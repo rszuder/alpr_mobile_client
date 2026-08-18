@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/alpr-model-v1.schema.json",
+  "title": "ALPR model package manifest v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "model_id", "role", "task", "input", "output", "labels", "variants"],
+  "properties": {
+    "schema": { "const": "alpr.model.v1" },
+    "model_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "role": { "enum": ["vehicle", "plate", "character"] },
+    "task": { "enum": ["detect", "pose"] },
+    "input": { "$ref": "#/$defs/input" },
+    "output": { "$ref": "#/$defs/output" },
+    "labels": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/variant" }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "channels": { "const": 3 },
+        "layout": { "enum": ["NHWC", "NCHW"] },
+        "color": { "enum": ["RGB", "BGR"] },
+        "data_type": { "enum": ["FLOAT32", "UINT8", "INT8"] },
+        "scale": { "type": "number" },
+        "offset": { "type": "number" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["decoder", "class_count"],
+      "properties": {
+        "decoder": {
+          "enum": [
+            "ultralytics_yolo_raw_v1",
+            "ultralytics_pose_raw_v1",
+            "ultralytics_detect_raw_v1"
+          ]
+        },
+        "class_count": { "type": "integer", "minimum": 1 },
+        "keypoint_count": { "type": "integer", "minimum": 0 },
+        "has_objectness": { "type": "boolean" },
+        "tensor_layout": { "enum": ["channels_first", "anchors_first"] },
+        "normalized_coordinates": { "type": "boolean" },
+        "nms_in_graph": { "const": false },
+        "confidence_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "iou_threshold": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "required": ["id", "runtime", "precision", "sha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "runtime": { "enum": ["tflite", "onnx", "ncnn"] },
+        "precision": { "enum": ["fp32", "fp16", "int8", "uint8"] },
+        "file": { "type": "string" },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "input": { "$ref": "#/$defs/input" },
+        "output": { "$ref": "#/$defs/output" },
+        "sha256": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+        }
+      },
+      "anyOf": [
+        { "required": ["file"] },
+        { "required": ["files"] }
+      ]
+    }
+  }
+}

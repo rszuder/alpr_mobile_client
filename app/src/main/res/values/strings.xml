@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Mobilny ALPR</string>
+    <string name="camera_permission_required">Do analizy obrazu potrzebny jest dostęp do kamery.</string>
+    <string name="import_model">Importuj model</string>
+    <string name="export_report">Eksportuj raport</string>
+    <string name="result_placeholder">—</string>
+    <string name="status_starting">Uruchamianie…</string>
+    <string name="models_missing">Zaimportuj model tablic i model znaków</string>
+    <string name="camera_content_description">Podgląd obrazu z kamery</string>
+    <string name="recognition_result_label">Rozpoznany numer</string>
+    <string name="camera_starting">Uruchamianie kamery…</string>
+    <string name="camera_error">Błąd kamery: %1$s</string>
+</resources>

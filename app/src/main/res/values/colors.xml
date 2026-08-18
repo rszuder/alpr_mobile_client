@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="alpr_panel">#E61A1D24</color>
+    <color name="alpr_accent">#7DD3FC</color>
+</resources>
