@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp"
+    app:cardBackgroundColor="@color/alpr_surface"
+    app:cardCornerRadius="14dp"
+    app:cardElevation="0dp"
+    app:strokeColor="@color/alpr_outline"
+    app:strokeWidth="1dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <com.example.alpr_v1.ui.PlateCropView
+            android:id="@+id/plate_crop"
+            android:layout_width="match_parent"
+            android:layout_height="94dp"
+            android:background="@color/black" />
+
+        <TextView
+            android:id="@+id/plate_verification_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="9dp"
+            android:gravity="center"
+            android:maxLines="1"
+            android:text="@string/verification_not_reviewed"
+            android:textColor="@color/alpr_text_muted"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/plate_verify_accept"
+                    style="@style/Widget.Material3.Button.IconButton.Outlined"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="@string/verification_accept_action"
+                    android:checkable="true"
+                    android:gravity="center"
+                    android:insetBottom="0dp"
+                    android:insetTop="0dp"
+                    android:minWidth="48dp"
+                    android:padding="0dp"
+                    android:tooltipText="@string/verification_accept_action"
+                    app:icon="@drawable/ic_check_24"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="25dp"
+                    app:iconTint="@color/alpr_success" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/verification_accept_short"
+                    android:textColor="@color/alpr_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/plate_verify_reject"
+                    style="@style/Widget.Material3.Button.IconButton.Outlined"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="@string/verification_reject_action"
+                    android:checkable="true"
+                    android:gravity="center"
+                    android:insetBottom="0dp"
+                    android:insetTop="0dp"
+                    android:minWidth="48dp"
+                    android:padding="0dp"
+                    android:tooltipText="@string/verification_reject_action"
+                    app:icon="@drawable/ic_close_24"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="25dp"
+                    app:iconTint="@color/alpr_warning" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/verification_reject_short"
+                    android:textColor="@color/alpr_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/plate_verify_edit"
+                    style="@style/Widget.Material3.Button.IconButton.Outlined"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="@string/verification_edit_action"
+                    android:gravity="center"
+                    android:insetBottom="0dp"
+                    android:insetTop="0dp"
+                    android:minWidth="48dp"
+                    android:padding="0dp"
+                    android:tooltipText="@string/verification_edit_action"
+                    app:icon="@drawable/ic_edit_24"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="25dp"
+                    app:iconTint="@color/alpr_primary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/verification_edit_short"
+                    android:textColor="@color/alpr_text_secondary"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/plate_number"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:maxLines="1"
+                android:textColor="@color/alpr_primary"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/plate_save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="40dp"
+                android:contentDescription="@string/crop_select_action"
+                android:textColor="@color/alpr_text_secondary"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/plate_date"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/plate_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:maxLines="2"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/plate_inference"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/plate_characters"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:fontFamily="monospace"
+            android:maxLines="4"
+            android:textColor="@color/alpr_text_muted"
+            android:textSize="11sp" />
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

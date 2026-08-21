@@ -67,7 +67,7 @@ public final class CameraController implements AutoCloseable {
                 .build();
         ImageAnalysis analysis = new ImageAnalysis.Builder()
                 .setResolutionSelector(resolutionSelector)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build();
         analysis.setAnalyzer(analyzerExecutor, image -> {

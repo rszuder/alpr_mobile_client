@@ -11,7 +11,8 @@ public final class YoloRawDecoder {
     public static List<Detection> decode(float[] data, int first, int second, YoloOutputSpec spec) {
         int channels = spec.channelsFirst ? first : second;
         int anchors = spec.channelsFirst ? second : first;
-        int expected = 4 + (spec.hasObjectness ? 1 : 0) + spec.classCount + spec.keypointCount * 3;
+        int expected = 4 + (spec.hasObjectness ? 1 : 0) + spec.classCount
+                + spec.keypointCount * spec.keypointDimensions;
         if (channels < expected || data.length < channels * anchors) {
             throw new IllegalArgumentException(
                     "Tensor YOLO ma niezgodny kształt: kanały=" + channels + ", oczekiwano co najmniej " + expected
@@ -52,7 +53,11 @@ public final class YoloRawDecoder {
             for (int point = 0; point < spec.keypointCount; point++) {
                 float x = value(data, channels, anchors, cursor++, anchor, spec.channelsFirst);
                 float y = value(data, channels, anchors, cursor++, anchor, spec.channelsFirst);
-                float pointConfidence = value(data, channels, anchors, cursor++, anchor, spec.channelsFirst);
+                float pointConfidence = 1f;
+                if (spec.keypointDimensions >= 3) {
+                    pointConfidence = value(data, channels, anchors, cursor++, anchor, spec.channelsFirst);
+                }
+                cursor += Math.max(0, spec.keypointDimensions - 3);
                 if (spec.normalizedCoordinates) {
                     x *= spec.inputWidth;
                     y *= spec.inputHeight;

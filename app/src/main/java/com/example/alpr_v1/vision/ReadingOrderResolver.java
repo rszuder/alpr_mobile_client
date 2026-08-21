@@ -8,7 +8,18 @@ public final class ReadingOrderResolver {
     private ReadingOrderResolver() {}
 
     public static List<Detection> sort(List<Detection> detections) {
-        if (detections.size() < 2) return new ArrayList<>(detections);
+        List<Detection> result = new ArrayList<>();
+        for (List<Detection> row : rows(detections)) result.addAll(row);
+        return result;
+    }
+
+    public static List<List<Detection>> rows(List<Detection> detections) {
+        List<List<Detection>> result = new ArrayList<>();
+        if (detections.isEmpty()) return result;
+        if (detections.size() == 1) {
+            result.add(new ArrayList<>(detections));
+            return result;
+        }
         List<Float> heights = new ArrayList<>();
         for (Detection detection : detections) heights.add(Math.max(1f, detection.height()));
         heights.sort(Float::compare);
@@ -35,10 +46,9 @@ public final class ReadingOrderResolver {
             best.items.add(detection);
         }
         rows.sort(Comparator.comparingDouble(Row::centerY));
-        List<Detection> result = new ArrayList<>();
         for (Row row : rows) {
             row.items.sort(Comparator.comparingDouble(Detection::centerX));
-            result.addAll(row.items);
+            result.add(new ArrayList<>(row.items));
         }
         return result;
     }

@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/diagnostics_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_screen_gradient"
+    tools:context=".DiagnosticsActivity">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/diagnostics_toolbar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/alpr_panel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:navigationIcon="@drawable/ic_arrow_back_24"
+        app:navigationIconTint="@color/alpr_text_primary"
+        app:subtitle="@string/diagnostics_subtitle"
+        app:subtitleTextColor="@color/alpr_text_muted"
+        app:title="@string/diagnostics_title"
+        app:titleTextColor="@color/alpr_text_primary" />
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/diagnostics_toolbar">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:paddingBottom="32dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_hero_gradient"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="20dp">
+
+                <ImageView
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:background="@drawable/bg_icon_green"
+                    android:contentDescription="@null"
+                    android:padding="13dp"
+                    android:src="@drawable/ic_diagnostics_24"
+                    app:tint="@color/alpr_success" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="15dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+                    <TextView
+                        android:id="@+id/diagnostics_health"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/alpr_text_primary"
+                        android:textSize="19sp"
+                        android:textStyle="bold" />
+                    <TextView
+                        android:id="@+id/diagnostics_health_detail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:textColor="#DDE2E8F0"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="20dp"
+                android:text="@string/diagnostics_overview"
+                android:textColor="@color/alpr_primary"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <GridLayout
+                android:id="@+id/diagnostics_grid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:alignmentMode="alignMargins"
+                android:columnCount="2"
+                android:orientation="horizontal"
+                android:useDefaultMargins="false" />
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="5dp"
+                android:layout_marginTop="12dp"
+                app:cardBackgroundColor="@color/alpr_card_blue"
+                app:cardCornerRadius="20dp"
+                app:strokeColor="@color/alpr_primary_dark"
+                app:strokeWidth="1dp">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        tools:ignore="UseCompoundDrawables">
+                        <ImageView
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_icon_blue"
+                            android:contentDescription="@null"
+                            android:padding="9dp"
+                            android:src="@drawable/ic_model_24"
+                            app:tint="@color/alpr_primary" />
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="12dp"
+                            android:layout_weight="1"
+                            android:text="@string/diagnostics_models"
+                            android:textColor="@color/alpr_text_primary"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/diagnostics_models_value"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:fontFamily="sans"
+                        android:textColor="@color/alpr_text_primary"
+                        android:textIsSelectable="true"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="5dp"
+                android:layout_marginTop="8dp"
+                app:cardBackgroundColor="@color/alpr_card"
+                app:cardCornerRadius="20dp"
+                app:strokeColor="@color/alpr_outline"
+                app:strokeWidth="1dp">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        tools:ignore="UseCompoundDrawables">
+                        <ImageView
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_icon_pink"
+                            android:contentDescription="@null"
+                            android:padding="9dp"
+                            android:src="@drawable/ic_session_24"
+                            app:tint="@color/alpr_magenta" />
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="12dp"
+                            android:layout_weight="1"
+                            android:text="@string/persistent_log_label"
+                            android:textColor="@color/alpr_text_primary"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/diagnostics_log"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:fontFamily="monospace"
+                        android:minHeight="96dp"
+                        android:text="@string/persistent_log_empty"
+                        android:textColor="@color/alpr_text_muted"
+                        android:textIsSelectable="true"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="5dp"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/diagnostics_refresh"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/diagnostics_refresh"
+                    app:icon="@drawable/ic_refresh_24" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/diagnostics_export"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:text="@string/export_report"
+                    app:icon="@drawable/ic_export_24" />
+            </LinearLayout>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</androidx.constraintlayout.widget.ConstraintLayout>

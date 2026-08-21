@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/alpr-package-v1.schema.json",
+  "title": "Complete ALPR pipeline package manifest v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "kind", "package_id", "models", "pipeline"],
+  "properties": {
+    "schema": { "const": "alpr.package.v1" },
+    "kind": { "const": "complete_alpr_pipeline" },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+    },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "created_at": { "type": "string" },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plate", "character"],
+      "properties": {
+        "vehicle": { "$ref": "#/$defs/vehicleModel" },
+        "plate": { "$ref": "#/$defs/plateModel" },
+        "character": { "$ref": "#/$defs/characterModel" }
+      }
+    },
+    "pipeline": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "models": { "required": ["vehicle"] }
+        }
+      },
+      "then": {
+        "properties": {
+          "pipeline": {
+            "prefixItems": [
+              { "$ref": "#/$defs/vehicleDetection" },
+              { "$ref": "#/$defs/plateDetection" },
+              { "$ref": "#/$defs/plateRectification" },
+              { "$ref": "#/$defs/characterDetection" },
+              { "$ref": "#/$defs/sequenceAssembly" }
+            ],
+            "items": false,
+            "minItems": 5,
+            "maxItems": 5
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "pipeline": {
+            "prefixItems": [
+              { "$ref": "#/$defs/plateDetection" },
+              { "$ref": "#/$defs/plateRectification" },
+              { "$ref": "#/$defs/characterDetection" },
+              { "$ref": "#/$defs/sequenceAssembly" }
+            ],
+            "items": false,
+            "minItems": 4,
+            "maxItems": 4
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "modelBase": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "role", "task", "model_id", "schema", "package_file",
+        "manifest_file", "sha256"
+      ],
+      "properties": {
+        "model_id": { "type": "string", "minLength": 1 },
+        "schema": { "const": "alpr.model.v1" },
+        "package_file": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*:).+\\.alprmodel$"
+        },
+        "manifest_file": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*:).+\\.json$"
+        },
+        "sha256": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$"
+          }
+        }
+      }
+    },
+    "vehicleModel": {
+      "allOf": [
+        { "$ref": "#/$defs/modelBase" },
+        {
+          "properties": {
+            "role": { "const": "vehicle" },
+            "task": { "const": "detect" }
+          }
+        }
+      ]
+    },
+    "plateModel": {
+      "allOf": [
+        { "$ref": "#/$defs/modelBase" },
+        {
+          "properties": {
+            "role": { "const": "plate" },
+            "task": { "const": "pose" }
+          }
+        }
+      ]
+    },
+    "characterModel": {
+      "allOf": [
+        { "$ref": "#/$defs/modelBase" },
+        {
+          "properties": {
+            "role": { "const": "character" },
+            "task": { "const": "detect" }
+          }
+        }
+      ]
+    },
+    "vehicleDetection": {
+      "type": "object",
+      "required": ["stage", "model", "role", "task"],
+      "properties": {
+        "stage": { "const": "vehicle_detection" },
+        "model": { "const": "vehicle" },
+        "role": { "const": "vehicle" },
+        "task": { "const": "detect" }
+      }
+    },
+    "plateDetection": {
+      "type": "object",
+      "required": ["stage", "model", "role", "task"],
+      "properties": {
+        "stage": { "const": "plate_detection" },
+        "model": { "const": "plate" },
+        "role": { "const": "plate" },
+        "task": { "const": "pose" }
+      }
+    },
+    "plateRectification": {
+      "type": "object",
+      "required": ["stage", "implementation"],
+      "properties": {
+        "stage": { "const": "plate_rectification" },
+        "implementation": { "const": "android_alpr_rectifier" }
+      }
+    },
+    "characterDetection": {
+      "type": "object",
+      "required": ["stage", "model", "role", "task"],
+      "properties": {
+        "stage": { "const": "character_detection" },
+        "model": { "const": "character" },
+        "role": { "const": "character" },
+        "task": { "const": "detect" }
+      }
+    },
+    "sequenceAssembly": {
+      "type": "object",
+      "required": ["stage", "implementation"],
+      "properties": {
+        "stage": { "const": "sequence_assembly" },
+        "implementation": { "const": "android_alpr_sequence_decoder" }
+      }
+    }
+  }
+}

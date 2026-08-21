@@ -101,6 +101,10 @@ public final class ModelVariant {
         return inputOverride == null ? packageDefault : inputOverride;
     }
     public ModelOutputSpec output(ModelOutputSpec packageDefault) {
-        return outputOverride == null ? packageDefault : outputOverride;
+        ModelOutputSpec resolved = outputOverride == null ? packageDefault : outputOverride;
+        if (runtime == ModelRuntime.NCNN && outputOverride == null) {
+            return resolved.asNcnnRawOutput();
+        }
+        return resolved;
     }
 }

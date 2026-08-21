@@ -48,13 +48,19 @@
           "enum": [
             "ultralytics_yolo_raw_v1",
             "ultralytics_pose_raw_v1",
-            "ultralytics_detect_raw_v1"
+            "ultralytics_detect_raw_v1",
+            "ultralytics_yolo_end2end_v1",
+            "ultralytics_pose_end2end_v1",
+            "ultralytics_detect_end2end_v1"
           ]
         },
         "class_count": { "type": "integer", "minimum": 1 },
         "keypoint_count": { "type": "integer", "minimum": 0 },
+        "keypoint_dimensions": { "type": "integer", "minimum": 0 },
         "has_objectness": { "type": "boolean" },
-        "tensor_layout": { "enum": ["channels_first", "anchors_first"] },
+        "score_index": { "type": "integer", "minimum": 0 },
+        "class_index": { "type": "integer", "minimum": 0 },
+        "tensor_layout": { "enum": ["channels_first", "anchors_first", "detections_first"] },
         "normalized_coordinates": { "type": "boolean" },
         "nms_in_graph": { "const": false },
         "confidence_threshold": { "type": "number", "minimum": 0, "maximum": 1 },

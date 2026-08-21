@@ -10,15 +10,28 @@ public final class ReportArchive {
     private ReportArchive() {}
 
     public static byte[] create(String json, String csv) throws IOException {
+        return createArchive(json, csv, null);
+    }
+
+    public static byte[] create(String json, String csv, String applicationLog) throws IOException {
+        return createArchive(json, csv, applicationLog == null ? "" : applicationLog);
+    }
+
+    private static byte[] createArchive(String json, String csv, String applicationLog) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
             write(zip, "report.json", json);
             write(zip, "traces.csv", csv);
+            if (applicationLog != null) write(zip, "application.log", applicationLog);
             write(
                     zip,
                     "README.txt",
-                    "Raport sesji mobilnego ALPR. report.json zawiera metadane urządzenia, modeli, "
-                            + "autotuningu i agregaty, a traces.csv zawiera jeden wiersz na przetworzoną klatkę.\n"
+                    "Raport mobilnego ALPR zgodny z alpr.mobile_benchmark_report.v1. "
+                            + "report.json zawiera osobne konfiguracje MP, MT i MZ, metadane urządzenia, "
+                            + "czas pierwszego wyniku, sesję cropów, ich daty i czasy inferencji, "
+                            + "autotuning, opóźnienia i pamięć. traces.csv zawiera jeden wiersz "
+                            + "na przetworzoną klatkę. application.log zawiera trwały dziennik aplikacji, "
+                            + "jeśli został dołączony. Metryki jakości wymagają osobnego testu z ground truth.\n"
             );
         }
         return bytes.toByteArray();

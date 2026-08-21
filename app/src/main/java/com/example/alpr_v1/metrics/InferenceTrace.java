@@ -16,6 +16,7 @@ public final class InferenceTrace {
     private final Map<String, Long> stageStarts = new LinkedHashMap<>();
     private final Map<String, Long> durationsNanos = new LinkedHashMap<>();
     private final Map<String, Double> confidences = new LinkedHashMap<>();
+    private final Map<String, Long> counters = new LinkedHashMap<>();
     private String status = "started";
     private String recognizedText = "";
     private final long pssStartKb;
@@ -55,6 +56,10 @@ public final class InferenceTrace {
         }
     }
 
+    public void putCount(String name, long value) {
+        counters.put(name, Math.max(0L, value));
+    }
+
     public void finish(String status, String recognizedText) {
         this.status = status == null ? "unknown" : status;
         this.recognizedText = recognizedText == null ? "" : recognizedText;
@@ -71,7 +76,13 @@ public final class InferenceTrace {
     public String status() { return status; }
     public String recognizedText() { return recognizedText; }
     public Map<String, Long> durationsNanos() { return Collections.unmodifiableMap(durationsNanos); }
+    public long durationNanos(String stage) { return durationsNanos.getOrDefault(stage, 0L); }
+    public long elapsedSinceStageStart(String stage) {
+        Long started = stageStarts.get(stage);
+        return started == null ? 0L : Math.max(0L, SystemClock.elapsedRealtimeNanos() - started);
+    }
     public Map<String, Double> confidences() { return Collections.unmodifiableMap(confidences); }
+    public Map<String, Long> counters() { return Collections.unmodifiableMap(counters); }
     public long pssStartKb() { return pssStartKb; }
     public long pssEndKb() { return pssEndKb; }
     public long nativeHeapStartBytes() { return nativeHeapStartBytes; }
@@ -89,6 +100,7 @@ public final class InferenceTrace {
         }
         json.put("stage_ms", stages);
         json.put("confidence", new JSONObject(confidences));
+        json.put("counters", new JSONObject(counters));
         JSONObject memory = new JSONObject();
         memory.put("sampled", memorySampled);
         memory.put("pss_start_kb", pssStartKb);

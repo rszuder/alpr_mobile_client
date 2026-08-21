@@ -1,0 +1,591 @@
+package com.example.alpr_v1;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Bundle;
+import android.view.View;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+
+import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.camera.AnalysisResolutionProfile;
+import com.example.alpr_v1.capture.CropCapacityPolicy;
+import com.example.alpr_v1.logging.AppLog;
+import com.example.alpr_v1.inference.RuntimeBackendFactory;
+import com.example.alpr_v1.model.AlprPackageImporter;
+import com.example.alpr_v1.model.InstalledAlprPackage;
+import com.example.alpr_v1.model.InstalledModel;
+import com.example.alpr_v1.model.ModelImportResult;
+import com.example.alpr_v1.model.ModelRegistry;
+import com.example.alpr_v1.model.ModelRole;
+import com.example.alpr_v1.model.ModelVariant;
+import com.example.alpr_v1.pipeline.RecognitionProfile;
+import com.example.alpr_v1.ui.ModelStatusFormatter;
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.button.MaterialButtonToggleGroup;
+import com.google.android.material.chip.Chip;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/** Osobny ekran konfiguracji. Zmiany są stosowane przez MainActivity po powrocie. */
+public final class SettingsActivity extends AppCompatActivity {
+    public static final String PREFERENCES = "alpr_ui";
+    public static final String KEY_REVISION = "settings_revision";
+    private static final String LOG_TAG = "SettingsActivity";
+
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    private SharedPreferences preferences;
+    private ModelRegistry modelRegistry;
+    private AlprPackageImporter packageImporter;
+    private AutoTuneManager autoTuneManager;
+    private TextView modelStatus;
+    private TextView storagePath;
+    private View progress;
+    private MaterialButton importButton;
+    private MaterialButton restoreBaseButton;
+    private MaterialButton vehicleNode;
+    private MaterialButton plateNode;
+    private MaterialButton characterNode;
+    private Chip vehicleBadge;
+    private Chip plateBadge;
+    private Chip characterBadge;
+    private ModelRole pendingImportRole;
+
+    private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(),
+            uri -> {
+                ModelRole expectedRole = pendingImportRole;
+                pendingImportRole = null;
+                if (uri != null) importModel(uri, expectedRole);
+            }
+    );
+
+    private final ActivityResultLauncher<Uri> directoryPicker = registerForActivityResult(
+            new ActivityResultContracts.OpenDocumentTree(),
+            uri -> {
+                if (uri == null) return;
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri,
+                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    );
+                    preferences.edit().putString("capture_directory_uri", uri.toString()).apply();
+                    markChanged();
+                    refreshStoragePath();
+                } catch (SecurityException error) {
+                    Toast.makeText(this, R.string.capture_directory_error, Toast.LENGTH_LONG).show();
+                }
+            }
+    );
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        EdgeToEdge.enable(this);
+        setContentView(R.layout.activity_settings);
+        applySystemInsets();
+
+        preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+        modelRegistry = new ModelRegistry(this);
+        packageImporter = new AlprPackageImporter(this, modelRegistry);
+        autoTuneManager = new AutoTuneManager(this);
+
+        MaterialToolbar toolbar = findViewById(R.id.settings_toolbar);
+        toolbar.setNavigationOnClickListener(view -> finish());
+        modelStatus = findViewById(R.id.settings_model_status);
+        storagePath = findViewById(R.id.settings_storage_path);
+        progress = findViewById(R.id.settings_progress);
+        importButton = findViewById(R.id.settings_import_model);
+        restoreBaseButton = findViewById(R.id.settings_restore_base_package);
+        vehicleNode = findViewById(R.id.settings_node_vehicle);
+        plateNode = findViewById(R.id.settings_node_plate);
+        characterNode = findViewById(R.id.settings_node_character);
+        vehicleBadge = findViewById(R.id.settings_node_vehicle_badge);
+        plateBadge = findViewById(R.id.settings_node_plate_badge);
+        characterBadge = findViewById(R.id.settings_node_character_badge);
+
+        configureProfileControls();
+        configureResolutionControls();
+        configureCropControls();
+        configurePipelineControls();
+        refreshModelStatus();
+        refreshStoragePath();
+    }
+
+    private void configureProfileControls() {
+        MaterialButtonToggleGroup group = findViewById(R.id.settings_profile_group);
+        RecognitionProfile selected = RecognitionProfile.fromWireName(preferences.getString(
+                "recognition_profile", RecognitionProfile.BALANCED.wireName()
+        ));
+        int selectedId = selected == RecognitionProfile.FAST
+                ? R.id.settings_profile_fast
+                : selected == RecognitionProfile.ACCURATE
+                ? R.id.settings_profile_accurate
+                : R.id.settings_profile_balanced;
+        group.check(selectedId);
+        group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
+            if (!isChecked) return;
+            RecognitionProfile profile = checkedId == R.id.settings_profile_fast
+                    ? RecognitionProfile.FAST
+                    : checkedId == R.id.settings_profile_accurate
+                    ? RecognitionProfile.ACCURATE
+                    : RecognitionProfile.BALANCED;
+            saveString("recognition_profile", profile.wireName());
+        });
+    }
+
+    private void configureResolutionControls() {
+        MaterialButtonToggleGroup group = findViewById(R.id.settings_resolution_group);
+        AnalysisResolutionProfile selected = AnalysisResolutionProfile.fromWireName(
+                preferences.getString("analysis_resolution_profile", AnalysisResolutionProfile.AUTO.wireName())
+        );
+        int selectedId = selected == AnalysisResolutionProfile.FAST
+                ? R.id.settings_resolution_fast
+                : selected == AnalysisResolutionProfile.DISTANT
+                ? R.id.settings_resolution_distant
+                : R.id.settings_resolution_auto;
+        group.check(selectedId);
+        group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
+            if (!isChecked) return;
+            AnalysisResolutionProfile profile = checkedId == R.id.settings_resolution_fast
+                    ? AnalysisResolutionProfile.FAST
+                    : checkedId == R.id.settings_resolution_distant
+                    ? AnalysisResolutionProfile.DISTANT
+                    : AnalysisResolutionProfile.AUTO;
+            saveString("analysis_resolution_profile", profile.wireName());
+        });
+    }
+
+    private void configureCropControls() {
+        MaterialButtonToggleGroup group = findViewById(R.id.settings_crop_group);
+        String selected = CropCapacityPolicy.normalizeSetting(
+                preferences.getString("crop_limit", CropCapacityPolicy.AUTO)
+        );
+        int selectedId;
+        switch (selected) {
+            case "10": selectedId = R.id.settings_crop_10; break;
+            case "25": selectedId = R.id.settings_crop_25; break;
+            case "50": selectedId = R.id.settings_crop_50; break;
+            case "100": selectedId = R.id.settings_crop_100; break;
+            default: selectedId = R.id.settings_crop_auto; break;
+        }
+        group.check(selectedId);
+        group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
+            if (!isChecked) return;
+            String value = checkedId == R.id.settings_crop_10 ? "10"
+                    : checkedId == R.id.settings_crop_25 ? "25"
+                    : checkedId == R.id.settings_crop_50 ? "50"
+                    : checkedId == R.id.settings_crop_100 ? "100"
+                    : CropCapacityPolicy.AUTO;
+            saveString("crop_limit", value);
+        });
+    }
+
+    private void configurePipelineControls() {
+        vehicleBadge.setOnClickListener(view -> {
+            boolean enabled = vehicleBadge.isChecked();
+            preferences.edit().putBoolean("vehicle_cascade_enabled", enabled).apply();
+            markChanged();
+            refreshNodeBadges();
+        });
+        importButton.setOnClickListener(view -> launchModelImport(null));
+        vehicleNode.setOnClickListener(view -> showNodeActions(ModelRole.VEHICLE));
+        plateNode.setOnClickListener(view -> showNodeActions(ModelRole.PLATE));
+        characterNode.setOnClickListener(view -> showNodeActions(ModelRole.CHARACTER));
+        restoreBaseButton.setOnClickListener(view -> restoreBaseComposition());
+        findViewById(R.id.settings_select_storage).setOnClickListener(view -> {
+            String stored = preferences.getString("capture_directory_uri", "");
+            Uri initial = stored.isEmpty() ? null : Uri.parse(stored);
+            directoryPicker.launch(initial);
+        });
+    }
+
+    private void launchModelImport(ModelRole expectedRole) {
+        pendingImportRole = expectedRole;
+        modelPicker.launch(new String[]{
+                "application/zip", "application/octet-stream", "application/x-zip-compressed"
+        });
+    }
+
+    private void showNodeActions(ModelRole role) {
+        CharSequence[] actions = new CharSequence[]{
+                getString(R.string.settings_node_choose_model),
+                getString(R.string.settings_node_import_model, roleLabel(role))
+        };
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(getString(R.string.settings_node_actions_title, roleLabel(role)))
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        showCompositionModel(role);
+                    } else {
+                        launchModelImport(role);
+                    }
+                })
+                .setNegativeButton(R.string.menu_close, null)
+                .show();
+    }
+
+    private void showCompositionModel(ModelRole role) {
+        modelRegistry.reload();
+        List<InstalledModel> models = modelRegistry.getInstalled(role);
+        if (models.isEmpty()) {
+            Toast.makeText(
+                    this,
+                    getString(R.string.settings_no_models_for_role, roleLabel(role)),
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+        int offset = role == ModelRole.VEHICLE ? 1 : 0;
+        CharSequence[] labels = new CharSequence[models.size() + offset];
+        if (offset == 1) labels[0] = getString(R.string.settings_vehicle_none);
+        InstalledModel active = modelRegistry.getActive(role);
+        int selected = offset == 1 && active == null ? 0 : -1;
+        for (int index = 0; index < models.size(); index++) {
+            InstalledModel model = models.get(index);
+            labels[index + offset] = model.manifest().name() + " · "
+                    + model.manifest().modelId();
+            if (!ModelRegistry.isExecutable(model)) {
+                labels[index + offset] = labels[index + offset] + " · brak runtime'u";
+            }
+            if (active != null && active.storageId().equals(model.storageId())) {
+                selected = index + offset;
+            }
+        }
+        final int[] choice = {Math.max(0, selected)};
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(getString(R.string.settings_select_model_title, roleLabel(role)))
+                .setSingleChoiceItems(labels, choice[0], (dialog, which) -> choice[0] = which)
+                .setPositiveButton(R.string.settings_apply, (dialog, ignored) -> {
+                    if (role == ModelRole.VEHICLE && choice[0] == 0) {
+                        InstalledModel previous = modelRegistry.getActive(ModelRole.VEHICLE);
+                        autoTuneManager.clearPinnedVariant(previous);
+                        modelRegistry.deactivateVehicle();
+                        setVehicleCascadeEnabled(false);
+                        markChanged();
+                        refreshModelStatus();
+                        return;
+                    }
+                    InstalledModel selectedModel = models.get(choice[0] - offset);
+                    if (!ModelRegistry.isExecutable(selectedModel)) {
+                        Toast.makeText(
+                                this,
+                                R.string.settings_model_not_executable,
+                                Toast.LENGTH_LONG
+                        ).show();
+                        return;
+                    }
+                    if (active == null || !active.storageId().equals(selectedModel.storageId())) {
+                        modelRegistry.activate(selectedModel);
+                        markChanged();
+                        refreshModelStatus();
+                    }
+                    showVariantSelection(role, selectedModel);
+                })
+                .setNegativeButton(R.string.menu_close, null)
+                .show();
+    }
+
+    private void showVariantSelection(ModelRole role, InstalledModel model) {
+        List<ModelVariant> variants = model.manifest().variants();
+        CharSequence[] labels = new CharSequence[variants.size() + 1];
+        labels[0] = getString(R.string.settings_variant_auto);
+        String pinned = autoTuneManager.pinnedVariantId(model);
+        int selected = 0;
+        for (int index = 0; index < variants.size(); index++) {
+            ModelVariant variant = variants.get(index);
+            String label = variant.id() + " · " + variant.runtime().wireName()
+                    + " · " + variant.precision().toUpperCase(java.util.Locale.ROOT);
+            if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                label += " · " + getString(
+                        R.string.settings_variant_unavailable,
+                        RuntimeBackendFactory.unavailableReason(variant.runtime())
+                );
+            }
+            labels[index + 1] = label;
+            if (variant.id().equals(pinned)) selected = index + 1;
+        }
+        final int[] choice = {selected};
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(getString(R.string.settings_select_variant_title, roleLabel(role)))
+                .setSingleChoiceItems(labels, selected, (dialog, which) -> choice[0] = which)
+                .setPositiveButton(R.string.settings_apply, (dialog, ignored) -> {
+                    if (choice[0] == 0) {
+                        autoTuneManager.clearPinnedVariant(model);
+                    } else {
+                        ModelVariant variant = variants.get(choice[0] - 1);
+                        if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                            Toast.makeText(
+                                    this,
+                                    RuntimeBackendFactory.unavailableReason(variant.runtime()),
+                                    Toast.LENGTH_LONG
+                            ).show();
+                            return;
+                        }
+                        autoTuneManager.pinVariant(model, variant.id());
+                    }
+                    markChanged();
+                    refreshModelStatus();
+                })
+                .setNegativeButton(R.string.menu_close, null)
+                .show();
+    }
+
+    private void restoreBaseComposition() {
+        modelRegistry.reload();
+        InstalledAlprPackage base = modelRegistry.getBasePackage();
+        if (base == null) return;
+        autoTuneManager.clearPinnedVariant(base.vehicleModel());
+        autoTuneManager.clearPinnedVariant(base.plateModel());
+        autoTuneManager.clearPinnedVariant(base.characterModel());
+        modelRegistry.restoreBasePackage();
+        markChanged();
+        refreshModelStatus();
+        Toast.makeText(this, R.string.settings_composition_restored, Toast.LENGTH_LONG).show();
+    }
+
+    private static String roleLabel(ModelRole role) {
+        return role == ModelRole.VEHICLE ? "MP"
+                : role == ModelRole.PLATE ? "MT" : "MZ";
+    }
+
+    private void importModel(Uri uri, ModelRole expectedRole) {
+        setBusy(true);
+        AppLog.info(this, LOG_TAG, "Rozpoczęto import modelu z ekranu opcji");
+        backgroundExecutor.execute(() -> {
+            try {
+                ModelImportResult result = packageImporter.importPackage(uri);
+                String name;
+                String successMessage;
+                if (expectedRole != null) {
+                    InstalledModel model = result.isCompletePackage()
+                            ? modelForRole(result.completePackage(), expectedRole)
+                            : result.singleModel();
+                    if (model == null) {
+                        throw new IllegalArgumentException(getString(
+                                R.string.settings_node_role_missing,
+                                roleLabel(expectedRole)
+                        ));
+                    }
+                    if (model.manifest().role() != expectedRole) {
+                        throw new IllegalArgumentException(getString(
+                                R.string.settings_node_role_mismatch,
+                                roleLabel(model.manifest().role()),
+                                roleLabel(expectedRole)
+                        ));
+                    }
+                    if (!ModelRegistry.isExecutable(model)) {
+                        modelRegistry.reload();
+                        throw new IllegalArgumentException(getString(
+                                R.string.settings_model_not_executable
+                        ));
+                    }
+                    modelRegistry.activate(model);
+                    name = model.manifest().name();
+                    successMessage = getString(
+                            R.string.settings_node_imported,
+                            roleLabel(expectedRole),
+                            name
+                    );
+                } else if (result.isCompletePackage()) {
+                    InstalledAlprPackage completePackage = result.completePackage();
+                    modelRegistry.activate(completePackage);
+                    name = completePackage.manifest().name();
+                    int message = completePackage.vehicleModel() != null
+                            && !ModelRegistry.isExecutable(completePackage.vehicleModel())
+                            ? R.string.settings_import_complete_partial_runtime
+                            : R.string.settings_import_complete;
+                    successMessage = getString(message, name);
+                } else {
+                    InstalledModel model = result.singleModel();
+                    if (ModelRegistry.isExecutable(model)) modelRegistry.activate(model);
+                    else modelRegistry.reload();
+                    name = model.manifest().name();
+                    successMessage = getString(R.string.settings_import_partial, name);
+                }
+                markChanged();
+                AppLog.info(this, LOG_TAG, "Zaimportowano model: " + name);
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    refreshModelStatus();
+                    Toast.makeText(this, successMessage, Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception error) {
+                AppLog.error(this, LOG_TAG, "Import odrzucony: " + error.getMessage(), error);
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    Toast.makeText(
+                            this,
+                            getString(R.string.settings_import_rejected, error.getMessage()),
+                            Toast.LENGTH_LONG
+                    ).show();
+                });
+            }
+        });
+    }
+
+    private static InstalledModel modelForRole(
+            InstalledAlprPackage completePackage,
+            ModelRole role
+    ) {
+        return role == ModelRole.VEHICLE
+                ? completePackage.vehicleModel()
+                : role == ModelRole.PLATE
+                ? completePackage.plateModel()
+                : completePackage.characterModel();
+    }
+
+    private void refreshModelStatus() {
+        modelRegistry.reload();
+        modelStatus.setText(ModelStatusFormatter.format(modelRegistry, autoTuneManager));
+        updateNode(vehicleNode, ModelRole.VEHICLE);
+        updateNode(plateNode, ModelRole.PLATE);
+        updateNode(characterNode, ModelRole.CHARACTER);
+        refreshNodeBadges();
+        restoreBaseButton.setEnabled(
+                modelRegistry.getBasePackage() != null
+                        && (modelRegistry.canRestoreBaseModels() || hasPinnedVariant())
+        );
+    }
+
+    private void refreshNodeBadges() {
+        boolean hasVehicle = modelRegistry.getActive(ModelRole.VEHICLE) != null;
+        boolean hasPlate = modelRegistry.getActive(ModelRole.PLATE) != null;
+        boolean hasCharacter = modelRegistry.getActive(ModelRole.CHARACTER) != null;
+        boolean vehicleEnabled = hasVehicle
+                && preferences.getBoolean("vehicle_cascade_enabled", false);
+
+        updateStageBadge(vehicleBadge, ModelRole.VEHICLE, hasVehicle, vehicleEnabled, true);
+        updateStageBadge(plateBadge, ModelRole.PLATE, hasPlate, hasPlate, false);
+        updateStageBadge(characterBadge, ModelRole.CHARACTER, hasCharacter, hasCharacter, false);
+    }
+
+    private void updateStageBadge(
+            Chip badge,
+            ModelRole role,
+            boolean available,
+            boolean enabled,
+            boolean userToggleable
+    ) {
+        badge.setChecked(enabled);
+        badge.setEnabled(available);
+        badge.setClickable(userToggleable && available);
+        badge.setFocusable(userToggleable && available);
+        badge.setText(!available
+                ? R.string.settings_node_badge_missing
+                : enabled
+                ? R.string.settings_node_badge_enabled
+                : R.string.settings_node_badge_disabled);
+        badge.setContentDescription(getString(
+                R.string.settings_node_badge_description,
+                roleLabel(role),
+                !available
+                        ? getString(R.string.settings_node_badge_state_missing)
+                        : enabled
+                        ? getString(R.string.settings_node_badge_state_enabled)
+                        : getString(R.string.settings_node_badge_state_disabled)
+        ));
+    }
+
+    private void setVehicleCascadeEnabled(boolean enabled) {
+        preferences.edit().putBoolean("vehicle_cascade_enabled", enabled).apply();
+    }
+
+    private void updateNode(MaterialButton button, ModelRole role) {
+        String roleName = roleLabel(role);
+        InstalledModel model = modelRegistry.getActive(role);
+        if (model == null) {
+            InstalledAlprPackage base = modelRegistry.getBasePackage();
+            InstalledModel baseModel = base == null ? null : modelForRole(base, role);
+            if (baseModel != null) {
+                String runtime = baseModel.manifest().variants().isEmpty()
+                        ? "--"
+                        : baseModel.manifest().variants().get(0).runtime().wireName()
+                        .toUpperCase(java.util.Locale.ROOT);
+                button.setText(roleName + "\n" + runtime + "\n"
+                        + getString(R.string.settings_node_inactive));
+                button.setContentDescription(roleName + ": "
+                        + baseModel.manifest().modelId() + ", " + runtime
+                        + ", " + getString(R.string.settings_node_inactive));
+            } else {
+                button.setText(roleName + "\n" + getString(R.string.settings_node_missing));
+                button.setContentDescription(roleName + ": "
+                        + getString(R.string.settings_node_missing));
+            }
+            return;
+        }
+        ModelVariant variant = autoTuneManager.chosenVariant(model);
+        String runtime = variant.runtime().wireName().toUpperCase(java.util.Locale.ROOT);
+        String precision = variant.precision().toUpperCase(java.util.Locale.ROOT);
+        button.setText(roleName + "\n" + runtime + "\n" + precision);
+        button.setContentDescription(
+                roleName + ": " + model.manifest().modelId()
+                        + ", " + variant.id()
+                        + ", " + (autoTuneManager.isVariantPinned(model) ? "ręczny" : "auto")
+        );
+    }
+
+    private boolean hasPinnedVariant() {
+        return autoTuneManager.isVariantPinned(modelRegistry.getActive(ModelRole.VEHICLE))
+                || autoTuneManager.isVariantPinned(modelRegistry.getActive(ModelRole.PLATE))
+                || autoTuneManager.isVariantPinned(modelRegistry.getActive(ModelRole.CHARACTER));
+    }
+
+    private void refreshStoragePath() {
+        String stored = preferences.getString("capture_directory_uri", "");
+        if (stored.isEmpty()) {
+            storagePath.setText(R.string.settings_storage_unset);
+            return;
+        }
+        Uri uri = Uri.parse(stored);
+        String label = uri.getLastPathSegment();
+        storagePath.setText(getString(
+                R.string.settings_storage_selected,
+                label == null || label.isEmpty() ? uri.toString() : label
+        ));
+    }
+
+    private void saveString(String key, String value) {
+        if (value.equals(preferences.getString(key, ""))) return;
+        preferences.edit().putString(key, value).apply();
+        markChanged();
+    }
+
+    private void markChanged() {
+        int revision = preferences.getInt(KEY_REVISION, 0);
+        preferences.edit().putInt(KEY_REVISION, revision + 1).apply();
+    }
+
+    private void setBusy(boolean busy) {
+        progress.setVisibility(busy ? View.VISIBLE : View.GONE);
+        importButton.setEnabled(!busy);
+    }
+
+    private void applySystemInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.settings_root), (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        backgroundExecutor.shutdownNow();
+        super.onDestroy();
+    }
+}

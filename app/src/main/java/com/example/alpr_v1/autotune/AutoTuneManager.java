@@ -15,6 +15,7 @@ import com.example.alpr_v1.model.ModelRuntime;
 import com.example.alpr_v1.model.ModelVariant;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.nio.ByteBuffer;
@@ -58,18 +59,20 @@ public final class AutoTuneManager {
 
         List<AutoTuneResult.Candidate> results = new ArrayList<>();
         AutoTuneResult.Candidate best = null;
+        boolean hasFp32 = hasExecutableFp32(model);
         for (ModelVariant variant : model.manifest().variants()) {
             if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) continue;
+            boolean selectable = !hasFp32 || isFp32(variant);
             for (int threads : threadCounts) {
                 ExecutionProfile profile = new ExecutionProfile(variant.runtime(), threads, false);
                 AutoTuneResult.Candidate candidate = benchmark(model, variant, profile);
                 results.add(candidate);
-                if (isBetter(candidate, best)) best = candidate;
+                if (selectable && isBetter(candidate, best)) best = candidate;
             }
             if (variant.runtime() == ModelRuntime.TFLITE && !isThermallyConstrained()) {
                 AutoTuneResult.Candidate candidate = benchmark(model, variant, ExecutionProfile.tfliteGpu());
                 results.add(candidate);
-                if (isBetter(candidate, best)) best = candidate;
+                if (selectable && isBetter(candidate, best)) best = candidate;
             }
         }
         if (best == null) {
@@ -142,37 +145,94 @@ public final class AutoTuneManager {
     }
 
     public ExecutionProfile chosenProfile(InstalledModel model) {
+        ModelVariant selected = chosenVariant(model);
         JSONObject parsed = profileObject(model);
         if (parsed == null) {
-            ModelRuntime runtime = fallbackVariant(model).runtime();
-            return new ExecutionProfile(runtime, Math.min(2, Math.max(1, Runtime.getRuntime().availableProcessors())), false);
+            return defaultProfile(selected.runtime());
         }
         try {
+            if (isVariantPinned(model)) {
+                return bestMeasuredProfile(parsed, selected);
+            }
             ModelRuntime runtime = ModelRuntime.fromWire(parsed.getString("runtime"));
+            if (runtime != selected.runtime()) {
+                return defaultProfile(selected.runtime());
+            }
             return new ExecutionProfile(
                     runtime,
                     Math.max(1, parsed.optInt("cpu_threads", 2)),
-                    parsed.optBoolean("gpu", false)
+                    runtime == ModelRuntime.TFLITE && parsed.optBoolean("gpu", false)
             );
         } catch (Exception e) {
-            return new ExecutionProfile(fallbackVariant(model).runtime(), 2, false);
+            return defaultProfile(selected.runtime());
         }
     }
 
     public ModelVariant chosenVariant(InstalledModel model) {
+        String pinnedId = pinnedVariantId(model);
+        if (!pinnedId.isEmpty()) {
+            for (ModelVariant variant : model.manifest().variants()) {
+                if (variant.id().equals(pinnedId)
+                        && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                    return variant;
+                }
+            }
+        }
         JSONObject parsed = profileObject(model);
         String selectedId = parsed == null ? "" : parsed.optString("chosen_variant_id", "");
+        boolean hasFp32 = hasExecutableFp32(model);
         for (ModelVariant variant : model.manifest().variants()) {
-            if (variant.id().equals(selectedId) && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+            if (variant.id().equals(selectedId)
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())
+                    && (!hasFp32 || isFp32(variant))) {
                 return variant;
             }
         }
         return fallbackVariant(model);
     }
 
+    public void pinVariant(InstalledModel model, String variantId) {
+        ModelVariant selected = null;
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (variant.id().equals(variantId)) {
+                selected = variant;
+                break;
+            }
+        }
+        if (selected == null) {
+            throw new IllegalArgumentException("Model nie zawiera wariantu: " + variantId);
+        }
+        if (!RuntimeBackendFactory.isRuntimeAvailable(selected.runtime())) {
+            throw new IllegalArgumentException(RuntimeBackendFactory.unavailableReason(selected.runtime()));
+        }
+        preferences.edit().putString(pinKey(model), selected.id()).apply();
+    }
+
+    public void clearPinnedVariant(InstalledModel model) {
+        if (model != null) preferences.edit().remove(pinKey(model)).apply();
+    }
+
+    public boolean isVariantPinned(InstalledModel model) {
+        return !pinnedVariantId(model).isEmpty();
+    }
+
+    public String pinnedVariantId(InstalledModel model) {
+        if (model == null) return "";
+        String value = preferences.getString(pinKey(model), "");
+        if (value == null || value.isEmpty()) return "";
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (variant.id().equals(value)
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                return value;
+            }
+        }
+        return "";
+    }
+
     public JSONObject exportProfiles() throws JSONException {
         JSONObject profiles = new JSONObject();
         for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
+            if (!entry.getKey().startsWith("profile.")) continue;
             if (!(entry.getValue() instanceof String)) continue;
             String value = (String) entry.getValue();
             try {
@@ -182,6 +242,40 @@ public final class AutoTuneManager {
             }
         }
         return profiles;
+    }
+
+    private static ExecutionProfile bestMeasuredProfile(
+            JSONObject profile,
+            ModelVariant variant
+    ) throws JSONException {
+        JSONArray candidates = profile.optJSONArray("candidates");
+        JSONObject best = null;
+        if (candidates != null) {
+            for (int index = 0; index < candidates.length(); index++) {
+                JSONObject candidate = candidates.optJSONObject(index);
+                if (candidate == null
+                        || !variant.id().equals(candidate.optString("variant_id"))
+                        || !candidate.optString("error", "").isEmpty()) continue;
+                if (best == null || candidate.optDouble("median_ms", Double.MAX_VALUE)
+                        < best.optDouble("median_ms", Double.MAX_VALUE)) {
+                    best = candidate;
+                }
+            }
+        }
+        if (best == null) return defaultProfile(variant.runtime());
+        return new ExecutionProfile(
+                variant.runtime(),
+                Math.max(1, best.optInt("threads", 2)),
+                variant.runtime() == ModelRuntime.TFLITE && best.optBoolean("gpu", false)
+        );
+    }
+
+    private static ExecutionProfile defaultProfile(ModelRuntime runtime) {
+        return new ExecutionProfile(
+                runtime,
+                Math.min(2, Math.max(1, Runtime.getRuntime().availableProcessors())),
+                false
+        );
     }
 
     private JSONObject profileObject(InstalledModel model) {
@@ -196,12 +290,38 @@ public final class AutoTuneManager {
 
     private static ModelVariant fallbackVariant(InstalledModel model) {
         for (ModelVariant variant : model.manifest().variants()) {
-            if (variant.runtime() == ModelRuntime.TFLITE) return variant;
+            if (variant.runtime() == ModelRuntime.TFLITE && isFp32(variant)
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+        }
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (variant.runtime() == ModelRuntime.ONNX && isFp32(variant)
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+        }
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (isFp32(variant) && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+        }
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (variant.runtime() == ModelRuntime.TFLITE
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
         }
         for (ModelVariant variant : model.manifest().variants()) {
             if (RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
         }
         throw new IllegalStateException("Pakiet nie zawiera wariantu wykonywalnego w tej wersji aplikacji");
+    }
+
+    public static int warmupRuns() { return WARMUP_RUNS; }
+    public static int measuredRunsPerCandidate() { return MEASURED_RUNS; }
+
+    private static boolean hasExecutableFp32(InstalledModel model) {
+        for (ModelVariant variant : model.manifest().variants()) {
+            if (isFp32(variant) && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return true;
+        }
+        return false;
+    }
+
+    private static boolean isFp32(ModelVariant variant) {
+        return "fp32".equals(variant.precision());
     }
 
     private boolean isThermallyConstrained() {
@@ -211,5 +331,9 @@ public final class AutoTuneManager {
 
     private String key(InstalledModel model) {
         return "profile." + environmentId + "." + model.manifest().role().wireName() + "." + model.fingerprint();
+    }
+
+    private String pinKey(InstalledModel model) {
+        return "variant_pin." + model.manifest().role().wireName() + "." + model.fingerprint();
     }
 }

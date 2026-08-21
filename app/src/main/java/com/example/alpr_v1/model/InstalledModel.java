@@ -17,6 +17,7 @@ public final class InstalledModel {
     public File directory() { return directory; }
     public String fingerprint() { return fingerprint; }
     public File resolve(String relativePath) { return new File(directory, relativePath); }
+    public File sourceArchive() { return new File(directory, "source.alprmodel"); }
 
     public String storageId() {
         return manifest.role().wireName() + "/" + directory.getName();

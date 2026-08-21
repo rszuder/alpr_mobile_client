@@ -8,13 +8,15 @@ public final class RuntimeBackendFactory {
     private RuntimeBackendFactory() {}
 
     public static boolean isRuntimeAvailable(ModelRuntime runtime) {
-        return runtime == ModelRuntime.TFLITE || runtime == ModelRuntime.ONNX;
+        return runtime == ModelRuntime.TFLITE
+                || runtime == ModelRuntime.ONNX
+                || (runtime == ModelRuntime.NCNN && NcnnBackend.isAvailable());
     }
 
     public static String unavailableReason(ModelRuntime runtime) {
         switch (runtime) {
             case NCNN:
-                return "Backend NCNN/JNI nie został jeszcze dołączony do APK";
+                return NcnnBackend.unavailableReason();
             default:
                 return "Runtime jest dostępny";
         }
@@ -33,6 +35,9 @@ public final class RuntimeBackendFactory {
         }
         if (variant.runtime() == ModelRuntime.ONNX) {
             return new OnnxBackend(model, variant, profile);
+        }
+        if (variant.runtime() == ModelRuntime.NCNN) {
+            return new NcnnBackend(model, variant, profile);
         }
         throw new UnsupportedOperationException(unavailableReason(variant.runtime()));
     }

@@ -140,6 +140,7 @@ public final class ModelManifest {
     public String decoder() { return output.decoder(); }
     public int classCount() { return output.classCount(); }
     public int keypointCount() { return output.keypointCount(); }
+    public int keypointDimensions() { return output.keypointDimensions(); }
     public boolean hasObjectness() { return output.hasObjectness(); }
     public boolean channelsFirst() { return output.channelsFirst(); }
     public boolean normalizedCoordinates() { return output.normalizedCoordinates(); }
@@ -148,5 +149,54 @@ public final class ModelManifest {
     public float iouThreshold() { return output.iouThreshold(); }
     public List<String> labels() { return labels; }
     public List<ModelVariant> variants() { return variants; }
+    public String yoloFamily() {
+        try {
+            JSONObject root = new JSONObject(rawJson);
+            JSONObject model = root.optJSONObject("model");
+            JSONObject source = root.optJSONObject("source");
+            String value = firstNonEmpty(
+                    model == null ? "" : model.optString("family"),
+                    model == null ? "" : model.optString("architecture_label"),
+                    source == null ? "" : source.optString("architecture_label")
+            );
+            return value;
+        } catch (JSONException ignored) {
+            return "";
+        }
+    }
+    public long parameterCount() {
+        try {
+            JSONObject root = new JSONObject(rawJson);
+            JSONObject source = root.optJSONObject("source");
+            JSONObject model = root.optJSONObject("model");
+            long value = source == null ? 0L : source.optLong("parameter_count", 0L);
+            return value > 0L || model == null ? value : model.optLong("parameter_count", 0L);
+        } catch (JSONException ignored) {
+            return 0L;
+        }
+    }
+    public String exportedAt() {
+        try {
+            JSONObject source = new JSONObject(rawJson).optJSONObject("source");
+            return source == null ? "" : source.optString("exported_at", "");
+        } catch (JSONException ignored) {
+            return "";
+        }
+    }
+    public double metric(String key) {
+        try {
+            JSONObject metrics = new JSONObject(rawJson).optJSONObject("metrics");
+            return metrics == null || !metrics.has(key) ? Double.NaN : metrics.optDouble(key, Double.NaN);
+        } catch (JSONException ignored) {
+            return Double.NaN;
+        }
+    }
     public String rawJson() { return rawJson; }
+
+    private static String firstNonEmpty(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) return value.trim();
+        }
+        return "";
+    }
 }
