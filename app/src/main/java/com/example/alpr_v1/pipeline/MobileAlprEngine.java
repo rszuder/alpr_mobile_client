@@ -32,6 +32,7 @@ import com.example.alpr_v1.vision.PreparedInput;
 import com.example.alpr_v1.vision.YoloOutputSpec;
 import com.example.alpr_v1.vision.YoloEndToEndDecoder;
 import com.example.alpr_v1.vision.YoloRawDecoder;
+import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -58,6 +59,8 @@ final class MobileAlprEngine implements AutoCloseable {
     private final ModelOutputSpec plateOutputSpec;
     private final ModelOutputSpec characterOutputSpec;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
+
+    private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
     private boolean vehicleCascadeEnabled;
@@ -151,6 +154,7 @@ final class MobileAlprEngine implements AutoCloseable {
         trackCoordinator.reset();
         cachedVehicleRegions.clear();
         lastVehicleDetectionFrame = Long.MIN_VALUE;
+        sceneChangeDetector.reset();
     }
 
     void setRapidCameraMotion(boolean rapid) {
@@ -158,6 +162,46 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     PipelineResult run(Bitmap frame, InferenceTrace trace) {
+        SceneChangeDetector.Result scene =
+                sceneChangeDetector.update(frame);
+
+        trace.putConfidence(
+                "scene_change_score",
+                scene.score
+        );
+
+        trace.putConfidence(
+                "scene_change_fraction",
+                scene.changedFraction
+        );
+
+        trace.putConfidence(
+                "scene_brightness_delta",
+                scene.brightnessDelta
+        );
+
+        trace.putCount(
+                "scene_change_candidate",
+                scene.sceneChanged ? 1 : 0
+        );
+
+        android.util.Log.d(
+                "ALPR_SCENE",
+                String.format(
+                        Locale.ROOT,
+                        "frame=%d changed=%s candidate=%s cooldown=%d "
+                                + "score=%.3f fraction=%.3f brightness=%.3f size=%dx%d",
+                        trace.frameId(),
+                        scene.sceneChanged,
+                        scene.rawCandidate,
+                        scene.cooldown,
+                        scene.score,
+                        scene.changedFraction,
+                        scene.brightnessDelta,
+                        frame.getWidth(),
+                        frame.getHeight()
+                )
+        );
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoiSelector.Region> plateRegions = new ArrayList<>();
         boolean useVehicleRegions = vehicleCascadeEnabled && vehicleBackend != null;
