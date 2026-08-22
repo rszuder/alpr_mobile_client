@@ -179,7 +179,16 @@ public final class DetectionOverlayView extends View {
         float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
         float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
         List<RenderItem> prepared = new ArrayList<>(items.size());
-        List<RectF> frameBounds = new ArrayList<>(items.size());
+
+        /*
+         * Przy rozmieszczaniu badge'y tablic unikamy tylko
+         * innych ramek tablic.
+         *
+         * VEHICLE i VEHICLE_ROI są ramkami diagnostycznymi
+         * obejmującymi tablicę, więc nie mogą blokować jej napisu.
+         */
+        List<RectF> plateFrameBounds = new ArrayList<>();
+
         for (OverlayItem item : items) {
             RectF source = item.normalizedBounds;
             RectF bounds = new RectF(
@@ -197,7 +206,10 @@ public final class DetectionOverlayView extends View {
             }
             RenderItem renderItem = new RenderItem(item, bounds, points);
             prepared.add(renderItem);
-            frameBounds.add(bounds);
+
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                plateFrameBounds.add(bounds);
+            }
         }
 
         List<RectF> occupiedLabels = new ArrayList<>();
@@ -220,7 +232,7 @@ public final class DetectionOverlayView extends View {
                     renderItem.bounds,
                     labelWidth,
                     labelHeight,
-                    frameBounds,
+                    plateFrameBounds,
                     occupiedLabels,
                     viewWidth,
                     viewHeight
