@@ -499,6 +499,29 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void presentResult(PipelineResult result, long observationNanos) {
+        if (result.sceneReset) {
+
+            /*
+             * Pipeline rozpoczął nową scenę.
+             *
+             * Usuwamy więc również stan trackera warstwy UI.
+             */
+            overlayTracker.reset();
+
+            /*
+             * TrackId w pipeline może po resecie zacząć się ponownie od 1.
+             * Stary stan próbkowania cropów nie może zostać przypisany
+             * do tablicy z nowego zdjęcia.
+             */
+            lastCaptureByTrack.clear();
+
+            /*
+             * Natychmiast usuwamy ewentualny stary overlay.
+             */
+            overlayView.setItems(
+                    java.util.Collections.emptyList()
+            );
+        }
         liveStatus.setText(result.message);
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
         overlayView.setItems(

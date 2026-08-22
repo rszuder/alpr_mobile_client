@@ -5,12 +5,12 @@ import android.graphics.Bitmap;
 /**
  * Lekki detektor nagłej zmiany sceny.
  *
- * Porównuje regularną siatkę próbek luminancji pomiędzy
- * kolejnymi przetwarzanymi klatkami.
+ * Detektor porównuje regularną siatkę próbek luminancji.
+ * Globalna zmiana jasności jest kompensowana.
  *
- * Globalna zmiana jasności jest kompensowana, dzięki czemu
- * zmiana ekspozycji kamery nie powinna być traktowana tak samo
- * jak przełączenie na zupełnie inne zdjęcie.
+ * Detektor zostaje uzbrojony dopiero po zaobserwowaniu
+ * stabilnej klatki. Po wykryciu zmiany sceny ponownie
+ * czeka na stabilizację przed kolejnym zgłoszeniem.
  */
 public final class SceneChangeDetector {
 
@@ -22,48 +22,22 @@ public final class SceneChangeDetector {
     private static final float SCORE_THRESHOLD = 0.14f;
     private static final float CHANGED_FRACTION_THRESHOLD = 0.38f;
 
-    private static final int COOLDOWN_UPDATES = 2;
-
     public static final class Result {
 
         public final boolean initialized;
-
-        /**
-         * Końcowa decyzja detektora, po uwzględnieniu cooldownu.
-         */
         public final boolean sceneChanged;
-
-        /**
-         * Czy sama różnica obrazu przekroczyła progi,
-         * niezależnie od cooldownu.
-         */
         public final boolean rawCandidate;
+        public final boolean armed;
 
-        /**
-         * Stan cooldownu przed obsłużeniem bieżącej klatki.
-         */
-        public final int cooldown;
-
-        /**
-         * Średnia zmiana struktury obrazu, około 0..1.
-         */
         public final float score;
-
-        /**
-         * Udział próbek, które zmieniły się silnie.
-         */
         public final float changedFraction;
-
-        /**
-         * Globalna różnica średniej jasności.
-         */
         public final float brightnessDelta;
 
         private Result(
                 boolean initialized,
                 boolean sceneChanged,
                 boolean rawCandidate,
-                int cooldown,
+                boolean armed,
                 float score,
                 float changedFraction,
                 float brightnessDelta
@@ -71,7 +45,7 @@ public final class SceneChangeDetector {
             this.initialized = initialized;
             this.sceneChanged = sceneChanged;
             this.rawCandidate = rawCandidate;
-            this.cooldown = cooldown;
+            this.armed = armed;
             this.score = score;
             this.changedFraction = changedFraction;
             this.brightnessDelta = brightnessDelta;
@@ -83,7 +57,14 @@ public final class SceneChangeDetector {
     private int previousWidth;
     private int previousHeight;
 
-    private int cooldownUpdates;
+    /*
+     * false:
+     * detektor czeka na pierwszą stabilną klatkę.
+     *
+     * true:
+     * kolejna duża zmiana może zostać uznana za zmianę sceny.
+     */
+    private boolean armed;
 
     public synchronized Result update(Bitmap frame) {
 
@@ -92,7 +73,7 @@ public final class SceneChangeDetector {
                     false,
                     false,
                     false,
-                    0,
+                    armed,
                     0f,
                     0f,
                     0f
@@ -106,18 +87,20 @@ public final class SceneChangeDetector {
 
         /*
          * Pierwsza klatka tworzy tylko punkt odniesienia.
+         * Nie wolno jeszcze zgłaszać zmiany sceny.
          */
         if (previousSamples == null) {
 
             previousSamples = currentSamples;
             previousWidth = width;
             previousHeight = height;
+            armed = false;
 
             return new Result(
                     false,
                     false,
                     false,
-                    0,
+                    false,
                     0f,
                     0f,
                     0f
@@ -125,24 +108,23 @@ public final class SceneChangeDetector {
         }
 
         /*
-         * Zmiana orientacji albo rozdzielczości oznacza
-         * przerwanie ciągłości sceny.
+         * Zmiana rozdzielczości / orientacji przerywa
+         * ciągłość poprzedniej sceny.
          */
         if (width != previousWidth || height != previousHeight) {
+
+            boolean changed = armed;
 
             previousSamples = currentSamples;
             previousWidth = width;
             previousHeight = height;
-
-            int cooldownBeforeUpdate = cooldownUpdates;
-
-            cooldownUpdates = COOLDOWN_UPDATES;
+            armed = false;
 
             return new Result(
                     true,
+                    changed,
                     true,
-                    true,
-                    cooldownBeforeUpdate,
+                    false,
                     1f,
                     1f,
                     0f
@@ -166,9 +148,8 @@ public final class SceneChangeDetector {
             float currentCentered =
                     currentSamples[i] - currentMean;
 
-            float difference = Math.abs(
-                    currentCentered - previousCentered
-            );
+            float difference =
+                    Math.abs(currentCentered - previousCentered);
 
             differenceSum += difference;
 
@@ -188,33 +169,37 @@ public final class SceneChangeDetector {
         float brightnessDelta =
                 Math.abs(currentMean - previousMean) / 255f;
 
-        /*
-         * Najpierw sprawdzamy sam obraz.
-         *
-         * To właśnie rawCandidate pozwoli nam odróżnić:
-         *
-         * candidate=true, changed=false
-         *
-         * czyli sytuację, gdy obraz mocno się zmienił,
-         * ale detektor był jeszcze w cooldownie.
-         */
         boolean rawCandidate =
                 score >= SCORE_THRESHOLD
-                        && changedFraction
-                        >= CHANGED_FRACTION_THRESHOLD;
+                        && changedFraction >= CHANGED_FRACTION_THRESHOLD;
 
-        int cooldownBeforeUpdate = cooldownUpdates;
+        boolean sceneChanged = false;
 
-        boolean changed =
-                cooldownUpdates == 0
-                        && rawCandidate;
+        if (!armed) {
 
-        if (cooldownUpdates > 0) {
-            cooldownUpdates--;
-        }
+            /*
+             * Dopóki obraz nadal mocno się zmienia
+             * (np. start kamery albo animacja galerii),
+             * detektor pozostaje rozbrojony.
+             *
+             * Pierwsza stabilna klatka go uzbraja.
+             */
+            if (!rawCandidate) {
+                armed = true;
+            }
 
-        if (changed) {
-            cooldownUpdates = COOLDOWN_UPDATES;
+        } else if (rawCandidate) {
+
+            /*
+             * Byliśmy w stabilnej scenie i pojawiła się
+             * duża zmiana obrazu.
+             */
+            sceneChanged = true;
+
+            /*
+             * Po zmianie czekamy na stabilizację nowej sceny.
+             */
+            armed = false;
         }
 
         previousSamples = currentSamples;
@@ -223,9 +208,9 @@ public final class SceneChangeDetector {
 
         return new Result(
                 true,
-                changed,
+                sceneChanged,
                 rawCandidate,
-                cooldownBeforeUpdate,
+                armed,
                 score,
                 changedFraction,
                 brightnessDelta
@@ -236,7 +221,7 @@ public final class SceneChangeDetector {
         previousSamples = null;
         previousWidth = 0;
         previousHeight = 0;
-        cooldownUpdates = 0;
+        armed = false;
     }
 
     private static float[] sampleLuminance(Bitmap frame) {
@@ -279,14 +264,9 @@ public final class SceneChangeDetector {
 
                 int pixel = frame.getPixel(x, y);
 
-                int red =
-                        (pixel >> 16) & 0xff;
-
-                int green =
-                        (pixel >> 8) & 0xff;
-
-                int blue =
-                        pixel & 0xff;
+                int red = (pixel >> 16) & 0xff;
+                int green = (pixel >> 8) & 0xff;
+                int blue = pixel & 0xff;
 
                 samples[index++] =
                         0.2126f * red

@@ -150,10 +150,14 @@ final class MobileAlprEngine implements AutoCloseable {
         trackCoordinator.setProfile(profile);
     }
 
-    void resetTracking() {
+    private void resetSceneDependentState() {
         trackCoordinator.reset();
         cachedVehicleRegions.clear();
         lastVehicleDetectionFrame = Long.MIN_VALUE;
+    }
+
+    void resetTracking() {
+        resetSceneDependentState();
         sceneChangeDetector.reset();
     }
 
@@ -182,19 +186,19 @@ final class MobileAlprEngine implements AutoCloseable {
 
         trace.putCount(
                 "scene_change_candidate",
-                scene.sceneChanged ? 1 : 0
+                scene.rawCandidate ? 1 : 0
         );
 
         android.util.Log.d(
                 "ALPR_SCENE",
                 String.format(
                         Locale.ROOT,
-                        "frame=%d changed=%s candidate=%s cooldown=%d "
+                        "frame=%d changed=%s candidate=%s armed=%s "
                                 + "score=%.3f fraction=%.3f brightness=%.3f size=%dx%d",
                         trace.frameId(),
                         scene.sceneChanged,
                         scene.rawCandidate,
-                        scene.cooldown,
+                        scene.armed,
                         scene.score,
                         scene.changedFraction,
                         scene.brightnessDelta,
@@ -202,6 +206,22 @@ final class MobileAlprEngine implements AutoCloseable {
                         frame.getHeight()
                 )
         );
+
+        if (scene.sceneChanged) {
+
+            resetSceneDependentState();
+
+            trace.putCount("scene_reset", 1);
+
+            android.util.Log.d(
+                    "ALPR_SCENE",
+                    "RESET frame=" + trace.frameId()
+                            + " -> wyczyszczono tracki MT/MZ i cache MP"
+            );
+        } else {
+            trace.putCount("scene_reset", 0);
+        }
+
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoiSelector.Region> plateRegions = new ArrayList<>();
         boolean useVehicleRegions = vehicleCascadeEnabled && vehicleBackend != null;
@@ -297,7 +317,7 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.finish("no_plate", "");
             return new PipelineResult(
                     "no_plate", "Nie wykryto tablicy", "", 0,
-                    overlays, frame.getWidth(), frame.getHeight()
+                    overlays, frame.getWidth(), frame.getHeight(), scene.sceneChanged
             );
         }
         trace.putConfidence("plate", plates.get(0).confidence);
@@ -500,7 +520,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                     plates.size(), characterRuns
                             ),
                     recognitions, overlays, frame.getWidth(), frame.getHeight(),
-                    plateObservations
+                    plateObservations, scene.sceneChanged
             );
         }
 
@@ -532,7 +552,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         recognitions.size(), plates.size(), characterRuns
                 ),
                 recognitions, overlays, frame.getWidth(), frame.getHeight(),
-                plateObservations
+                plateObservations, scene.sceneChanged
         );
     }
 

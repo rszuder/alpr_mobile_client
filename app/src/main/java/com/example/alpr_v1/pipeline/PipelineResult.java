@@ -17,6 +17,8 @@ public final class PipelineResult implements AutoCloseable {
     public final int sourceWidth;
     public final int sourceHeight;
 
+    public final boolean sceneReset;
+
     public PipelineResult(
             String status,
             String message,
@@ -36,10 +38,33 @@ public final class PipelineResult implements AutoCloseable {
             int sourceWidth,
             int sourceHeight
     ) {
+        this(
+                status,
+                message,
+                recognizedText,
+                confidence,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                false
+        );
+    }
+
+    public PipelineResult(
+            String status,
+            String message,
+            String recognizedText,
+            double confidence,
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            boolean sceneReset
+    ) {
         this.status = status;
         this.message = message;
         this.recognizedText = recognizedText == null ? "" : recognizedText;
         this.confidence = confidence;
+
         if (this.recognizedText.isEmpty()) {
             this.recognitions = Collections.emptyList();
         } else {
@@ -47,10 +72,16 @@ public final class PipelineResult implements AutoCloseable {
                     new PlateRecognition(this.recognizedText, confidence)
             );
         }
-        this.overlayItems = Collections.unmodifiableList(new ArrayList<>(overlayItems));
+
+        this.overlayItems =
+                Collections.unmodifiableList(
+                        new ArrayList<>(overlayItems)
+                );
+
         this.plateObservations = Collections.emptyList();
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
+        this.sceneReset = sceneReset;
     }
 
     public PipelineResult(
@@ -74,25 +105,63 @@ public final class PipelineResult implements AutoCloseable {
             int sourceHeight,
             List<PlateObservation> plateObservations
     ) {
+        this(
+                status,
+                message,
+                recognitions,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                plateObservations,
+                false
+        );
+    }
+
+    public PipelineResult(
+            String status,
+            String message,
+            List<PlateRecognition> recognitions,
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            List<PlateObservation> plateObservations,
+            boolean sceneReset
+    ) {
         this.status = status;
         this.message = message;
-        this.recognitions = Collections.unmodifiableList(new ArrayList<>(recognitions));
+
+        this.recognitions =
+                Collections.unmodifiableList(new ArrayList<>(recognitions));
+
         StringBuilder combined = new StringBuilder();
         double minimum = 1.0;
+
         for (PlateRecognition recognition : recognitions) {
             if (recognition.text.isEmpty()) continue;
-            if (combined.length() > 0) combined.append('\n');
+
+            if (combined.length() > 0) {
+                combined.append('\n');
+            }
+
             combined.append(recognition.text);
             minimum = Math.min(minimum, recognition.confidence);
         }
+
         this.recognizedText = combined.toString();
-        this.confidence = combined.length() == 0 ? 0.0 : minimum;
-        this.overlayItems = Collections.unmodifiableList(new ArrayList<>(overlayItems));
-        this.plateObservations = Collections.unmodifiableList(
-                new ArrayList<>(plateObservations)
-        );
+        this.confidence =
+                combined.length() == 0 ? 0.0 : minimum;
+
+        this.overlayItems =
+                Collections.unmodifiableList(new ArrayList<>(overlayItems));
+
+        this.plateObservations =
+                Collections.unmodifiableList(
+                        new ArrayList<>(plateObservations)
+                );
+
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
+        this.sceneReset = sceneReset;
     }
 
     public static PipelineResult waitingForModels() {
