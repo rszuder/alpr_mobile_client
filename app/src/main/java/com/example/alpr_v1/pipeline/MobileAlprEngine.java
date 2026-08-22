@@ -40,6 +40,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 final class MobileAlprEngine implements AutoCloseable {
     private static final int VEHICLE_REFRESH_FRAMES = 3;
@@ -58,6 +60,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private final ModelOutputSpec vehicleOutputSpec;
     private final ModelOutputSpec plateOutputSpec;
     private final ModelOutputSpec characterOutputSpec;
+    private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
@@ -98,6 +101,10 @@ final class MobileAlprEngine implements AutoCloseable {
         vehicleModel = vehicleCascadeEnabled ? registry.getActive(ModelRole.VEHICLE) : null;
         plateModel = required(registry, ModelRole.PLATE);
         characterModel = required(registry, ModelRole.CHARACTER);
+
+        vehicleClassIds = vehicleModel == null
+                ? Collections.emptySet()
+                : resolveVehicleClassIds(vehicleModel.manifest().labels());
 
         ModelVariant plateVariant = autoTuneManager.chosenVariant(plateModel);
         ModelVariant characterVariant = autoTuneManager.chosenVariant(characterModel);
@@ -640,6 +647,10 @@ final class MobileAlprEngine implements AutoCloseable {
         for (int i = 0; i < decodedVehicles.size(); i++) {
             Detection raw = decodedVehicles.get(i);
 
+            if (!vehicleClassIds.contains(raw.classId)) {
+                continue;
+            }
+
             android.util.Log.d(
                     "ALPR_MP",
                     "RAW[" + i + "] "
@@ -675,6 +686,30 @@ final class MobileAlprEngine implements AutoCloseable {
             vehicles.add(mapped);
         }
 
+        trace.putCount(
+                "vehicle_detections_raw",
+                decodedVehicles.size()
+        );
+
+        trace.putCount(
+                "vehicle_detections_used",
+                vehicles.size()
+        );
+
+        trace.putCount(
+                "vehicle_detections_rejected_class",
+                Math.max(0, decodedVehicles.size() - vehicles.size())
+        );
+
+        android.util.Log.d(
+                "ALPR_MP",
+                "CLASS FILTER raw=" + decodedVehicles.size()
+                        + ", used=" + vehicles.size()
+                        + ", rejected="
+                        + Math.max(0, decodedVehicles.size() - vehicles.size())
+                        + ", allowedClassIds=" + vehicleClassIds
+        );
+
         List<VehicleRoiSelector.Region> regions = VehicleRoiSelector.select(
                 vehicles,
                 frame.getWidth(),
@@ -708,6 +743,50 @@ final class MobileAlprEngine implements AutoCloseable {
             );
         }
         return regions;
+    }
+
+    private static Set<Integer> resolveVehicleClassIds(List<String> labels) {
+        Set<Integer> result = new HashSet<>();
+
+        for (int i = 0; i < labels.size(); i++) {
+            if (isVehicleLabel(labels.get(i))) {
+                result.add(i);
+            }
+        }
+
+        /*
+         * Jeżeli model ma nietypowe etykiety i nie rozpoznaliśmy żadnej klasy,
+         * nie blokujemy całego MP. Zachowujemy kompatybilność z modelem
+         * wyspecjalizowanym wyłącznie w pojazdach.
+         */
+        if (result.isEmpty()) {
+            for (int i = 0; i < labels.size(); i++) {
+                result.add(i);
+            }
+        }
+
+        return Collections.unmodifiableSet(result);
+    }
+
+    private static boolean isVehicleLabel(String label) {
+        if (label == null) return false;
+
+        String value = label
+                .trim()
+                .toLowerCase(Locale.ROOT)
+                .replace('_', ' ')
+                .replace('-', ' ');
+
+        return value.equals("car")
+                || value.equals("motorcycle")
+                || value.equals("motorbike")
+                || value.equals("bus")
+                || value.equals("truck")
+                || value.equals("van")
+                || value.equals("pickup")
+                || value.equals("pickup truck")
+                || value.equals("lorry")
+                || value.equals("vehicle");
     }
 
     private List<Detection> detectPlates(
