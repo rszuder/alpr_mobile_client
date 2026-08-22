@@ -817,11 +817,20 @@ public final class MainActivity extends AppCompatActivity {
             targetHeight = Math.max(1, availableHeight);
         }
         ViewGroup.LayoutParams listParameters = resultsList.getLayoutParams();
-        int listHeight = Math.round(344f * getResources().getDisplayMetrics().density);
+
+        int listHeight = ViewGroup.LayoutParams.WRAP_CONTENT;
+
         if (galleryMaximized && availableHeight > 0) {
-            int reserved = Math.round(150f * getResources().getDisplayMetrics().density);
-            listHeight = Math.max(listHeight, availableHeight - reserved);
+            int reserved = Math.round(
+                    150f * getResources().getDisplayMetrics().density
+            );
+
+            listHeight = Math.max(
+                    1,
+                    availableHeight - reserved
+            );
         }
+
         if (listParameters.height != listHeight) {
             listParameters.height = listHeight;
             resultsList.setLayoutParams(listParameters);
