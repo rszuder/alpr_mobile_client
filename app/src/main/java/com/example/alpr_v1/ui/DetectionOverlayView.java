@@ -19,6 +19,8 @@ import java.util.List;
 /** Lekki overlay ramek z badge'ami układanymi poza obszarem detekcji. */
 public final class DetectionOverlayView extends View {
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint vehiclePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint vehicleRoiPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint predictionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint detectionTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -34,6 +36,20 @@ public final class DetectionOverlayView extends View {
         boxPaint.setColor(Color.argb(190, 56, 189, 248));
         boxPaint.setStyle(Paint.Style.STROKE);
         boxPaint.setStrokeWidth(dp(1.35f));
+
+        vehiclePaint.setColor(Color.argb(225, 255, 152, 0));
+        vehiclePaint.setStyle(Paint.Style.STROKE);
+        vehiclePaint.setStrokeWidth(dp(1.8f));
+
+        vehicleRoiPaint.setColor(Color.argb(190, 255, 183, 77));
+        vehicleRoiPaint.setStyle(Paint.Style.STROKE);
+        vehicleRoiPaint.setStrokeWidth(dp(1.4f));
+        vehicleRoiPaint.setPathEffect(
+                new DashPathEffect(
+                        new float[]{dp(7), dp(5)},
+                        0f
+                )
+        );
 
         predictionPaint.setColor(Color.argb(95, 125, 211, 252));
         predictionPaint.setStyle(Paint.Style.STROKE);
@@ -85,11 +101,23 @@ public final class DetectionOverlayView extends View {
                     bounds,
                     dp(5),
                     dp(5),
-                    item.carriedPrediction ? predictionPaint : boxPaint
+                    paintFor(item)
             );
             if (item.carriedPrediction) continue;
-            for (PointF point : renderItem.points) {
-                canvas.drawCircle(point.x, point.y, dp(2.2f), pointPaint);
+
+            /*
+             * Keypointy należą do modelu tablicy MT.
+             * VEHICLE oraz VEHICLE_ROI są tylko prostokątami.
+             */
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                for (PointF point : renderItem.points) {
+                    canvas.drawCircle(
+                            point.x,
+                            point.y,
+                            dp(2.2f),
+                            pointPaint
+                    );
+                }
             }
         }
 
@@ -97,7 +125,21 @@ public final class DetectionOverlayView extends View {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
     }
+    private Paint paintFor(OverlayItem item) {
+        if (item.kind == OverlayItem.Kind.VEHICLE) {
+            return vehiclePaint;
+        }
 
+        if (item.kind == OverlayItem.Kind.VEHICLE_ROI) {
+            return vehicleRoiPaint;
+        }
+
+        if (item.carriedPrediction) {
+            return predictionPaint;
+        }
+
+        return boxPaint;
+    }
     private void drawLabel(Canvas canvas, RenderItem renderItem) {
         RectF badge = renderItem.badge;
         canvas.drawRoundRect(badge, dp(5), dp(5), labelPaint);

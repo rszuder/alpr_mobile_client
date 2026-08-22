@@ -175,6 +175,44 @@ final class MobileAlprEngine implements AutoCloseable {
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
             plateRegions.addAll(cachedVehicleRegions);
+
+            for (VehicleRoiSelector.Region region : cachedVehicleRegions) {
+                if (region.vehicle == null) continue;
+
+                Detection vehicle = region.vehicle;
+
+                overlays.add(new OverlayItem(
+                        OverlayItem.Kind.VEHICLE,
+                        new RectF(
+                                vehicle.left / frame.getWidth(),
+                                vehicle.top / frame.getHeight(),
+                                vehicle.right / frame.getWidth(),
+                                vehicle.bottom / frame.getHeight()
+                        ),
+                        Collections.emptyList(),
+                        String.format(
+                                Locale.ROOT,
+                                "pojazd %.0f%%",
+                                vehicle.confidence * 100f
+                        ),
+                        0L,
+                        false
+                ));
+
+                overlays.add(new OverlayItem(
+                        OverlayItem.Kind.VEHICLE_ROI,
+                        new RectF(
+                                region.left / (float) frame.getWidth(),
+                                region.top / (float) frame.getHeight(),
+                                region.right / (float) frame.getWidth(),
+                                region.bottom / (float) frame.getHeight()
+                        ),
+                        Collections.emptyList(),
+                        "ROI MP→MT",
+                        0L,
+                        false
+                ));
+            }
         } else if (vehicleCascadeEnabled) {
             trace.putCount("vehicle_unavailable", 1);
         }

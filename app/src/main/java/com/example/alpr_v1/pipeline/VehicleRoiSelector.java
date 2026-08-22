@@ -15,16 +15,35 @@ final class VehicleRoiSelector {
         final int right;
         final int bottom;
 
-        Region(int left, int top, int right, int bottom) {
+        // Detekcja pojazdu, z której powstał ROI.
+        // null oznacza obszar pełnej klatki.
+        final Detection vehicle;
+
+        Region(
+                int left,
+                int top,
+                int right,
+                int bottom,
+                Detection vehicle
+        ) {
             this.left = left;
             this.top = top;
             this.right = right;
             this.bottom = bottom;
+            this.vehicle = vehicle;
         }
 
-        int width() { return right - left; }
-        int height() { return bottom - top; }
-        long area() { return (long) width() * height(); }
+        int width() {
+            return right - left;
+        }
+
+        int height() {
+            return bottom - top;
+        }
+
+        long area() {
+            return (long) width() * height();
+        }
     }
 
     private VehicleRoiSelector() {}
@@ -50,14 +69,26 @@ final class VehicleRoiSelector {
             int top = clamp((int) Math.floor(vehicle.top - marginY), 0, imageHeight - 1);
             int right = clamp((int) Math.ceil(vehicle.right + marginX), left + 1, imageWidth);
             int bottom = clamp((int) Math.ceil(vehicle.bottom + marginY), top + 1, imageHeight);
-            Region region = new Region(left, top, right, bottom);
+            Region region = new Region(
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    vehicle
+            );
             if (region.width() >= 8 && region.height() >= 8) regions.add(region);
         }
         return regions;
     }
 
     static Region fullFrame(int width, int height) {
-        return new Region(0, 0, width, height);
+        return new Region(
+                0,
+                0,
+                width,
+                height,
+                null
+        );
     }
 
     private static double priority(Detection detection) {

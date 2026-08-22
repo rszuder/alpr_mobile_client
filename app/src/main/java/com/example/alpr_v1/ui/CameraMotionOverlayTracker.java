@@ -9,36 +9,95 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Adapter trackera ruchu kamery do elementów rysowanych przez overlay. */
+/**
+ * Adapter trackera ruchu kamery do elementów rysowanych przez overlay.
+ *
+ * Tracker ruchu jest stosowany wyłącznie do ramek tablic.
+ * Elementy diagnostyczne kaskady, takie jak pojazd i ROI MP→MT,
+ * są przekazywane bezpośrednio do warstwy wizualizacji.
+ */
 public final class CameraMotionOverlayTracker {
+
     private final MotionBoxTracker tracker = new MotionBoxTracker();
-    private List<OverlayItem> previousItems = Collections.emptyList();
+
+    /*
+     * Zapamiętujemy wyłącznie poprzednie elementy typu PLATE.
+     * Są potrzebne do odtworzenia keypointów podczas krótkiej predykcji trackera.
+     */
+    private List<OverlayItem> previousPlateItems = Collections.emptyList();
 
     public synchronized List<OverlayItem> update(
             List<OverlayItem> items,
             long observationNanos,
             long presentationNanos
     ) {
+        List<OverlayItem> plateItems = new ArrayList<>();
+        List<OverlayItem> passthroughItems = new ArrayList<>();
+
+        /*
+         * Rozdzielamy elementy według ich roli.
+         *
+         * PLATE        -> MotionBoxTracker
+         * VEHICLE      -> bez trackera
+         * VEHICLE_ROI  -> bez trackera
+         */
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                plateItems.add(item);
+            } else {
+                passthroughItems.add(item);
+            }
+        }
+
+        /*
+         * Do MotionBoxTracker trafiają już wyłącznie tablice.
+         */
         List<MotionBoxTracker.Observation> observations = new ArrayList<>();
-        for (int i = 0; i < items.size(); i++) {
-            OverlayItem item = items.get(i);
+
+        for (int i = 0; i < plateItems.size(); i++) {
+            OverlayItem item = plateItems.get(i);
             RectF box = item.normalizedBounds;
+
             observations.add(new MotionBoxTracker.Observation(
-                    new MotionBoxTracker.Box(box.left, box.top, box.right, box.bottom),
+                    new MotionBoxTracker.Box(
+                            box.left,
+                            box.top,
+                            box.right,
+                            box.bottom
+                    ),
                     item.label,
                     i
             ));
         }
 
-        List<OverlayItem> visible = new ArrayList<>();
+        /*
+         * Najpierw przekazujemy bieżące elementy diagnostyczne kaskady.
+         */
+        List<OverlayItem> visible = new ArrayList<>(passthroughItems);
+
+        /*
+         * Następnie dokładamy wygładzone / przewidziane ramki tablic.
+         */
         for (MotionBoxTracker.Result result : tracker.update(
-                observations, observationNanos, presentationNanos
+                observations,
+                observationNanos,
+                presentationNanos
         )) {
-            OverlayItem source = sourceItem(items, result.sourceIndex, result.label);
-            RectF target = new RectF(
-                    result.box.left, result.box.top, result.box.right, result.box.bottom
+            OverlayItem source = sourcePlateItem(
+                    plateItems,
+                    result.sourceIndex,
+                    result.label
             );
+
+            RectF target = new RectF(
+                    result.box.left,
+                    result.box.top,
+                    result.box.right,
+                    result.box.bottom
+            );
+
             visible.add(new OverlayItem(
+                    OverlayItem.Kind.PLATE,
                     target,
                     remapPoints(source, target),
                     result.label,
@@ -46,36 +105,79 @@ public final class CameraMotionOverlayTracker {
                     result.sourceIndex < 0
             ));
         }
-        previousItems = Collections.unmodifiableList(new ArrayList<>(visible));
-        return previousItems;
+
+        /*
+         * Do następnego przebiegu zachowujemy tylko rzeczywiste
+         * elementy tablic z bieżącej klatki.
+         */
+        previousPlateItems = Collections.unmodifiableList(
+                new ArrayList<>(plateItems)
+        );
+
+        return Collections.unmodifiableList(visible);
     }
 
     public synchronized void reset() {
         tracker.reset();
-        previousItems = Collections.emptyList();
+        previousPlateItems = Collections.emptyList();
     }
 
-    private OverlayItem sourceItem(List<OverlayItem> items, int index, String label) {
-        if (index >= 0 && index < items.size()) return items.get(index);
-        for (OverlayItem item : previousItems) {
-            if (item.label.equals(label)) return item;
+    private OverlayItem sourcePlateItem(
+            List<OverlayItem> items,
+            int index,
+            String label
+    ) {
+        if (index >= 0 && index < items.size()) {
+            return items.get(index);
         }
-        return new OverlayItem(new RectF(), Collections.emptyList(), label);
+
+        for (OverlayItem item : previousPlateItems) {
+            if (item.label.equals(label)) {
+                return item;
+            }
+        }
+
+        return new OverlayItem(
+                OverlayItem.Kind.PLATE,
+                new RectF(),
+                Collections.emptyList(),
+                label,
+                0L,
+                false
+        );
     }
 
-    private static List<PointF> remapPoints(OverlayItem source, RectF target) {
-        if (source.normalizedKeypoints.isEmpty()) return Collections.emptyList();
+    private static List<PointF> remapPoints(
+            OverlayItem source,
+            RectF target
+    ) {
+        if (source.normalizedKeypoints.isEmpty()) {
+            return Collections.emptyList();
+        }
+
         RectF from = source.normalizedBounds;
-        if (from.width() <= 0f || from.height() <= 0f) return source.normalizedKeypoints;
-        List<PointF> points = new ArrayList<>(source.normalizedKeypoints.size());
+
+        if (from.width() <= 0f || from.height() <= 0f) {
+            return source.normalizedKeypoints;
+        }
+
+        List<PointF> points = new ArrayList<>(
+                source.normalizedKeypoints.size()
+        );
+
         for (PointF point : source.normalizedKeypoints) {
-            float relativeX = (point.x - from.left) / from.width();
-            float relativeY = (point.y - from.top) / from.height();
+            float relativeX =
+                    (point.x - from.left) / from.width();
+
+            float relativeY =
+                    (point.y - from.top) / from.height();
+
             points.add(new PointF(
                     target.left + relativeX * target.width(),
                     target.top + relativeY * target.height()
             ));
         }
+
         return points;
     }
 }
