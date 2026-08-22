@@ -153,7 +153,7 @@ public final class ModelOutputSpec {
                 keypointCount,
                 keypointDimensions,
                 hasObjectness,
-                false,
+                channelsFirst,
                 normalizedCoordinates,
                 false,
                 true,

@@ -525,13 +525,92 @@ final class MobileAlprEngine implements AutoCloseable {
 
         trace.start("vehicle_inference");
         InferenceRunResult run = vehicleBackend.run(input.buffer);
+        Map.Entry<Integer, ByteBuffer> outputEntry =
+                run.outputs().entrySet().iterator().next();
+
+        TensorInfo outputInfo =
+                run.tensorInfo().get(outputEntry.getKey());
+
+        android.util.Log.d(
+                "ALPR_MP",
+                "OUTPUT shape="
+                        + java.util.Arrays.toString(outputInfo.shape)
+                        + ", decoder="
+                        + vehicleOutputSpec.decoder()
+                        + ", channelsFirst="
+                        + vehicleOutputSpec.channelsFirst()
+                        + ", classCount="
+                        + vehicleOutputSpec.classCount()
+                        + ", hasObjectness="
+                        + vehicleOutputSpec.hasObjectness()
+                        + ", normalized="
+                        + vehicleOutputSpec.normalizedCoordinates()
+        );
         trace.stop("vehicle_inference");
 
         trace.start("vehicle_postprocess");
+        List<Detection> decodedVehicles = decodeFirstOutput(
+                run,
+                vehicleInputSpec,
+                vehicleOutputSpec
+        );
+
+        android.util.Log.d(
+                "ALPR_MP",
+                "SPEC normalized="
+                        + vehicleOutputSpec.normalizedCoordinates()
+                        + ", input="
+                        + vehicleInputSpec.width()
+                        + "x"
+                        + vehicleInputSpec.height()
+                        + ", scale="
+                        + input.scale
+                        + ", padX="
+                        + input.padX
+                        + ", padY="
+                        + input.padY
+        );
+
         List<Detection> vehicles = new ArrayList<>();
-        for (Detection detection : decodeFirstOutput(run, vehicleInputSpec, vehicleOutputSpec)) {
-            vehicles.add(DetectionCoordinateMapper.toSource(detection, input, 0, 0));
+
+        for (int i = 0; i < decodedVehicles.size(); i++) {
+            Detection raw = decodedVehicles.get(i);
+
+            android.util.Log.d(
+                    "ALPR_MP",
+                    "RAW[" + i + "] "
+                            + "box=("
+                            + raw.left + ", "
+                            + raw.top + ", "
+                            + raw.right + ", "
+                            + raw.bottom + ")"
+                            + " size="
+                            + raw.width() + "x" + raw.height()
+                            + " conf=" + raw.confidence
+            );
+
+            Detection mapped = DetectionCoordinateMapper.toSource(
+                    raw,
+                    input,
+                    0,
+                    0
+            );
+
+            android.util.Log.d(
+                    "ALPR_MP",
+                    "MAP[" + i + "] "
+                            + "box=("
+                            + mapped.left + ", "
+                            + mapped.top + ", "
+                            + mapped.right + ", "
+                            + mapped.bottom + ")"
+                            + " size="
+                            + mapped.width() + "x" + mapped.height()
+            );
+
+            vehicles.add(mapped);
         }
+
         List<VehicleRoiSelector.Region> regions = VehicleRoiSelector.select(
                 vehicles,
                 frame.getWidth(),
@@ -540,6 +619,16 @@ final class MobileAlprEngine implements AutoCloseable {
                 rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
                 vehicleOutputSpec.iouThreshold()
         );
+        android.util.Log.d(
+                "ALPR_MP",
+                "MP detections=" + vehicles.size()
+                        + ", regions=" + regions.size()
+                        + ", confThreshold=" + vehicleOutputSpec.confidenceThreshold()
+                        + ", iouThreshold=" + vehicleOutputSpec.iouThreshold()
+                        + ", frame=" + frame.getWidth() + "x" + frame.getHeight()
+        );
+
+
         double maximumConfidence = 0.0;
         long totalArea = 0L;
         for (Detection vehicle : vehicles) {
