@@ -823,8 +823,8 @@ public final class MainActivity extends AppCompatActivity {
             }
             targetHeight = Math.max(1, availableHeight);
         }
-        ViewGroup.LayoutParams listParameters = galleryListContainer.getLayoutParams();
-        galleryListContainer.setLayoutParams(listParameters);
+        ViewGroup.LayoutParams containerParameters =
+                galleryListContainer.getLayoutParams();
 
         int listHeight = Math.round(
                 344f * getResources().getDisplayMetrics().density
@@ -841,9 +841,9 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
 
-        if (listParameters.height != listHeight) {
-            listParameters.height = listHeight;
-            resultsList.setLayoutParams(listParameters);
+        if (containerParameters.height != listHeight) {
+            containerParameters.height = listHeight;
+            galleryListContainer.setLayoutParams(containerParameters);
         }
         ViewGroup.LayoutParams parameters = controlPanel.getLayoutParams();
         if (parameters.height != targetHeight) {
