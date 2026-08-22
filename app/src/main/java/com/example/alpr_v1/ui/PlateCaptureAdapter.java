@@ -41,7 +41,7 @@ public final class PlateCaptureAdapter
 
     private final List<CapturedPlateItem> items = new ArrayList<>();
     private final SelectionListener selectionListener;
-    private int visibleSlots = 2;
+    private int visibleSlots = 1;
 
     public PlateCaptureAdapter(SelectionListener selectionListener) {
         this.selectionListener = selectionListener;
@@ -77,12 +77,7 @@ public final class PlateCaptureAdapter
         difference.dispatchUpdatesTo(this);
     }
 
-    public void setVisibleSlots(int visibleSlots) {
-        int normalized = Math.max(1, visibleSlots);
-        if (this.visibleSlots == normalized) return;
-        this.visibleSlots = normalized;
-        notifyDataSetChanged();
-    }
+
 
     @Override
     public long getItemId(int position) {
@@ -93,22 +88,10 @@ public final class PlateCaptureAdapter
     @Override
     public Holder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View view = LayoutInflater.from(parent.getContext()).inflate(
-                R.layout.item_plate_result, parent, false
+                R.layout.item_plate_result,
+                parent,
+                false
         );
-        int horizontalMargins = Math.round(
-                8f * parent.getResources().getDisplayMetrics().density
-        );
-        int availableWidth = parent.getMeasuredWidth();
-        if (availableWidth <= 0) {
-            availableWidth = parent.getResources().getDisplayMetrics().widthPixels
-                    - Math.round(32f * parent.getResources().getDisplayMetrics().density);
-        }
-        ViewGroup.LayoutParams parameters = view.getLayoutParams();
-        parameters.width = Math.max(
-                1,
-                availableWidth / visibleSlots - horizontalMargins
-        );
-        view.setLayoutParams(parameters);
         return new Holder(view);
     }
 

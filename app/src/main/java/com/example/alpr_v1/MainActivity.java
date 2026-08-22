@@ -560,10 +560,9 @@ public final class MainActivity extends AppCompatActivity {
             }
         });
         resultsList.setLayoutManager(new LinearLayoutManager(
-                this, RecyclerView.HORIZONTAL, false
+                this, RecyclerView.VERTICAL, false
         ));
         resultsList.setAdapter(captureAdapter);
-        captureAdapter.setVisibleSlots(2);
         collectionToggle.setOnClickListener(view -> toggleCollection());
         galleryVisibilityToggle.setOnClickListener(view -> {
             captureGalleryState.setGalleryExpanded(!captureGalleryState.galleryExpanded());
@@ -785,13 +784,18 @@ public final class MainActivity extends AppCompatActivity {
 
     private void updateGalleryLayout(boolean maximized) {
         RecyclerView.LayoutManager current = resultsList.getLayoutManager();
-        boolean alreadyMaximized = current instanceof GridLayoutManager;
-        if (maximized != alreadyMaximized) {
-            resultsList.setLayoutManager(maximized
-                    ? new GridLayoutManager(this, 2, RecyclerView.VERTICAL, false)
-                    : new LinearLayoutManager(this, RecyclerView.HORIZONTAL, false));
-            captureAdapter.setVisibleSlots(2);
-            resultsList.scrollToPosition(0);
+
+        if (!(current instanceof LinearLayoutManager)
+                || ((LinearLayoutManager) current).getOrientation()
+                != RecyclerView.VERTICAL) {
+
+            resultsList.setLayoutManager(
+                    new LinearLayoutManager(
+                            this,
+                            RecyclerView.VERTICAL,
+                            false
+                    )
+            );
         }
     }
 
