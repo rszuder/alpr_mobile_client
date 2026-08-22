@@ -32,9 +32,9 @@ public final class PlateCropView extends View {
 
     public PlateCropView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        boxPaint.setColor(Color.argb(185, 34, 211, 238));
+        boxPaint.setColor(Color.rgb(255, 152, 0));
         boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(dp(1f));
+        boxPaint.setStrokeWidth(dp(1.5f));
         bandPaint.setColor(Color.rgb(8, 13, 21));
         bandPaint.setStyle(Paint.Style.FILL);
         characterPaint.setColor(Color.rgb(125, 211, 252));

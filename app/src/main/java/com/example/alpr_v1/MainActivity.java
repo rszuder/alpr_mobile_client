@@ -132,6 +132,8 @@ public final class MainActivity extends AppCompatActivity {
     private int knownSettingsRevision;
     private CaptureGalleryViewModel captureGalleryState;
 
+    private View galleryListContainer;
+
     private final ActivityResultLauncher<String> permissionLauncher = registerForActivityResult(
             new ActivityResultContracts.RequestPermission(),
             granted -> {
@@ -252,6 +254,7 @@ public final class MainActivity extends AppCompatActivity {
         mainRoot = findViewById(R.id.main);
         progress = findViewById(R.id.progress);
         topAppBar = findViewById(R.id.top_app_bar);
+        galleryListContainer = findViewById(R.id.gallery_list_container);
     }
 
     private void configureRecognitionProfile() {
@@ -820,9 +823,12 @@ public final class MainActivity extends AppCompatActivity {
             }
             targetHeight = Math.max(1, availableHeight);
         }
-        ViewGroup.LayoutParams listParameters = resultsList.getLayoutParams();
+        ViewGroup.LayoutParams listParameters = galleryListContainer.getLayoutParams();
+        galleryListContainer.setLayoutParams(listParameters);
 
-        int listHeight = ViewGroup.LayoutParams.WRAP_CONTENT;
+        int listHeight = Math.round(
+                344f * getResources().getDisplayMetrics().density
+        );
 
         if (galleryMaximized && availableHeight > 0) {
             int reserved = Math.round(
