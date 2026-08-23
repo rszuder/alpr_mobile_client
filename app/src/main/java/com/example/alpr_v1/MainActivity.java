@@ -99,6 +99,8 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton collectionToggle;
     private MaterialButton galleryVisibilityToggle;
     private MaterialButton gallerySizeToggle;
+    private MaterialButton analysisStartButton;
+    private MaterialButton analysisStopButton;
     private MaterialCheckBox selectAllCropsToggle;
     private MaterialButton saveSelectedCropsButton;
     private PlateCaptureAdapter captureAdapter;
@@ -112,7 +114,7 @@ public final class MainActivity extends AppCompatActivity {
     private AlprPipeline pipeline;
     private CameraController cameraController;
     private CameraMotionMonitor cameraMotionMonitor;
-    private boolean cameraStarted;
+    private volatile boolean cameraStarted;
     private ResearchArchive.Kind pendingExportKind;
     private boolean exportInProgress;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
@@ -280,15 +282,17 @@ public final class MainActivity extends AppCompatActivity {
 
         configureAppMenu();
         configureCaptureCollection();
-
+        configureAnalysisControls();
         modelRegistry.reload();
-        ensureCameraPermission();
+
         scheduleMissingAutotuning();
     }
 
     private void bindViews() {
         previewView = findViewById(R.id.camera_preview);
         overlayView = findViewById(R.id.detection_overlay);
+        analysisStartButton = findViewById(R.id.analysis_start_button);
+        analysisStopButton = findViewById(R.id.analysis_stop_button);
         liveStatus = findViewById(R.id.live_status);
         recognitionHint = findViewById(R.id.recognition_hint);
         resultCount = findViewById(R.id.result_count);
@@ -386,8 +390,12 @@ public final class MainActivity extends AppCompatActivity {
         pipeline.resetTracking();
         overlayTracker.reset();
         lastCaptureByTrack.clear();
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED) {
+        if (cameraStarted
+                && ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED) {
+
             cameraController.stop();
             cameraStarted = false;
             startCamera();
@@ -496,6 +504,91 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void configureAnalysisControls() {
+        analysisStartButton.setOnClickListener(
+                view -> ensureCameraPermission()
+        );
+
+        analysisStopButton.setOnClickListener(
+                view -> stopAnalysis()
+        );
+
+        if (!cameraStarted) {
+            previewView.setVisibility(View.INVISIBLE);
+        }
+
+        renderAnalysisControls();
+
+        liveStatus.setText(R.string.analysis_idle);
+        recognitionHint.setText(R.string.analysis_idle_hint);
+    }
+
+
+    private void renderAnalysisControls() {
+        analysisStartButton.setVisibility(
+                cameraStarted ? View.GONE : View.VISIBLE
+        );
+
+        analysisStopButton.setVisibility(
+                cameraStarted ? View.VISIBLE : View.GONE
+        );
+    }
+
+
+    private void stopAnalysis() {
+        /*
+         * Najpierw ustawiamy flagę na false.
+         * Dzięki temu ewentualna klatka kończąca się właśnie
+         * na wątku analizatora nie powinna już aktualizować UI.
+         */
+        cameraStarted = false;
+
+        if (cameraController != null) {
+            cameraController.stop();
+        }
+        /*
+         * PreviewView zachowuje ostatnią wyrenderowaną klatkę
+         * nawet po odpięciu CameraX. Ukrywamy podgląd, ale
+         * pozostawiamy jego miejsce w layoucie.
+         */
+        previewView.setVisibility(View.INVISIBLE);
+
+        if (cameraMotionMonitor != null) {
+            cameraMotionMonitor.stop();
+        }
+
+        /*
+         * Nowe uruchomienie analizy ma zacząć bez starego
+         * trackingu i overlayu.
+         *
+         * Nie kasujemy historii cropów.
+         */
+        if (pipeline != null) {
+            pipeline.resetTracking();
+        }
+
+        overlayTracker.reset();
+        lastCaptureByTrack.clear();
+
+        overlayView.setItems(
+                java.util.Collections.emptyList()
+        );
+
+        liveStatus.setText(
+                R.string.analysis_idle
+        );
+
+        recognitionHint.setText(
+                R.string.analysis_idle_hint
+        );
+
+        renderAnalysisControls();
+
+        recordInfo(
+                "Zatrzymano analizę"
+        );
+    }
+
     private void ensureCameraPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
@@ -507,15 +600,49 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startCamera() {
         if (cameraStarted) return;
+        previewView.setVisibility(View.VISIBLE);
+
+        /*
+         * Każde ręczne uruchomienie analizy rozpoczyna się
+         * bez stanu trackingowego poprzedniego przebiegu.
+         */
+        pipeline.resetTracking();
+        overlayTracker.reset();
+        lastCaptureByTrack.clear();
+
+        overlayView.setItems(
+                java.util.Collections.emptyList()
+        );
+
         cameraStarted = true;
-        liveStatus.setText(R.string.camera_starting);
-        recordInfo("Uruchamianie kamery");
+
+        renderAnalysisControls();
+
+        if (cameraMotionMonitor != null) {
+            cameraMotionMonitor.start();
+        }
+
+        liveStatus.setText(
+                R.string.camera_starting
+        );
+
+        recognitionHint.setText(
+                R.string.recognition_searching
+        );
+
+        recordInfo(
+                "Uruchamianie analizy"
+        );
         cameraController.start(
                 image -> {
                     long observationNanos = System.nanoTime();
                     pipeline.setRapidCameraMotion(cameraMotionMonitor.isRapidMotion());
                     PipelineResult result = pipeline.process(image);
                     if (result == null) return;
+                    if (!cameraStarted) {
+                        result.close();
+                        return;
+                    }
                     long now = System.nanoTime();
                     long previous = lastUiUpdateNanos.get();
                     if (now - previous >= 200_000_000L && lastUiUpdateNanos.compareAndSet(previous, now)) {
@@ -540,6 +667,11 @@ public final class MainActivity extends AppCompatActivity {
                 },
                 error -> runOnUiThread(() -> {
                     cameraStarted = false;
+                    if (cameraMotionMonitor != null) {
+                        cameraMotionMonitor.stop();
+                    }
+
+                    renderAnalysisControls();
                     liveStatus.setText(getString(R.string.camera_error, error.getMessage()));
                     recordError("Błąd kamery: " + error.getMessage(), error);
                 }),
@@ -1413,8 +1545,16 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+
         applySettingsRevision();
-        if (cameraMotionMonitor != null) cameraMotionMonitor.start();
+
+        /*
+         * Sensor ruchu pracuje tylko wtedy,
+         * gdy działa analiza.
+         */
+        if (cameraStarted && cameraMotionMonitor != null) {
+            cameraMotionMonitor.start();
+        }
     }
 
     private void applySettingsRevision() {

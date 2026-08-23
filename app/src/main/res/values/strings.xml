@@ -68,6 +68,11 @@
     <string name="recognition_profile_changed">Wybrano tryb: %1$s</string>
     <string name="camera_starting">Uruchamianie kamery…</string>
     <string name="camera_error">Błąd kamery: %1$s</string>
+    <string name="analysis_start">Uruchom analizę</string>
+    <string name="analysis_stop">Zatrzymaj analizę</string>
+    <string name="analysis_idle">Analiza zatrzymana</string>
+    <string name="analysis_running">Analiza aktywna</string>
+    <string name="analysis_idle_hint">Naciśnij „Uruchom analizę”, aby rozpocząć pracę kamery i pipeline’u.</string>
     <string name="persistent_log_label">Dziennik aplikacji</string>
     <string name="persistent_log_empty">Brak zapisanych zdarzeń</string>
     <string name="menu_recognition_profile">Tryb rozpoznawania</string>
