@@ -513,11 +513,103 @@ public final class MetricsCollector {
                 experiment
         );
         JSONObject capture = new JSONObject();
-        capture.put("profile", captureProfile);
-        capture.put("requested_width", requestedSourceWidth);
-        capture.put("requested_height", requestedSourceHeight);
-        capture.put("actual_width", actualSourceWidth);
-        capture.put("actual_height", actualSourceHeight);
+
+
+        /*
+         * Sposób wyboru rozdzielczości.
+         *
+         * "auto"     -> aplikacja dobiera format do urządzenia,
+         * "explicit" -> użytkownik wskazał konkretny format WxH.
+         */
+        boolean automaticResolutionSelection =
+                captureProfile == null
+                        || captureProfile.trim().isEmpty()
+                        || "auto".equalsIgnoreCase(
+                        captureProfile.trim()
+                );
+
+
+        String selectionMode =
+                automaticResolutionSelection
+                        ? "auto"
+                        : "explicit";
+
+
+        String selectedResolution =
+                automaticResolutionSelection
+                        ? "auto"
+                        : captureProfile;
+
+
+        /*
+         * Nowe, jednoznaczne pola.
+         */
+        capture.put(
+                "selection_mode",
+                selectionMode
+        );
+
+        capture.put(
+                "selected_resolution",
+                selectedResolution
+        );
+
+
+        /*
+         * Zachowujemy stare pole "profile" dla zgodności
+         * z wcześniej zapisanymi raportami i parserami.
+         *
+         * Od tej wersji jego kanonicznym odpowiednikiem
+         * jest "selected_resolution".
+         */
+        capture.put(
+                "profile",
+                captureProfile
+        );
+
+
+        capture.put(
+                "requested_width",
+                requestedSourceWidth
+        );
+
+        capture.put(
+                "requested_height",
+                requestedSourceHeight
+        );
+
+        capture.put(
+                "actual_width",
+                actualSourceWidth
+        );
+
+        capture.put(
+                "actual_height",
+                actualSourceHeight
+        );
+
+
+        /*
+         * To NIE oznacza po prostu "dużej rozdzielczości".
+         *
+         * Informuje wyłącznie, że wybrany format pochodził
+         * ze specjalnej puli high-resolution Camera2 i CameraX
+         * został uruchomiony w trybie preferującym tę pulę.
+         *
+         * Dlatego np. zwykłe 4000x3000 może mieć tutaj false.
+         */
+        capture.put(
+                "extended_high_resolution_mode_requested",
+                captureHighResolutionRequested
+        );
+
+
+        /*
+         * Stary klucz pozostaje jako alias kompatybilności.
+         * W nowych analizach używamy:
+         *
+         * extended_high_resolution_mode_requested
+         */
         capture.put(
                 "high_resolution_mode_requested",
                 captureHighResolutionRequested
@@ -540,6 +632,10 @@ public final class MetricsCollector {
                         )
                                 ||
                                 (
+                                        /*
+                                         * Obrót urządzenia nie oznacza
+                                         * innej rozdzielczości źródłowej.
+                                         */
                                         requestedSourceWidth
                                                 == actualSourceHeight
                                                 && requestedSourceHeight
@@ -552,9 +648,36 @@ public final class MetricsCollector {
                 "requested_resolution_matched",
                 resolutionMatched
         );
-        capture.put("pixel_format", "YUV_420_888");
-        capture.put("gyroscope_available", motionSensorAvailable);
-        report.put("capture", capture);
+
+
+        /*
+         * Pomocniczy zapis faktycznie otrzymanego formatu.
+         */
+        if (actualAvailable) {
+            capture.put(
+                    "actual_resolution",
+                    actualSourceWidth
+                            + "x"
+                            + actualSourceHeight
+            );
+        }
+
+
+        capture.put(
+                "pixel_format",
+                "YUV_420_888"
+        );
+
+        capture.put(
+                "gyroscope_available",
+                motionSensorAvailable
+        );
+
+
+        report.put(
+                "capture",
+                capture
+        );
 
         JSONObject cropSession = new JSONObject();
         cropSession.put("session_id", cropSessionId);
