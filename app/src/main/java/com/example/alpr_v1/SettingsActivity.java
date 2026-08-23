@@ -31,6 +31,8 @@ import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.ModelStatusFormatter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
+import com.example.alpr_v1.experiment.TimerConfig;
+
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
@@ -51,6 +53,12 @@ public final class SettingsActivity extends AppCompatActivity {
 
     public static final String KEY_EXPERIMENT_ROI_POLICY =
             "experiment_roi_budget_policy";
+
+    public static final String KEY_EXPERIMENT_TIMER_ENABLED =
+            "experiment_timer_enabled";
+
+    public static final String KEY_EXPERIMENT_TIMER_SECONDS =
+            "experiment_timer_seconds";
     private static final String LOG_TAG = "SettingsActivity";
 
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
@@ -129,6 +137,7 @@ public final class SettingsActivity extends AppCompatActivity {
         configureResolutionControls();
         configureCropControls();
         configureRoiBudgetControls();
+        configureExperimentTimerControls();
         configurePipelineControls();
         refreshModelStatus();
         refreshStoragePath();
@@ -692,7 +701,121 @@ public final class SettingsActivity extends AppCompatActivity {
         backgroundExecutor.shutdownNow();
         super.onDestroy();
     }
+    private void configureExperimentTimerControls() {
 
+        com.google.android.material.materialswitch.MaterialSwitch timerSwitch =
+                findViewById(
+                        R.id.settings_experiment_timer_switch
+                );
+
+        View timerOptions =
+                findViewById(
+                        R.id.settings_experiment_timer_options
+                );
+
+        MaterialButtonToggleGroup group =
+                findViewById(
+                        R.id.settings_experiment_timer_group
+                );
+
+        boolean enabled =
+                preferences.getBoolean(
+                        KEY_EXPERIMENT_TIMER_ENABLED,
+                        false
+                );
+
+        int seconds =
+                TimerConfig.normalizeDurationSeconds(
+                        preferences.getInt(
+                                KEY_EXPERIMENT_TIMER_SECONDS,
+                                TimerConfig.DEFAULT_DURATION_SECONDS
+                        )
+                );
+
+        timerSwitch.setChecked(enabled);
+
+        timerOptions.setVisibility(
+                enabled
+                        ? View.VISIBLE
+                        : View.GONE
+        );
+
+        int selectedId;
+
+        if (seconds == 15) {
+            selectedId =
+                    R.id.settings_experiment_timer_15;
+        } else if (seconds == 180) {
+            selectedId =
+                    R.id.settings_experiment_timer_180;
+        } else if (seconds == 300) {
+            selectedId =
+                    R.id.settings_experiment_timer_300;
+        } else {
+            selectedId =
+                    R.id.settings_experiment_timer_60;
+        }
+
+        group.check(selectedId);
+
+        timerSwitch.setOnCheckedChangeListener(
+                (button, timerEnabled) -> {
+
+                    preferences.edit()
+                            .putBoolean(
+                                    KEY_EXPERIMENT_TIMER_ENABLED,
+                                    timerEnabled
+                            )
+                            .apply();
+
+                    timerOptions.setVisibility(
+                            timerEnabled
+                                    ? View.VISIBLE
+                                    : View.GONE
+                    );
+
+                    markChanged();
+                }
+        );
+
+        group.addOnButtonCheckedListener(
+                (ignored, checkedId, isChecked) -> {
+
+                    if (!isChecked) return;
+
+                    int selectedSeconds;
+
+                    if (checkedId ==
+                            R.id.settings_experiment_timer_15) {
+
+                        selectedSeconds = 15;
+
+                    } else if (checkedId ==
+                            R.id.settings_experiment_timer_180) {
+
+                        selectedSeconds = 180;
+
+                    } else if (checkedId ==
+                            R.id.settings_experiment_timer_300) {
+
+                        selectedSeconds = 300;
+
+                    } else {
+
+                        selectedSeconds = 60;
+                    }
+
+                    preferences.edit()
+                            .putInt(
+                                    KEY_EXPERIMENT_TIMER_SECONDS,
+                                    selectedSeconds
+                            )
+                            .apply();
+
+                    markChanged();
+                }
+        );
+    }
     private void configureRoiBudgetControls() {
         com.google.android.material.materialswitch.MaterialSwitch experimentSwitch =
                 findViewById(

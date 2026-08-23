@@ -38,6 +38,9 @@ public final class ExperimentSession {
 
         public final String completionReason;
 
+        public final boolean timerEnabled;
+        public final long timerDurationMillis;
+
         private Snapshot(
                 String sessionId,
                 String state,
@@ -46,7 +49,9 @@ public final class ExperimentSession {
                 long startedAtMillis,
                 long finishedAtMillis,
                 long durationMillis,
-                String completionReason
+                String completionReason,
+                boolean timerEnabled,
+                long timerDurationMillis
         ) {
             this.sessionId = sessionId;
             this.state = state;
@@ -56,6 +61,8 @@ public final class ExperimentSession {
             this.finishedAtMillis = finishedAtMillis;
             this.durationMillis = durationMillis;
             this.completionReason = completionReason;
+            this.timerEnabled = timerEnabled;
+            this.timerDurationMillis = timerDurationMillis;
         }
 
         public boolean hasSession() {
@@ -78,10 +85,25 @@ public final class ExperimentSession {
     private long finishedElapsedNanos = -1L;
 
     private CompletionReason completionReason;
+    private boolean timerEnabled;
+    private long timerDurationMillis;
 
     public synchronized boolean start(
             String experimentType,
             String variant
+    ) {
+        return start(
+                experimentType,
+                variant,
+                TimerConfig.disabled()
+        );
+    }
+
+
+    public synchronized boolean start(
+            String experimentType,
+            String variant,
+            TimerConfig timerConfig
     ) {
         if (state == State.RUNNING) {
             return false;
@@ -102,6 +124,19 @@ public final class ExperimentSession {
 
         this.variant =
                 normalize(variant);
+
+        TimerConfig effectiveTimer =
+                timerConfig == null
+                        ? TimerConfig.disabled()
+                        : timerConfig;
+
+        timerEnabled =
+                effectiveTimer.enabled();
+
+        timerDurationMillis =
+                timerEnabled
+                        ? effectiveTimer.durationMillis()
+                        : 0L;
 
         startedAtMillis = nowMillis;
         finishedAtMillis = -1L;
@@ -155,6 +190,9 @@ public final class ExperimentSession {
         finishedElapsedNanos = -1L;
 
         completionReason = null;
+
+        timerEnabled = false;
+        timerDurationMillis = 0L;
     }
 
     public synchronized boolean isRunning() {
@@ -212,7 +250,9 @@ public final class ExperimentSession {
                 startedAtMillis,
                 finishedAtMillis,
                 durationMillis(),
-                completionReasonWireName()
+                completionReasonWireName(),
+                timerEnabled,
+                timerDurationMillis
         );
     }
 

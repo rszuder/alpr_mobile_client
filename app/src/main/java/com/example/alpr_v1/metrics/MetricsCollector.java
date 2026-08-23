@@ -448,6 +448,24 @@ public final class MetricsCollector {
                     "variant",
                     experimentSession.variant
             );
+            JSONObject timer = new JSONObject();
+
+            timer.put(
+                    "enabled",
+                    experimentSession.timerEnabled
+            );
+
+            if (experimentSession.timerEnabled) {
+                timer.put(
+                        "configured_duration_ms",
+                        experimentSession.timerDurationMillis
+                );
+            }
+
+            session.put(
+                    "timer",
+                    timer
+            );
 
             experiment.put(
                     "session",

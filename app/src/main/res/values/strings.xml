@@ -210,4 +210,19 @@
     <string name="roi_budget_r2">R2 · MP + maksymalnie 2 ROI</string>
 
     <string name="roi_budget_policy_changed">Strategia badawcza: %1$s</string>
+
+    <string name="settings_experiment_timer_title">Czas eksperymentu</string>
+
+    <string name="settings_experiment_timer_description">
+    Opcjonalny warunek automatycznego zakończenia przebiegu. Restart kamery nie zeruje timera.
+</string>
+
+    <string name="settings_experiment_timer_switch">
+    Zakończ eksperyment automatycznie
+</string>
+
+    <string name="settings_experiment_timer_15">15 s</string>
+    <string name="settings_experiment_timer_60">1 min</string>
+    <string name="settings_experiment_timer_180">3 min</string>
+    <string name="settings_experiment_timer_300">5 min</string>
 </resources>

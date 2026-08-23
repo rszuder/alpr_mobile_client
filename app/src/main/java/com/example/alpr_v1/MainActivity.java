@@ -19,6 +19,8 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.view.WindowManager;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
@@ -64,6 +66,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.checkbox.MaterialCheckBox;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.example.alpr_v1.experiment.ExperimentSession;
+import com.example.alpr_v1.experiment.TimerConfig;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -87,6 +90,29 @@ public final class MainActivity extends AppCompatActivity {
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
     private final ExperimentSession experimentSession =
             new ExperimentSession();
+
+    private final Handler experimentTimerHandler =
+            new Handler(Looper.getMainLooper());
+
+    private final Runnable experimentTimerRunnable =
+            () -> {
+                /*
+                 * Nie sprawdzamy aktualnych ustawień EXP.
+                 * Liczy się sesja, która została już rozpoczęta.
+                 */
+                if (!experimentSession.isRunning()) {
+                    return;
+                }
+
+                recordInfo(
+                        "Upłynął czas eksperymentu "
+                                + experimentSession.sessionId()
+                );
+
+                stopAnalysis(
+                        ExperimentSession.CompletionReason.TIMER
+                );
+            };
     private List<CapturedPlateItem> capturedCrops;
     private Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack;
 
@@ -137,6 +163,8 @@ public final class MainActivity extends AppCompatActivity {
     private boolean experimentModeEnabled;
     private RoiBudgetPolicy experimentRoiBudgetPolicy =
             RoiBudgetPolicy.TWO_ROI;
+    private TimerConfig experimentTimerConfig =
+            TimerConfig.disabled();
     private volatile boolean collectionActive;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
@@ -283,6 +311,8 @@ public final class MainActivity extends AppCompatActivity {
                                 legacyRoiPolicy
                         )
                 );
+        experimentTimerConfig =
+                readExperimentTimerConfig();
 
         pipeline.setVehicleCascadeEnabled(
                 vehicleCascadeEnabled
@@ -451,6 +481,25 @@ public final class MainActivity extends AppCompatActivity {
         return vehicleCascadeEnabled
                 ? RoiBudgetPolicy.TWO_ROI
                 : RoiBudgetPolicy.FULL_FRAME;
+    }
+    private TimerConfig readExperimentTimerConfig() {
+
+        boolean enabled =
+                uiPreferences.getBoolean(
+                        SettingsActivity.KEY_EXPERIMENT_TIMER_ENABLED,
+                        false
+                );
+
+        int seconds =
+                uiPreferences.getInt(
+                        SettingsActivity.KEY_EXPERIMENT_TIMER_SECONDS,
+                        TimerConfig.DEFAULT_DURATION_SECONDS
+                );
+
+        return TimerConfig.of(
+                enabled,
+                seconds
+        );
     }
 
     private void setVehicleCascadeEnabled(boolean enabled) {
@@ -699,24 +748,75 @@ public final class MainActivity extends AppCompatActivity {
                 "Kamera i pipeline zatrzymane"
         );
     }
+
+    private void scheduleExperimentTimer(
+            TimerConfig timerConfig
+    ) {
+        cancelExperimentTimer();
+
+        if (timerConfig == null
+                || !timerConfig.enabled()
+                || !experimentSession.isRunning()) {
+            return;
+        }
+
+        experimentTimerHandler.postDelayed(
+                experimentTimerRunnable,
+                timerConfig.durationMillis()
+        );
+
+        recordInfo(
+                "Aktywowano timer eksperymentu: "
+                        + timerConfig.durationSeconds()
+                        + " s"
+        );
+    }
+
+
+    private void cancelExperimentTimer() {
+        experimentTimerHandler.removeCallbacks(
+                experimentTimerRunnable
+        );
+    }
     private void beginAnalysisMeasurement() {
         metricsCollector.startMeasurementSession();
 
         if (experimentModeEnabled) {
-            experimentSession.start(
-                    "roi_budget",
-                    experimentRoiBudgetPolicy.wireName()
-            );
 
-            recordInfo(
-                    "Rozpoczęto eksperyment "
-                            + experimentSession.sessionId()
-                            + " type="
-                            + experimentSession.experimentType()
-                            + " variant="
-                            + experimentSession.variant()
-            );
+            /*
+             * Zamrażamy konfigurację timera dla konkretnego przebiegu.
+             * Zmiana ustawień później nie zmienia aktywnej sesji.
+             */
+            TimerConfig timerForSession =
+                    experimentTimerConfig;
+
+            boolean started =
+                    experimentSession.start(
+                            "roi_budget",
+                            experimentRoiBudgetPolicy.wireName(),
+                            timerForSession
+                    );
+
+            if (started) {
+
+                recordInfo(
+                        "Rozpoczęto eksperyment "
+                                + experimentSession.sessionId()
+                                + " type="
+                                + experimentSession.experimentType()
+                                + " variant="
+                                + experimentSession.variant()
+                );
+
+                scheduleExperimentTimer(
+                        timerForSession
+                );
+            }
+
         } else {
+
+            cancelExperimentTimer();
+
             /*
              * Zwykła analiza nie może odziedziczyć informacji
              * o wcześniejszym eksperymencie.
@@ -729,6 +829,13 @@ public final class MainActivity extends AppCompatActivity {
     private void finishAnalysisMeasurement(
             ExperimentSession.CompletionReason reason
     ) {
+        /*
+         * Każda droga zakończenia sesji:
+         * MANUAL, TIMER albo ERROR
+         * unieważnia oczekujący callback timera.
+         */
+        cancelExperimentTimer();
+
         if (experimentSession.isRunning()) {
             experimentSession.finish(reason);
 
@@ -1908,6 +2015,8 @@ public final class MainActivity extends AppCompatActivity {
                                 RoiBudgetPolicy.TWO_ROI.wireName()
                         )
                 );
+        TimerConfig requestedExperimentTimer =
+                readExperimentTimerConfig();
 
         if (requestedExperimentMode != experimentModeEnabled
                 || requestedExperimentRoi != experimentRoiBudgetPolicy) {
@@ -1917,6 +2026,16 @@ public final class MainActivity extends AppCompatActivity {
                     requestedExperimentRoi
             );
         }
+
+        /*
+         * Nowa konfiguracja timera obowiązuje dopiero
+         * przy kolejnym START.
+         *
+         * Nie restartujemy i nie przedłużamy timera
+         * aktywnej ExperimentSession.
+         */
+        experimentTimerConfig =
+                requestedExperimentTimer;
 
 
         /*
@@ -2012,6 +2131,7 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         backgroundExecutor.shutdownNow();
+        cancelExperimentTimer();
 
         super.onDestroy();
 
