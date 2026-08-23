@@ -536,12 +536,13 @@ public final class MainActivity extends AppCompatActivity {
 
 
     private void stopAnalysis() {
-        /*
-         * Najpierw ustawiamy flagę na false.
-         * Dzięki temu ewentualna klatka kończąca się właśnie
-         * na wątku analizatora nie powinna już aktualizować UI.
-         */
         cameraStarted = false;
+
+        /*
+         * Od tej chwili żaden kolejny trace nie należy
+         * już do zakończonego przebiegu.
+         */
+        metricsCollector.finishMeasurementSession();
 
         if (cameraController != null) {
             cameraController.stop();
@@ -600,6 +601,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startCamera() {
         if (cameraStarted) return;
+        metricsCollector.startMeasurementSession();
         previewView.setVisibility(View.VISIBLE);
 
         /*

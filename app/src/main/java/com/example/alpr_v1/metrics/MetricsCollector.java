@@ -29,8 +29,11 @@ import java.util.Map;
 public final class MetricsCollector {
     public static final String REPORT_SCHEMA = "alpr.mobile_benchmark_report.v1";
     private static final int MAX_TRACES = 5_000;
-    private final long sessionStartedMillis = System.currentTimeMillis();
-    private final long sessionStartedNanos = System.nanoTime();
+    private long sessionStartedMillis = System.currentTimeMillis();
+    private long sessionStartedNanos = System.nanoTime();
+
+    private long sessionFinishedMillis = -1L;
+    private boolean measurementSessionActive;
     private final Deque<InferenceTrace> traces = new ArrayDeque<>();
     private long droppedFrames;
     private String recognitionProfile = "balanced";
@@ -53,18 +56,71 @@ public final class MetricsCollector {
     private int cropCapacity;
     private final List<JSONObject> capturedCropRecords = new ArrayList<>();
 
-    public synchronized void add(InferenceTrace trace) {
-        while (traces.size() >= MAX_TRACES) traces.removeFirst();
-        traces.addLast(trace);
+    public synchronized void startMeasurementSession() {
+        traces.clear();
+
+        droppedFrames = 0L;
+
+        firstPreliminaryResultNanos = -1L;
+        firstConfirmedResultNanos = -1L;
+
+        actualSourceWidth = 0;
+        actualSourceHeight = 0;
+
+        sessionStartedMillis =
+                System.currentTimeMillis();
+
+        sessionStartedNanos =
+                System.nanoTime();
+
+        sessionFinishedMillis = -1L;
+
+        measurementSessionActive = true;
     }
 
-    public synchronized void frameDropped() { droppedFrames++; }
+
+    public synchronized void finishMeasurementSession() {
+        if (!measurementSessionActive) {
+            return;
+        }
+
+        sessionFinishedMillis =
+                System.currentTimeMillis();
+
+        measurementSessionActive = false;
+    }
+
+
+    public synchronized boolean isMeasurementSessionActive() {
+        return measurementSessionActive;
+    }
+
+    public synchronized void add(InferenceTrace trace) {
+        if (!measurementSessionActive) {
+            return;
+        }
+
+        while (traces.size() >= MAX_TRACES) {
+            traces.removeFirst();
+        }
+
+        traces.addLast(trace);
+    }
+    public synchronized void frameDropped() {
+        if (measurementSessionActive) {
+            droppedFrames++;
+        }
+    }
+
     public synchronized int size() { return traces.size(); }
     public synchronized void setRecognitionProfile(String profile) {
         recognitionProfile = profile == null ? "balanced" : profile.trim();
     }
 
     public synchronized void recordRecognitionState(boolean hasResult, boolean hasConfirmedResult) {
+        if (!measurementSessionActive) {
+            return;
+        }
         long now = System.nanoTime();
         if (hasResult && firstPreliminaryResultNanos < 0L) {
             firstPreliminaryResultNanos = Math.max(0L, now - sessionStartedNanos);
@@ -196,7 +252,10 @@ public final class MetricsCollector {
             ModelRegistry registry,
             AutoTuneManager autoTuneManager
     ) throws JSONException {
-        long finishedMillis = System.currentTimeMillis();
+        long finishedMillis =
+                sessionFinishedMillis > 0L
+                        ? sessionFinishedMillis
+                        : System.currentTimeMillis();
         InstalledModel plate = registry.getActive(ModelRole.PLATE);
         InstalledModel character = registry.getActive(ModelRole.CHARACTER);
         InstalledModel vehicle = registry.getActive(ModelRole.VEHICLE);
@@ -231,6 +290,18 @@ public final class MetricsCollector {
         report.put("autotune_measured_runs_per_candidate", AutoTuneManager.measuredRunsPerCandidate());
         report.put("session_started_ms", sessionStartedMillis);
         report.put("session_finished_ms", finishedMillis);
+        report.put(
+                "session_duration_ms",
+                Math.max(
+                        0L,
+                        finishedMillis - sessionStartedMillis
+                )
+        );
+
+        report.put(
+                "measurement_session_active",
+                measurementSessionActive
+        );
         report.put("dropped_frames", droppedFrames);
         report.put("recognition_profile", recognitionProfile);
 
