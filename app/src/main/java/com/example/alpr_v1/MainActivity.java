@@ -535,8 +535,40 @@ public final class MainActivity extends AppCompatActivity {
         analysisStopButton.setVisibility(
                 cameraStarted ? View.VISIBLE : View.GONE
         );
-    }
 
+        /*
+         * Cropy mogą być zbierane wyłącznie wtedy,
+         * gdy działa kamera i pipeline.
+         */
+        if (collectionToggle != null) {
+            collectionToggle.setEnabled(cameraStarted);
+        }
+    }
+    private void pauseCropCollectionForStoppedAnalysis() {
+        if (!collectionActive) {
+            if (collectionToggle != null) {
+                collectionToggle.setEnabled(false);
+            }
+            return;
+        }
+
+        collectionActive = false;
+
+        metricsCollector.setCropCollectionActive(false);
+
+        captureGalleryState.retainSession(
+                false,
+                collectionSessionId,
+                collectionSessionStartedElapsedNanos,
+                collectionSequence
+        );
+
+        renderCapturedCrops();
+
+        recordInfo(
+                "Wstrzymano zbieranie cropów z powodu zatrzymania analizy"
+        );
+    }
     private void stopAnalysis() {
         stopAnalysis(
                 ExperimentSession.CompletionReason.MANUAL
@@ -546,7 +578,11 @@ public final class MainActivity extends AppCompatActivity {
             ExperimentSession.CompletionReason reason
     ) {
         cameraStarted = false;
-
+        /*
+         * Po zatrzymaniu źródła danych kolektor cropów
+         * również nie może pozostać aktywny.
+         */
+        pauseCropCollectionForStoppedAnalysis();
         /*
          * Od tej chwili żaden kolejny trace nie należy
          * już do zakończonego przebiegu.
@@ -809,6 +845,7 @@ public final class MainActivity extends AppCompatActivity {
         resolvedCropLimit = CropCapacityPolicy.resolve(
                 cropLimitSetting,
                 Runtime.getRuntime().maxMemory(),
+
                 deviceProfile.lowRamDevice
         );
         String directory = uiPreferences.getString("capture_directory_uri", "");
@@ -855,11 +892,33 @@ public final class MainActivity extends AppCompatActivity {
                 (button, checked) -> selectAllCrops(checked)
         );
         saveSelectedCropsButton.setOnClickListener(view -> saveSelectedCrops());
+        /*
+         * Nowa instancja MainActivity nie uruchamia kamery automatycznie.
+         * Nie możemy więc odziedziczyć aktywnego stanu kolektora.
+         */
+        if (!cameraStarted && collectionActive) {
+            collectionActive = false;
+
+            metricsCollector.setCropCollectionActive(false);
+
+            captureGalleryState.retainSession(
+                    false,
+                    collectionSessionId,
+                    collectionSessionStartedElapsedNanos,
+                    collectionSequence
+            );
+        }
         metricsCollector.setCropCapacity(resolvedCropLimit);
         renderCapturedCrops();
     }
 
     private void toggleCollection() {
+        if (!cameraStarted) {
+            collectionActive = false;
+            metricsCollector.setCropCollectionActive(false);
+            renderCapturedCrops();
+            return;
+        }
         collectionActive = !collectionActive;
         if (collectionActive && collectionSessionId.isEmpty()) {
             collectionSessionId = "s-" + new SimpleDateFormat(
