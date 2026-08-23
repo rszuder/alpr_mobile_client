@@ -30,6 +30,7 @@ import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.ModelStatusFormatter;
+import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
@@ -121,6 +122,7 @@ public final class SettingsActivity extends AppCompatActivity {
         configureProfileControls();
         configureResolutionControls();
         configureCropControls();
+        configureRoiBudgetControls();
         configurePipelineControls();
         refreshModelStatus();
         refreshStoragePath();
@@ -196,12 +198,7 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void configurePipelineControls() {
-        vehicleBadge.setOnClickListener(view -> {
-            boolean enabled = vehicleBadge.isChecked();
-            preferences.edit().putBoolean("vehicle_cascade_enabled", enabled).apply();
-            markChanged();
-            refreshNodeBadges();
-        });
+
         importButton.setOnClickListener(view -> launchModelImport(null));
         vehicleNode.setOnClickListener(view -> showNodeActions(ModelRole.VEHICLE));
         plateNode.setOnClickListener(view -> showNodeActions(ModelRole.PLATE));
@@ -587,5 +584,64 @@ public final class SettingsActivity extends AppCompatActivity {
     protected void onDestroy() {
         backgroundExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    private void configureRoiBudgetControls() {
+        MaterialButtonToggleGroup group =
+                findViewById(
+                        R.id.settings_roi_budget_group
+                );
+
+        boolean legacyCascade =
+                preferences.getBoolean(
+                        "vehicle_cascade_enabled",
+                        false
+                );
+
+        RoiBudgetPolicy selected =
+                RoiBudgetPolicy.fromWireName(
+                        preferences.getString(
+                                "roi_budget_policy",
+                                legacyCascade
+                                        ? RoiBudgetPolicy.TWO_ROI.wireName()
+                                        : RoiBudgetPolicy.FULL_FRAME.wireName()
+                        )
+                );
+
+        int selectedId =
+                selected == RoiBudgetPolicy.ONE_ROI
+                        ? R.id.settings_roi_r1
+                        : selected == RoiBudgetPolicy.TWO_ROI
+                          ? R.id.settings_roi_r2
+                          : R.id.settings_roi_r0;
+
+        group.check(selectedId);
+
+        group.addOnButtonCheckedListener(
+                (ignored, checkedId, isChecked) -> {
+                    if (!isChecked) return;
+
+                    RoiBudgetPolicy policy =
+                            checkedId == R.id.settings_roi_r1
+                                    ? RoiBudgetPolicy.ONE_ROI
+                                    : checkedId == R.id.settings_roi_r2
+                                      ? RoiBudgetPolicy.TWO_ROI
+                                      : RoiBudgetPolicy.FULL_FRAME;
+
+                    preferences.edit()
+                            .putString(
+                                    "roi_budget_policy",
+                                    policy.wireName()
+                            )
+                            .putBoolean(
+                                    "vehicle_cascade_enabled",
+                                    policy.usesVehicleCascade()
+                            )
+                            .apply();
+
+                    markChanged();
+                    refreshNodeBadges();
+                }
+        );
     }
 }

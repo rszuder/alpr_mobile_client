@@ -26,7 +26,8 @@ public final class AlprPipeline {
     private MobileAlprEngine engine;
     private volatile boolean reloadRequested;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
-    private boolean vehicleCascadeEnabled;
+    private RoiBudgetPolicy roiBudgetPolicy =
+            RoiBudgetPolicy.FULL_FRAME;
     private volatile boolean rapidCameraMotion;
 
     public AlprPipeline(
@@ -70,7 +71,7 @@ public final class AlprPipeline {
             }
             if (engine == null) {
                 engine = new MobileAlprEngine(
-                        registry, autoTuneManager, vehicleCascadeEnabled
+                        registry, autoTuneManager, roiBudgetPolicy
                 );
                 engine.setRecognitionProfile(recognitionProfile);
                 engine.setRapidCameraMotion(rapidCameraMotion);
@@ -125,15 +126,39 @@ public final class AlprPipeline {
         if (engine != null) engine.resetTracking();
     }
 
-    public synchronized void setVehicleCascadeEnabled(boolean enabled) {
-        if (vehicleCascadeEnabled == enabled) {
-            metrics.setVehicleCascadeEnabled(enabled);
+    public synchronized void setRoiBudgetPolicy(
+            RoiBudgetPolicy policy
+    ) {
+        RoiBudgetPolicy requested = policy == null
+                ? RoiBudgetPolicy.FULL_FRAME
+                : policy;
+
+        metrics.setRoiBudgetPolicy(requested.wireName());
+        metrics.setVehicleCascadeEnabled(
+                requested.usesVehicleCascade()
+        );
+
+        if (roiBudgetPolicy == requested) {
             return;
         }
-        vehicleCascadeEnabled = enabled;
-        metrics.setVehicleCascadeEnabled(enabled);
-        if (engine != null) engine.resetTracking();
+
+        roiBudgetPolicy = requested;
+
+        if (engine != null) {
+            engine.resetTracking();
+        }
+
         reloadRequested = true;
+    }
+
+    public synchronized void setVehicleCascadeEnabled(
+            boolean enabled
+    ) {
+        setRoiBudgetPolicy(
+                enabled
+                        ? RoiBudgetPolicy.TWO_ROI
+                        : RoiBudgetPolicy.FULL_FRAME
+        );
     }
 
     public synchronized void setRapidCameraMotion(boolean rapid) {

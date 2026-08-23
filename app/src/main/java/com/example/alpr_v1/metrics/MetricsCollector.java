@@ -35,6 +35,8 @@ public final class MetricsCollector {
     private long droppedFrames;
     private String recognitionProfile = "balanced";
     private boolean vehicleCascadeEnabled;
+
+    private String roiBudgetPolicy = "r0_full_frame";
     private String captureProfile = "auto";
     private int requestedSourceWidth;
     private int requestedSourceHeight;
@@ -72,6 +74,12 @@ public final class MetricsCollector {
 
     public synchronized void setVehicleCascadeEnabled(boolean enabled) {
         vehicleCascadeEnabled = enabled;
+    }
+
+    public synchronized void setRoiBudgetPolicy(String policy) {
+        roiBudgetPolicy = policy == null || policy.trim().isEmpty()
+                ? "r0_full_frame"
+                : policy.trim();
     }
 
     public synchronized void setCaptureConfiguration(String profile, int width, int height) {
@@ -212,6 +220,7 @@ public final class MetricsCollector {
         report.put("dropped_frames", droppedFrames);
         report.put("recognition_profile", recognitionProfile);
         report.put("vehicle_cascade_enabled", vehicleCascadeEnabled);
+        report.put("roi_budget_policy", roiBudgetPolicy);
         JSONObject capture = new JSONObject();
         capture.put("profile", captureProfile);
         capture.put("requested_width", requestedSourceWidth);

@@ -58,6 +58,7 @@ import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
+import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.checkbox.MaterialCheckBox;
@@ -117,6 +118,8 @@ public final class MainActivity extends AppCompatActivity {
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
     private AnalysisResolutionProfile analysisResolutionProfile = AnalysisResolutionProfile.AUTO;
     private boolean vehicleCascadeEnabled;
+    private RoiBudgetPolicy roiBudgetPolicy =
+            RoiBudgetPolicy.FULL_FRAME;
     private volatile boolean collectionActive;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
@@ -225,8 +228,27 @@ public final class MainActivity extends AppCompatActivity {
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         configureRecognitionProfile();
         configureAnalysisResolutionProfile();
-        vehicleCascadeEnabled = uiPreferences.getBoolean("vehicle_cascade_enabled", false);
-        pipeline.setVehicleCascadeEnabled(vehicleCascadeEnabled);
+        boolean legacyVehicleCascade =
+                uiPreferences.getBoolean(
+                        "vehicle_cascade_enabled",
+                        false
+                );
+
+        roiBudgetPolicy = RoiBudgetPolicy.fromWireName(
+                uiPreferences.getString(
+                        "roi_budget_policy",
+                        legacyVehicleCascade
+                                ? RoiBudgetPolicy.TWO_ROI.wireName()
+                                : RoiBudgetPolicy.FULL_FRAME.wireName()
+                )
+        );
+
+        vehicleCascadeEnabled =
+                roiBudgetPolicy.usesVehicleCascade();
+
+        pipeline.setRoiBudgetPolicy(
+                roiBudgetPolicy
+        );
         configureAppMenu();
         configureCaptureCollection();
 
@@ -1373,9 +1395,26 @@ public final class MainActivity extends AppCompatActivity {
             applyAnalysisResolutionProfile(requestedResolution);
         }
 
-        boolean requestedCascade = uiPreferences.getBoolean("vehicle_cascade_enabled", false);
-        if (requestedCascade != vehicleCascadeEnabled) {
-            setVehicleCascadeEnabled(requestedCascade);
+        boolean legacyRequestedCascade =
+                uiPreferences.getBoolean(
+                        "vehicle_cascade_enabled",
+                        false
+                );
+
+        RoiBudgetPolicy requestedRoiPolicy =
+                RoiBudgetPolicy.fromWireName(
+                        uiPreferences.getString(
+                                "roi_budget_policy",
+                                legacyRequestedCascade
+                                        ? RoiBudgetPolicy.TWO_ROI.wireName()
+                                        : RoiBudgetPolicy.FULL_FRAME.wireName()
+                        )
+                );
+
+        if (requestedRoiPolicy != roiBudgetPolicy) {
+            applyRoiBudgetPolicy(
+                    requestedRoiPolicy
+            );
         }
 
         String requestedLimit = CropCapacityPolicy.normalizeSetting(
@@ -1422,5 +1461,72 @@ public final class MainActivity extends AppCompatActivity {
         else if (pipeline != null) pipeline.close();
         backgroundExecutor.shutdownNow();
         super.onDestroy();
+    }
+    private void applyRoiBudgetPolicy(
+            RoiBudgetPolicy policy
+    ) {
+        RoiBudgetPolicy requested =
+                policy == null
+                        ? RoiBudgetPolicy.FULL_FRAME
+                        : policy;
+
+        roiBudgetPolicy = requested;
+        vehicleCascadeEnabled =
+                requested.usesVehicleCascade();
+
+        uiPreferences.edit()
+                .putString(
+                        "roi_budget_policy",
+                        requested.wireName()
+                )
+                .putBoolean(
+                        "vehicle_cascade_enabled",
+                        vehicleCascadeEnabled
+                )
+                .apply();
+
+        pipeline.setRoiBudgetPolicy(requested);
+
+        overlayTracker.reset();
+        pipeline.resetTracking();
+        lastCaptureByTrack.clear();
+
+        if (requested.usesVehicleCascade()
+                && modelRegistry.getActive(
+                com.example.alpr_v1.model.ModelRole.VEHICLE
+        ) == null) {
+
+            liveStatus.setText(
+                    R.string.vehicle_cascade_missing_model
+            );
+            return;
+        }
+
+        liveStatus.setText(
+                getString(
+                        R.string.roi_budget_policy_changed,
+                        roiBudgetPolicyLabel()
+                )
+        );
+    }
+
+    private String roiBudgetPolicyLabel() {
+        switch (roiBudgetPolicy) {
+            case ONE_ROI:
+                return getString(
+                        R.string.roi_budget_r1
+                );
+
+            case TWO_ROI:
+                return getString(
+                        R.string.roi_budget_r2
+                );
+
+            case FULL_FRAME:
+            default:
+                return getString(
+                        R.string.roi_budget_r0
+                );
+        }
     }
 }

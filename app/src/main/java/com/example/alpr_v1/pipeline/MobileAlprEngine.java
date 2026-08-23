@@ -46,11 +46,13 @@ import java.util.Set;
 final class MobileAlprEngine implements AutoCloseable {
     private static final int VEHICLE_REFRESH_FRAMES = 3;
     private static final int FULL_FRAME_FALLBACK_FRAMES = 15;
-    private static final int MAX_VEHICLE_REGIONS = 2;
+
     private static final float VEHICLE_REGION_MARGIN = 0.18f;
     private final InstalledModel vehicleModel;
     private final InstalledModel plateModel;
     private final InstalledModel characterModel;
+
+    private final RoiBudgetPolicy roiBudgetPolicy;
     private final InferenceBackend vehicleBackend;
     private final InferenceBackend plateBackend;
     private final InferenceBackend characterBackend;
@@ -66,7 +68,6 @@ final class MobileAlprEngine implements AutoCloseable {
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
-    private boolean vehicleCascadeEnabled;
     private volatile boolean rapidCameraMotion;
 
     private static final class PlateCandidate {
@@ -95,10 +96,15 @@ final class MobileAlprEngine implements AutoCloseable {
     MobileAlprEngine(
             ModelRegistry registry,
             AutoTuneManager autoTuneManager,
-            boolean vehicleCascadeEnabled
+            RoiBudgetPolicy roiBudgetPolicy
     ) {
-        this.vehicleCascadeEnabled = vehicleCascadeEnabled;
-        vehicleModel = vehicleCascadeEnabled ? registry.getActive(ModelRole.VEHICLE) : null;
+        this.roiBudgetPolicy = roiBudgetPolicy == null
+                ? RoiBudgetPolicy.FULL_FRAME
+                : roiBudgetPolicy;
+
+        vehicleModel = this.roiBudgetPolicy.usesVehicleCascade()
+                ? registry.getActive(ModelRole.VEHICLE)
+                : null;
         plateModel = required(registry, ModelRole.PLATE);
         characterModel = required(registry, ModelRole.CHARACTER);
 
@@ -231,7 +237,9 @@ final class MobileAlprEngine implements AutoCloseable {
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoiSelector.Region> plateRegions = new ArrayList<>();
-        boolean useVehicleRegions = vehicleCascadeEnabled && vehicleBackend != null;
+        boolean useVehicleRegions =
+                roiBudgetPolicy.usesVehicleCascade()
+                        && vehicleBackend != null;
         if (useVehicleRegions) {
             boolean refreshVehicles = cachedVehicleRegions.isEmpty()
                     || rapidCameraMotion
@@ -284,7 +292,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         false
                 ));
             }
-        } else if (vehicleCascadeEnabled) {
+        } else if (roiBudgetPolicy.usesVehicleCascade()) {
             trace.putCount("vehicle_unavailable", 1);
         }
 
@@ -710,18 +718,25 @@ final class MobileAlprEngine implements AutoCloseable {
                         + ", allowedClassIds=" + vehicleClassIds
         );
 
-        List<VehicleRoiSelector.Region> regions = VehicleRoiSelector.select(
-                vehicles,
-                frame.getWidth(),
-                frame.getHeight(),
-                MAX_VEHICLE_REGIONS,
-                rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
-                vehicleOutputSpec.iouThreshold()
+        List<VehicleRoiSelector.Region> regions =
+                VehicleRoiSelector.select(
+                        vehicles,
+                        frame.getWidth(),
+                        frame.getHeight(),
+                        roiBudgetPolicy.maximumRegions(),
+                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
+                        vehicleOutputSpec.iouThreshold()
+                );
+        trace.putCount(
+                "vehicle_regions_selected",
+                regions.size()
         );
         android.util.Log.d(
                 "ALPR_MP",
                 "MP detections=" + vehicles.size()
                         + ", regions=" + regions.size()
+                        + ", policy=" + roiBudgetPolicy.wireName()
+                        + ", maxRegions=" + roiBudgetPolicy.maximumRegions()
                         + ", confThreshold=" + vehicleOutputSpec.confidenceThreshold()
                         + ", iouThreshold=" + vehicleOutputSpec.iouThreshold()
                         + ", frame=" + frame.getWidth() + "x" + frame.getHeight()

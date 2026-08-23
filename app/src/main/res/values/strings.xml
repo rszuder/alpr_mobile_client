@@ -171,4 +171,16 @@
     <string name="diagnostics_boolean_no">nie</string>
     <string name="diagnostics_vehicle_on">włączony</string>
     <string name="diagnostics_vehicle_off">wyłączony</string>
+    <string name="settings_roi_budget_title">Strategia ROI · eksperyment</string>
+    <string name="settings_roi_budget_description">R0 porównuje pełną klatkę z kaskadą MP wykorzystującą maksymalnie 1 lub 2 ROI.</string>
+
+    <string name="roi_budget_r0_short">R0 · pełna</string>
+    <string name="roi_budget_r1_short">R1 · 1 ROI</string>
+    <string name="roi_budget_r2_short">R2 · 2 ROI</string>
+
+    <string name="roi_budget_r0">R0 · MT na pełnej klatce</string>
+    <string name="roi_budget_r1">R1 · MP + maksymalnie 1 ROI</string>
+    <string name="roi_budget_r2">R2 · MP + maksymalnie 2 ROI</string>
+
+    <string name="roi_budget_policy_changed">Strategia badawcza: %1$s</string>
 </resources>
