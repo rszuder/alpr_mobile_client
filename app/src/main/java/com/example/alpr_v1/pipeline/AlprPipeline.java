@@ -26,8 +26,20 @@ public final class AlprPipeline {
     private MobileAlprEngine engine;
     private volatile boolean reloadRequested;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
-    private RoiBudgetPolicy roiBudgetPolicy =
-            RoiBudgetPolicy.FULL_FRAME;
+
+    /*
+     * Normalna konfiguracja użytkownika.
+     * Tryb eksperymentalny nigdy nie zmienia tej wartości.
+     */
+    private boolean vehicleCascadeEnabled;
+
+    /*
+     * Oddzielna warstwa eksperymentalna.
+     */
+    private boolean experimentModeEnabled;
+    private RoiBudgetPolicy experimentRoiBudgetPolicy =
+            RoiBudgetPolicy.TWO_ROI;
+
     private volatile boolean rapidCameraMotion;
 
     public AlprPipeline(
@@ -71,7 +83,9 @@ public final class AlprPipeline {
             }
             if (engine == null) {
                 engine = new MobileAlprEngine(
-                        registry, autoTuneManager, roiBudgetPolicy
+                        registry,
+                        autoTuneManager,
+                        effectiveRoiBudgetPolicy()
                 );
                 engine.setRecognitionProfile(recognitionProfile);
                 engine.setRapidCameraMotion(rapidCameraMotion);
@@ -126,23 +140,39 @@ public final class AlprPipeline {
         if (engine != null) engine.resetTracking();
     }
 
-    public synchronized void setRoiBudgetPolicy(
-            RoiBudgetPolicy policy
-    ) {
-        RoiBudgetPolicy requested = policy == null
-                ? RoiBudgetPolicy.FULL_FRAME
-                : policy;
 
-        metrics.setRoiBudgetPolicy(requested.wireName());
-        metrics.setVehicleCascadeEnabled(
-                requested.usesVehicleCascade()
-        );
 
-        if (roiBudgetPolicy == requested) {
-            return;
+    private RoiBudgetPolicy effectiveRoiBudgetPolicy() {
+        if (experimentModeEnabled) {
+            return experimentRoiBudgetPolicy;
         }
 
-        roiBudgetPolicy = requested;
+        return vehicleCascadeEnabled
+                ? RoiBudgetPolicy.TWO_ROI
+                : RoiBudgetPolicy.FULL_FRAME;
+    }
+    public synchronized void setVehicleCascadeEnabled(boolean enabled) {
+        RoiBudgetPolicy previousEffective =
+                effectiveRoiBudgetPolicy();
+
+        vehicleCascadeEnabled = enabled;
+
+        metrics.setVehicleCascadeEnabled(enabled);
+
+        RoiBudgetPolicy currentEffective =
+                effectiveRoiBudgetPolicy();
+
+        metrics.setRoiBudgetPolicy(
+                currentEffective.wireName()
+        );
+
+        /*
+         * Jeżeli działa EXP, zmiana normalnej konfiguracji nie musi
+         * wpływać na aktualnie wykonywany pipeline.
+         */
+        if (previousEffective == currentEffective) {
+            return;
+        }
 
         if (engine != null) {
             engine.resetTracking();
@@ -151,14 +181,40 @@ public final class AlprPipeline {
         reloadRequested = true;
     }
 
-    public synchronized void setVehicleCascadeEnabled(
-            boolean enabled
+    public synchronized void setExperimentConfiguration(
+            boolean enabled,
+            RoiBudgetPolicy roiPolicy
     ) {
-        setRoiBudgetPolicy(
-                enabled
+        RoiBudgetPolicy previousEffective =
+                effectiveRoiBudgetPolicy();
+
+        experimentModeEnabled = enabled;
+        experimentRoiBudgetPolicy =
+                roiPolicy == null
                         ? RoiBudgetPolicy.TWO_ROI
-                        : RoiBudgetPolicy.FULL_FRAME
+                        : roiPolicy;
+
+        RoiBudgetPolicy currentEffective =
+                effectiveRoiBudgetPolicy();
+
+        metrics.setExperimentConfiguration(
+                experimentModeEnabled,
+                experimentRoiBudgetPolicy.wireName()
         );
+
+        metrics.setRoiBudgetPolicy(
+                currentEffective.wireName()
+        );
+
+        if (previousEffective == currentEffective) {
+            return;
+        }
+
+        if (engine != null) {
+            engine.resetTracking();
+        }
+
+        reloadRequested = true;
     }
 
     public synchronized void setRapidCameraMotion(boolean rapid) {

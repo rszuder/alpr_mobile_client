@@ -171,8 +171,25 @@
     <string name="diagnostics_boolean_no">nie</string>
     <string name="diagnostics_vehicle_on">włączony</string>
     <string name="diagnostics_vehicle_off">wyłączony</string>
+    <string name="settings_experiment_title">Tryb eksperymentalny</string>
+
+    <string name="settings_experiment_description">
+    Eksperyment może chwilowo nadpisywać sposób działania pipeline’u. Normalna konfiguracja nie jest zmieniana i zostanie ponownie użyta po wyłączeniu trybu eksperymentalnego.
+    </string>
+
+        <string name="settings_experiment_switch">
+        Włącz tryb eksperymentalny
+    </string>
+
+        <string name="experiment_mode_enabled_status">
+        Tryb eksperymentalny: %1$s
+    </string>
+
+        <string name="experiment_mode_disabled_status">
+        Tryb eksperymentalny wyłączony · przywrócono normalną konfigurację
+    </string>
     <string name="settings_roi_budget_title">Strategia ROI · eksperyment</string>
-    <string name="settings_roi_budget_description">R0 porównuje pełną klatkę z kaskadą MP wykorzystującą maksymalnie 1 lub 2 ROI.</string>
+    <string name="settings_roi_budget_description">R0: MT na pełnej klatce · R1: MP i maks. 1 ROI · R2: MP i maks. 2 ROI</string>
 
     <string name="roi_budget_r0_short">R0 · pełna</string>
     <string name="roi_budget_r1_short">R1 · 1 ROI</string>

@@ -45,6 +45,12 @@ import java.util.concurrent.Executors;
 public final class SettingsActivity extends AppCompatActivity {
     public static final String PREFERENCES = "alpr_ui";
     public static final String KEY_REVISION = "settings_revision";
+
+    public static final String KEY_EXPERIMENT_MODE_ENABLED =
+            "experiment_mode_enabled";
+
+    public static final String KEY_EXPERIMENT_ROI_POLICY =
+            "experiment_roi_budget_policy";
     private static final String LOG_TAG = "SettingsActivity";
 
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
@@ -198,6 +204,33 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void configurePipelineControls() {
+
+        vehicleBadge.setOnClickListener(view -> {
+            /*
+             * W trybie eksperymentalnym normalna konfiguracja jest
+             * tylko do odczytu.
+             */
+            if (preferences.getBoolean(
+                    KEY_EXPERIMENT_MODE_ENABLED,
+                    false
+            )) {
+                refreshNodeBadges();
+                return;
+            }
+
+            boolean enabled =
+                    vehicleBadge.isChecked();
+
+            preferences.edit()
+                    .putBoolean(
+                            "vehicle_cascade_enabled",
+                            enabled
+                    )
+                    .apply();
+
+            markChanged();
+            refreshNodeBadges();
+        });
 
         importButton.setOnClickListener(view -> launchModelImport(null));
         vehicleNode.setOnClickListener(view -> showNodeActions(ModelRole.VEHICLE));
@@ -460,15 +493,61 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void refreshNodeBadges() {
-        boolean hasVehicle = modelRegistry.getActive(ModelRole.VEHICLE) != null;
-        boolean hasPlate = modelRegistry.getActive(ModelRole.PLATE) != null;
-        boolean hasCharacter = modelRegistry.getActive(ModelRole.CHARACTER) != null;
-        boolean vehicleEnabled = hasVehicle
-                && preferences.getBoolean("vehicle_cascade_enabled", false);
+        boolean hasVehicle =
+                modelRegistry.getActive(ModelRole.VEHICLE) != null;
 
-        updateStageBadge(vehicleBadge, ModelRole.VEHICLE, hasVehicle, vehicleEnabled, true);
-        updateStageBadge(plateBadge, ModelRole.PLATE, hasPlate, hasPlate, false);
-        updateStageBadge(characterBadge, ModelRole.CHARACTER, hasCharacter, hasCharacter, false);
+        boolean hasPlate =
+                modelRegistry.getActive(ModelRole.PLATE) != null;
+
+        boolean hasCharacter =
+                modelRegistry.getActive(ModelRole.CHARACTER) != null;
+
+        /*
+         * To jest NORMALNY stan konfiguracji MP.
+         * Eksperyment nie zmienia tej wartości.
+         */
+        boolean vehicleEnabled =
+                hasVehicle
+                        && preferences.getBoolean(
+                        "vehicle_cascade_enabled",
+                        false
+                );
+
+        /*
+         * Sprawdzamy osobno, czy działa tryb eksperymentalny.
+         *
+         * Jeżeli tak, blokujemy możliwość ręcznej zmiany normalnego
+         * stanu MP z poziomu badge'a.
+         */
+        boolean experimentEnabled =
+                preferences.getBoolean(
+                        KEY_EXPERIMENT_MODE_ENABLED,
+                        false
+                );
+
+        updateStageBadge(
+                vehicleBadge,
+                ModelRole.VEHICLE,
+                hasVehicle,
+                vehicleEnabled,
+                !experimentEnabled
+        );
+
+        updateStageBadge(
+                plateBadge,
+                ModelRole.PLATE,
+                hasPlate,
+                hasPlate,
+                false
+        );
+
+        updateStageBadge(
+                characterBadge,
+                ModelRole.CHARACTER,
+                hasCharacter,
+                hasCharacter,
+                false
+        );
     }
 
     private void updateStageBadge(
@@ -587,26 +666,69 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void configureRoiBudgetControls() {
+        com.google.android.material.materialswitch.MaterialSwitch experimentSwitch =
+                findViewById(
+                        R.id.settings_experiment_switch
+                );
+
+        View experimentOptions =
+                findViewById(
+                        R.id.settings_roi_experiment_options
+                );
+
         MaterialButtonToggleGroup group =
                 findViewById(
                         R.id.settings_roi_budget_group
                 );
 
-        boolean legacyCascade =
+        /*
+         * Jednorazowa migracja wersji, którą właśnie zbudowaliśmy.
+         * Stara wartość roi_budget_policy staje się WYŁĄCZNIE
+         * wariantem eksperymentalnym.
+         */
+        if (!preferences.contains(
+                KEY_EXPERIMENT_ROI_POLICY
+        )) {
+            String legacy =
+                    preferences.getString(
+                            "roi_budget_policy",
+                            RoiBudgetPolicy.TWO_ROI.wireName()
+                    );
+
+            preferences.edit()
+                    .putString(
+                            KEY_EXPERIMENT_ROI_POLICY,
+                            legacy
+                    )
+                    .remove(
+                            "roi_budget_policy"
+                    )
+                    .apply();
+        }
+
+        boolean experimentEnabled =
                 preferences.getBoolean(
-                        "vehicle_cascade_enabled",
+                        KEY_EXPERIMENT_MODE_ENABLED,
                         false
                 );
 
         RoiBudgetPolicy selected =
                 RoiBudgetPolicy.fromWireName(
                         preferences.getString(
-                                "roi_budget_policy",
-                                legacyCascade
-                                        ? RoiBudgetPolicy.TWO_ROI.wireName()
-                                        : RoiBudgetPolicy.FULL_FRAME.wireName()
+                                KEY_EXPERIMENT_ROI_POLICY,
+                                RoiBudgetPolicy.TWO_ROI.wireName()
                         )
                 );
+
+        experimentSwitch.setChecked(
+                experimentEnabled
+        );
+
+        experimentOptions.setVisibility(
+                experimentEnabled
+                        ? View.VISIBLE
+                        : View.GONE
+        );
 
         int selectedId =
                 selected == RoiBudgetPolicy.ONE_ROI
@@ -616,6 +738,27 @@ public final class SettingsActivity extends AppCompatActivity {
                           : R.id.settings_roi_r0;
 
         group.check(selectedId);
+
+        experimentSwitch.setOnCheckedChangeListener(
+                (button, enabled) -> {
+
+                    preferences.edit()
+                            .putBoolean(
+                                    KEY_EXPERIMENT_MODE_ENABLED,
+                                    enabled
+                            )
+                            .apply();
+
+                    experimentOptions.setVisibility(
+                            enabled
+                                    ? View.VISIBLE
+                                    : View.GONE
+                    );
+
+                    markChanged();
+                    refreshNodeBadges();
+                }
+        );
 
         group.addOnButtonCheckedListener(
                 (ignored, checkedId, isChecked) -> {
@@ -628,19 +771,18 @@ public final class SettingsActivity extends AppCompatActivity {
                                       ? RoiBudgetPolicy.TWO_ROI
                                       : RoiBudgetPolicy.FULL_FRAME;
 
+                    /*
+                     * Bardzo ważne:
+                     * NIE DOTYKAMY vehicle_cascade_enabled.
+                     */
                     preferences.edit()
                             .putString(
-                                    "roi_budget_policy",
+                                    KEY_EXPERIMENT_ROI_POLICY,
                                     policy.wireName()
-                            )
-                            .putBoolean(
-                                    "vehicle_cascade_enabled",
-                                    policy.usesVehicleCascade()
                             )
                             .apply();
 
                     markChanged();
-                    refreshNodeBadges();
                 }
         );
     }

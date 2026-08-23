@@ -7,6 +7,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.PlateCharacter;
+import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -29,7 +30,10 @@ public final class CropMiniReport {
             AutoTuneManager autoTuneManager,
             String recognitionProfile,
             String resolutionProfile,
-            boolean vehicleCascadeEnabled
+            boolean normalVehicleCascadeEnabled,
+            boolean experimentModeEnabled,
+            RoiBudgetPolicy experimentRoiBudgetPolicy,
+            RoiBudgetPolicy effectiveRoiBudgetPolicy
     ) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("schema", SCHEMA);
@@ -68,7 +72,42 @@ public final class CropMiniReport {
         JSONObject pipeline = new JSONObject();
         pipeline.put("recognition_profile", recognitionProfile);
         pipeline.put("resolution_profile", resolutionProfile);
-        pipeline.put("vehicle_cascade_enabled", vehicleCascadeEnabled);
+        pipeline.put(
+                "vehicle_cascade_enabled",
+                effectiveRoiBudgetPolicy.usesVehicleCascade()
+        );
+
+        pipeline.put(
+                "roi_budget_policy",
+                effectiveRoiBudgetPolicy.wireName()
+        );
+
+        pipeline.put(
+                "normal_vehicle_cascade_enabled",
+                normalVehicleCascadeEnabled
+        );
+
+        JSONObject experiment = new JSONObject();
+
+        experiment.put(
+                "enabled",
+                experimentModeEnabled
+        );
+
+        experiment.put(
+                "type",
+                "roi_budget"
+        );
+
+        experiment.put(
+                "roi_budget_policy",
+                experimentRoiBudgetPolicy.wireName()
+        );
+
+        pipeline.put(
+                "experiment",
+                experiment
+        );
         json.put("pipeline", pipeline);
         JSONObject models = new JSONObject();
         addModel(models, "vehicle", registry.getActive(ModelRole.VEHICLE), autoTuneManager);

@@ -37,6 +37,9 @@ public final class MetricsCollector {
     private boolean vehicleCascadeEnabled;
 
     private String roiBudgetPolicy = "r0_full_frame";
+
+    private boolean experimentModeEnabled;
+    private String experimentRoiBudgetPolicy = "r2_two_roi";
     private String captureProfile = "auto";
     private int requestedSourceWidth;
     private int requestedSourceHeight;
@@ -80,6 +83,17 @@ public final class MetricsCollector {
         roiBudgetPolicy = policy == null || policy.trim().isEmpty()
                 ? "r0_full_frame"
                 : policy.trim();
+    }
+
+    public synchronized void setExperimentConfiguration(
+            boolean enabled,
+            String roiPolicy
+    ) {
+        experimentModeEnabled = enabled;
+        experimentRoiBudgetPolicy =
+                roiPolicy == null || roiPolicy.trim().isEmpty()
+                        ? "r2_two_roi"
+                        : roiPolicy.trim();
     }
 
     public synchronized void setCaptureConfiguration(String profile, int width, int height) {
@@ -219,8 +233,44 @@ public final class MetricsCollector {
         report.put("session_finished_ms", finishedMillis);
         report.put("dropped_frames", droppedFrames);
         report.put("recognition_profile", recognitionProfile);
-        report.put("vehicle_cascade_enabled", vehicleCascadeEnabled);
+
+        /*
+         * Zachowujemy efektywną politykę również na najwyższym poziomie
+         * dla zgodności z wcześniejszymi raportami.
+         */
         report.put("roi_budget_policy", roiBudgetPolicy);
+
+        JSONObject normalConfiguration = new JSONObject();
+        normalConfiguration.put(
+                "vehicle_cascade_enabled",
+                vehicleCascadeEnabled
+        );
+        report.put(
+                "normal_configuration",
+                normalConfiguration
+        );
+
+        JSONObject experiment = new JSONObject();
+        experiment.put(
+                "enabled",
+                experimentModeEnabled
+        );
+        experiment.put(
+                "type",
+                "roi_budget"
+        );
+        experiment.put(
+                "roi_budget_policy",
+                experimentRoiBudgetPolicy
+        );
+        experiment.put(
+                "effective_roi_budget_policy",
+                roiBudgetPolicy
+        );
+        report.put(
+                "experiment",
+                experiment
+        );
         JSONObject capture = new JSONObject();
         capture.put("profile", captureProfile);
         capture.put("requested_width", requestedSourceWidth);

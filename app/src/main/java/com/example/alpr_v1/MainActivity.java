@@ -117,9 +117,17 @@ public final class MainActivity extends AppCompatActivity {
     private boolean exportInProgress;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
     private AnalysisResolutionProfile analysisResolutionProfile = AnalysisResolutionProfile.AUTO;
+    /*
+     * Normalna konfiguracja aplikacji.
+     */
     private boolean vehicleCascadeEnabled;
-    private RoiBudgetPolicy roiBudgetPolicy =
-            RoiBudgetPolicy.FULL_FRAME;
+
+    /*
+     * Konfiguracja eksperymentalna.
+     */
+    private boolean experimentModeEnabled;
+    private RoiBudgetPolicy experimentRoiBudgetPolicy =
+            RoiBudgetPolicy.TWO_ROI;
     private volatile boolean collectionActive;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
@@ -228,27 +236,48 @@ public final class MainActivity extends AppCompatActivity {
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         configureRecognitionProfile();
         configureAnalysisResolutionProfile();
-        boolean legacyVehicleCascade =
+        /*
+         * Normalna konfiguracja użytkownika.
+         */
+        vehicleCascadeEnabled =
                 uiPreferences.getBoolean(
                         "vehicle_cascade_enabled",
                         false
                 );
 
-        roiBudgetPolicy = RoiBudgetPolicy.fromWireName(
+        /*
+         * Konfiguracja eksperymentalna jest całkowicie oddzielna.
+         */
+        experimentModeEnabled =
+                uiPreferences.getBoolean(
+                        SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,
+                        false
+                );
+
+        String legacyRoiPolicy =
                 uiPreferences.getString(
                         "roi_budget_policy",
-                        legacyVehicleCascade
-                                ? RoiBudgetPolicy.TWO_ROI.wireName()
-                                : RoiBudgetPolicy.FULL_FRAME.wireName()
-                )
+                        RoiBudgetPolicy.TWO_ROI.wireName()
+                );
+
+        experimentRoiBudgetPolicy =
+                RoiBudgetPolicy.fromWireName(
+                        uiPreferences.getString(
+                                SettingsActivity.KEY_EXPERIMENT_ROI_POLICY,
+                                legacyRoiPolicy
+                        )
+                );
+
+        pipeline.setVehicleCascadeEnabled(
+                vehicleCascadeEnabled
         );
 
-        vehicleCascadeEnabled =
-                roiBudgetPolicy.usesVehicleCascade();
-
-        pipeline.setRoiBudgetPolicy(
-                roiBudgetPolicy
+        pipeline.setExperimentConfiguration(
+                experimentModeEnabled,
+                experimentRoiBudgetPolicy
         );
+
+
         configureAppMenu();
         configureCaptureCollection();
 
@@ -388,6 +417,16 @@ public final class MainActivity extends AppCompatActivity {
             default:
                 return getString(R.string.resolution_profile_auto);
         }
+    }
+
+    private RoiBudgetPolicy effectiveRoiBudgetPolicy() {
+        if (experimentModeEnabled) {
+            return experimentRoiBudgetPolicy;
+        }
+
+        return vehicleCascadeEnabled
+                ? RoiBudgetPolicy.TWO_ROI
+                : RoiBudgetPolicy.FULL_FRAME;
     }
 
     private void setVehicleCascadeEnabled(boolean enabled) {
@@ -693,7 +732,10 @@ public final class MainActivity extends AppCompatActivity {
                         autoTuneManager,
                         recognitionProfile.wireName(),
                         analysisResolutionProfile.wireName(),
-                        vehicleCascadeEnabled
+                        vehicleCascadeEnabled,
+                        experimentModeEnabled,
+                        experimentRoiBudgetPolicy,
+                        effectiveRoiBudgetPolicy()
                 );
             } catch (Exception error) {
                 AppLog.warning(this, LOG_TAG, "Nie udało się zamrozić miniraportu cropu");
@@ -1083,7 +1125,10 @@ public final class MainActivity extends AppCompatActivity {
                             autoTuneManager,
                             recognitionProfile.wireName(),
                             analysisResolutionProfile.wireName(),
-                            vehicleCascadeEnabled
+                            vehicleCascadeEnabled,
+                            experimentModeEnabled,
+                            experimentRoiBudgetPolicy,
+                            effectiveRoiBudgetPolicy()
                     )
                     : item.miniReportJson;
             report = CropMiniReport.refreshHumanVerification(baseReport, item);
@@ -1374,66 +1419,150 @@ public final class MainActivity extends AppCompatActivity {
 
     private void applySettingsRevision() {
         if (uiPreferences == null || pipeline == null) return;
-        int revision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
+
+        int revision = uiPreferences.getInt(
+                SettingsActivity.KEY_REVISION,
+                0
+        );
+
         if (revision == knownSettingsRevision) return;
+
         knownSettingsRevision = revision;
 
-        RecognitionProfile requestedRecognition = RecognitionProfile.fromWireName(
-                uiPreferences.getString("recognition_profile", RecognitionProfile.BALANCED.wireName())
-        );
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * profil rozpoznawania.
+         */
+        RecognitionProfile requestedRecognition =
+                RecognitionProfile.fromWireName(
+                        uiPreferences.getString(
+                                "recognition_profile",
+                                RecognitionProfile.BALANCED.wireName()
+                        )
+                );
+
         if (requestedRecognition != recognitionProfile) {
-            applyRecognitionProfile(requestedRecognition);
+            applyRecognitionProfile(
+                    requestedRecognition
+            );
         }
 
-        AnalysisResolutionProfile requestedResolution = AnalysisResolutionProfile.fromWireName(
-                uiPreferences.getString(
-                        "analysis_resolution_profile",
-                        AnalysisResolutionProfile.AUTO.wireName()
-                )
-        );
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * rozdzielczość analizy.
+         */
+        AnalysisResolutionProfile requestedResolution =
+                AnalysisResolutionProfile.fromWireName(
+                        uiPreferences.getString(
+                                "analysis_resolution_profile",
+                                AnalysisResolutionProfile.AUTO.wireName()
+                        )
+                );
+
         if (requestedResolution != analysisResolutionProfile) {
-            applyAnalysisResolutionProfile(requestedResolution);
+            applyAnalysisResolutionProfile(
+                    requestedResolution
+            );
         }
 
-        boolean legacyRequestedCascade =
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * kaskada MP.
+         *
+         * Eksperyment NIE modyfikuje tej wartości.
+         */
+        boolean requestedCascade =
                 uiPreferences.getBoolean(
                         "vehicle_cascade_enabled",
                         false
                 );
 
-        RoiBudgetPolicy requestedRoiPolicy =
-                RoiBudgetPolicy.fromWireName(
-                        uiPreferences.getString(
-                                "roi_budget_policy",
-                                legacyRequestedCascade
-                                        ? RoiBudgetPolicy.TWO_ROI.wireName()
-                                        : RoiBudgetPolicy.FULL_FRAME.wireName()
-                        )
-                );
-
-        if (requestedRoiPolicy != roiBudgetPolicy) {
-            applyRoiBudgetPolicy(
-                    requestedRoiPolicy
+        if (requestedCascade != vehicleCascadeEnabled) {
+            setVehicleCascadeEnabled(
+                    requestedCascade
             );
         }
 
-        String requestedLimit = CropCapacityPolicy.normalizeSetting(
-                uiPreferences.getString("crop_limit", CropCapacityPolicy.AUTO)
-        );
-        if (!requestedLimit.equals(cropLimitSetting)) {
-            applyCropLimitSetting(requestedLimit);
+
+        /*
+         * ODDZIELNA WARSTWA EKSPERYMENTALNA.
+         */
+        boolean requestedExperimentMode =
+                uiPreferences.getBoolean(
+                        SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,
+                        false
+                );
+
+        RoiBudgetPolicy requestedExperimentRoi =
+                RoiBudgetPolicy.fromWireName(
+                        uiPreferences.getString(
+                                SettingsActivity.KEY_EXPERIMENT_ROI_POLICY,
+                                RoiBudgetPolicy.TWO_ROI.wireName()
+                        )
+                );
+
+        if (requestedExperimentMode != experimentModeEnabled
+                || requestedExperimentRoi != experimentRoiBudgetPolicy) {
+
+            applyExperimentConfiguration(
+                    requestedExperimentMode,
+                    requestedExperimentRoi
+            );
         }
 
-        String directory = uiPreferences.getString("capture_directory_uri", "");
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * limit cropów.
+         */
+        String requestedLimit =
+                CropCapacityPolicy.normalizeSetting(
+                        uiPreferences.getString(
+                                "crop_limit",
+                                CropCapacityPolicy.AUTO
+                        )
+                );
+
+        if (!requestedLimit.equals(cropLimitSetting)) {
+            applyCropLimitSetting(
+                    requestedLimit
+            );
+        }
+
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * katalog zapisu.
+         */
+        String directory =
+                uiPreferences.getString(
+                        "capture_directory_uri",
+                        ""
+                );
+
         try {
-            captureDirectoryUri = directory.isEmpty() ? null : Uri.parse(directory);
+            captureDirectoryUri =
+                    directory.isEmpty()
+                            ? null
+                            : Uri.parse(directory);
+
         } catch (RuntimeException ignored) {
             captureDirectoryUri = null;
         }
 
+
+        /*
+         * Ustawienia mogły zmienić modele lub warianty,
+         * dlatego odświeżamy rejestr i pipeline.
+         */
         modelRegistry.reload();
         pipeline.invalidateModels();
+
         lastCaptureByTrack.clear();
+
         scheduleMissingAutotuning();
     }
 
@@ -1462,56 +1591,71 @@ public final class MainActivity extends AppCompatActivity {
         backgroundExecutor.shutdownNow();
         super.onDestroy();
     }
-    private void applyRoiBudgetPolicy(
-            RoiBudgetPolicy policy
+    private void applyExperimentConfiguration(
+            boolean enabled,
+            RoiBudgetPolicy roiPolicy
     ) {
-        RoiBudgetPolicy requested =
-                policy == null
-                        ? RoiBudgetPolicy.FULL_FRAME
-                        : policy;
+        experimentModeEnabled = enabled;
+        experimentRoiBudgetPolicy =
+                roiPolicy == null
+                        ? RoiBudgetPolicy.TWO_ROI
+                        : roiPolicy;
 
-        roiBudgetPolicy = requested;
-        vehicleCascadeEnabled =
-                requested.usesVehicleCascade();
-
+        /*
+         * Zapisujemy wyłącznie stan eksperymentu.
+         * vehicle_cascade_enabled pozostaje nietknięte.
+         */
         uiPreferences.edit()
-                .putString(
-                        "roi_budget_policy",
-                        requested.wireName()
-                )
                 .putBoolean(
-                        "vehicle_cascade_enabled",
-                        vehicleCascadeEnabled
+                        SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,
+                        experimentModeEnabled
+                )
+                .putString(
+                        SettingsActivity.KEY_EXPERIMENT_ROI_POLICY,
+                        experimentRoiBudgetPolicy.wireName()
                 )
                 .apply();
 
-        pipeline.setRoiBudgetPolicy(requested);
+        pipeline.setExperimentConfiguration(
+                experimentModeEnabled,
+                experimentRoiBudgetPolicy
+        );
 
         overlayTracker.reset();
         pipeline.resetTracking();
         lastCaptureByTrack.clear();
 
-        if (requested.usesVehicleCascade()
-                && modelRegistry.getActive(
-                com.example.alpr_v1.model.ModelRole.VEHICLE
-        ) == null) {
+        if (experimentModeEnabled) {
+            if (experimentRoiBudgetPolicy.usesVehicleCascade()
+                    && modelRegistry.getActive(
+                    com.example.alpr_v1.model.ModelRole.VEHICLE
+            ) == null) {
+
+                liveStatus.setText(
+                        R.string.vehicle_cascade_missing_model
+                );
+                return;
+            }
 
             liveStatus.setText(
-                    R.string.vehicle_cascade_missing_model
+                    getString(
+                            R.string.experiment_mode_enabled_status,
+                            roiBudgetPolicyLabel(
+                                    experimentRoiBudgetPolicy
+                            )
+                    )
             );
-            return;
+
+        } else {
+            liveStatus.setText(
+                    R.string.experiment_mode_disabled_status
+            );
         }
-
-        liveStatus.setText(
-                getString(
-                        R.string.roi_budget_policy_changed,
-                        roiBudgetPolicyLabel()
-                )
-        );
     }
-
-    private String roiBudgetPolicyLabel() {
-        switch (roiBudgetPolicy) {
+    private String roiBudgetPolicyLabel(
+            RoiBudgetPolicy policy
+    ) {
+        switch (policy) {
             case ONE_ROI:
                 return getString(
                         R.string.roi_budget_r1
