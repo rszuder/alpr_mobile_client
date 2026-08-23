@@ -687,7 +687,7 @@ public final class MainActivity extends AppCompatActivity {
         renderAnalysisControls();
 
         recordInfo(
-                "Zatrzymano analizę"
+                "Kamera i pipeline zatrzymane"
         );
     }
     private void beginAnalysisMeasurement() {
@@ -780,7 +780,9 @@ public final class MainActivity extends AppCompatActivity {
         );
 
         recordInfo(
-                "Uruchamianie analizy"
+                beginNewMeasurement
+                        ? "Uruchamianie kamery i pipeline'u"
+                        : "Restart kamery w aktywnej analizie"
         );
         cameraController.start(
                 image -> {

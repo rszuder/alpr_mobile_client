@@ -10,6 +10,15 @@ import android.view.View;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.graphics.Typeface;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
@@ -26,6 +35,8 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.ModelStatusFormatter;
 import com.google.android.material.appbar.MaterialToolbar;
+
+
 
 /** Czytelny, dwukolumnowy ekran diagnostyczny niezależny od podglądu kamery. */
 public final class DiagnosticsActivity extends AppCompatActivity {
@@ -161,9 +172,175 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         );
 
         models.setText(ModelStatusFormatter.format(registry, autoTune));
-        log.setText(AppLog.recentEvents(this, 12));
+        log.setText(
+                formatRecentLog(
+                        AppLog.recentEvents(this, 20)
+                )
+        );
     }
 
+    private CharSequence formatRecentLog(String rawLog) {
+        if (rawLog == null || rawLog.trim().isEmpty()
+                || rawLog.equals("Brak zapisanych zdarzeń")) {
+            return getString(R.string.persistent_log_empty);
+        }
+
+        String[] sourceLines = rawLog.split("\\R");
+        List<String> lines = new ArrayList<>();
+
+        for (String line : sourceLines) {
+            if (line != null && !line.trim().isEmpty()) {
+                lines.add(line.trim());
+            }
+        }
+
+        SpannableStringBuilder result =
+                new SpannableStringBuilder();
+
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) {
+                result.append('\n');
+            }
+
+            appendStyledLogLine(
+                    result,
+                    i + 1,
+                    lines.get(i)
+            );
+        }
+
+        return result;
+    }
+
+    private void appendStyledLogLine(
+            SpannableStringBuilder target,
+            int number,
+            String rawLine
+    ) {
+        /*
+         * Format AppLog:
+         *
+         * 2026-08-23T19:21:12.123+02:00 INFO/MainActivity Treść
+         */
+
+        int levelSeparator = rawLine.indexOf(' ');
+        int messageSeparator = levelSeparator < 0
+                ? -1
+                : rawLine.indexOf(' ', levelSeparator + 1);
+
+        String timestamp;
+        String levelAndTag;
+        String message;
+
+        if (levelSeparator < 0 || messageSeparator < 0) {
+            timestamp = "";
+            levelAndTag = "";
+            message = rawLine;
+        } else {
+            timestamp = rawLine.substring(
+                    0,
+                    levelSeparator
+            );
+
+            levelAndTag = rawLine.substring(
+                    levelSeparator + 1,
+                    messageSeparator
+            );
+
+            message = rawLine.substring(
+                    messageSeparator + 1
+            );
+        }
+
+        String shortTime = extractTime(timestamp);
+
+        /*
+         * Numer zdarzenia.
+         */
+        int numberStart = target.length();
+
+        target.append(
+                String.format(
+                        Locale.ROOT,
+                        "[%02d] ",
+                        number
+                )
+        );
+
+        target.setSpan(
+                new ForegroundColorSpan(
+                        ContextCompat.getColor(
+                                this,
+                                R.color.alpr_text_muted
+                        )
+                ),
+                numberStart,
+                target.length(),
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        /*
+         * Godzina.
+         */
+        if (!shortTime.isEmpty()) {
+            int timeStart = target.length();
+
+            target.append(shortTime);
+            target.append("  ");
+
+            target.setSpan(
+                    new ForegroundColorSpan(
+                            ContextCompat.getColor(
+                                    this,
+                                    R.color.alpr_text_muted
+                            )
+                    ),
+                    timeStart,
+                    target.length(),
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        /*
+         * Treść zdarzenia.
+         */
+        int messageStart = target.length();
+
+        target.append(message);
+
+        int messageColor =
+                resolveLogMessageColor(
+                        levelAndTag,
+                        message
+                );
+
+        target.setSpan(
+                new ForegroundColorSpan(
+                        ContextCompat.getColor(
+                                this,
+                                messageColor
+                        )
+                ),
+                messageStart,
+                target.length(),
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        /*
+         * Najważniejsze zdarzenia eksperymentalne
+         * dodatkowo wyróżniamy pogrubieniem.
+         */
+        if (message.startsWith("Rozpoczęto eksperyment")
+                || message.startsWith("Zakończono eksperyment")) {
+
+            target.setSpan(
+                    new StyleSpan(Typeface.BOLD),
+                    messageStart,
+                    target.length(),
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+    }
     private void addMetric(
             int iconResource,
             int iconBackground,
@@ -218,5 +395,57 @@ public final class DiagnosticsActivity extends AppCompatActivity {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });
+    }
+    private int resolveLogMessageColor(
+            String levelAndTag,
+            String message
+    ) {
+        if (levelAndTag.startsWith("ERROR/")) {
+            return R.color.alpr_error;
+        }
+
+        if (levelAndTag.startsWith("WARN/")) {
+            return R.color.alpr_warning;
+        }
+
+        if (message.startsWith("Rozpoczęto eksperyment")
+                || message.startsWith("Zakończono eksperyment")) {
+            return R.color.alpr_success;
+        }
+
+        if (message.contains("analiz")
+                || message.contains("kamer")
+                || message.contains("Camera")) {
+            return R.color.alpr_primary;
+        }
+
+        if (message.contains("crop")
+                || message.contains("Crop")) {
+            return R.color.alpr_magenta;
+        }
+
+        return R.color.alpr_text_primary;
+    }
+
+    private static String extractTime(String timestamp) {
+        if (timestamp == null || timestamp.isEmpty()) {
+            return "";
+        }
+
+        int separator = timestamp.indexOf('T');
+
+        if (separator < 0
+                || timestamp.length() < separator + 9) {
+            return timestamp;
+        }
+
+        /*
+         * yyyy-MM-ddTHH:mm:ss...
+         *            ^^^^^^^^
+         */
+        return timestamp.substring(
+                separator + 1,
+                separator + 9
+        );
     }
 }

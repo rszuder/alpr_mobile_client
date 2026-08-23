@@ -14,6 +14,7 @@
     <color name="alpr_card_blue">#FF102333</color>
     <color name="alpr_card_violet">#FF201A35</color>
     <color name="alpr_card_green">#FF102A25</color>
+    <color name="alpr_error">#FFFB7185</color>
     <color name="alpr_primary">#FF38BDF8</color>
     <color name="alpr_primary_dark">#FF075985</color>
     <color name="alpr_secondary">#FFA78BFA</color>
