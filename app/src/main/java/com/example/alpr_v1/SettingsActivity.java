@@ -502,22 +502,21 @@ public final class SettingsActivity extends AppCompatActivity {
         boolean hasCharacter =
                 modelRegistry.getActive(ModelRole.CHARACTER) != null;
 
+
         /*
-         * To jest NORMALNY stan konfiguracji MP.
-         * Eksperyment nie zmienia tej wartości.
+         * NORMALNA konfiguracja użytkownika.
+         * Tryb eksperymentalny nigdy jej nie zmienia.
          */
-        boolean vehicleEnabled =
+        boolean normalVehicleEnabled =
                 hasVehicle
                         && preferences.getBoolean(
                         "vehicle_cascade_enabled",
                         false
                 );
 
+
         /*
-         * Sprawdzamy osobno, czy działa tryb eksperymentalny.
-         *
-         * Jeżeli tak, blokujemy możliwość ręcznej zmiany normalnego
-         * stanu MP z poziomu badge'a.
+         * Oddzielny stan eksperymentu.
          */
         boolean experimentEnabled =
                 preferences.getBoolean(
@@ -525,11 +524,40 @@ public final class SettingsActivity extends AppCompatActivity {
                         false
                 );
 
+        RoiBudgetPolicy experimentPolicy =
+                RoiBudgetPolicy.fromWireName(
+                        preferences.getString(
+                                KEY_EXPERIMENT_ROI_POLICY,
+                                RoiBudgetPolicy.TWO_ROI.wireName()
+                        )
+                );
+
+
+        /*
+         * Badge pokazuje stan EFEKTYWNIE wykonywany przez pipeline.
+         *
+         * EXP OFF:
+         *   pokazujemy normalną konfigurację.
+         *
+         * EXP ON:
+         *   R0 -> MP WYŁ.
+         *   R1 -> MP WŁ.
+         *   R2 -> MP WŁ.
+         *
+         * Normalna wartość vehicle_cascade_enabled nie jest zmieniana.
+         */
+        boolean effectiveVehicleEnabled =
+                experimentEnabled
+                        ? hasVehicle
+                          && experimentPolicy.usesVehicleCascade()
+                        : normalVehicleEnabled;
+
+
         updateStageBadge(
                 vehicleBadge,
                 ModelRole.VEHICLE,
                 hasVehicle,
-                vehicleEnabled,
+                effectiveVehicleEnabled,
                 !experimentEnabled
         );
 
@@ -783,6 +811,7 @@ public final class SettingsActivity extends AppCompatActivity {
                             .apply();
 
                     markChanged();
+                    refreshNodeBadges();
                 }
         );
     }
