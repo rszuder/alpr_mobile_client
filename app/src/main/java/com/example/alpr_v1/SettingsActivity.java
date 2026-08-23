@@ -291,12 +291,7 @@ public final class SettingsActivity extends AppCompatActivity {
         } else {
 
             capabilities.setText(
-                    getString(
-                            R.string.settings_resolution_available,
-                            catalog.cameraId(),
-                            catalog.regularCount(),
-                            catalog.highResolutionCount()
-                    )
+                    R.string.settings_resolution_available
             );
         }
     }

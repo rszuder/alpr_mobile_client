@@ -109,11 +109,11 @@
     <string name="settings_section_collection">GALERIA SESJI</string>
     <string name="settings_section_pipeline">PIPELINE I MODELE</string>
     <string name="settings_profile_description">Kompromis między opóźnieniem a stabilnością wyniku</string>
-    <string name="settings_resolution_description">Rzeczywiste formaty YUV_420_888 obsługiwane przez tylną kamerę urządzenia</string>    <string name="settings_crop_description">Maksymalna liczba cropów utrzymywanych w pamięci</string>
+    <string name="settings_resolution_description">Wybierz jakość obrazu przekazywanego do analizy</string>    <string name="settings_crop_description">Maksymalna liczba cropów utrzymywanych w pamięci</string>
     <string name="settings_resolution_choose">Rozdzielczość obrazu</string>
 
     <string name="settings_resolution_auto">
-    Auto · dobór do możliwości urządzenia
+    Auto · zalecane
 </string>
 
     <string name="settings_resolution_detecting">
@@ -121,7 +121,7 @@
 </string>
 
     <string name="settings_resolution_available">
-    Kamera %1$s · standardowe: %2$d · wysokie: %3$d
+    Wyższa rozdzielczość może ułatwić odczyt małych i odległych tablic, ale zwiększa czas analizy. Dostępne opcje zależą od aparatu telefonu.
 </string>
 
     <string name="settings_resolution_unavailable">
