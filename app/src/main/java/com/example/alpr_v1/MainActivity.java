@@ -63,6 +63,7 @@ import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.checkbox.MaterialCheckBox;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.example.alpr_v1.experiment.ExperimentSession;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -82,6 +83,8 @@ public final class MainActivity extends AppCompatActivity {
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
+    private final ExperimentSession experimentSession =
+            new ExperimentSession();
     private List<CapturedPlateItem> capturedCrops;
     private Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack;
 
@@ -150,7 +153,7 @@ public final class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<String> permissionLauncher = registerForActivityResult(
             new ActivityResultContracts.RequestPermission(),
             granted -> {
-                if (granted) startCamera();
+                if (granted) startCamera(true);
                 else {
                     liveStatus.setText(R.string.camera_permission_required);
                     recordWarning("Odmówiono dostępu do kamery");
@@ -398,7 +401,7 @@ public final class MainActivity extends AppCompatActivity {
 
             cameraController.stop();
             cameraStarted = false;
-            startCamera();
+            startCamera(false);
         }
         liveStatus.setText(getString(
                 R.string.resolution_profile_changed,
@@ -534,15 +537,21 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
-
     private void stopAnalysis() {
+        stopAnalysis(
+                ExperimentSession.CompletionReason.MANUAL
+        );
+    }
+    private void stopAnalysis(
+            ExperimentSession.CompletionReason reason
+    ) {
         cameraStarted = false;
 
         /*
          * Od tej chwili żaden kolejny trace nie należy
          * już do zakończonego przebiegu.
          */
-        metricsCollector.finishMeasurementSession();
+        finishAnalysisMeasurement(reason);
 
         if (cameraController != null) {
             cameraController.stop();
@@ -589,19 +598,65 @@ public final class MainActivity extends AppCompatActivity {
                 "Zatrzymano analizę"
         );
     }
+    private void beginAnalysisMeasurement() {
+        metricsCollector.startMeasurementSession();
 
+        if (experimentModeEnabled) {
+            experimentSession.start(
+                    "roi_budget",
+                    experimentRoiBudgetPolicy.wireName()
+            );
+
+            recordInfo(
+                    "Rozpoczęto eksperyment "
+                            + experimentSession.sessionId()
+                            + " type="
+                            + experimentSession.experimentType()
+                            + " variant="
+                            + experimentSession.variant()
+            );
+        } else {
+            /*
+             * Zwykła analiza nie może odziedziczyć informacji
+             * o wcześniejszym eksperymencie.
+             */
+            experimentSession.reset();
+        }
+    }
+
+
+    private void finishAnalysisMeasurement(
+            ExperimentSession.CompletionReason reason
+    ) {
+        if (experimentSession.isRunning()) {
+            experimentSession.finish(reason);
+
+            recordInfo(
+                    "Zakończono eksperyment "
+                            + experimentSession.sessionId()
+                            + " reason="
+                            + experimentSession.completionReasonWireName()
+                            + " durationMs="
+                            + experimentSession.durationMillis()
+            );
+        }
+
+        metricsCollector.finishMeasurementSession();
+    }
     private void ensureCameraPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
-            startCamera();
+            startCamera(true);
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA);
         }
     }
 
-    private void startCamera() {
+    private void startCamera(boolean beginNewMeasurement) {
         if (cameraStarted) return;
-        metricsCollector.startMeasurementSession();
+        if (beginNewMeasurement) {
+            beginAnalysisMeasurement();
+        }
         previewView.setVisibility(View.VISIBLE);
 
         /*
@@ -669,6 +724,9 @@ public final class MainActivity extends AppCompatActivity {
                 },
                 error -> runOnUiThread(() -> {
                     cameraStarted = false;
+                    finishAnalysisMeasurement(
+                            ExperimentSession.CompletionReason.ERROR
+                    );
                     if (cameraMotionMonitor != null) {
                         cameraMotionMonitor.stop();
                     }
