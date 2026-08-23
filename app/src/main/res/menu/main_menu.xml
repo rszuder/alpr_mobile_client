@@ -31,4 +31,8 @@
         android:icon="@drawable/ic_info_24"
         android:title="@string/menu_about"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/menu_exit_app"
+        android:title="@string/menu_exit_app"
+        app:showAsAction="never" />
 </menu>

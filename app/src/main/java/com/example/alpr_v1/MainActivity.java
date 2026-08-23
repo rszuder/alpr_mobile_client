@@ -118,6 +118,8 @@ public final class MainActivity extends AppCompatActivity {
     private CameraController cameraController;
     private CameraMotionMonitor cameraMotionMonitor;
     private volatile boolean cameraStarted;
+
+    private boolean explicitExitRequested;
     private ResearchArchive.Kind pendingExportKind;
     private boolean exportInProgress;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
@@ -342,6 +344,8 @@ public final class MainActivity extends AppCompatActivity {
             showHelp();
         } else if (id == R.id.menu_about) {
             showAbout();
+        } else if (id == R.id.menu_exit_app) {
+            showExitConfirmation();
         } else {
             return false;
         }
@@ -485,6 +489,58 @@ public final class MainActivity extends AppCompatActivity {
                 .setMessage(R.string.about_message)
                 .setPositiveButton(R.string.menu_close, null)
                 .show();
+    }
+
+    private void showExitConfirmation() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.exit_app_title)
+                .setMessage(R.string.exit_app_message)
+                .setNegativeButton(
+                        R.string.exit_app_cancel,
+                        null
+                )
+                .setPositiveButton(
+                        R.string.exit_app_confirm,
+                        (dialog, which) -> closeApplication()
+                )
+                .show();
+    }
+    private void closeApplication() {
+        /*
+         * Twarde zakończenie procesu wykonujemy tylko wtedy,
+         * gdy użytkownik jawnie wybrał "Zamknij aplikację".
+         */
+        explicitExitRequested = true;
+
+        /*
+         * Najpierw normalnie kończymy aktywne operacje.
+         */
+        if (cameraStarted) {
+            stopAnalysis(
+                    ExperimentSession.CompletionReason.MANUAL
+            );
+        } else {
+            if (collectionActive) {
+                pauseCropCollectionForStoppedAnalysis();
+            }
+
+            if (metricsCollector != null
+                    && metricsCollector.isMeasurementSessionActive()) {
+                finishAnalysisMeasurement(
+                        ExperimentSession.CompletionReason.MANUAL
+                );
+            }
+        }
+
+        recordInfo(
+                "Zamykanie aplikacji przez użytkownika"
+        );
+
+        /*
+         * Kończymy task. Faktyczne zakończenie procesu
+         * nastąpi w onDestroy(), po zwolnieniu zasobów.
+         */
+        finishAndRemoveTask();
     }
 
     private String recognitionProfileLabel() {
@@ -1844,11 +1900,43 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        AppLog.info(this, LOG_TAG, "Zamykanie aplikacji");
-        if (cameraController != null) cameraController.close(pipeline == null ? null : pipeline::close);
-        else if (pipeline != null) pipeline.close();
+        AppLog.info(
+                this,
+                LOG_TAG,
+                "Zamykanie aplikacji"
+        );
+
+        /*
+         * CameraController.close() zatrzymuje CameraX,
+         * czeka na zwolnienie pipeline'u na wątku analizatora
+         * i dopiero potem zamyka executor kamery.
+         */
+        if (cameraController != null) {
+            cameraController.close(
+                    pipeline == null
+                            ? null
+                            : pipeline::close
+            );
+        } else if (pipeline != null) {
+            pipeline.close();
+        }
+
         backgroundExecutor.shutdownNow();
+
         super.onDestroy();
+
+        /*
+         * Zwykły onDestroy, np. przy odtworzeniu Activity,
+         * NIE może kończyć procesu.
+         *
+         * Proces kończymy tylko po świadomym wybraniu
+         * pozycji "Zamknij aplikację".
+         */
+        if (explicitExitRequested) {
+            android.os.Process.killProcess(
+                    android.os.Process.myPid()
+            );
+        }
     }
     private void applyExperimentConfiguration(
             boolean enabled,

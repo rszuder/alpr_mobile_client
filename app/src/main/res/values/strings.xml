@@ -93,6 +93,11 @@
     <string name="menu_help">Jak używać</string>
     <string name="menu_about">O aplikacji</string>
     <string name="menu_close">Zamknij</string>
+    <string name="menu_exit_app">Zamknij aplikację</string>
+    <string name="exit_app_title">Zamknąć aplikację?</string>
+    <string name="exit_app_message">Aktywna analiza i zbieranie cropów zostaną zatrzymane.</string>
+    <string name="exit_app_confirm">Zamknij</string>
+    <string name="exit_app_cancel">Anuluj</string>
     <string name="recognition_cleared">Wyczyszczono bieżący wynik i śledzenie</string>
     <string name="help_title">Jak używać aplikacji</string>
     <string name="help_message">1. Zaimportuj pakiet .alprmodel zawierający modele MT i MZ. Opcjonalny model pojazdów MP możesz zaimportować osobno.\n\n2. Wybierz tryb rozpoznawania. Kaskadę pojazd → ROI → MT → MZ włącz tylko z aktywnym MP.\n\n3. Skieruj aparat na tablicę. Pierwszy odczyt pojawi się jako wstępny, a zgodne obserwacje oznaczą go jako potwierdzony.\n\nSzczegóły modeli i dziennik działania znajdziesz w opcji Diagnostyka.</string>
