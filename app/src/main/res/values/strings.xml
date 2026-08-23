@@ -77,7 +77,7 @@
     <string name="persistent_log_empty">Brak zapisanych zdarzeń</string>
     <string name="menu_recognition_profile">Tryb rozpoznawania</string>
     <string name="pipeline_models_title">Model pojazdów i pipeline</string>
-    <string name="menu_resolution_profile">Rozdzielczość analizy</string>
+    <string name="menu_resolution_profile">Rozdzielczość kamery</string>
     <string name="menu_crop_limit">Limit cropów sesji</string>
     <string name="menu_capture_directory">Katalog trwałego zapisu</string>
     <string name="crop_limit_changed">Nowy limit galerii: %1$d</string>
@@ -109,8 +109,24 @@
     <string name="settings_section_collection">GALERIA SESJI</string>
     <string name="settings_section_pipeline">PIPELINE I MODELE</string>
     <string name="settings_profile_description">Kompromis między opóźnieniem a stabilnością wyniku</string>
-    <string name="settings_resolution_description">Auto dobiera rozmiar · Szybkość: 640×480 · Daleki plan: 1920×1080</string>
-    <string name="settings_crop_description">Maksymalna liczba cropów utrzymywanych w pamięci</string>
+    <string name="settings_resolution_description">Rzeczywiste formaty YUV_420_888 obsługiwane przez tylną kamerę urządzenia</string>    <string name="settings_crop_description">Maksymalna liczba cropów utrzymywanych w pamięci</string>
+    <string name="settings_resolution_choose">Rozdzielczość obrazu</string>
+
+    <string name="settings_resolution_auto">
+    Auto · dobór do możliwości urządzenia
+</string>
+
+    <string name="settings_resolution_detecting">
+    Odczytywanie możliwości aparatu…
+</string>
+
+    <string name="settings_resolution_available">
+    Kamera %1$s · standardowe: %2$d · wysokie: %3$d
+</string>
+
+    <string name="settings_resolution_unavailable">
+    Nie udało się odczytać listy rozdzielczości aparatu
+</string>
     <string name="settings_auto_short">Auto</string>
     <string name="settings_fast_short">Szybkość</string>
     <string name="settings_distant_short">Daleki plan</string>

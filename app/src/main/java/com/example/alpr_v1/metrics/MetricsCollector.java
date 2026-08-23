@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class MetricsCollector {
+    private boolean captureHighResolutionRequested;
     public static final String REPORT_SCHEMA = "alpr.mobile_benchmark_report.v1";
     private static final int MAX_TRACES = 5_000;
     private long sessionStartedMillis = System.currentTimeMillis();
@@ -153,12 +154,46 @@ public final class MetricsCollector {
                         : roiPolicy.trim();
     }
 
-    public synchronized void setCaptureConfiguration(String profile, int width, int height) {
-        captureProfile = profile == null ? "auto" : profile;
-        requestedSourceWidth = Math.max(0, width);
-        requestedSourceHeight = Math.max(0, height);
+    public synchronized void setCaptureConfiguration(
+            String profile,
+            int width,
+            int height
+    ) {
+        setCaptureConfiguration(
+                profile,
+                width,
+                height,
+                false
+        );
     }
 
+
+    public synchronized void setCaptureConfiguration(
+            String profile,
+            int width,
+            int height,
+            boolean highResolutionRequested
+    ) {
+        captureProfile =
+                profile == null
+                        ? "auto"
+                        : profile;
+
+        requestedSourceWidth =
+                Math.max(
+                        0,
+                        width
+                );
+
+        requestedSourceHeight =
+                Math.max(
+                        0,
+                        height
+                );
+
+        captureHighResolutionRequested =
+                highResolutionRequested;
+    }
     public synchronized void observeSourceFrame(int width, int height) {
         actualSourceWidth = Math.max(0, width);
         actualSourceHeight = Math.max(0, height);
@@ -483,6 +518,40 @@ public final class MetricsCollector {
         capture.put("requested_height", requestedSourceHeight);
         capture.put("actual_width", actualSourceWidth);
         capture.put("actual_height", actualSourceHeight);
+        capture.put(
+                "high_resolution_mode_requested",
+                captureHighResolutionRequested
+        );
+
+
+        boolean actualAvailable =
+                actualSourceWidth > 0
+                        && actualSourceHeight > 0;
+
+
+        boolean resolutionMatched =
+                actualAvailable
+                        && (
+                        (
+                                requestedSourceWidth
+                                        == actualSourceWidth
+                                        && requestedSourceHeight
+                                        == actualSourceHeight
+                        )
+                                ||
+                                (
+                                        requestedSourceWidth
+                                                == actualSourceHeight
+                                                && requestedSourceHeight
+                                                == actualSourceWidth
+                                )
+                );
+
+
+        capture.put(
+                "requested_resolution_matched",
+                resolutionMatched
+        );
         capture.put("pixel_format", "YUV_420_888");
         capture.put("gyroscope_available", motionSensorAvailable);
         report.put("capture", capture);

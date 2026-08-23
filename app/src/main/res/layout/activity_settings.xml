@@ -211,45 +211,32 @@
                         </LinearLayout>
                     </LinearLayout>
 
-                    <com.google.android.material.button.MaterialButtonToggleGroup
-                        android:id="@+id/settings_resolution_group"
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/settings_resolution_input"
+                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="16dp"
-                        app:selectionRequired="true"
-                        app:singleSelection="true">
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/settings_resolution_auto"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
+                        android:hint="@string/settings_resolution_choose">
+
+                        <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                            android:id="@+id/settings_resolution_dropdown"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:minWidth="0dp"
-                            android:paddingHorizontal="2dp"
-                            android:text="@string/settings_auto_short"
-                            android:textSize="12sp" />
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/settings_resolution_fast"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:minWidth="0dp"
-                            android:paddingHorizontal="2dp"
-                            android:text="@string/settings_fast_short"
-                            android:textSize="12sp" />
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/settings_resolution_distant"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:minWidth="0dp"
-                            android:paddingHorizontal="2dp"
-                            android:text="@string/settings_distant_short"
-                            android:textSize="12sp" />
-                    </com.google.android.material.button.MaterialButtonToggleGroup>
-                </LinearLayout>
+                            android:inputType="none"
+                            android:maxLines="1"
+                            android:textSize="13sp" />
+
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <TextView
+                        android:id="@+id/settings_resolution_capabilities"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/settings_resolution_detecting"
+                        android:textColor="@color/alpr_text_muted"
+                        android:textSize="11sp" />                </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
             <TextView

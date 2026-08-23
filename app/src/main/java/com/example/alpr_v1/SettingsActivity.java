@@ -7,6 +7,10 @@ import android.os.Bundle;
 import android.view.View;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.util.Size;
+import android.widget.ArrayAdapter;
+
+
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
@@ -15,6 +19,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
@@ -31,6 +36,9 @@ import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.ModelStatusFormatter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
+import com.example.alpr_v1.camera.CameraResolutionCatalog;
+import com.example.alpr_v1.camera.CameraResolutionSelection;
+import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 
 
 import com.google.android.material.appbar.MaterialToolbar;
@@ -47,6 +55,9 @@ import java.util.concurrent.Executors;
 public final class SettingsActivity extends AppCompatActivity {
     public static final String PREFERENCES = "alpr_ui";
     public static final String KEY_REVISION = "settings_revision";
+
+    public static final String KEY_ANALYSIS_RESOLUTION_SELECTION =
+            "analysis_resolution_selection";
 
     public static final String KEY_EXPERIMENT_MODE_ENABLED =
             "experiment_mode_enabled";
@@ -160,25 +171,204 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void configureResolutionControls() {
-        MaterialButtonToggleGroup group = findViewById(R.id.settings_resolution_group);
-        AnalysisResolutionProfile selected = AnalysisResolutionProfile.fromWireName(
-                preferences.getString("analysis_resolution_profile", AnalysisResolutionProfile.AUTO.wireName())
+
+        MaterialAutoCompleteTextView dropdown =
+                findViewById(
+                        R.id.settings_resolution_dropdown
+                );
+
+        TextView capabilities =
+                findViewById(
+                        R.id.settings_resolution_capabilities
+                );
+
+
+        CameraResolutionCatalog catalog =
+                new CameraResolutionCatalog(
+                        this
+                );
+
+
+        List<String> labels =
+                new java.util.ArrayList<>();
+
+        List<String> values =
+                new java.util.ArrayList<>();
+
+
+        labels.add(
+                getString(
+                        R.string.settings_resolution_auto
+                )
         );
-        int selectedId = selected == AnalysisResolutionProfile.FAST
-                ? R.id.settings_resolution_fast
-                : selected == AnalysisResolutionProfile.DISTANT
-                ? R.id.settings_resolution_distant
-                : R.id.settings_resolution_auto;
-        group.check(selectedId);
-        group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
-            if (!isChecked) return;
-            AnalysisResolutionProfile profile = checkedId == R.id.settings_resolution_fast
-                    ? AnalysisResolutionProfile.FAST
-                    : checkedId == R.id.settings_resolution_distant
-                    ? AnalysisResolutionProfile.DISTANT
-                    : AnalysisResolutionProfile.AUTO;
-            saveString("analysis_resolution_profile", profile.wireName());
-        });
+
+        values.add(
+                CameraResolutionSelection.AUTO
+        );
+
+
+        for (Size size :
+                catalog.resolutions()) {
+
+            labels.add(
+                    catalog.label(
+                            size
+                    )
+            );
+
+            values.add(
+                    CameraResolutionCatalog.wireName(
+                            size
+                    )
+            );
+        }
+
+
+        ArrayAdapter<String> adapter =
+                new ArrayAdapter<>(
+                        this,
+                        android.R.layout.simple_list_item_1,
+                        labels
+                );
+
+        dropdown.setAdapter(
+                adapter
+        );
+
+
+        String selectedWire =
+                currentResolutionWire(
+                        catalog
+                );
+
+
+        int selectedIndex =
+                values.indexOf(
+                        selectedWire
+                );
+
+        if (selectedIndex < 0) {
+            selectedIndex = 0;
+        }
+
+
+        dropdown.setText(
+                labels.get(
+                        selectedIndex
+                ),
+                false
+        );
+
+
+        dropdown.setOnClickListener(
+                view ->
+                        dropdown.showDropDown()
+        );
+
+
+        dropdown.setOnItemClickListener(
+                (parent, view, position, id) -> {
+
+                    if (position < 0
+                            || position >= values.size()) {
+                        return;
+                    }
+
+                    saveString(
+                            KEY_ANALYSIS_RESOLUTION_SELECTION,
+                            values.get(position)
+                    );
+                }
+        );
+
+
+        if (catalog.resolutions().isEmpty()) {
+
+            capabilities.setText(
+                    R.string.settings_resolution_unavailable
+            );
+
+        } else {
+
+            capabilities.setText(
+                    getString(
+                            R.string.settings_resolution_available,
+                            catalog.cameraId(),
+                            catalog.regularCount(),
+                            catalog.highResolutionCount()
+                    )
+            );
+        }
+    }
+    private String currentResolutionWire(
+            CameraResolutionCatalog catalog
+    ) {
+
+        if (preferences.contains(
+                KEY_ANALYSIS_RESOLUTION_SELECTION
+        )) {
+
+            return preferences.getString(
+                    KEY_ANALYSIS_RESOLUTION_SELECTION,
+                    CameraResolutionSelection.AUTO
+            );
+        }
+
+
+        /*
+         * Migracja starej konfiguracji.
+         *
+         * AUTO    -> auto
+         * FAST    -> najbliższa standardowa 640x480
+         * DISTANT -> najbliższa standardowa 1920x1080
+         */
+        AnalysisResolutionProfile legacy =
+                AnalysisResolutionProfile.fromWireName(
+                        preferences.getString(
+                                "analysis_resolution_profile",
+                                AnalysisResolutionProfile.AUTO.wireName()
+                        )
+                );
+
+
+        if (legacy
+                == AnalysisResolutionProfile.AUTO) {
+
+            return CameraResolutionSelection.AUTO;
+        }
+
+
+        Size target =
+                legacy
+                        == AnalysisResolutionProfile.FAST
+
+                        ? new Size(
+                        640,
+                        480
+                )
+
+                        : new Size(
+                        1920,
+                        1080
+                );
+
+
+        Size resolved =
+                catalog.closestRegularTo(
+                        target
+                );
+
+
+        if (resolved == null) {
+            return CameraResolutionCatalog.wireName(
+                    target
+            );
+        }
+
+
+        return CameraResolutionCatalog.wireName(
+                resolved
+        );
     }
 
     private void configureCropControls() {

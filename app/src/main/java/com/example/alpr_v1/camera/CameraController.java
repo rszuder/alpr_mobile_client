@@ -1,5 +1,8 @@
 package com.example.alpr_v1.camera;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import android.content.Context;
 import android.util.Size;
 
@@ -43,42 +46,153 @@ public final class CameraController implements AutoCloseable {
         this.previewView = previewView;
     }
 
-    public void start(FrameHandler frameHandler, ErrorHandler errorHandler, Size analysisSize) {
+    public void start(FrameHandler frameHandler, ErrorHandler errorHandler, Size analysisSize,  boolean allowHighResolution) {
         ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(context);
         providerFuture.addListener(() -> {
             try {
                 cameraProvider = providerFuture.get();
-                bind(frameHandler, analysisSize);
+                bind(frameHandler, analysisSize, allowHighResolution);
             } catch (Exception e) {
                 errorHandler.onError(e);
             }
         }, ContextCompat.getMainExecutor(context));
     }
 
-    private void bind(FrameHandler frameHandler, Size analysisSize) {
-        Preview preview = new Preview.Builder().build();
-        preview.setSurfaceProvider(previewView.getSurfaceProvider());
+    private void bind(
+            FrameHandler frameHandler,
+            Size analysisSize,
+            boolean allowHighResolution
+    ) {
 
-        ResolutionSelector resolutionSelector = new ResolutionSelector.Builder()
-                .setResolutionStrategy(new ResolutionStrategy(
+        Preview preview =
+                new Preview.Builder()
+                        .build();
+
+
+        preview.setSurfaceProvider(
+                previewView.getSurfaceProvider()
+        );
+
+
+        ResolutionSelector.Builder selectorBuilder =
+                new ResolutionSelector.Builder();
+
+
+        /*
+         * Zwykłe rozdzielczości:
+         * priorytet FPS.
+         *
+         * Świadomie wybrana rozdzielczość high-res:
+         * dopuszczamy również wolniejsze formaty urządzenia.
+         */
+        selectorBuilder.setAllowedResolutionMode(
+                allowHighResolution
+
+                        ? ResolutionSelector
+                          .PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE
+
+                        : ResolutionSelector
+                          .PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION
+        );
+
+
+        selectorBuilder.setResolutionStrategy(
+                new ResolutionStrategy(
                         analysisSize,
-                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                ))
-                .build();
-        ImageAnalysis analysis = new ImageAnalysis.Builder()
-                .setResolutionSelector(resolutionSelector)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build();
-        analysis.setAnalyzer(analyzerExecutor, image -> {
-            try {
-                frameHandler.onFrame(image);
-            } finally {
-                image.close();
-            }
-        });
+                        ResolutionStrategy
+                                .FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                )
+        );
+
+
+        /*
+         * To jest ważne dla formatów innych niż typowe 4:3 / 16:9.
+         *
+         * ResolutionFilter jest wykonywany po standardowym sortowaniu
+         * CameraX i pozwala nam postawić dokładnie wybraną przez
+         * użytkownika rozdzielczość na pierwszym miejscu.
+         */
+        selectorBuilder.setResolutionFilter(
+                (supportedSizes, rotationDegrees) -> {
+
+                    List<Size> ordered =
+                            new ArrayList<>(
+                                    supportedSizes
+                            );
+
+                    for (int index = 0;
+                         index < ordered.size();
+                         index++) {
+
+                        Size candidate =
+                                ordered.get(
+                                        index
+                                );
+
+                        if (candidate.getWidth()
+                                == analysisSize.getWidth()
+                                && candidate.getHeight()
+                                == analysisSize.getHeight()) {
+
+                            if (index > 0) {
+                                ordered.remove(
+                                        index
+                                );
+
+                                ordered.add(
+                                        0,
+                                        candidate
+                                );
+                            }
+
+                            break;
+                        }
+                    }
+
+                    return ordered;
+                }
+        );
+
+
+        ResolutionSelector resolutionSelector =
+                selectorBuilder.build();
+
+
+        ImageAnalysis analysis =
+                new ImageAnalysis.Builder()
+                        .setResolutionSelector(
+                                resolutionSelector
+                        )
+                        .setOutputImageFormat(
+                                ImageAnalysis
+                                        .OUTPUT_IMAGE_FORMAT_YUV_420_888
+                        )
+                        .setBackpressureStrategy(
+                                ImageAnalysis
+                                        .STRATEGY_KEEP_ONLY_LATEST
+                        )
+                        .build();
+
+
+        analysis.setAnalyzer(
+                analyzerExecutor,
+                image -> {
+
+                    try {
+                        frameHandler.onFrame(
+                                image
+                        );
+
+                    } finally {
+                        image.close();
+                    }
+                }
+        );
+
 
         cameraProvider.unbindAll();
+
+
         cameraProvider.bindToLifecycle(
                 lifecycleOwner,
                 CameraSelector.DEFAULT_BACK_CAMERA,

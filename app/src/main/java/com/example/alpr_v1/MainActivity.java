@@ -39,7 +39,11 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
 import com.example.alpr_v1.camera.CameraController;
+//do usuniecia po migracji
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
+//--------------------------------------------------------------
+import com.example.alpr_v1.camera.CameraResolutionCatalog;
+import com.example.alpr_v1.camera.CameraResolutionSelection;
 import com.example.alpr_v1.camera.CameraMotionMonitor;
 import com.example.alpr_v1.capture.CapturedPlateItem;
 import com.example.alpr_v1.capture.CaptureGalleryViewModel;
@@ -174,7 +178,10 @@ public final class MainActivity extends AppCompatActivity {
     private ResearchArchive.Kind pendingExportKind;
     private boolean exportInProgress;
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
-    private AnalysisResolutionProfile analysisResolutionProfile = AnalysisResolutionProfile.AUTO;
+    private CameraResolutionCatalog cameraResolutionCatalog;
+
+    private CameraResolutionSelection cameraResolutionSelection =
+            CameraResolutionSelection.auto();
     /*
      * Normalna konfiguracja aplikacji.
      */
@@ -302,7 +309,14 @@ public final class MainActivity extends AppCompatActivity {
         uiPreferences = getSharedPreferences("alpr_ui", MODE_PRIVATE);
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         configureRecognitionProfile();
-        configureAnalysisResolutionProfile();
+        configureRecognitionProfile();
+
+        cameraResolutionCatalog =
+                new CameraResolutionCatalog(
+                        this
+                );
+
+        configureCameraResolutionSelection();
         /*
          * Normalna konfiguracja użytkownika.
          */
@@ -440,61 +454,212 @@ public final class MainActivity extends AppCompatActivity {
         ));
     }
 
-    private void configureAnalysisResolutionProfile() {
-        analysisResolutionProfile = AnalysisResolutionProfile.fromWireName(
-                uiPreferences.getString(
-                        "analysis_resolution_profile",
-                        AnalysisResolutionProfile.AUTO.wireName()
-                )
+
+
+
+
+    private void updateCaptureMetrics() {
+
+        Size requested =
+                chooseAnalysisSize();
+
+
+        boolean highResolution =
+                cameraResolutionCatalog != null
+                        && cameraResolutionCatalog
+                        .isHighResolution(
+                                requested
+                        );
+
+
+        metricsCollector.setCaptureConfiguration(
+                cameraResolutionSelection.wireName(),
+                requested.getWidth(),
+                requested.getHeight(),
+                highResolution
         );
+    }
+
+    private void configureCameraResolutionSelection() {
+
+        cameraResolutionSelection =
+                readCameraResolutionSelection();
+
         updateCaptureMetrics();
     }
 
-    private void applyAnalysisResolutionProfile(AnalysisResolutionProfile profile) {
-        if (analysisResolutionProfile == profile) return;
-        analysisResolutionProfile = profile;
+
+    private CameraResolutionSelection readCameraResolutionSelection() {
+
+        if (uiPreferences.contains(
+                SettingsActivity.KEY_ANALYSIS_RESOLUTION_SELECTION
+        )) {
+
+            return CameraResolutionSelection.fromWireName(
+                    uiPreferences.getString(
+                            SettingsActivity.KEY_ANALYSIS_RESOLUTION_SELECTION,
+                            CameraResolutionSelection.AUTO
+                    )
+            );
+        }
+
+
+        /*
+         * Migracja starego profilu.
+         */
+        AnalysisResolutionProfile legacy =
+                AnalysisResolutionProfile.fromWireName(
+                        uiPreferences.getString(
+                                "analysis_resolution_profile",
+                                AnalysisResolutionProfile.AUTO.wireName()
+                        )
+                );
+
+
+        if (legacy
+                == AnalysisResolutionProfile.AUTO) {
+
+            return CameraResolutionSelection.auto();
+        }
+
+
+        Size target =
+                legacy
+                        == AnalysisResolutionProfile.FAST
+
+                        ? new Size(
+                        640,
+                        480
+                )
+
+                        : new Size(
+                        1920,
+                        1080
+                );
+
+
+        Size resolved =
+                cameraResolutionCatalog
+                        .closestRegularTo(
+                                target
+                        );
+
+
+        CameraResolutionSelection migrated =
+                CameraResolutionSelection.exact(
+                        resolved != null
+                                ? resolved
+                                : target
+                );
+
+
         uiPreferences.edit()
-                .putString("analysis_resolution_profile", profile.wireName())
+                .putString(
+                        SettingsActivity.KEY_ANALYSIS_RESOLUTION_SELECTION,
+                        migrated.wireName()
+                )
                 .apply();
+
+
+        return migrated;
+    }
+
+
+    private void applyCameraResolutionSelection(
+            CameraResolutionSelection selection
+    ) {
+
+        if (selection == null) {
+            selection =
+                    CameraResolutionSelection.auto();
+        }
+
+        if (selection.equals(
+                cameraResolutionSelection
+        )) {
+            return;
+        }
+
+
+        cameraResolutionSelection =
+                selection;
+
+
+        uiPreferences.edit()
+                .putString(
+                        SettingsActivity.KEY_ANALYSIS_RESOLUTION_SELECTION,
+                        cameraResolutionSelection.wireName()
+                )
+                .apply();
+
+
         updateCaptureMetrics();
+
         pipeline.resetTracking();
+
         overlayTracker.reset();
+
         lastCaptureByTrack.clear();
+
+
         if (cameraStarted
                 && ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED) {
 
+            /*
+             * Restart techniczny.
+             *
+             * ExperimentSession i timer pozostają bez zmian.
+             */
             cameraController.stop();
-            cameraStarted = false;
-            startCamera(false);
-        }
-        liveStatus.setText(getString(
-                R.string.resolution_profile_changed,
-                resolutionProfileLabel()
-        ));
-    }
 
-    private void updateCaptureMetrics() {
-        Size requested = chooseAnalysisSize();
-        metricsCollector.setCaptureConfiguration(
-                analysisResolutionProfile.wireName(),
-                requested.getWidth(),
-                requested.getHeight()
+            cameraStarted = false;
+
+            startCamera(
+                    false
+            );
+        }
+
+
+        liveStatus.setText(
+                getString(
+                        R.string.resolution_profile_changed,
+                        cameraResolutionLabel()
+                )
         );
     }
 
-    private String resolutionProfileLabel() {
-        switch (analysisResolutionProfile) {
-            case FAST:
-                return getString(R.string.resolution_profile_fast);
-            case DISTANT:
-                return getString(R.string.resolution_profile_distant);
-            case AUTO:
-            default:
-                return getString(R.string.resolution_profile_auto);
+
+    private String cameraResolutionLabel() {
+
+        if (cameraResolutionSelection.automatic()) {
+
+            Size automatic =
+                    chooseAnalysisSize();
+
+            return "Auto · "
+                    + cameraResolutionCatalog.label(
+                    automatic
+            );
         }
+
+
+        Size selected =
+                cameraResolutionSelection.size();
+
+        Size available =
+                cameraResolutionCatalog.find(
+                        selected.getWidth(),
+                        selected.getHeight()
+                );
+
+        return cameraResolutionCatalog.label(
+                available != null
+                        ? available
+                        : selected
+        );
     }
 
     private RoiBudgetPolicy effectiveRoiBudgetPolicy() {
@@ -1021,6 +1186,15 @@ public final class MainActivity extends AppCompatActivity {
                         ? "Uruchamianie kamery i pipeline'u"
                         : "Restart kamery w aktywnej analizie"
         );
+        Size requestedCameraSize =
+                chooseAnalysisSize();
+
+        boolean allowHighResolution =
+                cameraResolutionCatalog != null
+                        && cameraResolutionCatalog
+                        .isHighResolution(
+                                requestedCameraSize
+                        );
         cameraController.start(
                 image -> {
                     long observationNanos = System.nanoTime();
@@ -1066,20 +1240,94 @@ public final class MainActivity extends AppCompatActivity {
                     liveStatus.setText(getString(R.string.camera_error, error.getMessage()));
                     recordError("Błąd kamery: " + error.getMessage(), error);
                 }),
-                chooseAnalysisSize()
+                requestedCameraSize,
+                allowHighResolution
         );
     }
 
     private Size chooseAnalysisSize() {
-        if (analysisResolutionProfile == AnalysisResolutionProfile.FAST) {
-            return new Size(640, 480);
+
+        /*
+         * Ręczny wybór:
+         * dokładnie rozdzielczość wskazana przez użytkownika.
+         */
+        if (!cameraResolutionSelection.automatic()) {
+
+            Size requested =
+                    cameraResolutionSelection.size();
+
+            if (requested != null) {
+
+                Size available =
+                        cameraResolutionCatalog.find(
+                                requested.getWidth(),
+                                requested.getHeight()
+                        );
+
+                if (available != null) {
+                    return available;
+                }
+
+                /*
+                 * Np. ustawienie przeniesione ze starszego
+                 * telefonu na nowe urządzenie.
+                 */
+                Size fallback =
+                        cameraResolutionCatalog
+                                .closestRegularTo(
+                                        requested
+                                );
+
+                if (fallback != null) {
+                    return fallback;
+                }
+
+                return requested;
+            }
         }
-        if (analysisResolutionProfile == AnalysisResolutionProfile.DISTANT) {
-            return new Size(1920, 1080);
-        }
-        boolean constrained = deviceProfile.lowRamDevice
-                || deviceProfile.totalMemoryBytes < 4L * 1024L * 1024L * 1024L;
-        return constrained ? new Size(640, 480) : new Size(1280, 720);
+
+
+        /*
+         * AUTO:
+         * słabsze urządzenie -> okolice 640x480,
+         * mocniejsze -> okolice 1280x720.
+         *
+         * Wybieramy jednak FORMAT RZECZYWIŚCIE
+         * zgłaszany przez aparat.
+         */
+        boolean constrained =
+                deviceProfile.lowRamDevice
+                        || deviceProfile.totalMemoryBytes
+                        < 4L
+                        * 1024L
+                        * 1024L
+                        * 1024L;
+
+
+        Size target =
+                constrained
+
+                        ? new Size(
+                        640,
+                        480
+                )
+
+                        : new Size(
+                        1280,
+                        720
+                );
+
+
+        Size resolved =
+                cameraResolutionCatalog
+                        .closestRegularTo(
+                                target
+                        );
+
+
+        return resolved != null
+                ? resolved
+                : target;
     }
 
     private void presentResult(PipelineResult result, long observationNanos) {
@@ -1277,7 +1525,7 @@ public final class MainActivity extends AppCompatActivity {
                         modelRegistry,
                         autoTuneManager,
                         recognitionProfile.wireName(),
-                        analysisResolutionProfile.wireName(),
+                        cameraResolutionSelection.wireName(),
                         vehicleCascadeEnabled,
                         experimentModeEnabled,
                         experimentRoiBudgetPolicy,
@@ -1670,7 +1918,7 @@ public final class MainActivity extends AppCompatActivity {
                             modelRegistry,
                             autoTuneManager,
                             recognitionProfile.wireName(),
-                            analysisResolutionProfile.wireName(),
+                            cameraResolutionSelection.wireName(),
                             vehicleCascadeEnabled,
                             experimentModeEnabled,
                             experimentRoiBudgetPolicy,
@@ -2018,18 +2266,22 @@ public final class MainActivity extends AppCompatActivity {
 
         /*
          * NORMALNA KONFIGURACJA:
-         * rozdzielczość analizy.
+         * rzeczywista rozdzielczość źródła CameraX.
          */
-        AnalysisResolutionProfile requestedResolution =
-                AnalysisResolutionProfile.fromWireName(
+        CameraResolutionSelection requestedResolution =
+                CameraResolutionSelection.fromWireName(
                         uiPreferences.getString(
-                                "analysis_resolution_profile",
-                                AnalysisResolutionProfile.AUTO.wireName()
+                                SettingsActivity.KEY_ANALYSIS_RESOLUTION_SELECTION,
+                                CameraResolutionSelection.AUTO
                         )
                 );
 
-        if (requestedResolution != analysisResolutionProfile) {
-            applyAnalysisResolutionProfile(
+
+        if (!requestedResolution.equals(
+                cameraResolutionSelection
+        )) {
+
+            applyCameraResolutionSelection(
                     requestedResolution
             );
         }
