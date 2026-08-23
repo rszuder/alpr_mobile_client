@@ -1710,11 +1710,24 @@ public final class MainActivity extends AppCompatActivity {
         for (CapturedPlateItem item : cropSnapshot) item.exportProtected = true;
         renderCapturedCrops();
         setBusy(true, getString(R.string.export_creating));
+        /*
+         * Zamrażamy dokładnie tę ExperimentSession,
+         * która ma trafić do eksportu.
+         *
+         * Nie przekazujemy do wątku eksportującego żywego obiektu
+         * ExperimentSession, ponieważ użytkownik mógłby w międzyczasie
+         * rozpocząć kolejny przebieg.
+         */
+        final ExperimentSession.Snapshot experimentSnapshot =
+                experimentSession.snapshot();
         backgroundExecutor.execute(() -> {
             try {
                 modelRegistry.reload();
                 String json = metricsCollector.createJsonReport(
-                        DeviceProfile.capture(this), modelRegistry, autoTuneManager
+                        DeviceProfile.capture(this),
+                        modelRegistry,
+                        autoTuneManager,
+                        experimentSnapshot
                 );
                 String csv = metricsCollector.createCsvReport();
                 String log = AppLog.contents(this);

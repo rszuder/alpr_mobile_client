@@ -10,6 +10,7 @@ import com.example.alpr_v1.model.ModelOutputSpec;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
+import com.example.alpr_v1.experiment.ExperimentSession;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -252,6 +253,19 @@ public final class MetricsCollector {
             ModelRegistry registry,
             AutoTuneManager autoTuneManager
     ) throws JSONException {
+        return createJsonReport(
+                device,
+                registry,
+                autoTuneManager,
+                null
+        );
+    }
+    public synchronized String createJsonReport(
+            DeviceProfile device,
+            ModelRegistry registry,
+            AutoTuneManager autoTuneManager,
+            ExperimentSession.Snapshot experimentSession
+    ) throws JSONException {
         long finishedMillis =
                 sessionFinishedMillis > 0L
                         ? sessionFinishedMillis
@@ -322,22 +336,125 @@ public final class MetricsCollector {
         );
 
         JSONObject experiment = new JSONObject();
+
+        boolean hasExperimentSession =
+                experimentSession != null
+                        && experimentSession.hasSession();
+
+        /*
+         * Jeżeli istnieje konkretna sesja eksperymentalna,
+         * jej konfiguracja jest ważniejsza niż aktualny stan UI.
+         *
+         * Dzięki temu zmiana R0 -> R1 już PO wykonaniu eksperymentu,
+         * ale PRZED eksportem, nie zmieni opisu zakończonego przebiegu.
+         */
+        String reportedExperimentType =
+                hasExperimentSession
+                        ? experimentSession.experimentType
+                        : "roi_budget";
+
+        String reportedExperimentRoiPolicy =
+                hasExperimentSession
+                        && "roi_budget".equals(
+                        experimentSession.experimentType
+                )
+                        ? experimentSession.variant
+                        : experimentRoiBudgetPolicy;
+
+        String reportedEffectiveRoiPolicy =
+                hasExperimentSession
+                        && "roi_budget".equals(
+                        experimentSession.experimentType
+                )
+                        ? experimentSession.variant
+                        : roiBudgetPolicy;
+
+
+        /*
+         * Zakończona sesja eksperymentalna oznacza, że raport
+         * opisuje eksperyment nawet wtedy, gdy użytkownik później
+         * wyłączył tryb EXP przed eksportem.
+         */
         experiment.put(
                 "enabled",
-                experimentModeEnabled
+                experimentModeEnabled || hasExperimentSession
         );
+
         experiment.put(
                 "type",
-                "roi_budget"
+                reportedExperimentType
         );
+
         experiment.put(
                 "roi_budget_policy",
-                experimentRoiBudgetPolicy
+                reportedExperimentRoiPolicy
         );
+
         experiment.put(
                 "effective_roi_budget_policy",
-                roiBudgetPolicy
+                reportedEffectiveRoiPolicy
         );
+
+
+        /*
+         * Sekcja session istnieje tylko wtedy,
+         * gdy rzeczywiście uruchomiono eksperyment.
+         */
+        if (hasExperimentSession) {
+            JSONObject session = new JSONObject();
+
+            session.put(
+                    "id",
+                    experimentSession.sessionId
+            );
+
+            session.put(
+                    "state",
+                    experimentSession.state
+            );
+
+            session.put(
+                    "started_at_ms",
+                    experimentSession.startedAtMillis
+            );
+
+            if (experimentSession.finishedAtMillis >= 0L) {
+                session.put(
+                        "finished_at_ms",
+                        experimentSession.finishedAtMillis
+                );
+            }
+
+            session.put(
+                    "duration_ms",
+                    experimentSession.durationMillis
+            );
+
+            if (experimentSession.completionReason != null
+                    && !experimentSession.completionReason.isEmpty()) {
+
+                session.put(
+                        "completion_reason",
+                        experimentSession.completionReason
+                );
+            }
+
+            session.put(
+                    "experiment_type",
+                    experimentSession.experimentType
+            );
+
+            session.put(
+                    "variant",
+                    experimentSession.variant
+            );
+
+            experiment.put(
+                    "session",
+                    session
+            );
+        }
+
         report.put(
                 "experiment",
                 experiment

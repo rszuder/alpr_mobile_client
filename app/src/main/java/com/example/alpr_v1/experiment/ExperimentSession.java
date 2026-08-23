@@ -25,6 +25,46 @@ public final class ExperimentSession {
         ERROR
     }
 
+    public static final class Snapshot {
+
+        public final String sessionId;
+        public final String state;
+        public final String experimentType;
+        public final String variant;
+
+        public final long startedAtMillis;
+        public final long finishedAtMillis;
+        public final long durationMillis;
+
+        public final String completionReason;
+
+        private Snapshot(
+                String sessionId,
+                String state,
+                String experimentType,
+                String variant,
+                long startedAtMillis,
+                long finishedAtMillis,
+                long durationMillis,
+                String completionReason
+        ) {
+            this.sessionId = sessionId;
+            this.state = state;
+            this.experimentType = experimentType;
+            this.variant = variant;
+            this.startedAtMillis = startedAtMillis;
+            this.finishedAtMillis = finishedAtMillis;
+            this.durationMillis = durationMillis;
+            this.completionReason = completionReason;
+        }
+
+        public boolean hasSession() {
+            return sessionId != null
+                    && !sessionId.isEmpty()
+                    && !"idle".equals(state);
+        }
+    }
+
     private State state = State.IDLE;
 
     private String sessionId = "";
@@ -161,6 +201,19 @@ public final class ExperimentSession {
         return completionReason
                 .name()
                 .toLowerCase(Locale.ROOT);
+    }
+
+    public synchronized Snapshot snapshot() {
+        return new Snapshot(
+                sessionId,
+                stateWireName(),
+                experimentType,
+                variant,
+                startedAtMillis,
+                finishedAtMillis,
+                durationMillis(),
+                completionReasonWireName()
+        );
     }
 
     public synchronized long durationMillis() {
