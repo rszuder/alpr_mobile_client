@@ -221,8 +221,13 @@
     Zakończ eksperyment automatycznie
 </string>
 
-    <string name="settings_experiment_timer_15">15 s</string>
-    <string name="settings_experiment_timer_60">1 min</string>
-    <string name="settings_experiment_timer_180">3 min</string>
-    <string name="settings_experiment_timer_300">5 min</string>
+
+
+    <string name="experiment_timer_button">Timer</string>
+    <string name="experiment_timer_dialog_title">Timer eksperymentu</string>
+    <string name="experiment_timer_none">Bez timera</string>
+    <string name="experiment_timer_armed">Timer: %1$s</string>
+    <string name="experiment_timer_running">%1$s</string>
+    <string name="experiment_timer_disabled_log">Wyłączono timer eksperymentu</string>
+    <string name="experiment_timer_armed_log">Ustawiono timer eksperymentu: %1$d s</string>
 </resources>

@@ -85,6 +85,9 @@ public final class MainActivity extends AppCompatActivity {
     private static final String LOG_TAG = "MainActivity";
     private static final String KEY_CAMERA_PERMISSION_REQUESTED =
             "camera_permission_requested";
+
+    private static final String KEY_LAST_EXPERIMENT_TIMER_SECONDS =
+            "last_experiment_timer_seconds";
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
@@ -93,6 +96,25 @@ public final class MainActivity extends AppCompatActivity {
 
     private final Handler experimentTimerHandler =
             new Handler(Looper.getMainLooper());
+    private long experimentTimerDeadlineElapsedMillis = -1L;
+
+    private final Runnable experimentTimerUiRunnable =
+            new Runnable() {
+                @Override
+                public void run() {
+                    if (!experimentSession.isRunning()
+                            || experimentTimerDeadlineElapsedMillis < 0L) {
+                        return;
+                    }
+
+                    updateExperimentTimerButton();
+
+                    experimentTimerHandler.postDelayed(
+                            this,
+                            250L
+                    );
+                }
+            };
 
     private final Runnable experimentTimerRunnable =
             () -> {
@@ -134,6 +156,7 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton analysisStopButton;
     private MaterialCheckBox selectAllCropsToggle;
     private MaterialButton saveSelectedCropsButton;
+    private MaterialButton experimentTimerButton;
     private PlateCaptureAdapter captureAdapter;
     private ProgressBar progress;
     private MaterialToolbar topAppBar;
@@ -311,8 +334,7 @@ public final class MainActivity extends AppCompatActivity {
                                 legacyRoiPolicy
                         )
                 );
-        experimentTimerConfig =
-                readExperimentTimerConfig();
+
 
         pipeline.setVehicleCascadeEnabled(
                 vehicleCascadeEnabled
@@ -354,6 +376,8 @@ public final class MainActivity extends AppCompatActivity {
         progress = findViewById(R.id.progress);
         topAppBar = findViewById(R.id.top_app_bar);
         galleryListContainer = findViewById(R.id.gallery_list_container);
+        experimentTimerButton =
+                findViewById(R.id.experiment_timer_button);
     }
 
     private void configureRecognitionProfile() {
@@ -482,25 +506,7 @@ public final class MainActivity extends AppCompatActivity {
                 ? RoiBudgetPolicy.TWO_ROI
                 : RoiBudgetPolicy.FULL_FRAME;
     }
-    private TimerConfig readExperimentTimerConfig() {
 
-        boolean enabled =
-                uiPreferences.getBoolean(
-                        SettingsActivity.KEY_EXPERIMENT_TIMER_ENABLED,
-                        false
-                );
-
-        int seconds =
-                uiPreferences.getInt(
-                        SettingsActivity.KEY_EXPERIMENT_TIMER_SECONDS,
-                        TimerConfig.DEFAULT_DURATION_SECONDS
-                );
-
-        return TimerConfig.of(
-                enabled,
-                seconds
-        );
-    }
 
     private void setVehicleCascadeEnabled(boolean enabled) {
         vehicleCascadeEnabled = enabled;
@@ -622,6 +628,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void configureAnalysisControls() {
+
+        experimentTimerButton.setOnClickListener(
+                view -> showExperimentTimerDialog()
+        );
+
         analysisStartButton.setOnClickListener(
                 view -> ensureCameraPermission()
         );
@@ -656,6 +667,25 @@ public final class MainActivity extends AppCompatActivity {
          */
         if (collectionToggle != null) {
             collectionToggle.setEnabled(cameraStarted);
+        }
+
+        if (experimentTimerButton != null) {
+            experimentTimerButton.setVisibility(
+                    experimentModeEnabled
+                            ? View.VISIBLE
+                            : View.GONE
+            );
+
+            /*
+             * Po START konfiguracja konkretnej sesji jest zamrożona.
+             * Użytkownik nie może zmieniać czasu w trakcie przebiegu.
+             */
+            experimentTimerButton.setEnabled(
+                    experimentModeEnabled
+                            && !cameraStarted
+            );
+
+            updateExperimentTimerButton();
         }
     }
     private void pauseCropCollectionForStoppedAnalysis() {
@@ -760,9 +790,17 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
 
+        experimentTimerDeadlineElapsedMillis =
+                android.os.SystemClock.elapsedRealtime()
+                        + timerConfig.durationMillis();
+
         experimentTimerHandler.postDelayed(
                 experimentTimerRunnable,
                 timerConfig.durationMillis()
+        );
+
+        experimentTimerHandler.post(
+                experimentTimerUiRunnable
         );
 
         recordInfo(
@@ -777,6 +815,12 @@ public final class MainActivity extends AppCompatActivity {
         experimentTimerHandler.removeCallbacks(
                 experimentTimerRunnable
         );
+
+        experimentTimerHandler.removeCallbacks(
+                experimentTimerUiRunnable
+        );
+
+        experimentTimerDeadlineElapsedMillis = -1L;
     }
     private void beginAnalysisMeasurement() {
         metricsCollector.startMeasurementSession();
@@ -850,6 +894,17 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         metricsCollector.finishMeasurementSession();
+        /*
+         * Timer jest ustawieniem pojedynczego przebiegu.
+         * Następny eksperyment domyślnie nie ma limitu czasu.
+         *
+         * ExperimentSession zachowała już własną kopię konfiguracji,
+         * więc raport bieżącego przebiegu pozostanie poprawny.
+         */
+        experimentTimerConfig =
+                TimerConfig.disabled();
+
+        updateExperimentTimerButton();
     }
     private void ensureCameraPermission() {
         if (ContextCompat.checkSelfPermission(
@@ -2015,8 +2070,7 @@ public final class MainActivity extends AppCompatActivity {
                                 RoiBudgetPolicy.TWO_ROI.wireName()
                         )
                 );
-        TimerConfig requestedExperimentTimer =
-                readExperimentTimerConfig();
+
 
         if (requestedExperimentMode != experimentModeEnabled
                 || requestedExperimentRoi != experimentRoiBudgetPolicy) {
@@ -2027,15 +2081,7 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
 
-        /*
-         * Nowa konfiguracja timera obowiązuje dopiero
-         * przy kolejnym START.
-         *
-         * Nie restartujemy i nie przedłużamy timera
-         * aktywnej ExperimentSession.
-         */
-        experimentTimerConfig =
-                requestedExperimentTimer;
+
 
 
         /*
@@ -2208,6 +2254,16 @@ public final class MainActivity extends AppCompatActivity {
                     R.string.experiment_mode_disabled_status
             );
         }
+        if (!experimentModeEnabled
+                && !experimentSession.isRunning()) {
+
+            experimentTimerConfig =
+                    TimerConfig.disabled();
+
+            cancelExperimentTimer();
+        }
+
+        renderAnalysisControls();
     }
     private String roiBudgetPolicyLabel(
             RoiBudgetPolicy policy
@@ -2229,5 +2285,211 @@ public final class MainActivity extends AppCompatActivity {
                         R.string.roi_budget_r0
                 );
         }
+    }
+    private void showExperimentTimerDialog() {
+        if (cameraStarted || !experimentModeEnabled) {
+            return;
+        }
+
+        final int[] durations = {
+                0,
+                15,
+                60,
+                180,
+                300
+        };
+
+        CharSequence[] labels = {
+                getString(R.string.experiment_timer_none),
+                "15 s",
+                "1 min",
+                "3 min",
+                "5 min"
+        };
+
+        int rememberedSeconds =
+                uiPreferences.getInt(
+                        KEY_LAST_EXPERIMENT_TIMER_SECONDS,
+                        TimerConfig.DEFAULT_DURATION_SECONDS
+                );
+
+        int currentSeconds =
+                experimentTimerConfig.enabled()
+                        ? experimentTimerConfig.durationSeconds()
+                        : 0;
+
+        int initialIndex = 0;
+
+        if (currentSeconds > 0) {
+            initialIndex =
+                    timerIndexForSeconds(
+                            durations,
+                            currentSeconds
+                    );
+        } else if (rememberedSeconds > 0) {
+            /*
+             * Timer nadal pozostaje WYŁĄCZONY.
+             * Zapamiętany czas wykorzystujemy tylko jako
+             * wygodną podpowiedź po otwarciu dialogu.
+             */
+            initialIndex =
+                    timerIndexForSeconds(
+                            durations,
+                            rememberedSeconds
+                    );
+        }
+
+        final int[] selectedIndex = {
+                initialIndex
+        };
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(
+                        R.string.experiment_timer_dialog_title
+                )
+                .setSingleChoiceItems(
+                        labels,
+                        initialIndex,
+                        (dialog, which) ->
+                                selectedIndex[0] = which
+                )
+                .setNegativeButton(
+                        R.string.menu_close,
+                        null
+                )
+                .setPositiveButton(
+                        R.string.settings_apply,
+                        (dialog, which) -> {
+                            int seconds =
+                                    durations[
+                                            selectedIndex[0]
+                                            ];
+
+                            if (seconds <= 0) {
+                                experimentTimerConfig =
+                                        TimerConfig.disabled();
+
+                                recordInfo(
+                                        getString(
+                                                R.string.experiment_timer_disabled_log
+                                        )
+                                );
+
+                            } else {
+                                experimentTimerConfig =
+                                        TimerConfig.of(
+                                                true,
+                                                seconds
+                                        );
+
+                                /*
+                                 * Zapamiętujemy tylko ostatni WYBRANY CZAS.
+                                 * Nie zapisujemy stanu "timer włączony".
+                                 */
+                                uiPreferences.edit()
+                                        .putInt(
+                                                KEY_LAST_EXPERIMENT_TIMER_SECONDS,
+                                                seconds
+                                        )
+                                        .apply();
+
+                                recordInfo(
+                                        getString(
+                                                R.string.experiment_timer_armed_log,
+                                                seconds
+                                        )
+                                );
+                            }
+
+                            updateExperimentTimerButton();
+                        }
+                )
+                .show();
+    }
+
+    private static int timerIndexForSeconds(
+            int[] durations,
+            int seconds
+    ) {
+        for (int index = 0;
+             index < durations.length;
+             index++) {
+
+            if (durations[index] == seconds) {
+                return index;
+            }
+        }
+
+        return 0;
+    }
+
+    private void updateExperimentTimerButton() {
+        if (experimentTimerButton == null) {
+            return;
+        }
+
+        /*
+         * Aktywny przebieg z timerem:
+         * pokazujemy pozostały czas.
+         */
+        if (experimentSession.isRunning()
+                && experimentTimerDeadlineElapsedMillis > 0L) {
+
+            long remainingMillis =
+                    Math.max(
+                            0L,
+                            experimentTimerDeadlineElapsedMillis
+                                    - android.os.SystemClock.elapsedRealtime()
+                    );
+
+            long remainingSeconds =
+                    (remainingMillis + 999L) / 1000L;
+
+            experimentTimerButton.setText(
+                    formatTimerDuration(
+                            remainingSeconds
+                    )
+            );
+
+            return;
+        }
+
+        /*
+         * Timer przygotowany dla następnego START.
+         */
+        if (experimentTimerConfig.enabled()) {
+            experimentTimerButton.setText(
+                    formatTimerDuration(
+                            experimentTimerConfig.durationSeconds()
+                    )
+            );
+            return;
+        }
+
+        experimentTimerButton.setText(
+                R.string.experiment_timer_button
+        );
+    }
+
+    private static String formatTimerDuration(
+            long seconds
+    ) {
+        if (seconds < 60L) {
+            return seconds + " s";
+        }
+
+        long minutes = seconds / 60L;
+        long remainingSeconds = seconds % 60L;
+
+        if (remainingSeconds == 0L) {
+            return minutes + " min";
+        }
+
+        return String.format(
+                Locale.ROOT,
+                "%d:%02d",
+                minutes,
+                remainingSeconds
+        );
     }
 }

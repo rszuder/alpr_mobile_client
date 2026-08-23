@@ -658,35 +658,7 @@
                                 android:textSize="11sp" />
 
                         </com.google.android.material.button.MaterialButtonToggleGroup>
-                        <View
-                            android:layout_width="match_parent"
-                            android:layout_height="1dp"
-                            android:layout_marginTop="18dp"
-                            android:layout_marginBottom="16dp"
-                            android:background="@color/alpr_outline" />
 
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/settings_experiment_timer_title"
-                            android:textColor="@color/alpr_text_primary"
-                            android:textSize="14sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/settings_experiment_timer_description"
-                            android:textColor="@color/alpr_text_muted"
-                            android:textSize="12sp" />
-
-                        <com.google.android.material.materialswitch.MaterialSwitch
-                            android:id="@+id/settings_experiment_timer_switch"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:text="@string/settings_experiment_timer_switch" />
 
                         <LinearLayout
                             android:id="@+id/settings_experiment_timer_options"
@@ -711,7 +683,7 @@
                                     android:layout_weight="1"
                                     android:minWidth="0dp"
                                     android:paddingHorizontal="2dp"
-                                    android:text="@string/settings_experiment_timer_15"
+
                                     android:textSize="11sp" />
 
                                 <com.google.android.material.button.MaterialButton
@@ -722,7 +694,7 @@
                                     android:layout_weight="1"
                                     android:minWidth="0dp"
                                     android:paddingHorizontal="2dp"
-                                    android:text="@string/settings_experiment_timer_60"
+
                                     android:textSize="11sp" />
 
                                 <com.google.android.material.button.MaterialButton
@@ -733,7 +705,7 @@
                                     android:layout_weight="1"
                                     android:minWidth="0dp"
                                     android:paddingHorizontal="2dp"
-                                    android:text="@string/settings_experiment_timer_180"
+
                                     android:textSize="11sp" />
 
                                 <com.google.android.material.button.MaterialButton
@@ -744,7 +716,7 @@
                                     android:layout_weight="1"
                                     android:minWidth="0dp"
                                     android:paddingHorizontal="2dp"
-                                    android:text="@string/settings_experiment_timer_300"
+
                                     android:textSize="11sp" />
 
                             </com.google.android.material.button.MaterialButtonToggleGroup>
