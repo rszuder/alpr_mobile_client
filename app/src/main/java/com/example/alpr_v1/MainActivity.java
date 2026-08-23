@@ -80,6 +80,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class MainActivity extends AppCompatActivity {
     private static final String LOG_TAG = "MainActivity";
+    private static final String KEY_CAMERA_PERMISSION_REQUESTED =
+            "camera_permission_requested";
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
@@ -152,16 +154,23 @@ public final class MainActivity extends AppCompatActivity {
 
     private View galleryListContainer;
 
-    private final ActivityResultLauncher<String> permissionLauncher = registerForActivityResult(
-            new ActivityResultContracts.RequestPermission(),
-            granted -> {
-                if (granted) startCamera(true);
-                else {
-                    liveStatus.setText(R.string.camera_permission_required);
-                    recordWarning("Odmówiono dostępu do kamery");
-                }
-            }
-    );
+    private final ActivityResultLauncher<String> permissionLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.RequestPermission(),
+                    granted -> {
+                        if (granted) {
+                            startCamera(true);
+                        } else {
+                            liveStatus.setText(
+                                    R.string.camera_permission_required
+                            );
+
+                            recordWarning(
+                                    "Odmówiono dostępu do kamery, możesz dodać dostęp Ustawienia -> Aplikacje."
+                            );
+                        }
+                    }
+            );
 
     private final ActivityResultLauncher<String> reportDestination = registerForActivityResult(
             new ActivityResultContracts.CreateDocument("application/zip"),
@@ -736,12 +745,78 @@ public final class MainActivity extends AppCompatActivity {
         metricsCollector.finishMeasurementSession();
     }
     private void ensureCameraPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED) {
+
             startCamera(true);
-        } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA);
+            return;
         }
+
+        boolean requestedBefore =
+                uiPreferences.getBoolean(
+                        KEY_CAMERA_PERMISSION_REQUESTED,
+                        false
+                );
+
+        boolean canShowRationale =
+                shouldShowRequestPermissionRationale(
+                        Manifest.permission.CAMERA
+                );
+
+        /*
+         * Jeżeli wcześniej pytaliśmy o zgodę, a Android nie chce już
+         * pokazać wyjaśnienia/systemowego dialogu, traktujemy to jako
+         * konieczność wejścia do ustawień aplikacji.
+         */
+        if (requestedBefore && !canShowRationale) {
+            showCameraPermissionSettingsDialog();
+            return;
+        }
+
+        uiPreferences.edit()
+                .putBoolean(
+                        KEY_CAMERA_PERMISSION_REQUESTED,
+                        true
+                )
+                .apply();
+
+        permissionLauncher.launch(
+                Manifest.permission.CAMERA
+        );
+    }
+
+    private void showCameraPermissionSettingsDialog() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Dostęp do kamery")
+                .setMessage(
+                        "Dostęp do kamery został wyłączony. "
+                                + "Aby uruchomić analizę, nadaj aplikacji "
+                                + "uprawnienie do kamery w ustawieniach Androida."
+                )
+                .setNegativeButton(
+                        "Anuluj",
+                        null
+                )
+                .setPositiveButton(
+                        "Otwórz ustawienia",
+                        (dialog, which) -> openApplicationSettings()
+                )
+                .show();
+    }
+    private void openApplicationSettings() {
+        Intent intent = new Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+        );
+
+        intent.setData(
+                Uri.parse(
+                        "package:" + getPackageName()
+                )
+        );
+
+        startActivity(intent);
     }
 
     private void startCamera(boolean beginNewMeasurement) {
