@@ -25,6 +25,25 @@ public final class AlprPipeline {
     private final AtomicLong frameIds = new AtomicLong();
     private MobileAlprEngine engine;
     private volatile boolean reloadRequested;
+    /*
+     * Żądanie resetu może przyjść z wątku UI
+     * podczas trwającej ciężkiej inferencji.
+     *
+     * Nie blokujemy UI na synchronized process().
+     * Reset zostanie wykonany przed następnym
+     * wywołaniem engine.run().
+     */
+    private volatile boolean trackingResetRequested;
+
+    /*
+     * Żądanie resetu może przyjść z wątku UI
+     * podczas trwającej ciężkiej inferencji.
+     *
+     * Nie blokujemy UI na synchronized process().
+     * Reset zostanie wykonany przed następnym
+     * wywołaniem engine.run().
+     */
+
     private RecognitionProfile recognitionProfile = RecognitionProfile.BALANCED;
 
     /*
@@ -82,15 +101,84 @@ public final class AlprPipeline {
                 reloadRequested = false;
             }
             if (engine == null) {
+
                 engine = new MobileAlprEngine(
                         registry,
                         autoTuneManager,
                         effectiveRoiBudgetPolicy()
                 );
-                engine.setRecognitionProfile(recognitionProfile);
-                engine.setRapidCameraMotion(rapidCameraMotion);
+
+                engine.setRecognitionProfile(
+                        recognitionProfile
+                );
+
+                engine.setRapidCameraMotion(
+                        rapidCameraMotion
+                );
             }
+
+
+            /*
+             * UI mogło zauważyć zmianę obrazu podczas
+             * poprzedniej, nadal trwającej inferencji.
+             *
+             * Jej wynik zostanie odrzucony przez
+             * uiSceneGeneration, a przed analizą następnej
+             * klatki usuwamy również wewnętrzny tracking,
+             * konsensus temporalny i cache sceny.
+             */
+            if (trackingResetRequested) {
+
+                engine.resetTracking();
+
+                trackingResetRequested =
+                        false;
+            }
+
+
             trace.start("camera_conversion");
+
+
+            /*
+             * UI mogło zauważyć zmianę obrazu podczas
+             * poprzedniej, nadal trwającej inferencji.
+             *
+             * Jej wynik zostanie odrzucony przez
+             * uiSceneGeneration, a przed analizą następnej
+             * klatki usuwamy również wewnętrzny tracking,
+             * konsensus temporalny i cache sceny.
+             */
+            if (trackingResetRequested) {
+
+                engine.resetTracking();
+
+                trackingResetRequested =
+                        false;
+            }
+
+
+
+
+
+            /*
+             * UI mogło zauważyć zmianę obrazu podczas
+             * poprzedniej, nadal trwającej inferencji.
+             *
+             * Jej wynik zostanie odrzucony przez
+             * uiSceneGeneration, a przed analizą następnej
+             * klatki usuwamy również wewnętrzny tracking,
+             * konsensus temporalny i cache sceny.
+             */
+            if (trackingResetRequested) {
+
+                engine.resetTracking();
+
+                trackingResetRequested =
+                        false;
+            }
+
+
+
             frame = com.example.alpr_v1.vision.CameraImageConverter.toBitmap(image);
             trace.stop("camera_conversion");
             PipelineResult result = engine.run(frame, trace);
@@ -130,6 +218,13 @@ public final class AlprPipeline {
     public void invalidateModels() {
         reloadRequested = true;
     }
+
+    public void requestTrackingReset() {
+
+        trackingResetRequested =
+                true;
+    }
+
 
     public synchronized void setRecognitionProfile(RecognitionProfile profile) {
         recognitionProfile = profile == null ? RecognitionProfile.BALANCED : profile;

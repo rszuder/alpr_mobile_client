@@ -389,9 +389,21 @@ public final class PreviewPlateTracker {
                 current.gray;
 
 
+        /*
+         * Ważne rozróżnienie:
+         *
+         * null:
+         * tracker nie ma jeszcze nowej informacji,
+         * więc UI powinno pozostawić bieżący overlay.
+         *
+         * emptyList:
+         * tracker miał aktywne tablice, ale właśnie
+         * stracił wszystkie tracki. UI musi wtedy
+         * natychmiast usunąć stare ramki.
+         */
         if (visible.isEmpty()) {
 
-            return null;
+            return Collections.emptyList();
         }
 
 

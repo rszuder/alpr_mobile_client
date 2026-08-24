@@ -185,14 +185,27 @@ public final class MainActivity extends AppCompatActivity {
                                         );
 
 
-                                if (trackedItems != null
-                                        && !trackedItems.isEmpty()) {
+                                if (trackedItems != null) {
 
-                                    overlayView.setItems(
-                                            trackedItems,
-                                            previewPlateTracker.sourceWidth(),
-                                            previewPlateTracker.sourceHeight()
-                                    );
+                                    /*
+                                     * Pusta lista jest świadomym komunikatem
+                                     * PreviewPlateTracker:
+                                     *
+                                     * "miałem aktywne tablice, ale właśnie
+                                     * straciłem wszystkie tracki".
+                                     */
+                                    if (trackedItems.isEmpty()) {
+
+                                        invalidateUiForLostPreviewTracking();
+
+                                    } else {
+
+                                        overlayView.setItems(
+                                                trackedItems,
+                                                previewPlateTracker.sourceWidth(),
+                                                previewPlateTracker.sourceHeight()
+                                        );
+                                    }
                                 }
                             }                        }
 
@@ -1437,6 +1450,11 @@ public final class MainActivity extends AppCompatActivity {
         long generation =
                 uiSceneGeneration.incrementAndGet();
 
+        if (pipeline != null) {
+
+            pipeline.requestTrackingReset();
+        }
+
 
         /*
          * Czyścimy wyłącznie stan prezentacji.
@@ -1502,6 +1520,78 @@ public final class MainActivity extends AppCompatActivity {
                         scene.score,
                         scene.changedFraction
                 )
+        );
+    }
+
+    private void invalidateUiForLostPreviewTracking() {
+
+        /*
+         * Tracker Preview stracił wszystkie tablice.
+         *
+         * Traktujemy to jako zmianę kontekstu obrazu,
+         * nawet jeżeli globalny SceneChangeDetector
+         * nie przekroczył jeszcze swojego progu.
+         */
+        long generation =
+                uiSceneGeneration.incrementAndGet();
+
+
+        /*
+         * Wynik ciężkiej inferencji rozpoczętej przed
+         * utratą trackera nie może później ponownie
+         * narysować starej tablicy.
+         */
+        if (pipeline != null) {
+
+            pipeline.requestTrackingReset();
+        }
+
+
+        overlayTracker.reset();
+
+        previewPlateTracker.reset();
+
+        lastCaptureByTrack.clear();
+
+
+        overlayView.setItems(
+                java.util.Collections.emptyList()
+        );
+
+
+        /*
+         * Następny świeży PipelineResult ma zostać
+         * pokazany bez throttlingu UI.
+         */
+        lastUiUpdateNanos.set(
+                0L
+        );
+
+
+        /*
+         * Stare czasy również nie opisują już
+         * aktualnie widocznego obrazu.
+         */
+        liveHudAwaitingFreshResult =
+                true;
+
+        renderLiveHud();
+
+
+        liveStatus.setText(
+                R.string.scene_change_analyzing
+        );
+
+        recognitionHint.setText(
+                R.string.recognition_stabilizing
+        );
+
+
+        android.util.Log.d(
+                "ALPR_SCENE_UI",
+                "TRACK_LOST generation="
+                        + generation
+                        + " -> overlay invalidated"
         );
     }
 
