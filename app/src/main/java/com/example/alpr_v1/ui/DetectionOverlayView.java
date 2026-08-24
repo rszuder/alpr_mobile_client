@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.util.AttributeSet;
@@ -91,38 +92,155 @@ public final class DetectionOverlayView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
-        // przykrywały żadnej z ramek detekcyjnych.
-        for (RenderItem renderItem : renderItems) {
-            OverlayItem item = renderItem.item;
-            RectF bounds = renderItem.bounds;
-            canvas.drawRoundRect(
-                    bounds,
-                    dp(5),
-                    dp(5),
-                    paintFor(item)
-            );
-            if (item.carriedPrediction) continue;
 
-            /*
-             * Keypointy należą do modelu tablicy MT.
-             * VEHICLE oraz VEHICLE_ROI są tylko prostokątami.
-             */
-            if (item.kind == OverlayItem.Kind.PLATE) {
-                for (PointF point : renderItem.points) {
-                    canvas.drawCircle(
-                            point.x,
-                            point.y,
-                            dp(2.2f),
-                            pointPaint
-                    );
-                }
+        super.onDraw(canvas);
+
+
+        /*
+         * Rysujemy geometrię detekcji.
+         *
+         * PLATE:
+         * jeżeli MT dostarczył cztery narożniki Pose,
+         * pokazujemy rzeczywisty czworokąt zamiast bbox.
+         *
+         * VEHICLE / VEHICLE_ROI:
+         * pozostają prostokątami.
+         */
+        for (RenderItem renderItem : renderItems) {
+
+            OverlayItem item =
+                    renderItem.item;
+
+
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && renderItem.points.size() >= 4) {
+
+                drawPlateQuad(
+                        canvas,
+                        renderItem
+                );
+
+            } else {
+
+                /*
+                 * Fallback dla tablic bez kompletu keypointów
+                 * oraz normalne rysowanie MP / ROI.
+                 */
+                canvas.drawRoundRect(
+                        renderItem.bounds,
+                        dp(5),
+                        dp(5),
+                        paintFor(item)
+                );
             }
         }
 
+
+        /*
+         * Badge'e rysujemy na końcu,
+         * żeby pozostały czytelne.
+         */
         for (RenderItem renderItem : renderItems) {
-            if (renderItem.badge != null) drawLabel(canvas, renderItem);
+
+            if (renderItem.badge != null) {
+
+                drawLabel(
+                        canvas,
+                        renderItem
+                );
+            }
+        }
+    }
+
+    private void drawPlateQuad(
+            Canvas canvas,
+            RenderItem renderItem
+    ) {
+
+        OverlayItem item =
+                renderItem.item;
+
+        List<PointF> points =
+                renderItem.points;
+
+
+        /*
+         * MT wykorzystuje pierwsze cztery keypointy
+         * jako narożniki tablicy.
+         *
+         * Łączymy je w kolejności zwróconej przez model.
+         * Na tym etapie celowo NIE stosujemy dodatkowego
+         * sortowania punktów.
+         *
+         * Dzięki temu overlay pokazuje surową geometrię
+         * Pose i może służyć do diagnostyki.
+         */
+        PointF first =
+                points.get(0);
+
+        PointF second =
+                points.get(1);
+
+        PointF third =
+                points.get(2);
+
+        PointF fourth =
+                points.get(3);
+
+
+        Path quad =
+                new Path();
+
+        quad.moveTo(
+                first.x,
+                first.y
+        );
+
+        quad.lineTo(
+                second.x,
+                second.y
+        );
+
+        quad.lineTo(
+                third.x,
+                third.y
+        );
+
+        quad.lineTo(
+                fourth.x,
+                fourth.y
+        );
+
+        quad.close();
+
+
+        canvas.drawPath(
+                quad,
+                paintFor(item)
+        );
+
+
+        /*
+         * Rzeczywiste narożniki MT zaznaczamy punktami.
+         * Dla krótkiej predykcji trackera nie dodajemy punktów,
+         * żeby odróżnić ją wizualnie od obserwacji modelu.
+         */
+        if (!item.carriedPrediction) {
+
+            for (int index = 0;
+                 index < 4;
+                 index++) {
+
+                PointF point =
+                        points.get(index);
+
+                canvas.drawCircle(
+                        point.x,
+                        point.y,
+                        dp(2.7f),
+                        pointPaint
+                );
+            }
         }
     }
     private Paint paintFor(OverlayItem item) {
