@@ -78,34 +78,88 @@ public final class CameraMotionOverlayTracker {
         /*
          * Następnie dokładamy wygładzone / przewidziane ramki tablic.
          */
-        for (MotionBoxTracker.Result result : tracker.update(
-                observations,
-                observationNanos,
-                presentationNanos
-        )) {
-            OverlayItem source = sourcePlateItem(
-                    plateItems,
-                    result.sourceIndex,
-                    result.label
-            );
+        List<MotionBoxTracker.Result> trackedResults =
+                tracker.update(
+                        observations,
+                        observationNanos,
+                        presentationNanos
+                );
 
-            RectF target = new RectF(
-                    result.box.left,
-                    result.box.top,
-                    result.box.right,
-                    result.box.bottom
-            );
+        android.util.Log.d(
+                "ALPR_OVERLAY",
+                "INPUT total=" + items.size()
+                        + " plates=" + plateItems.size()
+                        + " passthrough=" + passthroughItems.size()
+                        + " tracked=" + trackedResults.size()
+        );
 
-            visible.add(new OverlayItem(
-                    OverlayItem.Kind.PLATE,
-                    target,
-                    remapPoints(source, target),
-                    result.label,
-                    result.trackId,
-                    result.sourceIndex < 0
-            ));
+        for (OverlayItem item : items) {
+
+            android.util.Log.d(
+                    "ALPR_OVERLAY",
+                    "INPUT kind=" + item.kind
+                            + " track=" + item.trackId
+                            + " carried=" + item.carriedPrediction
+                            + " label=" + item.label
+                            + " box=" + item.normalizedBounds
+            );
         }
 
+        for (MotionBoxTracker.Result result : trackedResults) {
+
+            OverlayItem source =
+                    sourcePlateItem(
+                            plateItems,
+                            result.sourceIndex,
+                            result.label
+                    );
+
+            RectF target =
+                    new RectF(
+                            result.box.left,
+                            result.box.top,
+                            result.box.right,
+                            result.box.bottom
+                    );
+
+            boolean carried =
+                    result.sourceIndex < 0;
+
+            android.util.Log.d(
+                    "ALPR_OVERLAY",
+                    "TRACK track=" + result.trackId
+                            + " sourceIndex=" + result.sourceIndex
+                            + " predicted=" + result.predicted
+                            + " carried=" + carried
+                            + " box=" + target
+            );
+
+            visible.add(
+                    new OverlayItem(
+                            OverlayItem.Kind.PLATE,
+                            target,
+                            remapPoints(
+                                    source,
+                                    target
+                            ),
+                            result.label,
+                            result.trackId,
+                            carried
+                    )
+            );
+        }
+
+        for (OverlayItem item : visible) {
+
+            android.util.Log.d(
+                    "ALPR_OVERLAY",
+                    "VISIBLE kind=" + item.kind
+                            + " track=" + item.trackId
+                            + " carried=" + item.carriedPrediction
+                            + " label=" + item.label
+                            + " box=" + item.normalizedBounds
+            );
+        }
         /*
          * Do następnego przebiegu zachowujemy tylko rzeczywiste
          * elementy tablic z bieżącej klatki.

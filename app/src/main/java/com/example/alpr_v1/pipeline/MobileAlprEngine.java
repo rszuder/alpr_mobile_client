@@ -27,6 +27,7 @@ import com.example.alpr_v1.vision.DetectionDeduplicator;
 import com.example.alpr_v1.vision.ImageSharpnessScorer;
 import com.example.alpr_v1.vision.PlateRectifier;
 import com.example.alpr_v1.vision.PlateQualityScorer;
+import com.example.alpr_v1.vision.NonMaxSuppression;
 import com.example.alpr_v1.vision.Point2;
 import com.example.alpr_v1.vision.PreparedInput;
 import com.example.alpr_v1.vision.YoloOutputSpec;
@@ -323,9 +324,65 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.putDurationNanos("plate_postprocess", plateDurations[2]);
 
         // Deduplikacja po połączeniu wyników kilku ROI oraz fallbacku pełnoklatkowego.
-        plates = new ArrayList<>(DetectionDeduplicator.suppress(
-                plates, plateOutputSpec.iouThreshold(), 0.82f, false
-        ));
+        /*
+         * Diagnostyka surowych detekcji MT.
+         *
+         * Nie zmienia działania pipeline'u.
+         */
+        trace.putCount(
+                "plate_detections_raw",
+                plates.size()
+        );
+
+        logPlateDetectionPairs(
+                "RAW",
+                plates,
+                trace.frameId()
+        );
+
+
+        /*
+         * Deduplikacja po połączeniu wyników kilku ROI
+         * oraz fallbacku pełnoklatkowego.
+         */
+        int rawPlateDetectionCount =
+                plates.size();
+
+        plates =
+                new ArrayList<>(
+                        DetectionDeduplicator.suppress(
+                                plates,
+                                plateOutputSpec.iouThreshold(),
+                                0.82f,
+                                false
+                        )
+                );
+
+
+        trace.putCount(
+                "plate_detections_after_dedup",
+                plates.size()
+        );
+
+        trace.putCount(
+                "plate_detections_suppressed",
+                Math.max(
+                        0,
+                        rawPlateDetectionCount
+                                - plates.size()
+                )
+        );
+
+
+        /*
+         * To są już dokładnie detekcje, które mogą
+         * przejść dalej do trackera i overlayu.
+         */
+        logPlateDetectionPairs(
+                "KEPT",
+                plates,
+                trace.frameId()
+        );
         if (plates.isEmpty()) {
             trackCoordinator.update(
                     Collections.emptyList(), trace.frameId(), SystemClock.elapsedRealtimeNanos()
@@ -866,6 +923,121 @@ final class MobileAlprEngine implements AutoCloseable {
                 || value.equals("vehicle");
     }
 
+    private static void logPlateDetectionPairs(
+            String stage,
+            List<Detection> detections,
+            long frameId
+    ) {
+        if (detections == null) {
+            return;
+        }
+
+
+        android.util.Log.d(
+                "ALPR_MT_PAIR",
+                stage
+                        + " frame="
+                        + frameId
+                        + " count="
+                        + detections.size()
+        );
+
+
+        /*
+         * Najpierw wypisujemy każdą pojedynczą detekcję.
+         * Dzięki temu widzimy również wynik po deduplikacji,
+         * nawet jeśli pozostała tylko jedna ramka.
+         */
+        for (int index = 0;
+             index < detections.size();
+             index++) {
+
+            Detection detection =
+                    detections.get(index);
+
+
+            android.util.Log.d(
+                    "ALPR_MT_PAIR",
+                    String.format(
+                            Locale.ROOT,
+                            "%s frame=%d det=%d "
+                                    + "conf=%.3f area=%.0f "
+                                    + "box=[%.1f,%.1f,%.1f,%.1f]",
+                            stage,
+                            frameId,
+                            index,
+                            detection.confidence,
+                            detection.width()
+                                    * detection.height(),
+                            detection.left,
+                            detection.top,
+                            detection.right,
+                            detection.bottom
+                    )
+            );
+        }
+
+
+        /*
+         * Następnie relacje pomiędzy parami.
+         */
+        for (int firstIndex = 0;
+             firstIndex < detections.size();
+             firstIndex++) {
+
+            Detection first =
+                    detections.get(firstIndex);
+
+
+            for (int secondIndex =
+                 firstIndex + 1;
+                 secondIndex < detections.size();
+                 secondIndex++) {
+
+                Detection second =
+                        detections.get(secondIndex);
+
+
+                float iou =
+                        NonMaxSuppression.iou(
+                                first,
+                                second
+                        );
+
+
+                float containment =
+                        DetectionDeduplicator
+                                .overlapOverSmaller(
+                                        first,
+                                        second
+                                );
+
+
+                android.util.Log.d(
+                        "ALPR_MT_PAIR",
+                        String.format(
+                                Locale.ROOT,
+                                "%s frame=%d pair=%d-%d "
+                                        + "iou=%.3f containment=%.3f "
+                                        + "confA=%.3f confB=%.3f "
+                                        + "areaA=%.0f areaB=%.0f",
+                                stage,
+                                frameId,
+                                firstIndex,
+                                secondIndex,
+                                iou,
+                                containment,
+                                first.confidence,
+                                second.confidence,
+                                first.width()
+                                        * first.height(),
+                                second.width()
+                                        * second.height()
+                        )
+                );
+            }
+        }
+    }
     private List<Detection> detectPlates(
             Bitmap frame,
             VehicleRoiSelector.Region region,
