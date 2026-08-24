@@ -76,6 +76,7 @@ import com.example.alpr_v1.experiment.TimerConfig;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.vision.SceneAnchorGuard;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -122,6 +123,27 @@ public final class MainActivity extends AppCompatActivity {
     private final SceneChangeDetector previewSceneDetector =
             new SceneChangeDetector();
 
+    private final SceneAnchorGuard previewSceneAnchorGuard =
+            new SceneAnchorGuard();
+
+
+    /*
+     * Po otrzymaniu świeżego wyniku MT następna klatka
+     * PreviewView stanie się referencją dla trackera.
+     */
+    private boolean previewSceneAnchorPending;
+
+    private static final long DIAGNOSTIC_OVERLAY_TTL_NANOS =
+            1_200_000_000L;
+
+
+    private List<OverlayItem> latestDiagnosticOverlayItems =
+            java.util.Collections.emptyList();
+
+
+    private long latestDiagnosticOverlayNanos =
+            Long.MIN_VALUE;
+
 
     private boolean previewSceneMonitorRunning;
 
@@ -158,13 +180,46 @@ public final class MainActivity extends AppCompatActivity {
                         if (previewBitmap != null
                                 && !previewBitmap.isRecycled()) {
 
+                            /*
+                             * Pierwsza klatka Preview po świeżej detekcji MT
+                             * staje się stałą referencją sceny.
+                             */
+                            if (previewSceneAnchorPending) {
+
+                                previewSceneAnchorGuard.anchor(
+                                        previewBitmap
+                                );
+
+                                previewSceneAnchorPending =
+                                        false;
+                            }
+
+
+                            SceneAnchorGuard.Result anchorResult =
+                                    previewSceneAnchorGuard.evaluate(
+                                            previewBitmap
+                                    );
+
                             SceneChangeDetector.Result scene =
                                     previewSceneDetector.update(
                                             previewBitmap
                                     );
 
 
-                            if (scene.sceneChanged) {
+                            if (scene.sceneChanged
+                                    || anchorResult.changed) {
+
+                                android.util.Log.d(
+                                        "ALPR_SCENE_UI",
+                                        String.format(
+                                                Locale.ROOT,
+                                                "ANCHOR changed=%s score=%.3f fraction=%.3f",
+                                                anchorResult.changed,
+                                                anchorResult.score,
+                                                anchorResult.changedFraction
+                                        )
+                                );
+
 
                                 invalidateUiForPreviewSceneChange(
                                         scene
@@ -201,7 +256,9 @@ public final class MainActivity extends AppCompatActivity {
                                     } else {
 
                                         overlayView.setItems(
-                                                trackedItems,
+                                                mergePreviewOverlay(
+                                                        trackedItems
+                                                ),
                                                 previewPlateTracker.sourceWidth(),
                                                 previewPlateTracker.sourceHeight()
                                         );
@@ -1187,6 +1244,11 @@ public final class MainActivity extends AppCompatActivity {
 
         previewPlateTracker.reset();
 
+        previewSceneAnchorGuard.reset();
+
+        previewSceneAnchorPending =
+                false;
+
         lastCaptureByTrack.clear();
 
         overlayView.setItems(
@@ -1443,6 +1505,7 @@ public final class MainActivity extends AppCompatActivity {
             SceneChangeDetector.Result scene
     ) {
 
+
         /*
          * Wszystkie wyniki pipeline'u rozpoczęte przed tym
          * momentem należą już do starej sceny.
@@ -1467,7 +1530,23 @@ public final class MainActivity extends AppCompatActivity {
 
         previewPlateTracker.reset();
 
+        previewSceneAnchorGuard.reset();
+
+        previewSceneAnchorPending =
+                false;
+
+        latestDiagnosticOverlayItems =
+                java.util.Collections.emptyList();
+
+        latestDiagnosticOverlayItems =
+                java.util.Collections.emptyList();
+
+
+
         lastCaptureByTrack.clear();
+
+        latestDiagnosticOverlayNanos =
+                Long.MIN_VALUE;
 
         overlayView.setItems(
                 java.util.Collections.emptyList()
@@ -1550,8 +1629,19 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        previewSceneAnchorGuard.reset();
+
+        latestDiagnosticOverlayItems =
+                java.util.Collections.emptyList();
+
+
+
+        previewSceneAnchorPending =
+                false;
 
         lastCaptureByTrack.clear();
+        latestDiagnosticOverlayNanos =
+                Long.MIN_VALUE;
 
 
         overlayView.setItems(
@@ -1611,6 +1701,10 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        previewSceneAnchorGuard.reset();
+
+        previewSceneAnchorPending =
+                false;
 
         lastCaptureByTrack.clear();
 
@@ -2148,6 +2242,30 @@ public final class MainActivity extends AppCompatActivity {
                         observationNanos,
                         System.nanoTime()
                 );
+        List<OverlayItem> diagnosticItems =
+                new ArrayList<>();
+
+
+        for (OverlayItem item :
+                visibleOverlayItems) {
+
+            if (item.kind != OverlayItem.Kind.PLATE) {
+
+                diagnosticItems.add(
+                        item
+                );
+            }
+        }
+
+
+        latestDiagnosticOverlayItems =
+                java.util.Collections.unmodifiableList(
+                        diagnosticItems
+                );
+
+
+        latestDiagnosticOverlayNanos =
+                System.nanoTime();
 
 
         overlayView.setItems(
@@ -2165,11 +2283,24 @@ public final class MainActivity extends AppCompatActivity {
          * nie zwrócił, tracker zachowa poprzednią kotwicę
          * przez krótki czas.
          */
-        previewPlateTracker.anchor(
-                visibleOverlayItems,
-                result.sourceWidth,
-                result.sourceHeight
-        );
+        boolean previewTrackerAnchored =
+                previewPlateTracker.anchor(
+                        visibleOverlayItems,
+                        result.sourceWidth,
+                        result.sourceHeight
+                );
+
+
+        if (previewTrackerAnchored) {
+
+            /*
+             * Nie mamy tutaj Bitmap PreviewView.
+             * Następny tick lekkiego monitora ustawi
+             * referencję obrazu.
+             */
+            previewSceneAnchorPending =
+                    true;
+        }
         if (collectionActive) collectCrops(result.plateObservations);
         if ("models_missing".equals(result.status) || "pipeline_error".equals(result.status)) {
             recognitionHint.setText(R.string.recognition_unavailable);
@@ -3951,5 +4082,44 @@ public final class MainActivity extends AppCompatActivity {
                 minutes,
                 remainingSeconds
         );
+    }
+    private List<OverlayItem> mergePreviewOverlay(
+            List<OverlayItem> trackedPlates
+    ) {
+
+        List<OverlayItem> result =
+                new ArrayList<>();
+
+
+        long diagnosticAge =
+                System.nanoTime()
+                        - latestDiagnosticOverlayNanos;
+
+
+        /*
+         * MP / ROI pozostają przez krótki czas,
+         * ale nie przez kilka sekund.
+         */
+        if (latestDiagnosticOverlayNanos
+                != Long.MIN_VALUE
+                && diagnosticAge
+                <= DIAGNOSTIC_OVERLAY_TTL_NANOS) {
+
+            result.addAll(
+                    latestDiagnosticOverlayItems
+            );
+        }
+
+
+        /*
+         * Tablice rysujemy na końcu, czyli nad
+         * diagnostycznymi ramkami pojazdu.
+         */
+        result.addAll(
+                trackedPlates
+        );
+
+
+        return result;
     }
 }

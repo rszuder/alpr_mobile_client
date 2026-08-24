@@ -134,51 +134,7 @@ public final class AlprPipeline {
                 trackingResetRequested =
                         false;
             }
-
-
             trace.start("camera_conversion");
-
-
-            /*
-             * UI mogło zauważyć zmianę obrazu podczas
-             * poprzedniej, nadal trwającej inferencji.
-             *
-             * Jej wynik zostanie odrzucony przez
-             * uiSceneGeneration, a przed analizą następnej
-             * klatki usuwamy również wewnętrzny tracking,
-             * konsensus temporalny i cache sceny.
-             */
-            if (trackingResetRequested) {
-
-                engine.resetTracking();
-
-                trackingResetRequested =
-                        false;
-            }
-
-
-
-
-
-            /*
-             * UI mogło zauważyć zmianę obrazu podczas
-             * poprzedniej, nadal trwającej inferencji.
-             *
-             * Jej wynik zostanie odrzucony przez
-             * uiSceneGeneration, a przed analizą następnej
-             * klatki usuwamy również wewnętrzny tracking,
-             * konsensus temporalny i cache sceny.
-             */
-            if (trackingResetRequested) {
-
-                engine.resetTracking();
-
-                trackingResetRequested =
-                        false;
-            }
-
-
-
             frame = com.example.alpr_v1.vision.CameraImageConverter.toBitmap(image);
             trace.stop("camera_conversion");
             PipelineResult result = engine.run(frame, trace);
