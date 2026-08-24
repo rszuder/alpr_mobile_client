@@ -71,7 +71,7 @@
         android:textSize="10sp"
         android:visibility="gone"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_hud"
+        app:layout_constraintTop_toBottomOf="@id/top_app_bar"
         tools:text="R1 · EXP · 4000×3000 · 12,0 Mpix&#10;MP 0,38 s · MT 2,97 s · MZ 0,47 s&#10;PIPE 4,63 s · DROP 16" />
     <!--
         Krótki status pracy pipeline'u.
