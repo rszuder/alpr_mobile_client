@@ -679,7 +679,7 @@ public final class PreviewPlateTracker {
                 movedPoints,
                 basePlate.label,
                 basePlate.trackId,
-                true
+                false
         );
     }
 

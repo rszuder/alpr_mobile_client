@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
@@ -21,6 +22,7 @@ import android.widget.Toast;
 import android.view.WindowManager;
 import android.os.Handler;
 import android.os.Looper;
+
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
@@ -134,6 +136,16 @@ public final class MainActivity extends AppCompatActivity {
     private boolean previewSceneAnchorPending;
 
     private List<OverlayItem> latestDiagnosticOverlayItems =
+            java.util.Collections.emptyList();
+
+    /*
+     * Pozycje tablic pochodzące z ostatniego
+     * rzeczywistego wyniku MT.
+     *
+     * Służą jako geometria referencyjna do przesuwania
+     * VEHICLE i VEHICLE_ROI razem ze śledzoną tablicą.
+     */
+    private List<OverlayItem> latestPipelinePlateItems =
             java.util.Collections.emptyList();
 
 
@@ -1235,6 +1247,11 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        latestDiagnosticOverlayItems =
+                java.util.Collections.emptyList();
+
+        latestPipelinePlateItems =
+                java.util.Collections.emptyList();
 
         previewSceneAnchorGuard.reset();
 
@@ -1530,7 +1547,7 @@ public final class MainActivity extends AppCompatActivity {
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
 
-        latestDiagnosticOverlayItems =
+        latestPipelinePlateItems =
                 java.util.Collections.emptyList();
 
 
@@ -1691,6 +1708,13 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+
+        latestDiagnosticOverlayItems =
+                java.util.Collections.emptyList();
+
+        latestPipelinePlateItems =
+                java.util.Collections.emptyList();
+
         previewSceneAnchorGuard.reset();
 
         previewSceneAnchorPending =
@@ -2235,12 +2259,28 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> diagnosticItems =
                 new ArrayList<>();
 
+        List<OverlayItem> pipelinePlateItems =
+                new ArrayList<>();
+
 
         for (OverlayItem item :
                 visibleOverlayItems) {
 
-            if (item.kind != OverlayItem.Kind.PLATE) {
+            if (item.kind == OverlayItem.Kind.PLATE) {
 
+                /*
+                 * Zapamiętujemy dokładną pozycję wynikającą
+                 * z ostatniego pełnego przebiegu MT.
+                 */
+                pipelinePlateItems.add(
+                        item
+                );
+
+            } else {
+
+                /*
+                 * VEHICLE oraz VEHICLE_ROI.
+                 */
                 diagnosticItems.add(
                         item
                 );
@@ -2251,6 +2291,12 @@ public final class MainActivity extends AppCompatActivity {
         latestDiagnosticOverlayItems =
                 java.util.Collections.unmodifiableList(
                         diagnosticItems
+                );
+
+
+        latestPipelinePlateItems =
+                java.util.Collections.unmodifiableList(
+                        pipelinePlateItems
                 );
 
 
@@ -4079,21 +4125,27 @@ public final class MainActivity extends AppCompatActivity {
 
 
         /*
-         * VEHICLE i VEHICLE_ROI reprezentują ostatni
-         * prawidłowy wynik pipeline'u.
+         * VEHICLE oraz ROI nie mają własnego szybkiego
+         * trackera.
          *
-         * Nie usuwamy ich po arbitralnym czasie.
-         * Zostaną zastąpione przez kolejny wynik albo
-         * usunięte przy zmianie sceny.
+         * Przesuwamy je więc o translację odpowiadającej
+         * im tablicy.
          */
-        result.addAll(
-                latestDiagnosticOverlayItems
-        );
+        for (OverlayItem diagnostic :
+                latestDiagnosticOverlayItems) {
+
+            result.add(
+                    moveDiagnosticWithTrackedPlate(
+                            diagnostic,
+                            trackedPlates
+                    )
+            );
+        }
 
 
         /*
-         * Aktualnie śledzone tablice rysujemy na końcu,
-         * aby znajdowały się nad ramkami pojazdu.
+         * Tablice rysujemy na końcu, dzięki czemu
+         * pozostają nad pomarańczowymi ramkami.
          */
         result.addAll(
                 trackedPlates
@@ -4101,4 +4153,219 @@ public final class MainActivity extends AppCompatActivity {
 
 
         return result;
-    }}
+    }
+    private OverlayItem moveDiagnosticWithTrackedPlate(
+            OverlayItem diagnostic,
+            List<OverlayItem> trackedPlates
+    ) {
+
+        OverlayItem basePlate =
+                findAssociatedPipelinePlate(
+                        diagnostic
+                );
+
+
+        /*
+         * Nie znaleźliśmy tablicy należącej do tego
+         * VEHICLE/ROI.
+         *
+         * Nie zgadujemy ruchu — pozostawiamy ostatnią
+         * prawidłową pozycję MP.
+         */
+        if (basePlate == null) {
+
+            return diagnostic;
+        }
+
+
+        OverlayItem trackedPlate =
+                findTrackedPlate(
+                        trackedPlates,
+                        basePlate.trackId
+                );
+
+
+        if (trackedPlate == null) {
+
+            return diagnostic;
+        }
+
+
+        /*
+         * Ruch tablicy pomiędzy ostatnim MT
+         * a aktualną klatką Preview.
+         */
+        float dx =
+                trackedPlate.normalizedBounds.centerX()
+                        - basePlate.normalizedBounds.centerX();
+
+        float dy =
+                trackedPlate.normalizedBounds.centerY()
+                        - basePlate.normalizedBounds.centerY();
+
+
+        RectF movedBounds =
+                translatedBounds(
+                        diagnostic.normalizedBounds,
+                        dx,
+                        dy
+                );
+
+
+        return new OverlayItem(
+                diagnostic.kind,
+                movedBounds,
+                diagnostic.normalizedKeypoints,
+                diagnostic.label,
+                diagnostic.trackId,
+                false
+        );
+    }
+    private OverlayItem findAssociatedPipelinePlate(
+            OverlayItem diagnostic
+    ) {
+
+        OverlayItem best =
+                null;
+
+        float bestDistance =
+                Float.MAX_VALUE;
+
+
+        for (OverlayItem plate :
+                latestPipelinePlateItems) {
+
+            float plateX =
+                    plate.normalizedBounds.centerX();
+
+            float plateY =
+                    plate.normalizedBounds.centerY();
+
+
+            /*
+             * Tablica musi fizycznie znajdować się
+             * wewnątrz ramki pojazdu / ROI.
+             */
+            if (!diagnostic.normalizedBounds.contains(
+                    plateX,
+                    plateY
+            )) {
+
+                continue;
+            }
+
+
+            float dx =
+                    plateX
+                            - diagnostic.normalizedBounds.centerX();
+
+            float dy =
+                    plateY
+                            - diagnostic.normalizedBounds.centerY();
+
+
+            float distance =
+                    dx * dx
+                            + dy * dy;
+
+
+            if (distance < bestDistance) {
+
+                bestDistance =
+                        distance;
+
+                best =
+                        plate;
+            }
+        }
+
+
+        return best;
+    }
+    private static OverlayItem findTrackedPlate(
+            List<OverlayItem> trackedPlates,
+            long trackId
+    ) {
+
+        if (trackedPlates == null) {
+
+            return null;
+        }
+
+
+        for (OverlayItem plate :
+                trackedPlates) {
+
+            if (plate.kind
+                    == OverlayItem.Kind.PLATE
+                    && plate.trackId
+                    == trackId) {
+
+                return plate;
+            }
+        }
+
+
+        return null;
+    }
+    private static RectF translatedBounds(
+            RectF source,
+            float dx,
+            float dy
+    ) {
+
+        RectF result =
+                new RectF(
+                        source
+                );
+
+
+        result.offset(
+                dx,
+                dy
+        );
+
+
+        /*
+         * Zachowujemy rozmiar ramki, ale nie pozwalamy
+         * jej wyjechać poza znormalizowany obraz.
+         */
+        if (result.left < 0f) {
+
+            result.offset(
+                    -result.left,
+                    0f
+            );
+        }
+
+
+        if (result.right > 1f) {
+
+            result.offset(
+                    1f - result.right,
+                    0f
+            );
+        }
+
+
+        if (result.top < 0f) {
+
+            result.offset(
+                    0f,
+                    -result.top
+            );
+        }
+
+
+        if (result.bottom > 1f) {
+
+            result.offset(
+                    0f,
+                    1f - result.bottom
+            );
+        }
+
+
+        return result;
+    }
+}
