@@ -85,6 +85,7 @@
     <string name="plate_character_format">%1$s  x%2$d y%3$d · %4$d%%</string>
     <string name="recognition_searching">Skieruj aparat na tablicę rejestracyjną</string>
     <string name="recognition_stabilizing">Stabilizuję odczyt…</string>
+    <string name="scene_change_analyzing">Zmiana sceny · analizuję…</string>
     <string name="recognition_unavailable">Rozpoznawanie jest teraz niedostępne</string>
     <string name="recognition_profile_fast">Szybki</string>
     <string name="recognition_profile_balanced">Zrównoważony</string>

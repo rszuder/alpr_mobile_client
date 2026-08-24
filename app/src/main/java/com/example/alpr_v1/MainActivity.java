@@ -73,6 +73,7 @@ import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.TimerConfig;
+import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -96,6 +97,106 @@ public final class MainActivity extends AppCompatActivity {
             "last_experiment_timer_seconds";
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
+    /*
+     * Lekki monitor tego, co użytkownik faktycznie widzi
+     * w PreviewView.
+     *
+     * Jest niezależny od ciężkiego pipeline'u MP/MT/MZ.
+     */
+    private static final long PREVIEW_SCENE_POLL_MS =
+            180L;
+
+
+    private final AtomicLong uiSceneGeneration =
+            new AtomicLong();
+
+
+    private final Handler previewSceneHandler =
+            new Handler(
+                    Looper.getMainLooper()
+            );
+
+
+    private final SceneChangeDetector previewSceneDetector =
+            new SceneChangeDetector();
+
+
+    private boolean previewSceneMonitorRunning;
+
+
+    private final Runnable previewSceneMonitorRunnable =
+            new Runnable() {
+
+                @Override
+                public void run() {
+
+                    if (!previewSceneMonitorRunning
+                            || !cameraStarted
+                            || previewView == null) {
+
+                        return;
+                    }
+
+
+                    Bitmap previewBitmap =
+                            null;
+
+
+                    try {
+
+                        /*
+                         * PreviewView.getBitmap() pobiera aktualny obraz
+                         * prezentowany użytkownikowi, niezależnie od tego,
+                         * czy analyzer CameraX jest nadal zajęty inferencją.
+                         */
+                        previewBitmap =
+                                previewView.getBitmap();
+
+
+                        if (previewBitmap != null
+                                && !previewBitmap.isRecycled()) {
+
+                            SceneChangeDetector.Result scene =
+                                    previewSceneDetector.update(
+                                            previewBitmap
+                                    );
+
+
+                            if (scene.sceneChanged) {
+
+                                invalidateUiForPreviewSceneChange(
+                                        scene
+                                );
+                            }
+                        }
+
+                    } catch (RuntimeException ignored) {
+
+                        /*
+                         * Brak klatki PreviewView podczas startu/restartu
+                         * kamery nie jest błędem pipeline'u.
+                         */
+
+                    } finally {
+
+                        if (previewBitmap != null
+                                && !previewBitmap.isRecycled()) {
+
+                            previewBitmap.recycle();
+                        }
+                    }
+
+
+                    if (previewSceneMonitorRunning
+                            && cameraStarted) {
+
+                        previewSceneHandler.postDelayed(
+                                this,
+                                PREVIEW_SCENE_POLL_MS
+                        );
+                    }
+                }
+            };
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
     private final ExperimentSession experimentSession =
             new ExperimentSession();
@@ -978,10 +1079,18 @@ public final class MainActivity extends AppCompatActivity {
                 ExperimentSession.CompletionReason.MANUAL
         );
     }
+
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
         cameraStarted = false;
+        stopPreviewSceneMonitor();
+
+        /*
+         * Unieważniamy również ewentualną inferencję
+         * znajdującą się jeszcze w toku.
+         */
+        uiSceneGeneration.incrementAndGet();
         /*
          * Po zatrzymaniu źródła danych kolektor cropów
          * również nie może pozostać aktywny.
@@ -1240,6 +1349,93 @@ public final class MainActivity extends AppCompatActivity {
 
         startActivity(intent);
     }
+    private void startPreviewSceneMonitor() {
+
+        previewSceneHandler.removeCallbacks(
+                previewSceneMonitorRunnable
+        );
+
+        previewSceneDetector.reset();
+
+        previewSceneMonitorRunning =
+                true;
+
+        previewSceneHandler.post(
+                previewSceneMonitorRunnable
+        );
+    }
+
+
+    private void stopPreviewSceneMonitor() {
+
+        previewSceneMonitorRunning =
+                false;
+
+        previewSceneHandler.removeCallbacks(
+                previewSceneMonitorRunnable
+        );
+
+        previewSceneDetector.reset();
+    }
+
+
+    private void invalidateUiForPreviewSceneChange(
+            SceneChangeDetector.Result scene
+    ) {
+
+        /*
+         * Wszystkie wyniki pipeline'u rozpoczęte przed tym
+         * momentem należą już do starej sceny.
+         */
+        long generation =
+                uiSceneGeneration.incrementAndGet();
+
+
+        /*
+         * Czyścimy wyłącznie stan prezentacji.
+         *
+         * NIE wywołujemy tutaj pipeline.resetTracking(),
+         * ponieważ ciężki pipeline może właśnie pracować
+         * na swoim wątku.
+         */
+        overlayTracker.reset();
+
+        lastCaptureByTrack.clear();
+
+        overlayView.setItems(
+                java.util.Collections.emptyList()
+        );
+
+
+        /*
+         * Kolejny prawidłowy wynik ma zostać pokazany
+         * natychmiast, bez dodatkowego throttlingu UI.
+         */
+        lastUiUpdateNanos.set(
+                0L
+        );
+
+
+        liveStatus.setText(
+                R.string.scene_change_analyzing
+        );
+
+        recognitionHint.setText(
+                R.string.recognition_stabilizing
+        );
+
+
+        android.util.Log.d(
+                "ALPR_SCENE_UI",
+                String.format(
+                        Locale.ROOT,
+                        "INVALIDATE generation=%d score=%.3f fraction=%.3f",
+                        generation,
+                        scene.score,
+                        scene.changedFraction
+                )
+        );
+    }
 
     private void startCamera(boolean beginNewMeasurement) {
         if (cameraStarted) return;
@@ -1260,7 +1456,16 @@ public final class MainActivity extends AppCompatActivity {
                 java.util.Collections.emptyList()
         );
 
+        /*
+         * Nowe uruchomienie kamery oznacza nową generację.
+         * Wynik ewentualnej starej inferencji nie może
+         * pojawić się po restarcie.
+         */
+        uiSceneGeneration.incrementAndGet();
+
         cameraStarted = true;
+
+        startPreviewSceneMonitor();
 
         renderAnalysisControls();
 
@@ -1292,38 +1497,141 @@ public final class MainActivity extends AppCompatActivity {
                         );
         cameraController.start(
                 image -> {
-                    long observationNanos = System.nanoTime();
-                    pipeline.setRapidCameraMotion(cameraMotionMonitor.isRapidMotion());
-                    PipelineResult result = pipeline.process(image);
-                    if (result == null) return;
-                    if (!cameraStarted) {
-                        result.close();
+
+                    /*
+                     * Zapamiętujemy scenę, do której należała klatka
+                     * w chwili rozpoczęcia ciężkiej inferencji.
+                     */
+                    final long sceneGenerationAtStart =
+                            uiSceneGeneration.get();
+
+
+                    long observationNanos =
+                            System.nanoTime();
+
+
+                    pipeline.setRapidCameraMotion(
+                            cameraMotionMonitor.isRapidMotion()
+                    );
+
+
+                    PipelineResult result =
+                            pipeline.process(
+                                    image
+                            );
+
+
+                    if (result == null) {
                         return;
                     }
-                    long now = System.nanoTime();
-                    long previous = lastUiUpdateNanos.get();
-                    if (now - previous >= 200_000_000L && lastUiUpdateNanos.compareAndSet(previous, now)) {
-                        runOnUiThread(() -> {
-                            try {
-                                presentResult(result, observationNanos);
-                            } finally {
-                                result.close();
-                            }
-                        });
-                    } else if (collectionActive && containsNewCrop(result.plateObservations)) {
-                        runOnUiThread(() -> {
-                            try {
-                                collectCrops(result.plateObservations);
-                            } finally {
-                                result.close();
-                            }
-                        });
+
+
+                    /*
+                     * Podczas MP/MT/MZ użytkownik mógł już skierować
+                     * kamerę na zupełnie inną scenę.
+                     *
+                     * Takiego wyniku nie wolno ani pokazać,
+                     * ani zapisać jako crop.
+                     */
+                    if (!cameraStarted
+                            || sceneGenerationAtStart
+                            != uiSceneGeneration.get()) {
+
+                        result.close();
+
+                        return;
+                    }
+
+
+                    long now =
+                            System.nanoTime();
+
+                    long previous =
+                            lastUiUpdateNanos.get();
+
+
+                    if (now - previous >= 200_000_000L
+                            && lastUiUpdateNanos.compareAndSet(
+                            previous,
+                            now
+                    )) {
+
+                        runOnUiThread(
+                                () -> {
+
+                                    /*
+                                     * Generacja mogła zmienić się również
+                                     * pomiędzy post() a wykonaniem callbacku UI.
+                                     */
+                                    if (!cameraStarted
+                                            || sceneGenerationAtStart
+                                            != uiSceneGeneration.get()) {
+
+                                        result.close();
+
+                                        return;
+                                    }
+
+
+                                    try {
+
+                                        presentResult(
+                                                result,
+                                                observationNanos
+                                        );
+
+                                    } finally {
+
+                                        result.close();
+                                    }
+                                }
+                        );
+
+                    } else if (collectionActive
+                            && containsNewCrop(
+                            result.plateObservations
+                    )) {
+
+                        runOnUiThread(
+                                () -> {
+
+                                    /*
+                                     * Stara scena nie może również trafić
+                                     * do kolekcji cropów.
+                                     */
+                                    if (!cameraStarted
+                                            || sceneGenerationAtStart
+                                            != uiSceneGeneration.get()) {
+
+                                        result.close();
+
+                                        return;
+                                    }
+
+
+                                    try {
+
+                                        collectCrops(
+                                                result.plateObservations
+                                        );
+
+                                    } finally {
+
+                                        result.close();
+                                    }
+                                }
+                        );
+
                     } else {
+
                         result.close();
                     }
                 },
                 error -> runOnUiThread(() -> {
                     cameraStarted = false;
+                    stopPreviewSceneMonitor();
+
+                    uiSceneGeneration.incrementAndGet();
                     finishAnalysisMeasurement(
                             ExperimentSession.CompletionReason.ERROR
                     );
@@ -2868,6 +3176,9 @@ public final class MainActivity extends AppCompatActivity {
         if (cameraStarted && cameraMotionMonitor != null) {
             cameraMotionMonitor.start();
         }
+        if (cameraStarted) {
+            startPreviewSceneMonitor();
+        }
     }
 
     private void applySettingsRevision() {
@@ -3029,6 +3340,7 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         retainCaptureGalleryState();
+        stopPreviewSceneMonitor();
         if (cameraMotionMonitor != null) cameraMotionMonitor.stop();
         super.onPause();
     }
@@ -3050,6 +3362,9 @@ public final class MainActivity extends AppCompatActivity {
                 LOG_TAG,
                 "Zamykanie aplikacji"
         );
+        stopPreviewSceneMonitor();
+
+        uiSceneGeneration.incrementAndGet();
 
         /*
          * CameraController.close() zatrzymuje CameraX,
