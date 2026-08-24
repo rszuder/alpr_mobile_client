@@ -33,6 +33,7 @@ import com.example.alpr_v1.vision.YoloOutputSpec;
 import com.example.alpr_v1.vision.YoloEndToEndDecoder;
 import com.example.alpr_v1.vision.YoloRawDecoder;
 import com.example.alpr_v1.vision.SceneChangeDetector;
+import com.example.alpr_v1.vision.ReadingOrderResolver;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -429,10 +430,12 @@ final class MobileAlprEngine implements AutoCloseable {
                     characterRuns++;
 
                     started = SystemClock.elapsedRealtimeNanos();
-                    List<Detection> characters = characterCandidates(
-                            characterRun,
-                            decision.expectedCharacterCount
-                    );
+                    List<Detection> characters =
+                            characterCandidates(
+                                    characterRun,
+                                    decision.expectedCharacterCount,
+                                    decision.expectedRowCounts
+                            );
                     cropCharacterPostprocessNanos = SystemClock.elapsedRealtimeNanos() - started;
                     characterPostprocessNanos += cropCharacterPostprocessNanos;
                     for (Detection character : characters) {
@@ -920,32 +923,218 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private List<Detection> characterCandidates(
             InferenceRunResult run,
-            int expectedCharacterCount
+            int expectedCharacterCount,
+            List<Integer> expectedRowCounts
     ) {
-        float normalThreshold = characterOutputSpec.confidenceThreshold();
-        float candidateFloor = Math.min(normalThreshold, 0.10f);
-        List<Detection> candidates = decodeFirstOutput(
-                run, characterInputSpec, characterOutputSpec, candidateFloor
-        );
-        List<Detection> normal = new ArrayList<>();
-        for (Detection candidate : candidates) {
-            if (candidate.confidence >= normalThreshold) normal.add(candidate);
-        }
-        List<Detection> selected = CharacterSequencePostProcessor.process(
-                normal, expectedCharacterCount
-        );
-        if (expectedCharacterCount > 0 && selected.size() < expectedCharacterCount) {
-            List<Detection> recall = CharacterSequencePostProcessor.process(
-                    candidates, expectedCharacterCount
-            );
-            if (Math.abs(recall.size() - expectedCharacterCount)
-                    < Math.abs(selected.size() - expectedCharacterCount)) {
-                selected = recall;
+        float normalThreshold =
+                characterOutputSpec.confidenceThreshold();
+
+        float candidateFloor =
+                Math.min(
+                        normalThreshold,
+                        0.10f
+                );
+
+
+        List<Detection> candidates =
+                decodeFirstOutput(
+                        run,
+                        characterInputSpec,
+                        characterOutputSpec,
+                        candidateFloor
+                );
+
+
+        List<Detection> normal =
+                new ArrayList<>();
+
+
+        for (Detection candidate :
+                candidates) {
+
+            if (candidate.confidence
+                    >= normalThreshold) {
+
+                normal.add(
+                        candidate
+                );
             }
         }
+
+
+        List<Detection> selected =
+                CharacterSequencePostProcessor.process(
+                        normal,
+                        expectedCharacterCount
+                );
+
+
+        /*
+         * Jeżeli nie mamy jeszcze stabilnej wiedzy czasowej
+         * o oczekiwanym wyniku, pozostajemy przy zwykłym
+         * progu confidence.
+         */
+        if (expectedCharacterCount <= 0) {
+            return selected;
+        }
+
+
+        int selectedDistance =
+                candidateStructureDistance(
+                        selected,
+                        expectedCharacterCount,
+                        expectedRowCounts
+                );
+
+
+        /*
+         * Jeżeli wynik z normalnego progu dokładnie odpowiada
+         * oczekiwanej strukturze, nie ma powodu uruchamiać
+         * bardziej liberalnego recall.
+         */
+        if (selectedDistance == 0) {
+            return selected;
+        }
+
+
+        /*
+         * Druga próba używa również kandydatów z niższym
+         * confidence.
+         *
+         * Nie wybieramy jej już wyłącznie na podstawie
+         * całkowitej liczby znaków.
+         *
+         * Uwzględniamy także strukturę wierszy zapamiętaną
+         * przez konsensus czasowy.
+         */
+        List<Detection> recall =
+                CharacterSequencePostProcessor.process(
+                        candidates,
+                        expectedCharacterCount
+                );
+
+
+        int recallDistance =
+                candidateStructureDistance(
+                        recall,
+                        expectedCharacterCount,
+                        expectedRowCounts
+                );
+
+
+        if (recallDistance < selectedDistance) {
+            return recall;
+        }
+
+
         return selected;
     }
 
+    private static int candidateStructureDistance(
+            List<Detection> detections,
+            int expectedCharacterCount,
+            List<Integer> expectedRowCounts
+    ) {
+        int totalCountDistance =
+                Math.abs(
+                        detections.size()
+                                - Math.max(
+                                0,
+                                expectedCharacterCount
+                        )
+                );
+
+
+        /*
+         * Jeśli tracker zna tylko długość sekwencji,
+         * zachowujemy stare zachowanie.
+         */
+        if (expectedRowCounts == null
+                || expectedRowCounts.isEmpty()) {
+
+            return totalCountDistance;
+        }
+
+
+        List<List<Detection>> actualRows =
+                ReadingOrderResolver.rows(
+                        detections
+                );
+
+
+        /*
+         * Różna liczba wierszy jest znacznie poważniejszą
+         * niezgodnością niż brak pojedynczego znaku.
+         *
+         * Dlatego nadajemy jej większą wagę.
+         */
+        int distance =
+                Math.abs(
+                        actualRows.size()
+                                - expectedRowCounts.size()
+                ) * 100;
+
+
+        int commonRows =
+                Math.min(
+                        actualRows.size(),
+                        expectedRowCounts.size()
+                );
+
+
+        for (int rowIndex = 0;
+             rowIndex < commonRows;
+             rowIndex++) {
+
+            distance +=
+                    Math.abs(
+                            actualRows
+                                    .get(rowIndex)
+                                    .size()
+                                    - expectedRowCounts
+                                    .get(rowIndex)
+                    );
+        }
+
+
+        /*
+         * Znaki należące do brakujących albo dodatkowych
+         * wierszy także zwiększają odległość.
+         */
+        for (int rowIndex = commonRows;
+             rowIndex < actualRows.size();
+             rowIndex++) {
+
+            distance +=
+                    actualRows
+                            .get(rowIndex)
+                            .size();
+        }
+
+
+        for (int rowIndex = commonRows;
+             rowIndex < expectedRowCounts.size();
+             rowIndex++) {
+
+            distance +=
+                    Math.max(
+                            0,
+                            expectedRowCounts
+                                    .get(rowIndex)
+                    );
+        }
+
+
+        /*
+         * Zachowujemy dodatkowo kontrolę całkowitej
+         * liczby znaków.
+         */
+        distance +=
+                totalCountDistance;
+
+
+        return distance;
+    }
     private static List<Detection> decodeFirstOutput(
             InferenceRunResult run,
             ModelInputSpec inputSpec,

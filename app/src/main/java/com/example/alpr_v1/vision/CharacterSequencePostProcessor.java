@@ -16,25 +16,85 @@ public final class CharacterSequencePostProcessor {
 
     private CharacterSequencePostProcessor() {}
 
-    public static List<Detection> process(List<Detection> detections, int expectedCount) {
-        List<Detection> unique = suppressDuplicates(detections);
-        if (unique.size() <= 1) return unique;
-        List<List<Detection>> rows = ReadingOrderResolver.rows(unique);
-        List<Detection> dominantRow = rows.stream()
-                .max(Comparator.comparingInt((List<Detection> row) -> row.size()))
-                .orElse(java.util.Collections.emptyList());
-        Stats dominantStats = stats(referenceSubset(dominantRow));
-        List<Detection> filtered = new ArrayList<>();
+    public static List<Detection> process(
+            List<Detection> detections,
+            int expectedCount
+    ) {
+        List<Detection> unique =
+                suppressDuplicates(detections);
+
+        if (unique.size() <= 1) {
+            return unique;
+        }
+
+        List<List<Detection>> rows =
+                ReadingOrderResolver.rows(unique);
+
+        List<Detection> dominantRow =
+                rows.stream()
+                        .max(
+                                Comparator.comparingInt(
+                                        (List<Detection> row) -> row.size()
+                                )
+                        )
+                        .orElse(
+                                java.util.Collections.emptyList()
+                        );
+
+        Stats dominantStats =
+                stats(
+                        referenceSubset(dominantRow)
+                );
+
+        List<Detection> filtered =
+                new ArrayList<>();
+
+        List<List<Detection>> filteredRows =
+                new ArrayList<>();
+
         for (List<Detection> row : rows) {
-            if (row.size() == 1 && dominantRow.size() >= 2
-                    && isGeometryOutlier(row.get(0), dominantStats)) {
+
+            if (row.size() == 1
+                    && dominantRow.size() >= 2
+                    && isGeometryOutlier(
+                    row.get(0),
+                    dominantStats
+            )) {
                 continue;
             }
-            filtered.addAll(filterRow(row, 0));
+
+            List<Detection> filteredRow =
+                    filterRow(row, 0);
+
+            if (filteredRow.isEmpty()) {
+                continue;
+            }
+
+            filteredRows.add(filteredRow);
+            filtered.addAll(filteredRow);
         }
-        if (expectedCount > 0 && filtered.size() > expectedCount) {
-            filtered = bestCountCandidates(filtered, expectedCount);
+
+        /*
+         * expectedCount jest płaską liczbą znaków znaną z trackera.
+         *
+         * Możemy używać jej do ograniczenia liczby kandydatów
+         * w układzie jednorzędowym.
+         *
+         * Dla tablic wielowierszowych struktura wierszy ma
+         * pierwszeństwo. Globalny ranking mógłby bowiem usunąć
+         * poprawne znaki jednego z wierszy.
+         */
+        if (expectedCount > 0
+                && filtered.size() > expectedCount
+                && filteredRows.size() <= 1) {
+
+            filtered =
+                    bestCountCandidates(
+                            filtered,
+                            expectedCount
+                    );
         }
+
         return ReadingOrderResolver.sort(filtered);
     }
 

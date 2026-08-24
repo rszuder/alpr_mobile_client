@@ -33,24 +33,75 @@ final class PlateTrackCoordinator {
     }
 
     static final class Decision {
+
         final long trackId;
+
         final int sourceIndex;
+
         final boolean recognize;
+
+        /*
+         * Całkowita liczba znaków oczekiwana na podstawie
+         * dominującego konsensusu czasowego.
+         */
         final int expectedCharacterCount;
+
+        /*
+         * Struktura wierszy oczekiwana dla tracku.
+         *
+         * Przykłady:
+         *
+         * [7]
+         * [3, 5]
+         * [2, 3, 3]
+         */
+        final List<Integer> expectedRowCounts;
+
+        /*
+         * single_row / two_row / multi_row / unknown
+         */
+        final String expectedLayout;
+
         final TemporalCharacterAggregator.Result currentResult;
+
 
         private Decision(
                 long trackId,
                 int sourceIndex,
                 boolean recognize,
                 int expectedCharacterCount,
+                List<Integer> expectedRowCounts,
+                String expectedLayout,
                 TemporalCharacterAggregator.Result currentResult
         ) {
-            this.trackId = trackId;
-            this.sourceIndex = sourceIndex;
-            this.recognize = recognize;
-            this.expectedCharacterCount = expectedCharacterCount;
-            this.currentResult = currentResult;
+            this.trackId =
+                    trackId;
+
+            this.sourceIndex =
+                    sourceIndex;
+
+            this.recognize =
+                    recognize;
+
+            this.expectedCharacterCount =
+                    expectedCharacterCount;
+
+            this.expectedRowCounts =
+                    java.util.Collections.unmodifiableList(
+                            new ArrayList<>(
+                                    expectedRowCounts == null
+                                            ? java.util.Collections.emptyList()
+                                            : expectedRowCounts
+                            )
+                    );
+
+            this.expectedLayout =
+                    expectedLayout == null
+                            ? TemporalCharacterAggregator.LAYOUT_UNKNOWN
+                            : expectedLayout;
+
+            this.currentResult =
+                    currentResult;
         }
     }
 
@@ -96,13 +147,17 @@ final class PlateTrackCoordinator {
             TemporalCharacterAggregator.Result current = state.aggregator.current();
             boolean stable = current != null && current.stable;
             boolean recognize = shouldRecognize(state, observation, frameId, stable);
-            decisions.add(new Decision(
-                    track.trackId,
-                    track.sourceIndex,
-                    recognize,
-                    state.aggregator.expectedCount(),
-                    current
-            ));
+            decisions.add(
+                    new Decision(
+                            track.trackId,
+                            track.sourceIndex,
+                            recognize,
+                            state.aggregator.expectedCount(),
+                            state.aggregator.expectedRowCounts(),
+                            state.aggregator.expectedLayout(),
+                            current
+                    )
+            );
         }
         Iterator<Map.Entry<Long, State>> iterator = states.entrySet().iterator();
         while (iterator.hasNext()) {

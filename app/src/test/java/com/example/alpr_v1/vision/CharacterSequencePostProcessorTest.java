@@ -58,7 +58,84 @@ public class CharacterSequencePostProcessorTest {
                 result.get(3).classId
         ));
     }
+    @Test
+    public void expectedCountStillLimitsSingleRow() {
+        List<Detection> result =
+                CharacterSequencePostProcessor.process(
+                        Arrays.asList(
+                                detection(
+                                        0, 0.95f,
+                                        10, 10, 30, 50
+                                ),
+                                detection(
+                                        1, 0.94f,
+                                        40, 10, 60, 50
+                                ),
+                                detection(
+                                        2, 0.93f,
+                                        70, 10, 90, 50
+                                ),
+                                detection(
+                                        3, 0.40f,
+                                        100, 10, 120, 50
+                                )
+                        ),
+                        3
+                );
 
+        assertEquals(3, result.size());
+    }
+
+    @Test
+    public void expectedCountDoesNotFlattenTwoRows() {
+        List<Detection> result =
+                CharacterSequencePostProcessor.process(
+                        Arrays.asList(
+                                detection(
+                                        0, 0.98f,
+                                        10, 10, 30, 50
+                                ),
+                                detection(
+                                        1, 0.97f,
+                                        40, 10, 60, 50
+                                ),
+                                detection(
+                                        2, 0.96f,
+                                        70, 10, 90, 50
+                                ),
+                                detection(
+                                        3, 0.82f,
+                                        10, 70, 30, 110
+                                ),
+                                detection(
+                                        4, 0.81f,
+                                        40, 70, 60, 110
+                                ),
+                                detection(
+                                        5, 0.80f,
+                                        70, 70, 90, 110
+                                )
+                        ),
+                        4
+                );
+
+        assertEquals(6, result.size());
+
+        assertEquals(
+                Arrays.asList(
+                        0, 1, 2,
+                        3, 4, 5
+                ),
+                Arrays.asList(
+                        result.get(0).classId,
+                        result.get(1).classId,
+                        result.get(2).classId,
+                        result.get(3).classId,
+                        result.get(4).classId,
+                        result.get(5).classId
+                )
+        );
+    }
     private static Detection detection(
             int classId, float confidence, float left, float top, float right, float bottom
     ) {

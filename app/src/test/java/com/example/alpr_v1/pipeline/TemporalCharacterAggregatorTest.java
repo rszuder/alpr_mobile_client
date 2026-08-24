@@ -49,6 +49,121 @@ public class TemporalCharacterAggregatorTest {
         assertEquals("AB1", aggregator.current().text);
     }
 
+    @Test
+    public void keepsDifferentLayoutsWithSameLengthSeparate() {
+        TemporalCharacterAggregator aggregator =
+                new TemporalCharacterAggregator();
+
+        /*
+         * Ta sama całkowita liczba znaków:
+         *
+         * pierwsza obserwacja:
+         * A B 1 2
+         *
+         * drugi wariant:
+         *
+         * A B
+         * 1 2
+         *
+         * Nie mogą uczestniczyć w jednym stanie konsensusu.
+         */
+        aggregator.accept(
+                sequence(
+                        0, 1, 2, 3
+                ),
+                LABELS
+        );
+
+        aggregator.accept(
+                twoRowSequence(
+                        0, 1,
+                        2, 3
+                ),
+                LABELS
+        );
+
+        TemporalCharacterAggregator.Result result =
+                aggregator.accept(
+                        twoRowSequence(
+                                0, 1,
+                                2, 3
+                        ),
+                        LABELS
+                );
+
+        assertEquals(
+                "two_row",
+                result.layout
+        );
+
+        assertEquals(
+                2,
+                result.rowCount
+        );
+
+        assertEquals(
+                Arrays.asList(
+                        2,
+                        2
+                ),
+                result.rowCounts
+        );
+
+        assertEquals(
+                2,
+                result.observations
+        );
+
+        assertTrue(
+                result.stable
+        );
+    }
+
+
+    @Test
+    public void exposesExpectedTwoRowStructureAfterTwoObservations() {
+        TemporalCharacterAggregator aggregator =
+                new TemporalCharacterAggregator();
+
+        aggregator.accept(
+                twoRowSequence(
+                        0, 1,
+                        2, 3
+                ),
+                LABELS
+        );
+
+        assertEquals(
+                Collections.emptyList(),
+                aggregator.expectedRowCounts()
+        );
+
+        aggregator.accept(
+                twoRowSequence(
+                        0, 1,
+                        2, 3
+                ),
+                LABELS
+        );
+
+        assertEquals(
+                4,
+                aggregator.expectedCount()
+        );
+
+        assertEquals(
+                "two_row",
+                aggregator.expectedLayout()
+        );
+
+        assertEquals(
+                Arrays.asList(
+                        2,
+                        2
+                ),
+                aggregator.expectedRowCounts()
+        );
+    }
     private static java.util.List<Detection> sequence(int... classIds) {
         java.util.List<Detection> result = new java.util.ArrayList<>();
         for (int i = 0; i < classIds.length; i++) {
@@ -59,5 +174,51 @@ public class TemporalCharacterAggregatorTest {
             ));
         }
         return result;
+    }
+
+    private static java.util.List<Detection> twoRowSequence(
+            int topLeft,
+            int topRight,
+            int bottomLeft,
+            int bottomRight
+    ) {
+        return Arrays.asList(
+                new Detection(
+                        topLeft,
+                        0.9f,
+                        10,
+                        10,
+                        25,
+                        40,
+                        Collections.emptyList()
+                ),
+                new Detection(
+                        topRight,
+                        0.9f,
+                        40,
+                        10,
+                        55,
+                        40,
+                        Collections.emptyList()
+                ),
+                new Detection(
+                        bottomLeft,
+                        0.9f,
+                        10,
+                        70,
+                        25,
+                        100,
+                        Collections.emptyList()
+                ),
+                new Detection(
+                        bottomRight,
+                        0.9f,
+                        40,
+                        70,
+                        55,
+                        100,
+                        Collections.emptyList()
+                )
+        );
     }
 }
