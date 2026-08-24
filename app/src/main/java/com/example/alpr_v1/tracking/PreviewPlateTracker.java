@@ -13,109 +13,82 @@ import java.util.List;
 
 
 /**
- * Lekki tracker tablicy działający na klatkach PreviewView.
+ * Lekki tracker tablic działający na klatkach PreviewView.
  *
- * Nie wykonuje inferencji.
- *
- * MT okresowo dostarcza dokładne położenie tablicy,
+ * MT okresowo dostarcza dokładne położenie tablic,
  * a pomiędzy kolejnymi wynikami MT tracker szacuje
- * przesunięcie tablicy na podstawie obrazu.
+ * ich przesunięcie na obrazie.
  *
- * Wersja v1 śledzi translację całego quada.
+ * Wersja v2:
+ * - obsługuje wiele tablic,
+ * - każda tablica ma własne cztery punkty,
+ * - wspólny obraz Preview służy jako źródło ruchu,
+ * - na razie śledzona jest translacja całego quada.
  */
 public final class PreviewPlateTracker {
 
-    /*
-     * Preview jest zmniejszany przed śledzeniem.
-     *
-     * Dzięki temu tracker ma mały koszt nawet wtedy,
-     * gdy podgląd telefonu ma rozdzielczość Full HD.
-     */
     private static final int MAX_TRACK_WIDTH =
             320;
 
-
-    /*
-     * Fragment analizowany wokół każdego narożnika:
-     *
-     * radius = 3 -> patch 7x7.
-     */
     private static final int PATCH_RADIUS =
             3;
 
-
-    /*
-     * Maksymalne przesunięcie narożnika między
-     * kolejnymi klatkami trackera.
-     */
     private static final int SEARCH_RADIUS =
             14;
 
-
-    /*
-     * Maksymalny średni błąd jasności patcha.
-     *
-     * Chroni przed śledzeniem przypadkowego fragmentu obrazu.
-     */
     private static final float MAX_MEAN_ERROR =
             34f;
 
-
-    /*
-     * Cztery narożniki powinny zgadzać się mniej więcej
-     * co do kierunku i wielkości ruchu.
-     */
     private static final int DISPLACEMENT_CONSISTENCY =
             3;
 
-
     /*
-     * Jeżeli MT przez bardzo długi czas nie potwierdzi
-     * tablicy, przestajemy ufać trackerowi.
+     * Po kilku kolejnych nieudanych dopasowaniach
+     * przestajemy pokazywać dany track.
      */
-    private static final long MAX_WITHOUT_REANCHOR_NANOS =
-            8_000_000_000L;
+    private static final int MAX_CONSECUTIVE_FAILURES =
+            3;
 
 
-    private List<OverlayItem> baseItems =
-            Collections.emptyList();
+    private static final class TrackState {
+
+        final OverlayItem basePlate;
+
+        List<PointF> trackedPoints =
+                Collections.emptyList();
+
+        int consecutiveFailures;
 
 
-    private OverlayItem basePlate;
+        TrackState(
+                OverlayItem basePlate
+        ) {
+
+            this.basePlate =
+                    basePlate;
+        }
+    }
 
 
-    private int plateIndex =
-            -1;
-
-
-    private int sourceWidth;
-    private int sourceHeight;
-
-
-    /*
-     * Pozycje narożników w zmniejszonym obrazie trackera.
-     */
-    private List<PointF> trackedPoints =
+    private List<TrackState> tracks =
             Collections.emptyList();
 
 
     private byte[] previousGray;
 
-
     private int trackerWidth;
     private int trackerHeight;
-
 
     private int previousPreviewWidth;
     private int previousPreviewHeight;
 
-
-    private long lastAnchorNanos =
-            Long.MIN_VALUE;
+    private int sourceWidth;
+    private int sourceHeight;
 
 
     /**
-     * Ponowne zakotwiczenie trackera wynikiem MT.
+     * Nowy wynik MT ponownie kotwiczy wszystkie
+     * aktualnie wykryte tablice.
      */
     public synchronized boolean anchor(
             List<OverlayItem> items,
@@ -131,71 +104,58 @@ public final class PreviewPlateTracker {
         }
 
 
-        int foundIndex =
-                -1;
-
-        OverlayItem foundPlate =
-                null;
+        List<TrackState> newTracks =
+                new ArrayList<>();
 
 
-        for (int index = 0;
-             index < items.size();
-             index++) {
+        for (OverlayItem item :
+                items) {
 
-            OverlayItem candidate =
-                    items.get(index);
-
-
-            if (candidate.kind
+            if (item.kind
                     != OverlayItem.Kind.PLATE) {
 
                 continue;
             }
 
 
-            if (candidate.normalizedKeypoints.size()
+            /*
+             * Do ponownego kotwiczenia używamy
+             * rzeczywistej obserwacji MT, a nie
+             * krótkiej predykcji starego trackera.
+             */
+            if (item.carriedPrediction) {
+
+                continue;
+            }
+
+
+            if (item.normalizedKeypoints.size()
                     < 4) {
 
                 continue;
             }
 
 
-            foundIndex =
-                    index;
-
-            foundPlate =
-                    candidate;
-
-            break;
+            newTracks.add(
+                    new TrackState(
+                            item
+                    )
+            );
         }
 
 
         /*
-         * Brak tablicy w pojedynczym wyniku MT nie zabija
-         * natychmiast poprzedniego trackera.
-         *
-         * Może to być chwilowy miss detektora.
+         * Pojedynczy miss MT nie kasuje od razu
+         * istniejącego trackera.
          */
-        if (foundPlate == null) {
+        if (newTracks.isEmpty()) {
 
             return false;
         }
 
 
-        this.baseItems =
-                Collections.unmodifiableList(
-                        new ArrayList<>(
-                                items
-                        )
-                );
-
-
-        this.basePlate =
-                foundPlate;
-
-
-        this.plateIndex =
-                foundIndex;
+        this.tracks =
+                newTracks;
 
 
         this.sourceWidth =
@@ -206,21 +166,11 @@ public final class PreviewPlateTracker {
 
 
         /*
-         * Nowy MT jest nowym punktem odniesienia.
-         *
-         * Pierwsza kolejna klatka Preview utworzy
-         * świeży obraz referencyjny.
+         * Pierwsza następna klatka Preview ustawi
+         * pozycje punktów względem aktualnego obrazu.
          */
-        this.previousGray =
+        previousGray =
                 null;
-
-
-        this.trackedPoints =
-                Collections.emptyList();
-
-
-        this.lastAnchorNanos =
-                System.nanoTime();
 
 
         return true;
@@ -228,10 +178,8 @@ public final class PreviewPlateTracker {
 
 
     /**
-     * Przetwarza kolejną klatkę PreviewView.
-     *
-     * null oznacza:
-     * nie mamy jeszcze wiarygodnej aktualizacji.
+     * Aktualizacja wszystkich aktywnych tablic
+     * na podstawie jednej klatki PreviewView.
      */
     public synchronized List<OverlayItem> update(
             Bitmap preview
@@ -239,22 +187,7 @@ public final class PreviewPlateTracker {
 
         if (preview == null
                 || preview.isRecycled()
-                || basePlate == null
-                || plateIndex < 0) {
-
-            return null;
-        }
-
-
-        long now =
-                System.nanoTime();
-
-
-        if (lastAnchorNanos == Long.MIN_VALUE
-                || now - lastAnchorNanos
-                > MAX_WITHOUT_REANCHOR_NANOS) {
-
-            reset();
+                || tracks.isEmpty()) {
 
             return null;
         }
@@ -273,8 +206,8 @@ public final class PreviewPlateTracker {
 
 
         /*
-         * Pierwsza klatka po wyniku MT tworzy
-         * punkt odniesienia trackera.
+         * Pierwsza klatka po nowym wyniku MT
+         * tworzy obraz odniesienia.
          */
         if (previousGray == null
                 || trackerWidth != current.width
@@ -290,7 +223,6 @@ public final class PreviewPlateTracker {
             trackerHeight =
                     current.height;
 
-
             previousPreviewWidth =
                     preview.getWidth();
 
@@ -298,31 +230,184 @@ public final class PreviewPlateTracker {
                     preview.getHeight();
 
 
-            trackedPoints =
-                    initialTrackerPoints(
-                            preview.getWidth(),
-                            preview.getHeight(),
+            for (TrackState track :
+                    tracks) {
+
+                track.trackedPoints =
+                        initialTrackerPoints(
+                                track.basePlate,
+                                preview.getWidth(),
+                                preview.getHeight(),
+                                trackerWidth,
+                                trackerHeight
+                        );
+
+                track.consecutiveFailures =
+                        0;
+            }
+
+
+            previousGray =
+                    current.gray;
+
+
+            return null;
+        }
+
+
+        List<TrackState> survivingTracks =
+                new ArrayList<>();
+
+        List<OverlayItem> visible =
+                new ArrayList<>();
+
+
+        for (TrackState track :
+                tracks) {
+
+            if (track.trackedPoints.size()
+                    < 4) {
+
+                continue;
+            }
+
+
+            TrackUpdate update =
+                    updateTrack(
+                            track,
+                            previousGray,
+                            current.gray,
                             trackerWidth,
                             trackerHeight
                     );
 
 
-            previousGray =
-                    current.gray;
+            if (!update.valid) {
 
+                track.consecutiveFailures++;
+
+
+                /*
+                 * Krótki pojedynczy miss nie powoduje
+                 * migotania ramki.
+                 */
+                if (track.consecutiveFailures
+                        < MAX_CONSECUTIVE_FAILURES) {
+
+                    OverlayItem unchanged =
+                            buildTrackedPlate(
+                                    track,
+                                    preview.getWidth(),
+                                    preview.getHeight()
+                            );
+
+
+                    if (unchanged != null) {
+
+                        visible.add(
+                                unchanged
+                        );
+
+                        survivingTracks.add(
+                                track
+                        );
+                    }
+                }
+
+
+                continue;
+            }
+
+
+            track.consecutiveFailures =
+                    0;
+
+
+            List<PointF> moved =
+                    new ArrayList<>(
+                            track.trackedPoints.size()
+                    );
+
+
+            for (PointF point :
+                    track.trackedPoints) {
+
+                moved.add(
+                        new PointF(
+                                point.x + update.dx,
+                                point.y + update.dy
+                        )
+                );
+            }
+
+
+            track.trackedPoints =
+                    Collections.unmodifiableList(
+                            moved
+                    );
+
+
+            OverlayItem trackedPlate =
+                    buildTrackedPlate(
+                            track,
+                            preview.getWidth(),
+                            preview.getHeight()
+                    );
+
+
+            if (trackedPlate != null) {
+
+                visible.add(
+                        trackedPlate
+                );
+
+                survivingTracks.add(
+                        track
+                );
+            }
+
+
+            android.util.Log.d(
+                    "ALPR_PREVIEW_TRACK",
+                    "track="
+                            + track.basePlate.trackId
+                            + " dx="
+                            + update.dx
+                            + " dy="
+                            + update.dy
+                            + " support="
+                            + update.support
+            );
+        }
+
+
+        tracks =
+                survivingTracks;
+
+
+        previousGray =
+                current.gray;
+
+
+        if (visible.isEmpty()) {
 
             return null;
         }
 
 
-        if (trackedPoints.size() < 4) {
+        return Collections.unmodifiableList(
+                visible
+        );
+    }
 
-            previousGray =
-                    current.gray;
 
-            return null;
-        }
-
+    private static TrackUpdate updateTrack(
+            TrackState track,
+            byte[] previous,
+            byte[] current,
+            int width,
+            int height
+    ) {
 
         List<Match> matches =
                 new ArrayList<>(
@@ -336,11 +421,11 @@ public final class PreviewPlateTracker {
 
             matches.add(
                     matchPoint(
-                            previousGray,
-                            current.gray,
-                            trackerWidth,
-                            trackerHeight,
-                            trackedPoints.get(
+                            previous,
+                            current,
+                            width,
+                            height,
+                            track.trackedPoints.get(
                                     index
                             )
                     )
@@ -359,6 +444,7 @@ public final class PreviewPlateTracker {
                 matches) {
 
             if (!match.valid) {
+
                 continue;
             }
 
@@ -375,10 +461,7 @@ public final class PreviewPlateTracker {
 
         if (dxValues.size() < 2) {
 
-            previousGray =
-                    current.gray;
-
-            return null;
+            return TrackUpdate.invalid();
         }
 
 
@@ -393,10 +476,6 @@ public final class PreviewPlateTracker {
                 );
 
 
-        /*
-         * Weryfikujemy, czy przynajmniej dwa narożniki
-         * naprawdę opisują ten sam ruch.
-         */
         int support =
                 0;
 
@@ -405,6 +484,7 @@ public final class PreviewPlateTracker {
                 matches) {
 
             if (!match.valid) {
+
                 continue;
             }
 
@@ -423,113 +503,21 @@ public final class PreviewPlateTracker {
 
         if (support < 2) {
 
-            previousGray =
-                    current.gray;
-
-            return null;
+            return TrackUpdate.invalid();
         }
 
 
-        List<PointF> moved =
-                new ArrayList<>(
-                        trackedPoints.size()
-                );
-
-
-        for (PointF point :
-                trackedPoints) {
-
-            moved.add(
-                    new PointF(
-                            point.x + medianDx,
-                            point.y + medianDy
-                    )
-            );
-        }
-
-
-        trackedPoints =
-                Collections.unmodifiableList(
-                        moved
-                );
-
-
-        previousGray =
-                current.gray;
-
-
-        List<OverlayItem> result =
-                buildTrackedItems(
-                        preview.getWidth(),
-                        preview.getHeight()
-                );
-
-
-        android.util.Log.d(
-                "ALPR_PREVIEW_TRACK",
-                "dx=" + medianDx
-                        + " dy=" + medianDy
-                        + " support=" + support
+        return new TrackUpdate(
+                true,
+                medianDx,
+                medianDy,
+                support
         );
-
-
-        return result;
-    }
-
-
-    public synchronized int sourceWidth() {
-
-        return sourceWidth;
-    }
-
-
-    public synchronized int sourceHeight() {
-
-        return sourceHeight;
-    }
-
-
-    public synchronized void reset() {
-
-        baseItems =
-                Collections.emptyList();
-
-        basePlate =
-                null;
-
-        plateIndex =
-                -1;
-
-        sourceWidth =
-                0;
-
-        sourceHeight =
-                0;
-
-        trackedPoints =
-                Collections.emptyList();
-
-        previousGray =
-                null;
-
-        trackerWidth =
-                0;
-
-        trackerHeight =
-                0;
-
-        previousPreviewWidth =
-                0;
-
-        previousPreviewHeight =
-                0;
-
-        lastAnchorNanos =
-                Long.MIN_VALUE;
     }
 
 
     private List<PointF> initialTrackerPoints(
+            OverlayItem plate,
             int previewWidth,
             int previewHeight,
             int trackerWidth,
@@ -547,9 +535,9 @@ public final class PreviewPlateTracker {
              index++) {
 
             PointF normalized =
-                    basePlate
-                            .normalizedKeypoints
-                            .get(index);
+                    plate.normalizedKeypoints.get(
+                            index
+                    );
 
 
             result.add(
@@ -572,21 +560,26 @@ public final class PreviewPlateTracker {
     }
 
 
-    private List<OverlayItem> buildTrackedItems(
+    private OverlayItem buildTrackedPlate(
+            TrackState track,
             int previewWidth,
             int previewHeight
     ) {
 
-        if (trackedPoints.size() < 4
-                || basePlate == null) {
+        if (track.trackedPoints.size()
+                < 4) {
 
             return null;
         }
 
 
+        OverlayItem basePlate =
+                track.basePlate;
+
+
         PointF trackedFirst =
                 trackerToNormalized(
-                        trackedPoints.get(0),
+                        track.trackedPoints.get(0),
                         sourceWidth,
                         sourceHeight,
                         previewWidth,
@@ -597,9 +590,9 @@ public final class PreviewPlateTracker {
 
 
         PointF originalFirst =
-                basePlate
-                        .normalizedKeypoints
-                        .get(0);
+                basePlate.normalizedKeypoints.get(
+                        0
+                );
 
 
         float dx =
@@ -611,9 +604,6 @@ public final class PreviewPlateTracker {
                         - originalFirst.y;
 
 
-        /*
-         * Nie pozwalamy bboxowi wyjść poza obraz.
-         */
         dx =
                 clamp(
                         dx,
@@ -643,10 +633,6 @@ public final class PreviewPlateTracker {
                 );
 
 
-        /*
-         * W wersji v1 zachowujemy kształt quada
-         * i przesuwamy go jako całość.
-         */
         List<PointF> movedPoints =
                 new ArrayList<>(
                         basePlate
@@ -675,32 +661,54 @@ public final class PreviewPlateTracker {
         }
 
 
-        OverlayItem trackedPlate =
-                new OverlayItem(
-                        OverlayItem.Kind.PLATE,
-                        movedBounds,
-                        movedPoints,
-                        basePlate.label,
-                        basePlate.trackId,
-                        basePlate.carriedPrediction
-                );
-
-
-        List<OverlayItem> result =
-                new ArrayList<>(
-                        baseItems
-                );
-
-
-        result.set(
-                plateIndex,
-                trackedPlate
+        return new OverlayItem(
+                OverlayItem.Kind.PLATE,
+                movedBounds,
+                movedPoints,
+                basePlate.label,
+                basePlate.trackId,
+                basePlate.carriedPrediction
         );
+    }
 
 
-        return Collections.unmodifiableList(
-                result
-        );
+    public synchronized int sourceWidth() {
+
+        return sourceWidth;
+    }
+
+
+    public synchronized int sourceHeight() {
+
+        return sourceHeight;
+    }
+
+
+    public synchronized void reset() {
+
+        tracks =
+                Collections.emptyList();
+
+        previousGray =
+                null;
+
+        trackerWidth =
+                0;
+
+        trackerHeight =
+                0;
+
+        previousPreviewWidth =
+                0;
+
+        previousPreviewHeight =
+                0;
+
+        sourceWidth =
+                0;
+
+        sourceHeight =
+                0;
     }
 
 
@@ -745,7 +753,6 @@ public final class PreviewPlateTracker {
                         width - PATCH_RADIUS - 1,
                         sourceX + SEARCH_RADIUS
                 );
-
 
         int minimumY =
                 Math.max(
@@ -797,9 +804,6 @@ public final class PreviewPlateTracker {
                                 ] & 0xff;
 
 
-                /*
-                 * Prosta kompensacja lokalnej zmiany jasności.
-                 */
                 int brightnessShift =
                         currentCenter
                                 - previousCenter;
@@ -832,7 +836,6 @@ public final class PreviewPlateTracker {
                                                 + sourceX
                                                 + patchX
                                         ] & 0xff;
-
 
                         int newValue =
                                 current[
@@ -986,7 +989,6 @@ public final class PreviewPlateTracker {
             int pixel =
                     pixels[index];
 
-
             int red =
                     (pixel >> 16)
                             & 0xff;
@@ -1053,7 +1055,6 @@ public final class PreviewPlateTracker {
                                 * scale
                 ) * 0.5f;
 
-
         float offsetY =
                 (
                         previewHeight
@@ -1067,7 +1068,6 @@ public final class PreviewPlateTracker {
                         + point.x
                         * sourceWidth
                         * scale;
-
 
         float previewY =
                 offsetY
@@ -1103,7 +1103,6 @@ public final class PreviewPlateTracker {
                         * previewWidth
                         / trackerWidth;
 
-
         float previewY =
                 point.y
                         * previewHeight
@@ -1126,7 +1125,6 @@ public final class PreviewPlateTracker {
                                 * scale
                 ) * 0.5f;
 
-
         float offsetY =
                 (
                         previewHeight
@@ -1148,6 +1146,7 @@ public final class PreviewPlateTracker {
                         0f,
                         1f
                 ),
+
                 clamp(
                         (
                                 previewY
@@ -1285,6 +1284,47 @@ public final class PreviewPlateTracker {
                     0,
                     0,
                     Float.POSITIVE_INFINITY
+            );
+        }
+    }
+
+
+    private static final class TrackUpdate {
+
+        final boolean valid;
+        final int dx;
+        final int dy;
+        final int support;
+
+
+        TrackUpdate(
+                boolean valid,
+                int dx,
+                int dy,
+                int support
+        ) {
+
+            this.valid =
+                    valid;
+
+            this.dx =
+                    dx;
+
+            this.dy =
+                    dy;
+
+            this.support =
+                    support;
+        }
+
+
+        static TrackUpdate invalid() {
+
+            return new TrackUpdate(
+                    false,
+                    0,
+                    0,
+                    0
             );
         }
     }

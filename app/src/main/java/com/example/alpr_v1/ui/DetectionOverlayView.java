@@ -55,9 +55,27 @@ public final class DetectionOverlayView extends View {
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        boxPaint.setColor(Color.argb(190, 56, 189, 248));
-        boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(dp(1.35f));
+        /*
+         * PLATE:
+         * jaskrawa magenta odróżnia tablicę zarówno
+         * od pomarańczowego VEHICLE, jak i żółtego ROI.
+         */
+        boxPaint.setColor(
+                Color.argb(
+                        245,
+                        255,
+                        55,
+                        190
+                )
+        );
+
+        boxPaint.setStyle(
+                Paint.Style.STROKE
+        );
+
+        boxPaint.setStrokeWidth(
+                dp(2.3f)
+        );
 
         vehiclePaint.setColor(Color.argb(225, 255, 152, 0));
         vehiclePaint.setStyle(Paint.Style.STROKE);
@@ -78,8 +96,18 @@ public final class DetectionOverlayView extends View {
         predictionPaint.setStrokeWidth(dp(1f));
         predictionPaint.setPathEffect(new DashPathEffect(new float[]{dp(4), dp(4)}, 0f));
 
-        pointPaint.setColor(Color.argb(185, 94, 234, 212));
-        pointPaint.setStyle(Paint.Style.FILL);
+        pointPaint.setColor(
+                Color.argb(
+                        245,
+                        255,
+                        255,
+                        255
+                )
+        );
+
+        pointPaint.setStyle(
+                Paint.Style.FILL
+        );
 
         detectionTextPaint.setColor(Color.rgb(125, 211, 252));
         detectionTextPaint.setTextSize(dp(11.5f));
