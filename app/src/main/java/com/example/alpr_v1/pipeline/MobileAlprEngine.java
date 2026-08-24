@@ -516,13 +516,72 @@ final class MobileAlprEngine implements AutoCloseable {
             ));
         }
 
-        trace.putDurationNanos("rectification", rectificationNanos);
-        trace.putDurationNanos("character_preprocess", characterPreprocessNanos);
-        trace.putDurationNanos("character_inference", characterInferenceNanos);
-        trace.putDurationNanos("character_postprocess", characterPostprocessNanos);
-        trace.putCount("mz_runs", characterRuns);
-        trace.putCount("mz_skipped", Math.max(0, plates.size() - characterRuns));
-        trace.putCount("invalid_plate_geometry", invalidGeometryCount);
+        /*
+         * Czasy MZ zapisujemy tylko dla klatek,
+         * w których MZ rzeczywiście został uruchomiony.
+         *
+         * Wcześniej dla klatek bez MZ zapisywaliśmy:
+         *
+         * character_preprocess = 0
+         * character_inference  = 0
+         * character_postprocess = 0
+         *
+         * przez co zera trafiały do percentyli i sztucznie
+         * obniżały p50/p90/p95.
+         *
+         * Brak etapu w trace oznacza teraz:
+         * "ten etap nie wystąpił w tej klatce",
+         * a nie "wykonał się w czasie 0 ms".
+         */
+        if (characterRuns > 0) {
+
+            trace.putDurationNanos(
+                    "rectification",
+                    rectificationNanos
+            );
+
+            trace.putDurationNanos(
+                    "character_preprocess",
+                    characterPreprocessNanos
+            );
+
+            trace.putDurationNanos(
+                    "character_inference",
+                    characterInferenceNanos
+            );
+
+            trace.putDurationNanos(
+                    "character_postprocess",
+                    characterPostprocessNanos
+            );
+        }
+
+
+        /*
+         * Liczniki zapisujemy zawsze.
+         *
+         * Dzięki temu nadal wiemy:
+         * - ile razy MZ rzeczywiście uruchomiono,
+         * - ile kandydatów pominięto,
+         * - ile tablic miało niepoprawną geometrię.
+         */
+        trace.putCount(
+                "mz_runs",
+                characterRuns
+        );
+
+        trace.putCount(
+                "mz_skipped",
+                Math.max(
+                        0,
+                        plates.size() - characterRuns
+                )
+        );
+
+        trace.putCount(
+                "invalid_plate_geometry",
+                invalidGeometryCount
+        );
         if (recognitions.isEmpty()) {
             trace.finish("stabilizing", "");
             return new PipelineResult(
