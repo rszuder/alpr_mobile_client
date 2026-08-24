@@ -28,6 +28,54 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class MetricsCollector {
+    public static final class LiveSnapshot {
+
+        public final int sourceWidth;
+
+        public final int sourceHeight;
+
+        public final long droppedFrames;
+
+        public final double vehicleInferenceMs;
+
+        public final double plateInferenceMs;
+
+        public final double characterInferenceMs;
+
+        public final double pipelineMs;
+
+
+        private LiveSnapshot(
+                int sourceWidth,
+                int sourceHeight,
+                long droppedFrames,
+                double vehicleInferenceMs,
+                double plateInferenceMs,
+                double characterInferenceMs,
+                double pipelineMs
+        ) {
+            this.sourceWidth =
+                    sourceWidth;
+
+            this.sourceHeight =
+                    sourceHeight;
+
+            this.droppedFrames =
+                    droppedFrames;
+
+            this.vehicleInferenceMs =
+                    vehicleInferenceMs;
+
+            this.plateInferenceMs =
+                    plateInferenceMs;
+
+            this.characterInferenceMs =
+                    characterInferenceMs;
+
+            this.pipelineMs =
+                    pipelineMs;
+        }
+    }
     private boolean captureHighResolutionRequested;
     public static final String REPORT_SCHEMA = "alpr.mobile_benchmark_report.v1";
     private static final int MAX_TRACES = 5_000;
@@ -115,6 +163,70 @@ public final class MetricsCollector {
     }
 
     public synchronized int size() { return traces.size(); }
+
+    public synchronized LiveSnapshot liveSnapshot() {
+
+        InferenceTrace trace =
+                traces.peekLast();
+
+
+        if (trace == null) {
+
+            return new LiveSnapshot(
+                    actualSourceWidth,
+                    actualSourceHeight,
+                    droppedFrames,
+                    Double.NaN,
+                    Double.NaN,
+                    Double.NaN,
+                    Double.NaN
+            );
+        }
+
+
+        return new LiveSnapshot(
+                actualSourceWidth,
+                actualSourceHeight,
+                droppedFrames,
+                stageMilliseconds(
+                        trace,
+                        "vehicle_inference"
+                ),
+                stageMilliseconds(
+                        trace,
+                        "plate_inference"
+                ),
+                stageMilliseconds(
+                        trace,
+                        "character_inference"
+                ),
+                stageMilliseconds(
+                        trace,
+                        "total"
+                )
+        );
+    }
+
+    private static double stageMilliseconds(
+            InferenceTrace trace,
+            String stage
+    ) {
+        Long nanos =
+                trace.durationsNanos()
+                        .get(stage);
+
+
+        /*
+         * Brak etapu oznacza brak wykonania,
+         * nie czas równy 0 ms.
+         */
+        if (nanos == null) {
+            return Double.NaN;
+        }
+
+
+        return nanos / 1_000_000.0;
+    }
     public synchronized void setRecognitionProfile(String profile) {
         recognitionProfile = profile == null ? "balanced" : profile.trim();
     }
@@ -1257,3 +1369,4 @@ public final class MetricsCollector {
         return safe;
     }
 }
+

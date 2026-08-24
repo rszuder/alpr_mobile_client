@@ -147,6 +147,7 @@ public final class MainActivity extends AppCompatActivity {
     private PreviewView previewView;
     private DetectionOverlayView overlayView;
     private TextView liveStatus;
+    private TextView liveHud;
     private TextView recognitionHint;
     private MaterialButton collectionToggle;
     private MaterialButton galleryOpenButton;
@@ -396,6 +397,11 @@ public final class MainActivity extends AppCompatActivity {
         liveStatus =
                 findViewById(
                         R.id.live_status
+                );
+
+        liveHud =
+                findViewById(
+                        R.id.live_hud
                 );
 
         recognitionHint =
@@ -928,6 +934,19 @@ public final class MainActivity extends AppCompatActivity {
 
             updateExperimentTimerButton();
         }
+        if (liveHud != null) {
+
+            if (cameraStarted) {
+
+                renderLiveHud();
+
+            } else {
+
+                liveHud.setVisibility(
+                        View.GONE
+                );
+            }
+        }
     }
     private void pauseCropCollectionForStoppedAnalysis() {
         if (!collectionActive) {
@@ -1406,6 +1425,168 @@ public final class MainActivity extends AppCompatActivity {
                 : target;
     }
 
+    private void renderLiveHud() {
+
+        if (liveHud == null) {
+            return;
+        }
+
+
+        if (!cameraStarted) {
+
+            liveHud.setVisibility(
+                    View.GONE
+            );
+
+            return;
+        }
+
+
+        MetricsCollector.LiveSnapshot snapshot =
+                metricsCollector.liveSnapshot();
+
+
+        int width =
+                snapshot.sourceWidth;
+
+        int height =
+                snapshot.sourceHeight;
+
+
+        /*
+         * Przed otrzymaniem pierwszej klatki CameraX
+         * pokazujemy rozdzielczość oczekiwaną.
+         */
+        if (width <= 0
+                || height <= 0) {
+
+            Size requested =
+                    chooseAnalysisSize();
+
+            width =
+                    requested.getWidth();
+
+            height =
+                    requested.getHeight();
+        }
+
+
+        double megapixels =
+                (
+                        (double) width
+                                * (double) height
+                ) / 1_000_000.0;
+
+
+        String resolution;
+
+
+        if (cameraResolutionSelection.automatic()) {
+
+            resolution =
+                    String.format(
+                            Locale.forLanguageTag("pl-PL"),
+                            "AUTO→%d×%d · %.2f Mpix",
+                            width,
+                            height,
+                            megapixels
+                    );
+
+        } else {
+
+            resolution =
+                    String.format(
+                            Locale.forLanguageTag("pl-PL"),
+                            "%d×%d · %.2f Mpix",
+                            width,
+                            height,
+                            megapixels
+                    );
+        }
+
+
+        String firstLine =
+                hudRoiLabel()
+                        + (
+                        experimentModeEnabled
+                                ? " · EXP"
+                                : ""
+                )
+                        + " · "
+                        + resolution;
+
+
+        String secondLine =
+                "MP "
+                        + hudDuration(
+                        snapshot.vehicleInferenceMs
+                )
+                        + " · MT "
+                        + hudDuration(
+                        snapshot.plateInferenceMs
+                )
+                        + " · MZ "
+                        + hudDuration(
+                        snapshot.characterInferenceMs
+                );
+
+
+        String thirdLine =
+                "PIPE "
+                        + hudDuration(
+                        snapshot.pipelineMs
+                )
+                        + " · DROP "
+                        + snapshot.droppedFrames;
+
+
+        liveHud.setText(
+                firstLine
+                        + "\n"
+                        + secondLine
+                        + "\n"
+                        + thirdLine
+        );
+
+
+        liveHud.setVisibility(
+                View.VISIBLE
+        );
+    }
+
+    private String hudRoiLabel() {
+
+        switch (effectiveRoiBudgetPolicy()) {
+
+            case ONE_ROI:
+                return "R1";
+
+            case TWO_ROI:
+                return "R2";
+
+            case FULL_FRAME:
+            default:
+                return "R0";
+        }
+    }
+
+    private static String hudDuration(
+            double milliseconds
+    ) {
+
+        if (Double.isNaN(milliseconds)
+                || Double.isInfinite(milliseconds)) {
+
+            return "—";
+        }
+
+
+        return String.format(
+                Locale.forLanguageTag("pl-PL"),
+                "%.2f s",
+                milliseconds / 1000.0
+        );
+    }
     private void presentResult(PipelineResult result, long observationNanos) {
         if (result.sceneReset) {
 
