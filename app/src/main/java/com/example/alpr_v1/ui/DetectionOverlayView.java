@@ -11,6 +11,7 @@ import android.util.AttributeSet;
 import android.view.View;
 import android.animation.ValueAnimator;
 import android.view.animation.DecelerateInterpolator;
+import android.graphics.Path;
 
 import androidx.annotation.Nullable;
 
@@ -709,34 +710,122 @@ public final class DetectionOverlayView extends View {
         // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
         // przykrywały żadnej z ramek detekcyjnych.
         for (RenderItem renderItem : renderItems) {
-            OverlayItem item = renderItem.item;
-            RectF bounds = renderItem.bounds;
-            canvas.drawRoundRect(
-                    bounds,
-                    dp(5),
-                    dp(5),
-                    paintFor(item)
-            );
-            if (item.carriedPrediction) continue;
+
+            OverlayItem item =
+                    renderItem.item;
+
 
             /*
-             * Keypointy należą do modelu tablicy MT.
-             * VEHICLE oraz VEHICLE_ROI są tylko prostokątami.
+             * PLATE:
+             * jeżeli mamy komplet czterech keypointów MT,
+             * rysujemy rzeczywisty quad.
+             *
+             * VEHICLE / VEHICLE_ROI:
+             * nadal pozostają bboxami.
              */
-            if (item.kind == OverlayItem.Kind.PLATE) {
-                for (PointF point : renderItem.points) {
-                    canvas.drawCircle(
-                            point.x,
-                            point.y,
-                            dp(2.2f),
-                            pointPaint
-                    );
-                }
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && renderItem.points.size() >= 4) {
+
+                drawPlateQuad(
+                        canvas,
+                        renderItem
+                );
+
+            } else {
+
+                canvas.drawRoundRect(
+                        renderItem.bounds,
+                        dp(5),
+                        dp(5),
+                        paintFor(item)
+                );
             }
         }
 
         for (RenderItem renderItem : renderItems) {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
+        }
+    }
+
+    private void drawPlateQuad(
+            Canvas canvas,
+            RenderItem renderItem
+    ) {
+
+        OverlayItem item =
+                renderItem.item;
+
+        List<PointF> points =
+                renderItem.points;
+
+
+        PointF first =
+                points.get(0);
+
+        PointF second =
+                points.get(1);
+
+        PointF third =
+                points.get(2);
+
+        PointF fourth =
+                points.get(3);
+
+
+        Path quad =
+                new Path();
+
+
+        quad.moveTo(
+                first.x,
+                first.y
+        );
+
+        quad.lineTo(
+                second.x,
+                second.y
+        );
+
+        quad.lineTo(
+                third.x,
+                third.y
+        );
+
+        quad.lineTo(
+                fourth.x,
+                fourth.y
+        );
+
+        quad.close();
+
+
+        canvas.drawPath(
+                quad,
+                paintFor(item)
+        );
+
+
+        /*
+         * Punkty narożników pokazujemy tylko
+         * dla normalnej aktywnej obserwacji.
+         */
+        if (!item.carriedPrediction) {
+
+            for (int index = 0;
+                 index < 4;
+                 index++) {
+
+                PointF point =
+                        points.get(index);
+
+
+                canvas.drawCircle(
+                        point.x,
+                        point.y,
+                        dp(2.7f),
+                        pointPaint
+                );
+            }
         }
     }
     private Paint paintFor(OverlayItem item) {
