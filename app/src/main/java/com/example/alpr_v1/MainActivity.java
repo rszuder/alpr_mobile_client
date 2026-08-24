@@ -74,6 +74,8 @@ import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.TimerConfig;
 import com.example.alpr_v1.vision.SceneChangeDetector;
+import com.example.alpr_v1.tracking.PreviewPlateTracker;
+import com.example.alpr_v1.ui.OverlayItem;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -104,7 +106,7 @@ public final class MainActivity extends AppCompatActivity {
      * Jest niezależny od ciężkiego pipeline'u MP/MT/MZ.
      */
     private static final long PREVIEW_SCENE_POLL_MS =
-            180L;
+            160L;
 
 
     private final AtomicLong uiSceneGeneration =
@@ -167,8 +169,32 @@ public final class MainActivity extends AppCompatActivity {
                                 invalidateUiForPreviewSceneChange(
                                         scene
                                 );
-                            }
-                        }
+
+                            } else {
+
+                                /*
+                                 * Scena nadal jest ta sama.
+                                 *
+                                 * Pomiędzy ciężkimi inferencjami próbujemy więc
+                                 * przesunąć ostatnio wykrytą tablicę na podstawie
+                                 * aktualnego obrazu PreviewView.
+                                 */
+                                List<OverlayItem> trackedItems =
+                                        previewPlateTracker.update(
+                                                previewBitmap
+                                        );
+
+
+                                if (trackedItems != null
+                                        && !trackedItems.isEmpty()) {
+
+                                    overlayView.setItems(
+                                            trackedItems,
+                                            previewPlateTracker.sourceWidth(),
+                                            previewPlateTracker.sourceHeight()
+                                    );
+                                }
+                            }                        }
 
                     } catch (RuntimeException ignored) {
 
@@ -198,6 +224,12 @@ public final class MainActivity extends AppCompatActivity {
                 }
             };
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
+    /*
+     * Tracker działający na lekkich klatkach PreviewView
+     * pomiędzy kolejnymi wywołaniami MT.
+     */
+    private final PreviewPlateTracker previewPlateTracker =
+            new PreviewPlateTracker();
     private final ExperimentSession experimentSession =
             new ExperimentSession();
 
@@ -1127,6 +1159,9 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         overlayTracker.reset();
+
+        previewPlateTracker.reset();
+
         lastCaptureByTrack.clear();
 
         overlayView.setItems(
@@ -1400,6 +1435,8 @@ public final class MainActivity extends AppCompatActivity {
          */
         overlayTracker.reset();
 
+        previewPlateTracker.reset();
+
         lastCaptureByTrack.clear();
 
         overlayView.setItems(
@@ -1449,7 +1486,11 @@ public final class MainActivity extends AppCompatActivity {
          * bez stanu trackingowego poprzedniego przebiegu.
          */
         pipeline.resetTracking();
+
         overlayTracker.reset();
+
+        previewPlateTracker.reset();
+
         lastCaptureByTrack.clear();
 
         overlayView.setItems(
@@ -1904,7 +1945,7 @@ public final class MainActivity extends AppCompatActivity {
              * Usuwamy więc również stan trackera warstwy UI.
              */
             overlayTracker.reset();
-
+            previewPlateTracker.reset();
             /*
              * TrackId w pipeline może po resecie zacząć się ponownie od 1.
              * Stary stan próbkowania cropów nie może zostać przypisany
@@ -1922,8 +1963,31 @@ public final class MainActivity extends AppCompatActivity {
         liveStatus.setText(result.message);
         renderLiveHud();
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
+        List<OverlayItem> visibleOverlayItems =
+                overlayTracker.update(
+                        result.overlayItems,
+                        observationNanos,
+                        System.nanoTime()
+                );
+
+
         overlayView.setItems(
-                overlayTracker.update(result.overlayItems, observationNanos, System.nanoTime()),
+                visibleOverlayItems,
+                result.sourceWidth,
+                result.sourceHeight
+        );
+
+
+        /*
+         * Każdy nowy rzeczywisty wynik MT ponownie
+         * ustawia dokładną pozycję trackera Preview.
+         *
+         * Jeżeli w tej konkretnej inferencji MT niczego
+         * nie zwrócił, tracker zachowa poprzednią kotwicę
+         * przez krótki czas.
+         */
+        previewPlateTracker.anchor(
+                visibleOverlayItems,
                 result.sourceWidth,
                 result.sourceHeight
         );
