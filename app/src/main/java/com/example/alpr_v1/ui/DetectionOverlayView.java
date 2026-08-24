@@ -5,11 +5,12 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
+import android.animation.ValueAnimator;
+import android.view.animation.DecelerateInterpolator;
 
 import androidx.annotation.Nullable;
 
@@ -27,8 +28,28 @@ public final class DetectionOverlayView extends View {
     private final Paint detectionTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint confidenceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private List<OverlayItem> items = Collections.emptyList();
-    private List<RenderItem> renderItems = Collections.emptyList();
+    private static final long OVERLAY_TRANSITION_MS =
+            220L;
+
+
+    /*
+     * items reprezentuje aktualnie rysowaną,
+     * również pośrednią klatkę animacji.
+     */
+    private List<OverlayItem> items =
+            Collections.emptyList();
+
+    private List<RenderItem> renderItems =
+            Collections.emptyList();
+
+
+    private ValueAnimator overlayAnimator;
+
+
+    private final DecelerateInterpolator overlayInterpolator =
+            new DecelerateInterpolator();
+
+
     private int sourceWidth;
     private int sourceHeight;
 
@@ -76,12 +97,576 @@ public final class DetectionOverlayView extends View {
         setItems(newItems, 0, 0);
     }
 
-    public void setItems(List<OverlayItem> newItems, int sourceWidth, int sourceHeight) {
-        this.items = Collections.unmodifiableList(new ArrayList<>(newItems));
-        this.sourceWidth = sourceWidth;
-        this.sourceHeight = sourceHeight;
-        rebuildRenderItems();
-        postInvalidateOnAnimation();
+    public void setItems(
+            List<OverlayItem> newItems,
+            int sourceWidth,
+            int sourceHeight
+    ) {
+
+        List<OverlayItem> targetItems =
+                Collections.unmodifiableList(
+                        new ArrayList<>(
+                                newItems == null
+                                        ? Collections.emptyList()
+                                        : newItems
+                        )
+                );
+
+
+        this.sourceWidth =
+                sourceWidth;
+
+        this.sourceHeight =
+                sourceHeight;
+
+
+        /*
+         * Jeżeli poprzednia animacja jeszcze trwa,
+         * zaczynamy nową od aktualnego położenia,
+         * a nie od jej starego punktu początkowego.
+         */
+        if (overlayAnimator != null) {
+
+            overlayAnimator.cancel();
+
+            overlayAnimator =
+                    null;
+        }
+
+
+        /*
+         * Pusta lista oznacza jawne unieważnienie overlayu,
+         * np. zmianę sceny albo STOP.
+         *
+         * Tego nie morphujemy do przypadkowego miejsca.
+         */
+        if (targetItems.isEmpty()) {
+
+            items =
+                    Collections.emptyList();
+
+            rebuildRenderItems();
+
+            postInvalidateOnAnimation();
+
+            return;
+        }
+
+
+        /*
+         * Pierwszy wynik nie ma poprzedniej geometrii,
+         * więc pokazujemy go od razu.
+         */
+        if (items.isEmpty()) {
+
+            items =
+                    targetItems;
+
+            rebuildRenderItems();
+
+            postInvalidateOnAnimation();
+
+            return;
+        }
+
+
+        /*
+         * Zachowujemy aktualną pozycję jako początek
+         * nowej krótkiej korekty.
+         */
+        final List<OverlayItem> startItems =
+                Collections.unmodifiableList(
+                        new ArrayList<>(
+                                items
+                        )
+                );
+
+
+        final List<OverlayItem> finalTargetItems =
+                targetItems;
+
+
+        overlayAnimator =
+                ValueAnimator.ofFloat(
+                        0f,
+                        1f
+                );
+
+
+        overlayAnimator.setDuration(
+                OVERLAY_TRANSITION_MS
+        );
+
+
+        overlayAnimator.setInterpolator(
+                overlayInterpolator
+        );
+
+
+        overlayAnimator.addUpdateListener(
+                animator -> {
+
+                    float progress =
+                            (float) animator.getAnimatedValue();
+
+
+                    items =
+                            interpolateItems(
+                                    startItems,
+                                    finalTargetItems,
+                                    progress
+                            );
+
+
+                    rebuildRenderItems();
+
+                    postInvalidateOnAnimation();
+                }
+        );
+
+
+        overlayAnimator.start();
+    }
+
+    private static List<OverlayItem> interpolateItems(
+            List<OverlayItem> previousItems,
+            List<OverlayItem> targetItems,
+            float progress
+    ) {
+
+        float amount =
+                clamp(
+                        progress,
+                        0f,
+                        1f
+                );
+
+
+        boolean[] previousUsed =
+                new boolean[
+                        previousItems.size()
+                        ];
+
+
+        List<OverlayItem> result =
+                new ArrayList<>(
+                        targetItems.size()
+                );
+
+
+        for (OverlayItem target :
+                targetItems) {
+
+            int previousIndex =
+                    findPreviousMatch(
+                            target,
+                            previousItems,
+                            previousUsed
+                    );
+
+
+            /*
+             * Nowa detekcja bez odpowiednika.
+             *
+             * Nie próbujemy przeciągać do niej
+             * przypadkowej starej ramki.
+             */
+            if (previousIndex < 0) {
+
+                result.add(
+                        target
+                );
+
+                continue;
+            }
+
+
+            previousUsed[previousIndex] =
+                    true;
+
+
+            OverlayItem previous =
+                    previousItems.get(
+                            previousIndex
+                    );
+
+
+            result.add(
+                    interpolateItem(
+                            previous,
+                            target,
+                            amount
+                    )
+            );
+        }
+
+
+        return Collections.unmodifiableList(
+                result
+        );
+    }
+
+    private static int findPreviousMatch(
+            OverlayItem target,
+            List<OverlayItem> previousItems,
+            boolean[] previousUsed
+    ) {
+
+        /*
+         * PLATE ma prawdziwy trackId.
+         * To jest najlepszy możliwy klucz.
+         */
+        if (target.kind
+                == OverlayItem.Kind.PLATE
+                && target.trackId > 0L) {
+
+            for (int index = 0;
+                 index < previousItems.size();
+                 index++) {
+
+                if (previousUsed[index]) {
+                    continue;
+                }
+
+
+                OverlayItem previous =
+                        previousItems.get(
+                                index
+                        );
+
+
+                if (previous.kind
+                        == OverlayItem.Kind.PLATE
+                        && previous.trackId
+                        == target.trackId) {
+
+                    return index;
+                }
+            }
+        }
+
+
+        /*
+         * VEHICLE i VEHICLE_ROI nie mają obecnie
+         * stabilnego trackId.
+         *
+         * Dopasowujemy więc geometrycznie:
+         * ten sam rodzaj + możliwie największe IoU.
+         */
+        int bestIndex =
+                -1;
+
+        float bestScore =
+                Float.NEGATIVE_INFINITY;
+
+
+        for (int index = 0;
+             index < previousItems.size();
+             index++) {
+
+            if (previousUsed[index]) {
+                continue;
+            }
+
+
+            OverlayItem previous =
+                    previousItems.get(
+                            index
+                    );
+
+
+            if (previous.kind
+                    != target.kind) {
+
+                continue;
+            }
+
+
+            float overlap =
+                    iou(
+                            previous.normalizedBounds,
+                            target.normalizedBounds
+                    );
+
+
+            float distance =
+                    centerDistance(
+                            previous.normalizedBounds,
+                            target.normalizedBounds
+                    );
+
+
+            /*
+             * Duże przesunięcie bez żadnego overlapu
+             * jest raczej nowym obiektem niż korektą
+             * starej ramki.
+             */
+            if (overlap < 0.02f
+                    && distance > 0.30f) {
+
+                continue;
+            }
+
+
+            float score =
+                    overlap
+                            - distance * 0.25f;
+
+
+            if (score > bestScore) {
+
+                bestScore =
+                        score;
+
+                bestIndex =
+                        index;
+            }
+        }
+
+
+        return bestIndex;
+    }
+    private static OverlayItem interpolateItem(
+            OverlayItem previous,
+            OverlayItem target,
+            float amount
+    ) {
+
+        RectF previousBounds =
+                previous.normalizedBounds;
+
+        RectF targetBounds =
+                target.normalizedBounds;
+
+
+        RectF bounds =
+                new RectF(
+                        lerp(
+                                previousBounds.left,
+                                targetBounds.left,
+                                amount
+                        ),
+                        lerp(
+                                previousBounds.top,
+                                targetBounds.top,
+                                amount
+                        ),
+                        lerp(
+                                previousBounds.right,
+                                targetBounds.right,
+                                amount
+                        ),
+                        lerp(
+                                previousBounds.bottom,
+                                targetBounds.bottom,
+                                amount
+                        )
+                );
+
+
+        List<PointF> points =
+                interpolatePoints(
+                        previous.normalizedKeypoints,
+                        target.normalizedKeypoints,
+                        amount
+                );
+
+
+        /*
+         * Geometria jest interpolowana.
+         *
+         * Tekst, confidence, trackId i stan predykcji
+         * pochodzą już z najnowszego wyniku.
+         */
+        return new OverlayItem(
+                target.kind,
+                bounds,
+                points,
+                target.label,
+                target.trackId,
+                target.carriedPrediction
+        );
+    }
+
+    private static List<PointF> interpolatePoints(
+            List<PointF> previous,
+            List<PointF> target,
+            float amount
+    ) {
+
+        /*
+         * Quad MT możemy płynnie morphować tylko wtedy,
+         * gdy obie obserwacje mają tę samą liczbę punktów.
+         */
+        if (previous == null
+                || target == null
+                || previous.size()
+                != target.size()
+                || target.isEmpty()) {
+
+            return target == null
+                    ? Collections.emptyList()
+                    : new ArrayList<>(
+                    target
+            );
+        }
+
+
+        List<PointF> result =
+                new ArrayList<>(
+                        target.size()
+                );
+
+
+        for (int index = 0;
+             index < target.size();
+             index++) {
+
+            PointF from =
+                    previous.get(
+                            index
+                    );
+
+            PointF to =
+                    target.get(
+                            index
+                    );
+
+
+            result.add(
+                    new PointF(
+                            lerp(
+                                    from.x,
+                                    to.x,
+                                    amount
+                            ),
+                            lerp(
+                                    from.y,
+                                    to.y,
+                                    amount
+                            )
+                    )
+            );
+        }
+
+
+        return result;
+    }
+
+    private static float lerp(
+            float from,
+            float to,
+            float amount
+    ) {
+
+        return from
+                + (to - from)
+                * amount;
+    }
+
+
+    private static float iou(
+            RectF first,
+            RectF second
+    ) {
+
+        float intersectionLeft =
+                Math.max(
+                        first.left,
+                        second.left
+                );
+
+        float intersectionTop =
+                Math.max(
+                        first.top,
+                        second.top
+                );
+
+        float intersectionRight =
+                Math.min(
+                        first.right,
+                        second.right
+                );
+
+        float intersectionBottom =
+                Math.min(
+                        first.bottom,
+                        second.bottom
+                );
+
+
+        float intersectionWidth =
+                Math.max(
+                        0f,
+                        intersectionRight
+                                - intersectionLeft
+                );
+
+        float intersectionHeight =
+                Math.max(
+                        0f,
+                        intersectionBottom
+                                - intersectionTop
+                );
+
+
+        float intersection =
+                intersectionWidth
+                        * intersectionHeight;
+
+
+        float firstArea =
+                Math.max(
+                        0f,
+                        first.width()
+                )
+                        * Math.max(
+                        0f,
+                        first.height()
+                );
+
+
+        float secondArea =
+                Math.max(
+                        0f,
+                        second.width()
+                )
+                        * Math.max(
+                        0f,
+                        second.height()
+                );
+
+
+        float union =
+                firstArea
+                        + secondArea
+                        - intersection;
+
+
+        return union <= 0f
+                ? 0f
+                : intersection / union;
+    }
+
+
+    private static float centerDistance(
+            RectF first,
+            RectF second
+    ) {
+
+        float dx =
+                first.centerX()
+                        - second.centerX();
+
+        float dy =
+                first.centerY()
+                        - second.centerY();
+
+
+        return (float) Math.hypot(
+                dx,
+                dy
+        );
     }
 
     @Override
@@ -92,155 +677,38 @@ public final class DetectionOverlayView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-
         super.onDraw(canvas);
-
-
-        /*
-         * Rysujemy geometrię detekcji.
-         *
-         * PLATE:
-         * jeżeli MT dostarczył cztery narożniki Pose,
-         * pokazujemy rzeczywisty czworokąt zamiast bbox.
-         *
-         * VEHICLE / VEHICLE_ROI:
-         * pozostają prostokątami.
-         */
+        // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
+        // przykrywały żadnej z ramek detekcyjnych.
         for (RenderItem renderItem : renderItems) {
+            OverlayItem item = renderItem.item;
+            RectF bounds = renderItem.bounds;
+            canvas.drawRoundRect(
+                    bounds,
+                    dp(5),
+                    dp(5),
+                    paintFor(item)
+            );
+            if (item.carriedPrediction) continue;
 
-            OverlayItem item =
-                    renderItem.item;
-
-
-            if (item.kind == OverlayItem.Kind.PLATE
-                    && renderItem.points.size() >= 4) {
-
-                drawPlateQuad(
-                        canvas,
-                        renderItem
-                );
-
-            } else {
-
-                /*
-                 * Fallback dla tablic bez kompletu keypointów
-                 * oraz normalne rysowanie MP / ROI.
-                 */
-                canvas.drawRoundRect(
-                        renderItem.bounds,
-                        dp(5),
-                        dp(5),
-                        paintFor(item)
-                );
+            /*
+             * Keypointy należą do modelu tablicy MT.
+             * VEHICLE oraz VEHICLE_ROI są tylko prostokątami.
+             */
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                for (PointF point : renderItem.points) {
+                    canvas.drawCircle(
+                            point.x,
+                            point.y,
+                            dp(2.2f),
+                            pointPaint
+                    );
+                }
             }
         }
 
-
-        /*
-         * Badge'e rysujemy na końcu,
-         * żeby pozostały czytelne.
-         */
         for (RenderItem renderItem : renderItems) {
-
-            if (renderItem.badge != null) {
-
-                drawLabel(
-                        canvas,
-                        renderItem
-                );
-            }
-        }
-    }
-
-    private void drawPlateQuad(
-            Canvas canvas,
-            RenderItem renderItem
-    ) {
-
-        OverlayItem item =
-                renderItem.item;
-
-        List<PointF> points =
-                renderItem.points;
-
-
-        /*
-         * MT wykorzystuje pierwsze cztery keypointy
-         * jako narożniki tablicy.
-         *
-         * Łączymy je w kolejności zwróconej przez model.
-         * Na tym etapie celowo NIE stosujemy dodatkowego
-         * sortowania punktów.
-         *
-         * Dzięki temu overlay pokazuje surową geometrię
-         * Pose i może służyć do diagnostyki.
-         */
-        PointF first =
-                points.get(0);
-
-        PointF second =
-                points.get(1);
-
-        PointF third =
-                points.get(2);
-
-        PointF fourth =
-                points.get(3);
-
-
-        Path quad =
-                new Path();
-
-        quad.moveTo(
-                first.x,
-                first.y
-        );
-
-        quad.lineTo(
-                second.x,
-                second.y
-        );
-
-        quad.lineTo(
-                third.x,
-                third.y
-        );
-
-        quad.lineTo(
-                fourth.x,
-                fourth.y
-        );
-
-        quad.close();
-
-
-        canvas.drawPath(
-                quad,
-                paintFor(item)
-        );
-
-
-        /*
-         * Rzeczywiste narożniki MT zaznaczamy punktami.
-         * Dla krótkiej predykcji trackera nie dodajemy punktów,
-         * żeby odróżnić ją wizualnie od obserwacji modelu.
-         */
-        if (!item.carriedPrediction) {
-
-            for (int index = 0;
-                 index < 4;
-                 index++) {
-
-                PointF point =
-                        points.get(index);
-
-                canvas.drawCircle(
-                        point.x,
-                        point.y,
-                        dp(2.7f),
-                        pointPaint
-                );
-            }
+            if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
     }
     private Paint paintFor(OverlayItem item) {
