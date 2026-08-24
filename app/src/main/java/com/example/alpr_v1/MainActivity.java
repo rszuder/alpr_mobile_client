@@ -133,16 +133,8 @@ public final class MainActivity extends AppCompatActivity {
      */
     private boolean previewSceneAnchorPending;
 
-    private static final long DIAGNOSTIC_OVERLAY_TTL_NANOS =
-            1_200_000_000L;
-
-
     private List<OverlayItem> latestDiagnosticOverlayItems =
             java.util.Collections.emptyList();
-
-
-    private long latestDiagnosticOverlayNanos =
-            Long.MIN_VALUE;
 
 
     private boolean previewSceneMonitorRunning;
@@ -1545,8 +1537,7 @@ public final class MainActivity extends AppCompatActivity {
 
         lastCaptureByTrack.clear();
 
-        latestDiagnosticOverlayNanos =
-                Long.MIN_VALUE;
+
 
         overlayView.setItems(
                 java.util.Collections.emptyList()
@@ -1640,8 +1631,7 @@ public final class MainActivity extends AppCompatActivity {
                 false;
 
         lastCaptureByTrack.clear();
-        latestDiagnosticOverlayNanos =
-                Long.MIN_VALUE;
+
 
 
         overlayView.setItems(
@@ -2263,9 +2253,6 @@ public final class MainActivity extends AppCompatActivity {
                         diagnosticItems
                 );
 
-
-        latestDiagnosticOverlayNanos =
-                System.nanoTime();
 
 
         overlayView.setItems(
@@ -4091,29 +4078,22 @@ public final class MainActivity extends AppCompatActivity {
                 new ArrayList<>();
 
 
-        long diagnosticAge =
-                System.nanoTime()
-                        - latestDiagnosticOverlayNanos;
-
-
         /*
-         * MP / ROI pozostają przez krótki czas,
-         * ale nie przez kilka sekund.
+         * VEHICLE i VEHICLE_ROI reprezentują ostatni
+         * prawidłowy wynik pipeline'u.
+         *
+         * Nie usuwamy ich po arbitralnym czasie.
+         * Zostaną zastąpione przez kolejny wynik albo
+         * usunięte przy zmianie sceny.
          */
-        if (latestDiagnosticOverlayNanos
-                != Long.MIN_VALUE
-                && diagnosticAge
-                <= DIAGNOSTIC_OVERLAY_TTL_NANOS) {
-
-            result.addAll(
-                    latestDiagnosticOverlayItems
-            );
-        }
+        result.addAll(
+                latestDiagnosticOverlayItems
+        );
 
 
         /*
-         * Tablice rysujemy na końcu, czyli nad
-         * diagnostycznymi ramkami pojazdu.
+         * Aktualnie śledzone tablice rysujemy na końcu,
+         * aby znajdowały się nad ramkami pojazdu.
          */
         result.addAll(
                 trackedPlates
@@ -4121,5 +4101,4 @@ public final class MainActivity extends AppCompatActivity {
 
 
         return result;
-    }
-}
+    }}

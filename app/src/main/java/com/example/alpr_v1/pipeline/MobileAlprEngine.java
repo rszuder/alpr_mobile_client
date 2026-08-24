@@ -564,16 +564,46 @@ final class MobileAlprEngine implements AutoCloseable {
                     candidate.sharpness,
                     cropTiming
             ));
-            overlays.add(overlayBox(
-                    frame,
-                    candidate.detection.left,
-                    candidate.detection.top,
-                    candidate.detection.right,
-                    candidate.detection.bottom,
-                    candidate.corners,
-                    visibleText.isEmpty() ? "tablica" : visibleText,
-                    candidate.detection.confidence
-            ));
+            String overlayText;
+
+
+            /*
+             * Rozdzielamy trzy sytuacje:
+             *
+             * 1. MT widzi tablicę, ale nie mamy jeszcze OCR.
+             * 2. MZ został wykonany w tej klatce.
+             * 3. Tekst pochodzi z pamięci temporalnej tracka.
+             */
+            if (visibleText.isEmpty()) {
+
+                overlayText =
+                        "tablica";
+
+            } else if (decision.recognize) {
+
+                overlayText =
+                        visibleText;
+
+            } else {
+
+                overlayText =
+                        visibleText
+                                + " · pamięć";
+            }
+
+
+            overlays.add(
+                    overlayBox(
+                            frame,
+                            candidate.detection.left,
+                            candidate.detection.top,
+                            candidate.detection.right,
+                            candidate.detection.bottom,
+                            candidate.corners,
+                            overlayText,
+                            candidate.detection.confidence
+                    )
+            );
         }
 
         /*
@@ -674,19 +704,63 @@ final class MobileAlprEngine implements AutoCloseable {
                 break;
             }
         }
-        String resultStatus = hasConfirmed ? "recognized" : "preliminary";
-        trace.finish(resultStatus, traceText.toString());
+        String resultStatus =
+                hasConfirmed
+                        ? "recognized"
+                        : "preliminary";
+
+
+        trace.finish(
+                resultStatus,
+                traceText.toString()
+        );
+
+
+        String resultMessage;
+
+
+        if (characterRuns == 0) {
+
+            /*
+             * Mamy wynik, ale w bieżącej klatce MZ
+             * nie zostało uruchomione.
+             *
+             * Wynik pochodzi z historii temporalnej tracka.
+             */
+            resultMessage =
+                    String.format(
+                            Locale.ROOT,
+                            hasConfirmed
+                                    ? "Potwierdzone odczyty: %d/%d · MZ: bez nowej próby · wynik z pamięci"
+                                    : "Wynik wstępny: %d/%d · MZ: bez nowej próby · wynik z pamięci",
+                            recognitions.size(),
+                            plates.size()
+                    );
+
+        } else {
+
+            resultMessage =
+                    String.format(
+                            Locale.ROOT,
+                            hasConfirmed
+                                    ? "Potwierdzone odczyty: %d/%d · MZ wykonano: %d"
+                                    : "Wynik wstępny: %d/%d · MZ wykonano: %d",
+                            recognitions.size(),
+                            plates.size(),
+                            characterRuns
+                    );
+        }
+
+
         return new PipelineResult(
                 resultStatus,
-                String.format(
-                        Locale.ROOT,
-                        hasConfirmed
-                                ? "Potwierdzone odczyty: %d/%d; MZ w tej klatce: %d"
-                                : "Wynik wstępny: %d/%d; MZ w tej klatce: %d",
-                        recognitions.size(), plates.size(), characterRuns
-                ),
-                recognitions, overlays, frame.getWidth(), frame.getHeight(),
-                plateObservations, scene.sceneChanged
+                resultMessage,
+                recognitions,
+                overlays,
+                frame.getWidth(),
+                frame.getHeight(),
+                plateObservations,
+                scene.sceneChanged
         );
     }
 
