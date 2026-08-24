@@ -14,25 +14,103 @@ import static org.junit.Assert.assertTrue;
 
 public class PlateTrackCoordinatorTest {
     @Test
-    public void stopsSchedulingAfterTwoConsistentRecognitions() {
-        PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
-        PlateTrackCoordinator.Decision first = update(coordinator, 1, 0.8f);
-        assertTrue(first.recognize);
-        coordinator.recordRecognition(
-                first.trackId, 0.8f, 1,
-                characters(), Arrays.asList("A", "1")
+    public void stableRecognitionStillAllowsLaterMzRetry() {
+
+        PlateTrackCoordinator coordinator =
+                new PlateTrackCoordinator();
+
+
+        PlateTrackCoordinator.Decision first =
+                update(
+                        coordinator,
+                        1,
+                        0.8f
+                );
+
+        assertTrue(
+                first.recognize
         );
 
-        PlateTrackCoordinator.Decision second = update(coordinator, 2, 0.8f);
-        assertTrue(second.recognize);
+
         coordinator.recordRecognition(
-                second.trackId, 0.8f, 2,
-                characters(), Arrays.asList("A", "1")
+                first.trackId,
+                0.8f,
+                1,
+                characters(),
+                Arrays.asList(
+                        "A",
+                        "1"
+                )
         );
 
-        PlateTrackCoordinator.Decision third = update(coordinator, 3, 0.9f);
-        assertFalse(third.recognize);
-        assertTrue(third.currentResult.stable);
+
+        PlateTrackCoordinator.Decision second =
+                update(
+                        coordinator,
+                        2,
+                        0.8f
+                );
+
+        assertTrue(
+                second.recognize
+        );
+
+
+        coordinator.recordRecognition(
+                second.trackId,
+                0.8f,
+                2,
+                characters(),
+                Arrays.asList(
+                        "A",
+                        "1"
+                )
+        );
+
+
+        /*
+         * Po dwóch zgodnych wynikach konsensus
+         * jest stabilny.
+         *
+         * Nie uruchamiamy jednak MZ natychmiast
+         * w każdej kolejnej klatce.
+         */
+        PlateTrackCoordinator.Decision third =
+                update(
+                        coordinator,
+                        3,
+                        0.8f
+                );
+
+        assertFalse(
+                third.recognize
+        );
+
+        assertTrue(
+                third.currentResult.stable
+        );
+
+
+        /*
+         * BALANCED ma retryGapFrames = 2.
+         *
+         * Po odpowiednim odstępie MZ powinien
+         * dostać kolejną szansę mimo stable=true.
+         */
+        PlateTrackCoordinator.Decision fourth =
+                update(
+                        coordinator,
+                        4,
+                        0.8f
+                );
+
+        assertTrue(
+                fourth.recognize
+        );
+
+        assertTrue(
+                fourth.currentResult.stable
+        );
     }
 
     @Test

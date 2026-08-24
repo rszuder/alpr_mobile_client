@@ -144,9 +144,10 @@ final class PlateTrackCoordinator {
             Observation observation = byIndex.get(track.sourceIndex);
             if (observation == null) continue;
             State state = states.computeIfAbsent(track.trackId, ignored -> new State());
-            TemporalCharacterAggregator.Result current = state.aggregator.current();
-            boolean stable = current != null && current.stable;
-            boolean recognize = shouldRecognize(state, observation, frameId, stable);
+            TemporalCharacterAggregator.Result current =
+                    state.aggregator.current();
+
+            boolean recognize = shouldRecognize(state, observation, frameId);
             decisions.add(
                     new Decision(
                             track.trackId,
@@ -202,22 +203,91 @@ final class PlateTrackCoordinator {
     private boolean shouldRecognize(
             State state,
             Observation observation,
-            long frameId,
-            boolean stable
+            long frameId
     ) {
-        if (stable || !observation.validGeometry || observation.quality < profile.minimumQuality) {
+
+        /*
+         * Nie uruchamiamy MZ dla geometrii,
+         * której nie można bezpiecznie zrektyfikować,
+         * ani dla bardzo słabego obrazu.
+         */
+        if (!observation.validGeometry
+                || observation.quality < profile.minimumQuality) {
+
             return false;
         }
-        if (state.attempts >= profile.burstAttempts) {
-            return frameId - state.lastAttemptFrame >= profile.periodicRetryGapFrames;
+
+
+        /*
+         * Pierwsza poprawna obserwacja tracku
+         * zawsze dostaje próbę MZ.
+         */
+        if (state.attempts == 0) {
+
+            return true;
         }
-        if (state.attempts == 0) return true;
-        long framesSinceAttempt = frameId - state.lastAttemptFrame;
-        if (state.attempts == 1) {
-            return observation.quality >= state.bestAttemptQuality - 0.10f
-                    || framesSinceAttempt >= profile.retryGapFrames;
+
+
+        long framesSinceAttempt =
+                frameId - state.lastAttemptFrame;
+
+
+        /*
+         * Jeżeli pojawiła się wyraźnie lepsza obserwacja
+         * tablicy, warto wykorzystać ją od razu.
+         *
+         * Dotyczy to również wyniku, który temporalnie
+         * został już uznany za stabilny.
+         */
+        boolean qualityImproved =
+                observation.quality
+                        >= state.bestAttemptQuality
+                        + profile.qualityImprovement;
+
+
+        if (qualityImproved) {
+
+            return true;
         }
-        return observation.quality >= state.bestAttemptQuality + profile.qualityImprovement
-                || framesSinceAttempt >= profile.retryGapFrames;
-    }
-}
+
+
+        /*
+         * Początkowy burst.
+         *
+         * Stable NIE kończy już działania MZ.
+         *
+         * Dzięki temu dwa zgodne, ale błędne odczyty
+         * nie zamrażają wyniku na resztę życia tracku.
+         */
+        if (state.attempts < profile.burstAttempts) {
+
+            /*
+             * Po pierwszej próbie jesteśmy nieco bardziej
+             * liberalni, aby szybko zebrać materiał
+             * do konsensusu.
+             */
+            if (state.attempts == 1) {
+
+                return observation.quality
+                        >= state.bestAttemptQuality - 0.10f
+                        || framesSinceAttempt
+                        >= profile.retryGapFrames;
+            }
+
+
+            return framesSinceAttempt
+                    >= profile.retryGapFrames;
+        }
+
+
+        /*
+         * Po wykorzystaniu burstu nadal okresowo
+         * sprawdzamy nieruchomą tablicę.
+         *
+         * Nowa, ostrzejsza klatka albo nieco lepsze
+         * położenie keypointów MT może dzięki temu
+         * poprawić wcześniejszy konsensus.
+         */
+        return framesSinceAttempt
+                >= profile.periodicRetryGapFrames;
+    }}
