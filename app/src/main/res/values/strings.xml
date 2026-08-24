@@ -24,8 +24,32 @@
     <string name="gallery_hide_description">Ukryj galerię cropów</string>
     <string name="gallery_maximize_description">Maksymalizuj galerię cropów</string>
     <string name="gallery_restore_description">Przywróć galerię do paska</string>
-    <string name="collection_start">Start</string>
-    <string name="collection_stop">Stop</string>
+    <string name="collection_start">Zbieraj cropy</string>
+    <string name="collection_stop">Wstrzymaj</string>
+    <string name="gallery_open_zero">Cropy · 0</string>
+    <string name="gallery_open_count">Cropy · %1$d</string>
+
+    <string name="gallery_sheet_title">Cropy sesji</string>
+
+    <string name="gallery_empty">
+    Brak zebranych cropów.
+</string>
+
+    <string name="gallery_collection_ready">
+    Zbieranie nieuruchomione
+</string>
+
+    <string name="gallery_collection_ready_limit">
+    Zbieranie nieuruchomione · limit %1$d
+</string>
+
+    <string name="gallery_collection_running">
+    Zbieranie aktywne · %1$d/%2$d
+</string>
+
+    <string name="gallery_collection_paused">
+    Zbieranie wstrzymane · %1$d/%2$d
+</string>
     <string name="collection_ready">Zbieranie zatrzymane</string>
     <string name="collection_running">Sesja %1$s · %2$d/%3$d</string>
     <string name="collection_paused">Wstrzymano · %1$d/%2$d</string>

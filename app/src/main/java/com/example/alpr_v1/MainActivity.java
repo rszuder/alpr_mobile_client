@@ -32,9 +32,15 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.lifecycle.ViewModelProvider;
-import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import com.google.android.material.bottomsheet.BottomSheetBehavior;
+import com.google.android.material.bottomsheet.BottomSheetDialog;
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.checkbox.MaterialCheckBox;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+//---------------------------------------------------------------
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
@@ -65,10 +71,6 @@ import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
-import com.google.android.material.appbar.MaterialToolbar;
-import com.google.android.material.button.MaterialButton;
-import com.google.android.material.checkbox.MaterialCheckBox;
-import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.TimerConfig;
 
@@ -146,20 +148,28 @@ public final class MainActivity extends AppCompatActivity {
     private DetectionOverlayView overlayView;
     private TextView liveStatus;
     private TextView recognitionHint;
-    private TextView resultCount;
-    private TextView collectionStats;
-    private RecyclerView resultsList;
-    private View resultsEmpty;
-    private View galleryContent;
-    private View controlPanel;
-    private View mainRoot;
     private MaterialButton collectionToggle;
-    private MaterialButton galleryVisibilityToggle;
-    private MaterialButton gallerySizeToggle;
+    private MaterialButton galleryOpenButton;
     private MaterialButton analysisStartButton;
-    private MaterialButton analysisStopButton;
-    private MaterialCheckBox selectAllCropsToggle;
-    private MaterialButton saveSelectedCropsButton;
+
+
+    /*
+     * Galeria nie jest już częścią activity_main.
+     * Jej widoki istnieją tylko wtedy, gdy Bottom Sheet jest otwarty.
+     */
+    private BottomSheetDialog galleryBottomSheet;
+
+    private RecyclerView galleryResultsList;
+
+    private TextView galleryResultsEmpty;
+
+    private TextView gallerySheetCount;
+
+    private TextView galleryCollectionStats;
+
+    private MaterialCheckBox gallerySelectAllCropsToggle;
+
+    private MaterialButton gallerySaveSelectedCropsButton;
     private MaterialButton experimentTimerButton;
     private PlateCaptureAdapter captureAdapter;
     private ProgressBar progress;
@@ -210,7 +220,6 @@ public final class MainActivity extends AppCompatActivity {
     private int knownSettingsRevision;
     private CaptureGalleryViewModel captureGalleryState;
 
-    private View galleryListContainer;
 
     private final ActivityResultLauncher<String> permissionLauncher =
             registerForActivityResult(
@@ -309,7 +318,6 @@ public final class MainActivity extends AppCompatActivity {
         uiPreferences = getSharedPreferences("alpr_ui", MODE_PRIVATE);
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         configureRecognitionProfile();
-        configureRecognitionProfile();
 
         cameraResolutionCatalog =
                 new CameraResolutionCatalog(
@@ -369,29 +377,56 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
-        previewView = findViewById(R.id.camera_preview);
-        overlayView = findViewById(R.id.detection_overlay);
-        analysisStartButton = findViewById(R.id.analysis_start_button);
-        analysisStopButton = findViewById(R.id.analysis_stop_button);
-        liveStatus = findViewById(R.id.live_status);
-        recognitionHint = findViewById(R.id.recognition_hint);
-        resultCount = findViewById(R.id.result_count);
-        collectionStats = findViewById(R.id.collection_stats);
-        collectionToggle = findViewById(R.id.collection_toggle);
-        galleryVisibilityToggle = findViewById(R.id.gallery_visibility_toggle);
-        gallerySizeToggle = findViewById(R.id.gallery_size_toggle);
-        selectAllCropsToggle = findViewById(R.id.crop_select_all);
-        saveSelectedCropsButton = findViewById(R.id.crop_save_selected);
-        resultsList = findViewById(R.id.results_list);
-        resultsEmpty = findViewById(R.id.results_empty);
-        galleryContent = findViewById(R.id.gallery_content);
-        controlPanel = findViewById(R.id.control_panel);
-        mainRoot = findViewById(R.id.main);
-        progress = findViewById(R.id.progress);
-        topAppBar = findViewById(R.id.top_app_bar);
-        galleryListContainer = findViewById(R.id.gallery_list_container);
+
+        previewView =
+                findViewById(
+                        R.id.camera_preview
+                );
+
+        overlayView =
+                findViewById(
+                        R.id.detection_overlay
+                );
+
+        analysisStartButton =
+                findViewById(
+                        R.id.analysis_start_button
+                );
+
+        liveStatus =
+                findViewById(
+                        R.id.live_status
+                );
+
+        recognitionHint =
+                findViewById(
+                        R.id.recognition_hint
+                );
+
+        collectionToggle =
+                findViewById(
+                        R.id.collection_toggle
+                );
+
+        galleryOpenButton =
+                findViewById(
+                        R.id.gallery_open_button
+                );
+
+        progress =
+                findViewById(
+                        R.id.progress
+                );
+
+        topAppBar =
+                findViewById(
+                        R.id.top_app_bar
+                );
+
         experimentTimerButton =
-                findViewById(R.id.experiment_timer_button);
+                findViewById(
+                        R.id.experiment_timer_button
+                );
     }
 
     private void configureRecognitionProfile() {
@@ -795,60 +830,101 @@ public final class MainActivity extends AppCompatActivity {
     private void configureAnalysisControls() {
 
         experimentTimerButton.setOnClickListener(
-                view -> showExperimentTimerDialog()
+                view ->
+                        showExperimentTimerDialog()
         );
 
+
+        /*
+         * Jeden przycisk obsługuje cały lifecycle analizy.
+         */
         analysisStartButton.setOnClickListener(
-                view -> ensureCameraPermission()
+                view -> {
+
+                    if (cameraStarted) {
+
+                        stopAnalysis();
+
+                    } else {
+
+                        ensureCameraPermission();
+                    }
+                }
         );
 
-        analysisStopButton.setOnClickListener(
-                view -> stopAnalysis()
-        );
 
         if (!cameraStarted) {
-            previewView.setVisibility(View.INVISIBLE);
+
+            previewView.setVisibility(
+                    View.INVISIBLE
+            );
         }
+
 
         renderAnalysisControls();
 
-        liveStatus.setText(R.string.analysis_idle);
-        recognitionHint.setText(R.string.analysis_idle_hint);
+
+        liveStatus.setText(
+                R.string.analysis_idle
+        );
+
+        recognitionHint.setText(
+                R.string.analysis_idle_hint
+        );
     }
 
-
     private void renderAnalysisControls() {
-        analysisStartButton.setVisibility(
-                cameraStarted ? View.GONE : View.VISIBLE
-        );
-
-        analysisStopButton.setVisibility(
-                cameraStarted ? View.VISIBLE : View.GONE
-        );
 
         /*
-         * Cropy mogą być zbierane wyłącznie wtedy,
-         * gdy działa kamera i pipeline.
+         * Jeden CTA zamiast osobnych START i STOP.
+         */
+        analysisStartButton.setText(
+                cameraStarted
+                        ? R.string.analysis_stop
+                        : R.string.analysis_start
+        );
+
+
+        analysisStartButton.setIconResource(
+                cameraStarted
+                        ? R.drawable.ic_stop_24
+                        : R.drawable.ic_camera_24
+        );
+
+
+        /*
+         * Cropy mogą być zbierane tylko podczas
+         * aktywnej analizy.
          */
         if (collectionToggle != null) {
-            collectionToggle.setEnabled(cameraStarted);
+
+            collectionToggle.setEnabled(
+                    cameraStarted
+            );
         }
 
+
+        /*
+         * Timer jest widoczny wyłącznie w trybie EXP.
+         */
         if (experimentTimerButton != null) {
+
             experimentTimerButton.setVisibility(
                     experimentModeEnabled
                             ? View.VISIBLE
                             : View.GONE
             );
 
+
             /*
-             * Po START konfiguracja konkretnej sesji jest zamrożona.
-             * Użytkownik nie może zmieniać czasu w trakcie przebiegu.
+             * Konfigurację czasu można zmienić
+             * tylko przed rozpoczęciem przebiegu.
              */
             experimentTimerButton.setEnabled(
                     experimentModeEnabled
                             && !cameraStarted
             );
+
 
             updateExperimentTimerButton();
         }
@@ -1382,67 +1458,125 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void configureCaptureCollection() {
-        cropLimitSetting = CropCapacityPolicy.normalizeSetting(
-                uiPreferences.getString("crop_limit", CropCapacityPolicy.AUTO)
-        );
-        resolvedCropLimit = CropCapacityPolicy.resolve(
-                cropLimitSetting,
-                Runtime.getRuntime().maxMemory(),
 
-                deviceProfile.lowRamDevice
-        );
-        String directory = uiPreferences.getString("capture_directory_uri", "");
+        cropLimitSetting =
+                CropCapacityPolicy.normalizeSetting(
+                        uiPreferences.getString(
+                                "crop_limit",
+                                CropCapacityPolicy.AUTO
+                        )
+                );
+
+
+        resolvedCropLimit =
+                CropCapacityPolicy.resolve(
+                        cropLimitSetting,
+                        Runtime.getRuntime().maxMemory(),
+                        deviceProfile.lowRamDevice
+                );
+
+
+        String directory =
+                uiPreferences.getString(
+                        "capture_directory_uri",
+                        ""
+                );
+
+
         if (!directory.isEmpty()) {
+
             try {
-                captureDirectoryUri = Uri.parse(directory);
+
+                captureDirectoryUri =
+                        Uri.parse(
+                                directory
+                        );
+
             } catch (RuntimeException ignored) {
-                captureDirectoryUri = null;
+
+                captureDirectoryUri =
+                        null;
             }
         }
-        captureAdapter = new PlateCaptureAdapter(new PlateCaptureAdapter.SelectionListener() {
-            @Override
-            public void onSelectionChanged(CapturedPlateItem item, boolean selected) {
-                onCropSelectionChanged(item, selected);
-            }
 
-            @Override
-            public void onVerificationChanged(
-                    CapturedPlateItem item,
-                    CapturedPlateItem.VerificationStatus status
-            ) {
-                applyHumanVerification(item, status, "");
-            }
 
-            @Override
-            public void onCorrectionRequested(CapturedPlateItem item) {
-                showCorrectionDialog(item);
-            }
-        });
-        resultsList.setLayoutManager(new LinearLayoutManager(
-                this, RecyclerView.VERTICAL, false
-        ));
-        resultsList.setAdapter(captureAdapter);
-        collectionToggle.setOnClickListener(view -> toggleCollection());
-        galleryVisibilityToggle.setOnClickListener(view -> {
-            captureGalleryState.setGalleryExpanded(!captureGalleryState.galleryExpanded());
-            renderGalleryVisibility();
-        });
-        gallerySizeToggle.setOnClickListener(view -> {
-            captureGalleryState.setGalleryMaximized(!captureGalleryState.galleryMaximized());
-            renderGalleryVisibility();
-        });
-        selectAllCropsToggle.setOnCheckedChangeListener(
-                (button, checked) -> selectAllCrops(checked)
-        );
-        saveSelectedCropsButton.setOnClickListener(view -> saveSelectedCrops());
         /*
-         * Nowa instancja MainActivity nie uruchamia kamery automatycznie.
-         * Nie możemy więc odziedziczyć aktywnego stanu kolektora.
+         * Adapter istnieje niezależnie od tego,
+         * czy Bottom Sheet jest aktualnie otwarty.
          */
-        if (!cameraStarted && collectionActive) {
-            collectionActive = false;
+        captureAdapter =
+                new PlateCaptureAdapter(
+                        new PlateCaptureAdapter.SelectionListener() {
 
-            metricsCollector.setCropCollectionActive(false);
+                            @Override
+                            public void onSelectionChanged(
+                                    CapturedPlateItem item,
+                                    boolean selected
+                            ) {
+
+                                onCropSelectionChanged(
+                                        item,
+                                        selected
+                                );
+                            }
+
+
+                            @Override
+                            public void onVerificationChanged(
+                                    CapturedPlateItem item,
+                                    CapturedPlateItem.VerificationStatus status
+                            ) {
+
+                                applyHumanVerification(
+                                        item,
+                                        status,
+                                        ""
+                                );
+                            }
+
+
+                            @Override
+                            public void onCorrectionRequested(
+                                    CapturedPlateItem item
+                            ) {
+
+                                showCorrectionDialog(
+                                        item
+                                );
+                            }
+                        }
+                );
+
+
+        collectionToggle.setOnClickListener(
+                view ->
+                        toggleCollection()
+        );
+
+
+        galleryOpenButton.setOnClickListener(
+                view ->
+                        showGalleryBottomSheet()
+        );
+
+
+        /*
+         * Nowa instancja MainActivity nie może odziedziczyć
+         * aktywnego kolektora, skoro kamera jest zatrzymana.
+         *
+         * Historia cropów i sessionId pozostają.
+         */
+        if (!cameraStarted
+                && collectionActive) {
+
+            collectionActive =
+                    false;
+
+
+            metricsCollector.setCropCollectionActive(
+                    false
+            );
+
 
             captureGalleryState.retainSession(
                     false,
@@ -1451,7 +1585,201 @@ public final class MainActivity extends AppCompatActivity {
                     collectionSequence
             );
         }
-        metricsCollector.setCropCapacity(resolvedCropLimit);
+
+
+        metricsCollector.setCropCapacity(
+                resolvedCropLimit
+        );
+
+
+        renderCapturedCrops();
+    }
+
+    private void showGalleryBottomSheet() {
+
+        /*
+         * Nie tworzymy drugiej instancji,
+         * jeżeli galeria już jest otwarta.
+         */
+        if (galleryBottomSheet != null
+                && galleryBottomSheet.isShowing()) {
+
+            return;
+        }
+
+
+        View content =
+                getLayoutInflater().inflate(
+                        R.layout.bottom_sheet_gallery,
+                        null,
+                        false
+                );
+
+
+        BottomSheetDialog dialog =
+                new BottomSheetDialog(
+                        this
+                );
+
+
+        dialog.setContentView(
+                content
+        );
+
+
+        galleryBottomSheet =
+                dialog;
+
+
+        galleryResultsList =
+                content.findViewById(
+                        R.id.gallery_sheet_list
+                );
+
+
+        galleryResultsEmpty =
+                content.findViewById(
+                        R.id.gallery_sheet_empty
+                );
+
+
+        gallerySheetCount =
+                content.findViewById(
+                        R.id.gallery_sheet_count
+                );
+
+
+        galleryCollectionStats =
+                content.findViewById(
+                        R.id.gallery_sheet_collection_stats
+                );
+
+
+        gallerySelectAllCropsToggle =
+                content.findViewById(
+                        R.id.gallery_sheet_select_all
+                );
+
+
+        gallerySaveSelectedCropsButton =
+                content.findViewById(
+                        R.id.gallery_sheet_save_selected
+                );
+
+
+        galleryResultsList.setLayoutManager(
+                new LinearLayoutManager(
+                        this,
+                        RecyclerView.VERTICAL,
+                        false
+                )
+        );
+
+
+        galleryResultsList.setAdapter(
+                captureAdapter
+        );
+
+
+        gallerySelectAllCropsToggle.setOnCheckedChangeListener(
+                (button, checked) ->
+                        selectAllCrops(
+                                checked
+                        )
+        );
+
+
+        gallerySaveSelectedCropsButton.setOnClickListener(
+                view ->
+                        saveSelectedCrops()
+        );
+
+
+        /*
+         * Po zamknięciu Bottom Sheeta usuwamy wyłącznie
+         * referencje do jego widoków.
+         *
+         * Adapter, cropy i sesja pozostają.
+         */
+        dialog.setOnDismissListener(
+                ignored -> {
+
+                    galleryBottomSheet =
+                            null;
+
+                    galleryResultsList =
+                            null;
+
+                    galleryResultsEmpty =
+                            null;
+
+                    gallerySheetCount =
+                            null;
+
+                    galleryCollectionStats =
+                            null;
+
+                    gallerySelectAllCropsToggle =
+                            null;
+
+                    gallerySaveSelectedCropsButton =
+                            null;
+                }
+        );
+
+
+        dialog.show();
+
+
+        /*
+         * Galeria otwiera się jako duży panel.
+         * Użytkownik może go przeciągnąć w dół,
+         * zamiast używać osobnych przycisków
+         * "ukryj" i "maksymalizuj".
+         */
+        View bottomSheet =
+                dialog.findViewById(
+                        com.google.android.material.R.id.design_bottom_sheet
+                );
+
+
+        if (bottomSheet != null) {
+
+            ViewGroup.LayoutParams parameters =
+                    bottomSheet.getLayoutParams();
+
+
+            parameters.height =
+                    ViewGroup.LayoutParams.MATCH_PARENT;
+
+
+            bottomSheet.setLayoutParams(
+                    parameters
+            );
+
+
+            BottomSheetBehavior<View> behavior =
+                    BottomSheetBehavior.from(
+                            bottomSheet
+                    );
+
+
+            behavior.setState(
+                    BottomSheetBehavior.STATE_EXPANDED
+            );
+
+
+            behavior.setHideable(
+                    true
+            );
+
+
+            behavior.setDraggable(
+                    true
+            );
+        }
+
+
         renderCapturedCrops();
     }
 
@@ -1576,162 +1904,230 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderCapturedCrops() {
-        if (captureAdapter == null) return;
+
+        if (captureAdapter == null) {
+            return;
+        }
+
+
         updateCaptureAdapterItems();
-        boolean empty = capturedCrops.isEmpty();
-        resultsEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-        resultsList.setVisibility(empty ? View.GONE : View.VISIBLE);
-        renderGalleryVisibility();
-        resultCount.setText(String.valueOf(capturedCrops.size()));
-        collectionToggle.setText(collectionActive
-                ? R.string.collection_stop
-                : R.string.collection_start);
-        collectionToggle.setIconResource(collectionActive
-                ? R.drawable.ic_stop_24
-                : R.drawable.ic_camera_24);
-        if (collectionActive) {
-            String shortId = collectionSessionId.length() <= 8
-                    ? collectionSessionId
-                    : collectionSessionId.substring(collectionSessionId.length() - 8);
-            collectionStats.setText(getString(
-                    R.string.collection_running,
-                    shortId,
-                    capturedCrops.size(),
-                    resolvedCropLimit
-            ));
-        } else if (collectionSessionId.isEmpty()) {
-            collectionStats.setText(R.string.collection_ready);
-        } else {
-            collectionStats.setText(getString(
-                    R.string.collection_paused,
-                    capturedCrops.size(),
-                    resolvedCropLimit
-            ));
-        }
-        updateSelectionControls();
-    }
 
-    private void renderGalleryVisibility() {
-        if (galleryContent == null || galleryVisibilityToggle == null
-                || gallerySizeToggle == null
-                || captureGalleryState == null) return;
-        boolean expanded = captureGalleryState.galleryExpanded();
-        boolean maximized = captureGalleryState.galleryMaximized();
-        galleryContent.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        galleryVisibilityToggle.setText(null);
-        galleryVisibilityToggle.setContentDescription(getString(expanded
-                ? R.string.gallery_hide_description
-                : R.string.gallery_show_description));
-        galleryVisibilityToggle.setIconResource(expanded
-                ? R.drawable.ic_expand_more_24
-                : R.drawable.ic_expand_less_24);
-        galleryVisibilityToggle.setTooltipText(getString(expanded
-                ? R.string.gallery_hide_description
-                : R.string.gallery_show_description));
-        gallerySizeToggle.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        gallerySizeToggle.setIconResource(maximized
-                ? R.drawable.ic_gallery_restore_24
-                : R.drawable.ic_gallery_maximize_24);
-        gallerySizeToggle.setContentDescription(getString(maximized
-                ? R.string.gallery_restore_description
-                : R.string.gallery_maximize_description));
-        gallerySizeToggle.setTooltipText(getString(maximized
-                ? R.string.gallery_restore_description
-                : R.string.gallery_maximize_description));
-        updateGalleryLayout(maximized);
-        updateControlPanelHeight(expanded, maximized);
-    }
 
-    private void updateCaptureAdapterItems() {
-        RecyclerView.LayoutManager manager = resultsList.getLayoutManager();
-        LinearLayoutManager linear = manager instanceof LinearLayoutManager
-                ? (LinearLayoutManager) manager
-                : null;
-        int previousCount = captureAdapter.getItemCount();
-        int firstVisible = linear == null ? RecyclerView.NO_POSITION
-                : linear.findFirstVisibleItemPosition();
-        View anchor = firstVisible == RecyclerView.NO_POSITION || linear == null
-                ? null
-                : linear.findViewByPosition(firstVisible);
-        int anchorOffset = 0;
-        if (anchor != null) {
-            anchorOffset = linear.getOrientation() == RecyclerView.HORIZONTAL
-                    ? anchor.getLeft() - resultsList.getPaddingLeft()
-                    : anchor.getTop() - resultsList.getPaddingTop();
-        }
-        captureAdapter.setItems(capturedCrops);
-        int addedAtFront = captureAdapter.getItemCount() - previousCount;
-        if (linear != null && firstVisible > 0 && addedAtFront > 0) {
-            linear.scrollToPositionWithOffset(firstVisible + addedAtFront, anchorOffset);
-        }
-    }
+        boolean empty =
+                capturedCrops.isEmpty();
 
-    private void updateGalleryLayout(boolean maximized) {
-        RecyclerView.LayoutManager current = resultsList.getLayoutManager();
 
-        if (!(current instanceof LinearLayoutManager)
-                || ((LinearLayoutManager) current).getOrientation()
-                != RecyclerView.VERTICAL) {
+        /*
+         * Przycisk galerii na głównym ekranie
+         * zawsze pokazuje bieżącą liczbę cropów.
+         */
+        if (galleryOpenButton != null) {
 
-            resultsList.setLayoutManager(
-                    new LinearLayoutManager(
-                            this,
-                            RecyclerView.VERTICAL,
-                            false
+            galleryOpenButton.setText(
+                    getString(
+                            R.string.gallery_open_count,
+                            capturedCrops.size()
                     )
             );
         }
-    }
 
-    private void updateControlPanelHeight(boolean galleryExpanded, boolean galleryMaximized) {
-        if (controlPanel == null) return;
-        int targetHeight = ViewGroup.LayoutParams.WRAP_CONTENT;
-        boolean landscape = getResources().getConfiguration().orientation
-                == Configuration.ORIENTATION_LANDSCAPE;
-        int availableHeight = 0;
-        if (galleryMaximized || (galleryExpanded && landscape)) {
-            availableHeight = mainRoot == null || liveStatus == null
-                    ? 0
-                    : mainRoot.getHeight() - liveStatus.getBottom();
-            if (availableHeight <= 0) {
-                availableHeight = Math.round(
-                        getResources().getDisplayMetrics().heightPixels * 0.65f
-                );
-                controlPanel.post(() -> updateControlPanelHeight(
-                        captureGalleryState != null && captureGalleryState.galleryExpanded(),
-                        captureGalleryState != null && captureGalleryState.galleryMaximized()
-                ));
-            }
-            targetHeight = Math.max(1, availableHeight);
+
+        /*
+         * Bottom Sheet może być zamknięty,
+         * dlatego wszystkie jego widoki są opcjonalne.
+         */
+        if (galleryResultsEmpty != null) {
+
+            galleryResultsEmpty.setVisibility(
+                    empty
+                            ? View.VISIBLE
+                            : View.GONE
+            );
         }
-        ViewGroup.LayoutParams containerParameters =
-                galleryListContainer.getLayoutParams();
 
-        int listHeight = Math.round(
-                344f * getResources().getDisplayMetrics().density
+
+        if (galleryResultsList != null) {
+
+            galleryResultsList.setVisibility(
+                    empty
+                            ? View.GONE
+                            : View.VISIBLE
+            );
+        }
+
+
+        if (gallerySheetCount != null) {
+
+            gallerySheetCount.setText(
+                    String.valueOf(
+                            capturedCrops.size()
+                    )
+            );
+        }
+
+
+        /*
+         * Główny ekran pokazuje tylko jedną prostą akcję
+         * uruchomienia / wstrzymania zbierania.
+         */
+        collectionToggle.setText(
+                collectionActive
+                        ? R.string.collection_stop
+                        : R.string.collection_start
         );
 
-        if (galleryMaximized && availableHeight > 0) {
-            int reserved = Math.round(
-                    150f * getResources().getDisplayMetrics().density
-            );
 
-            listHeight = Math.max(
-                    1,
-                    availableHeight - reserved
-            );
+        collectionToggle.setIconResource(
+                collectionActive
+                        ? R.drawable.ic_stop_24
+                        : R.drawable.ic_gallery_24
+        );
+
+
+        updateGalleryCollectionStatus();
+
+        updateSelectionControls();
+    }
+
+    private void updateGalleryCollectionStatus() {
+
+        if (galleryCollectionStats == null) {
+            return;
         }
 
-        if (containerParameters.height != listHeight) {
-            containerParameters.height = listHeight;
-            galleryListContainer.setLayoutParams(containerParameters);
+
+        if (collectionActive) {
+
+            galleryCollectionStats.setText(
+                    getString(
+                            R.string.gallery_collection_running,
+                            capturedCrops.size(),
+                            resolvedCropLimit
+                    )
+            );
+
+            return;
         }
-        ViewGroup.LayoutParams parameters = controlPanel.getLayoutParams();
-        if (parameters.height != targetHeight) {
-            parameters.height = targetHeight;
-            controlPanel.setLayoutParams(parameters);
+
+
+        if (collectionSessionId.isEmpty()) {
+
+            galleryCollectionStats.setText(
+                    getString(
+                            R.string.gallery_collection_ready_limit,
+                            resolvedCropLimit
+                    )
+            );
+
+            return;
+        }
+
+
+        galleryCollectionStats.setText(
+                getString(
+                        R.string.gallery_collection_paused,
+                        capturedCrops.size(),
+                        resolvedCropLimit
+                )
+        );
+    }
+
+
+
+
+    private void updateCaptureAdapterItems() {
+
+        /*
+         * Galeria może być zamknięta.
+         *
+         * Adapter nadal aktualizujemy, żeby po ponownym
+         * otwarciu od razu zawierał aktualne dane.
+         */
+        if (galleryResultsList == null) {
+
+            captureAdapter.setItems(
+                    capturedCrops
+            );
+
+            return;
+        }
+
+
+        RecyclerView.LayoutManager manager =
+                galleryResultsList.getLayoutManager();
+
+
+        LinearLayoutManager linear =
+                manager instanceof LinearLayoutManager
+
+                        ? (LinearLayoutManager) manager
+
+                        : null;
+
+
+        int previousCount =
+                captureAdapter.getItemCount();
+
+
+        int firstVisible =
+                linear == null
+
+                        ? RecyclerView.NO_POSITION
+
+                        : linear.findFirstVisibleItemPosition();
+
+
+        View anchor =
+                firstVisible == RecyclerView.NO_POSITION
+                        || linear == null
+
+                        ? null
+
+                        : linear.findViewByPosition(
+                        firstVisible
+                );
+
+
+        int anchorOffset =
+                0;
+
+
+        if (anchor != null) {
+
+            anchorOffset =
+                    anchor.getTop()
+                            - galleryResultsList.getPaddingTop();
+        }
+
+
+        captureAdapter.setItems(
+                capturedCrops
+        );
+
+
+        int addedAtFront =
+                captureAdapter.getItemCount()
+                        - previousCount;
+
+
+        /*
+         * Jeżeli użytkownik ogląda starsze cropy,
+         * nowa detekcja nie przesuwa mu gwałtownie listy.
+         */
+        if (linear != null
+                && firstVisible > 0
+                && addedAtFront > 0) {
+
+            linear.scrollToPositionWithOffset(
+                    firstVisible + addedAtFront,
+                    anchorOffset
+            );
         }
     }
+
+
+
+
 
     private void onCropSelectionChanged(CapturedPlateItem item, boolean selected) {
         item.selectedForSave = selected && isSelectableForSave(item);
@@ -1837,21 +2233,81 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void updateSelectionControls() {
-        int selectable = 0;
-        int selected = 0;
-        for (CapturedPlateItem item : capturedCrops) {
-            if (!isSelectableForSave(item)) continue;
+
+        int selectable =
+                0;
+
+        int selected =
+                0;
+
+
+        for (CapturedPlateItem item :
+                capturedCrops) {
+
+            if (!isSelectableForSave(
+                    item
+            )) {
+                continue;
+            }
+
+
             selectable++;
-            if (item.selectedForSave) selected++;
+
+
+            if (item.selectedForSave) {
+                selected++;
+            }
         }
-        selectAllCropsToggle.setOnCheckedChangeListener(null);
-        selectAllCropsToggle.setChecked(selectable > 0 && selected == selectable);
-        selectAllCropsToggle.setEnabled(selectable > 0);
-        selectAllCropsToggle.setOnCheckedChangeListener(
-                (button, checked) -> selectAllCrops(checked)
-        );
-        saveSelectedCropsButton.setText(getString(R.string.crop_save_selected_count, selected));
-        saveSelectedCropsButton.setEnabled(selected > 0 && pendingBatchWrites == 0);
+
+
+        /*
+         * Kontrolki istnieją wyłącznie przy
+         * otwartym Bottom Sheecie.
+         */
+        if (gallerySelectAllCropsToggle != null) {
+
+            gallerySelectAllCropsToggle
+                    .setOnCheckedChangeListener(
+                            null
+                    );
+
+
+            gallerySelectAllCropsToggle.setChecked(
+                    selectable > 0
+                            && selected == selectable
+            );
+
+
+            gallerySelectAllCropsToggle.setEnabled(
+                    selectable > 0
+            );
+
+
+            gallerySelectAllCropsToggle
+                    .setOnCheckedChangeListener(
+                            (button, checked) ->
+                                    selectAllCrops(
+                                            checked
+                                    )
+                    );
+        }
+
+
+        if (gallerySaveSelectedCropsButton != null) {
+
+            gallerySaveSelectedCropsButton.setText(
+                    getString(
+                            R.string.crop_save_selected_count,
+                            selected
+                    )
+            );
+
+
+            gallerySaveSelectedCropsButton.setEnabled(
+                    selected > 0
+                            && pendingBatchWrites == 0
+            );
+        }
     }
 
     private static boolean isSelectableForSave(CapturedPlateItem item) {
@@ -2430,6 +2886,18 @@ public final class MainActivity extends AppCompatActivity {
 
         backgroundExecutor.shutdownNow();
         cancelExperimentTimer();
+
+        if (galleryBottomSheet != null) {
+
+            galleryBottomSheet.setOnDismissListener(
+                    null
+            );
+
+            galleryBottomSheet.dismiss();
+
+            galleryBottomSheet =
+                    null;
+        }
 
         super.onDestroy();
 

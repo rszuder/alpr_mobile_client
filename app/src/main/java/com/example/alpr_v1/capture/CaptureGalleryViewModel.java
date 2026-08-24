@@ -22,8 +22,7 @@ public final class CaptureGalleryViewModel extends ViewModel {
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
     private int collectionSequence;
-    private boolean galleryExpanded;
-    private boolean galleryMaximized;
+
 
     public List<CapturedPlateItem> capturedCrops() { return capturedCrops; }
 
@@ -52,16 +51,7 @@ public final class CaptureGalleryViewModel extends ViewModel {
         collectionSequence = Math.max(0, sequence);
     }
 
-    public boolean galleryExpanded() { return galleryExpanded; }
-    public void setGalleryExpanded(boolean expanded) {
-        galleryExpanded = expanded;
-        if (!expanded) galleryMaximized = false;
-    }
-    public boolean galleryMaximized() { return galleryMaximized; }
-    public void setGalleryMaximized(boolean maximized) {
-        galleryMaximized = maximized;
-        if (maximized) galleryExpanded = true;
-    }
+
 
     @Override
     protected void onCleared() {
