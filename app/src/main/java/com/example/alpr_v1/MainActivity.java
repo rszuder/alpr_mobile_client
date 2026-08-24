@@ -1612,6 +1612,7 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
         liveStatus.setText(result.message);
+        renderLiveHud();
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
         overlayView.setItems(
                 overlayTracker.update(result.overlayItems, observationNanos, System.nanoTime()),
