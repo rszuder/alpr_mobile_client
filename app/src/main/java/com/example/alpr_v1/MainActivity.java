@@ -317,6 +317,16 @@ public final class MainActivity extends AppCompatActivity {
     private CameraController cameraController;
     private CameraMotionMonitor cameraMotionMonitor;
     private volatile boolean cameraStarted;
+    /*
+     * true:
+     * HUD czeka na pierwszy wynik ciężkiego pipeline'u
+     * należący do aktualnej sceny.
+     *
+     * W tym czasie nie pokazujemy czasów poprzedniej
+     * inferencji jako danych bieżącego kadru.
+     */
+    private boolean liveHudAwaitingFreshResult =
+            true;
 
     private boolean explicitExitRequested;
     private ResearchArchive.Kind pendingExportKind;
@@ -1116,6 +1126,8 @@ public final class MainActivity extends AppCompatActivity {
             ExperimentSession.CompletionReason reason
     ) {
         cameraStarted = false;
+        liveHudAwaitingFreshResult =
+                true;
         stopPreviewSceneMonitor();
 
         /*
@@ -1453,6 +1465,25 @@ public final class MainActivity extends AppCompatActivity {
         );
 
 
+        /*
+         * Od tej chwili ostatni InferenceTrace należy
+         * do poprzedniej sceny.
+         *
+         * Nie usuwamy go z MetricsCollector, bo jest
+         * poprawnym wynikiem badawczym. Unieważniamy
+         * tylko jego prezentację w HUD.
+         */
+        liveHudAwaitingFreshResult =
+                true;
+
+
+        /*
+         * Odświeżamy HUD od razu, nie dopiero po
+         * zakończeniu następnego MP/MT/MZ.
+         */
+        renderLiveHud();
+
+
         liveStatus.setText(
                 R.string.scene_change_analyzing
         );
@@ -1503,6 +1534,15 @@ public final class MainActivity extends AppCompatActivity {
          * pojawić się po restarcie.
          */
         uiSceneGeneration.incrementAndGet();
+
+
+        /*
+         * Również restart techniczny kamery nie może
+         * chwilowo pokazywać czasów poprzedniego obrazu.
+         */
+        liveHudAwaitingFreshResult =
+                true;
+
 
         cameraStarted = true;
 
@@ -1865,25 +1905,59 @@ public final class MainActivity extends AppCompatActivity {
                         + resolution;
 
 
+        /*
+         * Jeżeli obraz Preview należy już do nowej sceny,
+         * ale ciężki pipeline nie zakończył jeszcze jej
+         * pierwszej inferencji, ostatnie czasy w MetricsCollector
+         * dotyczą poprzedniego kadru.
+         *
+         * Dlatego pokazujemy kreski.
+         */
+        double vehicleInference =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.vehicleInferenceMs;
+
+        double plateInference =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.plateInferenceMs;
+
+        double characterInference =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.characterInferenceMs;
+
+        double pipelineInference =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.pipelineMs;
+
+
         String secondLine =
                 "MP "
                         + hudDuration(
-                        snapshot.vehicleInferenceMs
+                        vehicleInference
                 )
                         + " · MT "
                         + hudDuration(
-                        snapshot.plateInferenceMs
+                        plateInference
                 )
                         + " · MZ "
                         + hudDuration(
-                        snapshot.characterInferenceMs
+                        characterInference
                 );
 
 
+        /*
+         * DROP jest licznikiem całej aktywnej sesji,
+         * więc może pozostać widoczny również podczas
+         * oczekiwania na nowy trace.
+         */
         String thirdLine =
                 "PIPE "
                         + hudDuration(
-                        snapshot.pipelineMs
+                        pipelineInference
                 )
                         + " · DROP "
                         + snapshot.droppedFrames;
@@ -1902,7 +1976,6 @@ public final class MainActivity extends AppCompatActivity {
                 View.VISIBLE
         );
     }
-
     private String hudRoiLabel() {
 
         switch (effectiveRoiBudgetPolicy()) {
@@ -1960,7 +2033,23 @@ public final class MainActivity extends AppCompatActivity {
                     java.util.Collections.emptyList()
             );
         }
-        liveStatus.setText(result.message);
+
+
+        /*
+         * presentResult() może zostać wywołane tylko dla wyniku,
+         * który przeszedł kontrolę uiSceneGeneration.
+         *
+         * Oznacza to, że trace należy już do aktualnej sceny
+         * i jego czasy mogą wrócić do HUD.
+         */
+        liveHudAwaitingFreshResult =
+                false;
+
+
+        liveStatus.setText(
+                result.message
+        );
+
         renderLiveHud();
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
         List<OverlayItem> visibleOverlayItems =
