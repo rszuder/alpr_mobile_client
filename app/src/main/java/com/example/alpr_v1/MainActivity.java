@@ -77,6 +77,8 @@ import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.TimerConfig;
+import com.example.alpr_v1.experiment.ThermalConfig;
+import com.example.alpr_v1.experiment.ThermalMonitor;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
 import com.example.alpr_v1.ui.OverlayItem;
@@ -102,6 +104,11 @@ public final class MainActivity extends AppCompatActivity {
 
     private static final String KEY_LAST_EXPERIMENT_TIMER_SECONDS =
             "last_experiment_timer_seconds";
+    private static final String KEY_LAST_EXPERIMENT_THERMAL_TENTHS =
+            "last_experiment_thermal_tenths";
+
+    private static final long THERMAL_POLL_MS =
+            1000L;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     /*
@@ -311,6 +318,14 @@ public final class MainActivity extends AppCompatActivity {
 
     private final Handler experimentTimerHandler =
             new Handler(Looper.getMainLooper());
+
+    private final Handler thermalHandler =
+            new Handler(
+                    Looper.getMainLooper()
+            );
+
+    private boolean thermalUiMonitorRunning;
+
     private long experimentTimerDeadlineElapsedMillis = -1L;
 
     private final Runnable experimentTimerUiRunnable =
@@ -382,6 +397,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private MaterialButton gallerySaveSelectedCropsButton;
     private MaterialButton experimentTimerButton;
+    private MaterialButton experimentThermalButton;
     private PlateCaptureAdapter captureAdapter;
     private ProgressBar progress;
     private MaterialToolbar topAppBar;
@@ -426,6 +442,17 @@ public final class MainActivity extends AppCompatActivity {
             RoiBudgetPolicy.TWO_ROI;
     private TimerConfig experimentTimerConfig =
             TimerConfig.disabled();
+    private ThermalConfig experimentThermalConfig =
+            ThermalConfig.disabled();
+
+    private ThermalMonitor thermalMonitor;
+
+    private ThermalMonitor.Snapshot latestThermalSnapshot;
+
+    private boolean waitingForThermalStart;
+
+    private long thermalReadySinceElapsedMillis =
+            -1L;
     private volatile boolean collectionActive;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
@@ -659,7 +686,20 @@ public final class MainActivity extends AppCompatActivity {
                 findViewById(
                         R.id.experiment_timer_button
                 );
+        experimentThermalButton =
+                findViewById(
+                        R.id.experiment_thermal_button
+                );
+        thermalMonitor = new ThermalMonitor(this);
+
+        latestThermalSnapshot = thermalMonitor.read();
+
+
     }
+
+
+
+
 
     private void configureRecognitionProfile() {
         recognitionProfile = RecognitionProfile.fromWireName(
@@ -3671,9 +3711,12 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onResume() {
+
+        stopThermalUiMonitor();
         super.onResume();
 
         applySettingsRevision();
+        startThermalUiMonitor();
 
         /*
          * Sensor ruchu pracuje tylko wtedy,
@@ -4474,5 +4517,284 @@ public final class MainActivity extends AppCompatActivity {
         if (hasFocus) {
             enableImmersiveMode();
         }
+    }
+    private final Runnable thermalUiRunnable =
+            new Runnable() {
+
+                @Override
+                public void run() {
+
+                    if (!thermalUiMonitorRunning
+                            || thermalMonitor == null) {
+                        return;
+                    }
+
+
+                    latestThermalSnapshot =
+                            thermalMonitor.read();
+
+
+                    updateExperimentThermalButton();
+
+
+                    if (waitingForThermalStart) {
+
+                        evaluateThermalStartCondition(
+                                latestThermalSnapshot
+                        );
+                    }
+
+
+                    /*
+                     * Podczas aktywnej analizy odświeżamy
+                     * również temperaturę w HUD.
+                     */
+                    if (cameraStarted) {
+                        renderLiveHud();
+                    }
+
+
+                    thermalHandler.postDelayed(
+                            this,
+                            THERMAL_POLL_MS
+                    );
+                }
+            };
+    private void startThermalUiMonitor() {
+
+        thermalHandler.removeCallbacks(
+                thermalUiRunnable
+        );
+
+        thermalUiMonitorRunning =
+                true;
+
+        thermalHandler.post(
+                thermalUiRunnable
+        );
+    }
+
+    private void updateExperimentThermalButton() {
+
+        if (experimentThermalButton == null) {
+            return;
+        }
+
+        experimentThermalButton.setVisibility(
+                experimentModeEnabled
+                        ? View.VISIBLE
+                        : View.GONE
+        );
+
+        if (!experimentModeEnabled) {
+            return;
+        }
+
+        ThermalMonitor.Snapshot snapshot =
+                latestThermalSnapshot;
+
+        if (snapshot == null
+                || !snapshot.available()) {
+
+            experimentThermalButton.setText(
+                    "TEMP —"
+            );
+
+            return;
+        }
+
+        String text =
+                String.format(
+                        Locale.ROOT,
+                        "TEMP %.1f°C · TH%d",
+                        snapshot.batteryTemperatureC,
+                        snapshot.thermalStatus
+                );
+
+        experimentThermalButton.setText(
+                text
+        );
+
+        /*
+         * Konfigurację warunku termicznego można zmienić
+         * tylko wtedy, gdy analiza jeszcze nie działa
+         * i nie oczekujemy właśnie na schłodzenie.
+         */
+        experimentThermalButton.setEnabled(
+                !cameraStarted
+                        && !waitingForThermalStart
+        );
+    }
+
+    private void evaluateThermalStartCondition(
+            ThermalMonitor.Snapshot snapshot
+    ) {
+
+        if (!waitingForThermalStart) {
+            return;
+        }
+
+        /*
+         * Jeżeli warunek termiczny jest wyłączony,
+         * nie ma na co czekać.
+         */
+        if (!experimentThermalConfig.enabled()) {
+
+            waitingForThermalStart =
+                    false;
+
+            thermalReadySinceElapsedMillis =
+                    -1L;
+
+            startCamera(
+                    true
+            );
+
+            return;
+        }
+
+
+        /*
+         * Brak prawidłowego odczytu nie może rozpocząć
+         * eksperymentu.
+         */
+        if (snapshot == null
+                || !snapshot.available()) {
+
+            thermalReadySinceElapsedMillis =
+                    -1L;
+
+            liveStatus.setText(
+                    "Oczekiwanie na odczyt temperatury…"
+            );
+
+            return;
+        }
+
+
+        boolean acceptable =
+                experimentThermalConfig.accepts(
+                        snapshot
+                );
+
+
+        if (!acceptable) {
+
+            thermalReadySinceElapsedMillis =
+                    -1L;
+
+            liveStatus.setText(
+                    String.format(
+                            Locale.ROOT,
+                            "Chłodzenie: %.1f°C · TH%d · cel ≤ %.1f°C · TH≤%d",
+                            snapshot.batteryTemperatureC,
+                            snapshot.thermalStatus,
+                            experimentThermalConfig
+                                    .maxBatteryTemperatureC(),
+                            experimentThermalConfig
+                                    .maxThermalStatus()
+                    )
+            );
+
+            return;
+        }
+
+
+        long now =
+                android.os.SystemClock.elapsedRealtime();
+
+
+        /*
+         * Pierwszy prawidłowy pomiar rozpoczyna
+         * okres stabilizacji.
+         */
+        if (thermalReadySinceElapsedMillis < 0L) {
+
+            thermalReadySinceElapsedMillis =
+                    now;
+        }
+
+
+        long stableMillis =
+                now
+                        - thermalReadySinceElapsedMillis;
+
+
+        long requiredMillis =
+                experimentThermalConfig
+                        .stabilizationMillis();
+
+
+        if (stableMillis < requiredMillis) {
+
+            long remainingMillis =
+                    requiredMillis
+                            - stableMillis;
+
+            long remainingSeconds =
+                    Math.max(
+                            1L,
+                            (remainingMillis + 999L)
+                                    / 1000L
+                    );
+
+
+            liveStatus.setText(
+                    String.format(
+                            Locale.ROOT,
+                            "Temperatura OK: %.1f°C · TH%d · stabilizacja %d s",
+                            snapshot.batteryTemperatureC,
+                            snapshot.thermalStatus,
+                            remainingSeconds
+                    )
+            );
+
+            return;
+        }
+
+
+        /*
+         * Warunek był spełniony nieprzerwanie przez
+         * wymagany czas. Dopiero teraz zaczynamy
+         * właściwy eksperyment.
+         */
+        waitingForThermalStart =
+                false;
+
+        thermalReadySinceElapsedMillis =
+                -1L;
+
+
+        recordInfo(
+                String.format(
+                        Locale.ROOT,
+                        "Warunek termiczny spełniony: %.1f°C TH%d",
+                        snapshot.batteryTemperatureC,
+                        snapshot.thermalStatus
+                )
+        );
+
+
+        startCamera(
+                true
+        );
+    }
+
+
+    private void stopThermalUiMonitor() {
+
+        thermalUiMonitorRunning =
+                false;
+
+        thermalHandler.removeCallbacks(
+                thermalUiRunnable
+        );
+
+        /*
+         * Po powrocie do aplikacji wymagamy ponownie
+         * pełnego okresu stabilizacji.
+         */
+        thermalReadySinceElapsedMillis =
+                -1L;
     }
 }

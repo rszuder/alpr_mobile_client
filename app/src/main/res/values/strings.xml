@@ -272,4 +272,9 @@
     <string name="experiment_timer_disabled_log">Wyłączono timer eksperymentu</string>
     <string name="experiment_timer_armed_log">Ustawiono timer eksperymentu: %1$d s</string>
     <string name="export_short">Eksport sesji</string>
+
+    <string name="experiment_thermal_button">TEMP —</string>
+    <string name="analysis_cancel_waiting">Anuluj oczekiwanie</string>
+    <string name="experiment_thermal_title">Warunek temperatury</string>
+    <string name="experiment_thermal_none">Bez warunku</string>
 </resources>

@@ -115,6 +115,24 @@
         app:layout_constraintBottom_toBottomOf="@id/camera_preview"
         app:layout_constraintStart_toStartOf="@id/camera_preview" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/experiment_thermal_button"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="10dp"
+        android:text="@string/experiment_thermal_button"
+        android:textSize="11sp"
+        android:visibility="gone"
+        app:icon="@drawable/ic_device_24"
+        app:iconPadding="5dp"
+        app:iconSize="20dp"
+        app:layout_constraintBottom_toBottomOf="@id/camera_preview"
+        app:layout_constraintEnd_toEndOf="@id/camera_preview" />
+
 
     <!--
         Stały, mały panel sterowania.
