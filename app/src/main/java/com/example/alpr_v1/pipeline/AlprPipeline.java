@@ -450,7 +450,8 @@ public final class AlprPipeline {
                                 + "MZ_POST=%.3f | "
                                 + "MT_ROI=%d "
                                 + "MT_FULL=%d "
-                                + "MZ_RUNS=%d",
+                                + "MZ_RUNS=%d"
+                                + "SRC=%dx%d ",
 
                         trace.frameId(),
 
@@ -539,6 +540,7 @@ public final class AlprPipeline {
                                 "character_postprocess"
                         ),
 
+
                         trace.counters()
                                 .getOrDefault(
                                         "plate_roi_runs",
@@ -555,7 +557,12 @@ public final class AlprPipeline {
                                 .getOrDefault(
                                         "mz_runs",
                                         0L
-                                )
+                                ),
+                        trace.counters()
+                                .getOrDefault("source_width", 0L),
+
+                        trace.counters()
+                                .getOrDefault("source_height", 0L)
                 )
         );
     }
