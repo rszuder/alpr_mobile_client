@@ -44,11 +44,10 @@ public final class MetricsCollector {
 
         public final double pipelineMs;
 
-        public final double measuredStageSumMs;
+        public final double inferenceSumMs;
 
-        public final double pipelineOverheadMs;
+        public final double auxiliarySumMs;
 
-        public final double engineOverheadMs;
 
 
         private LiveSnapshot(
@@ -59,9 +58,8 @@ public final class MetricsCollector {
                 double plateInferenceMs,
                 double characterInferenceMs,
                 double pipelineMs,
-                double measuredStageSumMs,
-                double pipelineOverheadMs,
-                double engineOverheadMs
+                double inferenceSumMs,
+                double auxiliarySumMs
         ) {
             this.sourceWidth =
                     sourceWidth;
@@ -83,14 +81,11 @@ public final class MetricsCollector {
 
             this.pipelineMs =
                     pipelineMs;
-            this.measuredStageSumMs =
-                    measuredStageSumMs;
+            this.inferenceSumMs =
+                    inferenceSumMs;
 
-            this.pipelineOverheadMs =
-                    pipelineOverheadMs;
-
-            this.engineOverheadMs =
-                    engineOverheadMs;
+            this.auxiliarySumMs =
+                    auxiliarySumMs;
         }
     }
     private boolean captureHighResolutionRequested;
@@ -198,8 +193,9 @@ public final class MetricsCollector {
                     Double.NaN,
                     Double.NaN,
                     Double.NaN,
-                    Double.NaN,
                     Double.NaN
+
+
             );
         }
 
@@ -208,18 +204,22 @@ public final class MetricsCollector {
                 actualSourceWidth,
                 actualSourceHeight,
                 droppedFrames,
+
                 stageMilliseconds(
                         trace,
                         "vehicle_inference"
                 ),
+
                 stageMilliseconds(
                         trace,
                         "plate_inference"
                 ),
+
                 stageMilliseconds(
                         trace,
                         "character_inference"
                 ),
+
                 stageMilliseconds(
                         trace,
                         "total"
@@ -227,15 +227,12 @@ public final class MetricsCollector {
 
                 stageMilliseconds(
                         trace,
-                        "measured_stage_sum"
+                        "inference_sum"
                 ),
+
                 stageMilliseconds(
                         trace,
-                        "pipeline_overhead"
-                ),
-                stageMilliseconds(
-                        trace,
-                        "engine_overhead"
+                        "auxiliary_sum"
                 )
         );
     }

@@ -167,6 +167,9 @@ public final class CameraController implements AutoCloseable {
                                 ImageAnalysis
                                         .OUTPUT_IMAGE_FORMAT_YUV_420_888
                         )
+                        .setOutputImageRotationEnabled(
+                                true
+                        )
                         .setBackpressureStrategy(
                                 ImageAnalysis
                                         .STRATEGY_KEEP_ONLY_LATEST

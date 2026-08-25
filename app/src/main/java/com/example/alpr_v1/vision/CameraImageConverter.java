@@ -104,7 +104,7 @@ public final class CameraImageConverter {
                         bitmap.getWidth(),
                         bitmap.getHeight(),
                         matrix,
-                        true
+                        false
                 );
 
 
