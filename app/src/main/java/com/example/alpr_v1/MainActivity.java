@@ -1129,7 +1129,9 @@ public final class MainActivity extends AppCompatActivity {
 
         exportReportButton.setOnClickListener(
                 view ->
-                        showExportOptions()
+                        requestExportDestination(
+                                ResearchArchive.Kind.RESEARCH_SESSION
+                        )
         );
     }
 
@@ -1191,11 +1193,31 @@ public final class MainActivity extends AppCompatActivity {
 
         if (exportReportButton != null) {
 
+            boolean experimentFinished =
+                    experimentModeEnabled
+                            && experimentSession.state()
+                            == ExperimentSession.State.FINISHED;
+
+            exportReportButton.setVisibility(
+                    experimentFinished
+                            ? View.VISIBLE
+                            : View.GONE
+            );
+
             exportReportButton.setEnabled(
-                    !cameraStarted
+                    experimentFinished
                             && !exportInProgress
             );
         }
+
+        if (recognitionHint != null) {
+            recognitionHint.setVisibility(
+                    cameraStarted
+                            ? View.VISIBLE
+                            : View.GONE
+            );
+        }
+
         if (liveHud != null) {
 
             if (cameraStarted) {
@@ -1313,9 +1335,7 @@ public final class MainActivity extends AppCompatActivity {
                 R.string.analysis_idle
         );
 
-        recognitionHint.setText(
-                R.string.analysis_idle_hint
-        );
+
 
         renderAnalysisControls();
 
