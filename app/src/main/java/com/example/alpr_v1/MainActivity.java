@@ -2130,6 +2130,16 @@ public final class MainActivity extends AppCompatActivity {
                 liveHudAwaitingFreshResult
                         ? Double.NaN
                         : snapshot.pipelineMs;
+        double measuredStageSum =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.measuredStageSumMs;
+
+
+        double pipelineOverhead =
+                liveHudAwaitingFreshResult
+                        ? Double.NaN
+                        : snapshot.pipelineOverheadMs;
 
 
         String secondLine =
@@ -2157,6 +2167,15 @@ public final class MainActivity extends AppCompatActivity {
                         + hudDuration(
                         pipelineInference
                 )
+                        + " · SUM "
+                        + hudDuration(
+                        measuredStageSum
+                );
+        String fourthLine =
+                "OVH "
+                        + hudDuration(
+                        pipelineOverhead
+                )
                         + " · DROP "
                         + snapshot.droppedFrames;
 
@@ -2167,6 +2186,8 @@ public final class MainActivity extends AppCompatActivity {
                         + secondLine
                         + "\n"
                         + thirdLine
+                        + "\n"
+                        + fourthLine
         );
 
 

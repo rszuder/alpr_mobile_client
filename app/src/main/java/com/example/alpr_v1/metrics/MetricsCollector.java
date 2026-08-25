@@ -44,6 +44,12 @@ public final class MetricsCollector {
 
         public final double pipelineMs;
 
+        public final double measuredStageSumMs;
+
+        public final double pipelineOverheadMs;
+
+        public final double engineOverheadMs;
+
 
         private LiveSnapshot(
                 int sourceWidth,
@@ -52,7 +58,10 @@ public final class MetricsCollector {
                 double vehicleInferenceMs,
                 double plateInferenceMs,
                 double characterInferenceMs,
-                double pipelineMs
+                double pipelineMs,
+                double measuredStageSumMs,
+                double pipelineOverheadMs,
+                double engineOverheadMs
         ) {
             this.sourceWidth =
                     sourceWidth;
@@ -74,6 +83,14 @@ public final class MetricsCollector {
 
             this.pipelineMs =
                     pipelineMs;
+            this.measuredStageSumMs =
+                    measuredStageSumMs;
+
+            this.pipelineOverheadMs =
+                    pipelineOverheadMs;
+
+            this.engineOverheadMs =
+                    engineOverheadMs;
         }
     }
     private boolean captureHighResolutionRequested;
@@ -179,6 +196,9 @@ public final class MetricsCollector {
                     Double.NaN,
                     Double.NaN,
                     Double.NaN,
+                    Double.NaN,
+                    Double.NaN,
+                    Double.NaN,
                     Double.NaN
             );
         }
@@ -203,6 +223,19 @@ public final class MetricsCollector {
                 stageMilliseconds(
                         trace,
                         "total"
+                ),
+
+                stageMilliseconds(
+                        trace,
+                        "measured_stage_sum"
+                ),
+                stageMilliseconds(
+                        trace,
+                        "pipeline_overhead"
+                ),
+                stageMilliseconds(
+                        trace,
+                        "engine_overhead"
                 )
         );
     }
