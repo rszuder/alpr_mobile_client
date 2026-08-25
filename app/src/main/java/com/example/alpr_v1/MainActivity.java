@@ -359,6 +359,7 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton collectionToggle;
     private MaterialButton galleryOpenButton;
     private MaterialButton analysisStartButton;
+    private MaterialButton exportReportButton;
 
 
     /*
@@ -634,6 +635,11 @@ public final class MainActivity extends AppCompatActivity {
         galleryOpenButton =
                 findViewById(
                         R.id.gallery_open_button
+                );
+
+        exportReportButton =
+                findViewById(
+                        R.id.export_report_button
                 );
 
         progress =
@@ -1099,6 +1105,11 @@ public final class MainActivity extends AppCompatActivity {
         recognitionHint.setText(
                 R.string.analysis_idle_hint
         );
+
+        exportReportButton.setOnClickListener(
+                view ->
+                        showExportOptions()
+        );
     }
 
     private void renderAnalysisControls() {
@@ -1155,6 +1166,14 @@ public final class MainActivity extends AppCompatActivity {
 
 
             updateExperimentTimerButton();
+        }
+
+        if (exportReportButton != null) {
+
+            exportReportButton.setEnabled(
+                    !cameraStarted
+                            && !exportInProgress
+            );
         }
         if (liveHud != null) {
 
@@ -1399,17 +1418,21 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         metricsCollector.finishMeasurementSession();
-        /*
-         * Timer jest ustawieniem pojedynczego przebiegu.
-         * Następny eksperyment domyślnie nie ma limitu czasu.
-         *
-         * ExperimentSession zachowała już własną kopię konfiguracji,
-         * więc raport bieżącego przebiegu pozostanie poprawny.
-         */
-        experimentTimerConfig =
-                TimerConfig.disabled();
 
-        updateExperimentTimerButton();
+        /*
+         * Kończymy aktywne odliczanie, ale zachowujemy
+         * konfigurację timera dla następnego przebiegu.
+         *
+         * Dzięki temu seria R0/R1/R2 o jednakowym czasie
+         * nie wymaga ponownego ustawiania timera
+         * po każdym eksperymencie.
+         *
+         * ExperimentSession nadal przechowuje własną
+         * zamrożoną konfigurację zakończonego przebiegu.
+         */
+                updateExperimentTimerButton();
+
+
     }
     private void ensureCameraPermission() {
         if (ContextCompat.checkSelfPermission(

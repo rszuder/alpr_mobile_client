@@ -201,6 +201,19 @@
                 app:iconSize="20dp" />
 
         </LinearLayout>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/export_report_button"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="@string/export_short"
+            android:textSize="11sp"
+            app:icon="@drawable/ic_export_24"
+            app:iconPadding="5dp"
+            app:iconSize="20dp" />
 
 
         <ProgressBar
