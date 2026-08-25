@@ -209,11 +209,34 @@ public final class AlprPipeline {
 
             try {
 
-                frame =
+                com.example.alpr_v1.vision.CameraImageConverter.Result
+                        conversion =
                         com.example.alpr_v1.vision.CameraImageConverter
-                                .toBitmap(
+                                .convert(
                                         image
                                 );
+
+
+                frame =
+                        conversion.bitmap;
+
+
+                trace.putDurationNanos(
+                        "camera_to_bitmap",
+                        conversion.toBitmapNanos
+                );
+
+
+                trace.putDurationNanos(
+                        "camera_rotation",
+                        conversion.rotationNanos
+                );
+
+
+                trace.putCount(
+                        "camera_rotation_degrees",
+                        conversion.rotationDegrees
+                );
 
             } finally {
 
@@ -435,111 +458,64 @@ public final class AlprPipeline {
                                 + "INF=%.3f "
                                 + "AUX=%.3f "
                                 + "OVH=%.3f | "
+
                                 + "CAM=%.3f "
+                                + "CAM_BITMAP=%.3f "
+                                + "CAM_ROT=%.3f "
+                                + "ROT=%d "
                                 + "SETUP=%.3f "
                                 + "FINAL=%.3f | "
+
                                 + "MP_PRE=%.3f "
                                 + "MP_INF=%.3f "
                                 + "MP_POST=%.3f | "
+
                                 + "MT_PRE=%.3f "
                                 + "MT_INF=%.3f "
                                 + "MT_POST=%.3f | "
+
                                 + "RECT=%.3f "
                                 + "MZ_PRE=%.3f "
                                 + "MZ_INF=%.3f "
                                 + "MZ_POST=%.3f | "
+
                                 + "MT_ROI=%d "
                                 + "MT_FULL=%d "
-                                + "MZ_RUNS=%d"
-                                + "SRC=%dx%d ",
+                                + "MZ_RUNS=%d "
+                                + "SRC=%dx%d",
 
                         trace.frameId(),
 
-                        ms(
-                                trace,
-                                "total"
-                        ),
+                        ms(trace, "total"),
+                        ms(trace, "inference_sum"),
+                        ms(trace, "auxiliary_sum"),
+                        ms(trace, "pipeline_overhead"),
 
-                        ms(
-                                trace,
-                                "inference_sum"
-                        ),
+                        ms(trace, "camera_conversion"),
+                        ms(trace, "camera_to_bitmap"),
+                        ms(trace, "camera_rotation"),
 
-                        ms(
-                                trace,
-                                "auxiliary_sum"
-                        ),
+                        trace.counters()
+                                .getOrDefault(
+                                        "camera_rotation_degrees",
+                                        0L
+                                ),
 
-                        ms(
-                                trace,
-                                "pipeline_overhead"
-                        ),
+                        ms(trace, "engine_setup"),
+                        ms(trace, "pipeline_finalize"),
 
-                        ms(
-                                trace,
-                                "camera_conversion"
-                        ),
+                        ms(trace, "vehicle_preprocess"),
+                        ms(trace, "vehicle_inference"),
+                        ms(trace, "vehicle_postprocess"),
 
-                        ms(
-                                trace,
-                                "engine_setup"
-                        ),
+                        ms(trace, "plate_preprocess"),
+                        ms(trace, "plate_inference"),
+                        ms(trace, "plate_postprocess"),
 
-                        ms(
-                                trace,
-                                "pipeline_finalize"
-                        ),
-
-                        ms(
-                                trace,
-                                "vehicle_preprocess"
-                        ),
-
-                        ms(
-                                trace,
-                                "vehicle_inference"
-                        ),
-
-                        ms(
-                                trace,
-                                "vehicle_postprocess"
-                        ),
-
-                        ms(
-                                trace,
-                                "plate_preprocess"
-                        ),
-
-                        ms(
-                                trace,
-                                "plate_inference"
-                        ),
-
-                        ms(
-                                trace,
-                                "plate_postprocess"
-                        ),
-
-                        ms(
-                                trace,
-                                "rectification"
-                        ),
-
-                        ms(
-                                trace,
-                                "character_preprocess"
-                        ),
-
-                        ms(
-                                trace,
-                                "character_inference"
-                        ),
-
-                        ms(
-                                trace,
-                                "character_postprocess"
-                        ),
-
+                        ms(trace, "rectification"),
+                        ms(trace, "character_preprocess"),
+                        ms(trace, "character_inference"),
+                        ms(trace, "character_postprocess"),
 
                         trace.counters()
                                 .getOrDefault(
@@ -558,11 +534,18 @@ public final class AlprPipeline {
                                         "mz_runs",
                                         0L
                                 ),
-                        trace.counters()
-                                .getOrDefault("source_width", 0L),
 
                         trace.counters()
-                                .getOrDefault("source_height", 0L)
+                                .getOrDefault(
+                                        "source_width",
+                                        0L
+                                ),
+
+                        trace.counters()
+                                .getOrDefault(
+                                        "source_height",
+                                        0L
+                                )
                 )
         );
     }
