@@ -36,7 +36,7 @@
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/top_app_bar"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
+        android:layout_height="48dp"
         android:background="@color/alpr_panel"
         android:elevation="4dp"
         app:layout_constraintEnd_toEndOf="parent"
@@ -181,7 +181,7 @@
                 android:minWidth="0dp"
                 android:text="@string/collection_start"
                 android:textSize="11sp"
-                app:icon="@drawable/ic_gallery_24"
+                app:icon="@drawable/ic_session_24"
                 app:iconPadding="5dp"
                 app:iconSize="20dp" />
 
@@ -204,10 +204,9 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/export_report_button"
             style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
+            android:layout_marginTop="8dp"
             android:minWidth="0dp"
             android:text="@string/export_short"
             android:textSize="11sp"

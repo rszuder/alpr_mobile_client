@@ -33,6 +33,8 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -514,6 +516,7 @@ public final class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         bindViews();
         applySystemInsets();
+        enableImmersiveMode();
 
         captureGalleryState = new ViewModelProvider(this).get(CaptureGalleryViewModel.class);
         capturedCrops = captureGalleryState.capturedCrops();
@@ -1059,6 +1062,24 @@ public final class MainActivity extends AppCompatActivity {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });
+    }
+
+    private void enableImmersiveMode() {
+
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(
+                        getWindow(),
+                        getWindow().getDecorView()
+                );
+
+        controller.hide(
+                WindowInsetsCompat.Type.systemBars()
+        );
+
+        controller.setSystemBarsBehavior(
+                WindowInsetsControllerCompat
+                        .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        );
     }
 
     private void configureAnalysisControls() {
@@ -2928,7 +2949,7 @@ public final class MainActivity extends AppCompatActivity {
         collectionToggle.setIconResource(
                 collectionActive
                         ? R.drawable.ic_stop_24
-                        : R.drawable.ic_gallery_24
+                        : R.drawable.ic_session_24
         );
 
 
@@ -4425,5 +4446,13 @@ public final class MainActivity extends AppCompatActivity {
 
 
         return result;
+    }
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+
+        if (hasFocus) {
+            enableImmersiveMode();
+        }
     }
 }
