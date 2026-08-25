@@ -907,6 +907,11 @@ public final class MainActivity extends AppCompatActivity {
         Size selected =
                 cameraResolutionSelection.size();
 
+        if (selected == null) {
+            selected =
+                    chooseAnalysisSize();
+        }
+
         Size available =
                 cameraResolutionCatalog.find(
                         selected.getWidth(),
@@ -2999,10 +3004,7 @@ public final class MainActivity extends AppCompatActivity {
 
         View anchor =
                 firstVisible == RecyclerView.NO_POSITION
-                        || linear == null
-
                         ? null
-
                         : linear.findViewByPosition(
                         firstVisible
                 );
@@ -3078,10 +3080,20 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void refreshPersistedVerification(CapturedPlateItem item) {
-        if (item.miniReportJson.isEmpty()) return;
+        String miniReportJson =
+                item.miniReportJson;
+
+        if (miniReportJson == null
+                || miniReportJson.isEmpty()) {
+            return;
+        }
         final String refreshed;
         try {
-            refreshed = CropMiniReport.refreshHumanVerification(item.miniReportJson, item);
+            refreshed =
+                    CropMiniReport.refreshHumanVerification(
+                            miniReportJson,
+                            item
+                    );
             item.miniReportJson = refreshed;
         } catch (Exception error) {
             AppLog.warning(this, LOG_TAG, "Nie udało się zaktualizować manualnej walidacji");
