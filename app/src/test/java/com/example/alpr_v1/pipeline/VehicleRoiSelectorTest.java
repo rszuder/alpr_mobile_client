@@ -43,6 +43,40 @@ public class VehicleRoiSelectorTest {
         assertEquals(120, regions.get(1).left);
     }
 
+    @Test
+    public void convertsNormalizedAutoZoomRoiToSourcePixels() {
+        VehicleRoiSelector.Region region = VehicleRoiSelector.normalizedRegion(
+                1000,
+                500,
+                0.30f,
+                0.20f,
+                0.70f,
+                0.80f
+        );
+
+        assertEquals(300, region.left);
+        assertEquals(100, region.top);
+        assertEquals(700, region.right);
+        assertEquals(400, region.bottom);
+    }
+
+    @Test
+    public void clampsAutoZoomRoiAtFrameEdges() {
+        VehicleRoiSelector.Region region = VehicleRoiSelector.normalizedRegion(
+                100,
+                200,
+                -0.20f,
+                0.75f,
+                1.30f,
+                1.20f
+        );
+
+        assertEquals(0, region.left);
+        assertEquals(150, region.top);
+        assertEquals(100, region.right);
+        assertEquals(200, region.bottom);
+    }
+
     private static Detection detection(
             float confidence,
             float left,

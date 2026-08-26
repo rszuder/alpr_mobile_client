@@ -38,6 +38,10 @@ public final class CameraMotionMonitor implements SensorEventListener {
         return filter.isRapid(SystemClock.elapsedRealtimeNanos());
     }
 
+    public boolean isMoving() {
+        return filter.isMoving(SystemClock.elapsedRealtimeNanos());
+    }
+
     public boolean isAvailable() { return gyroscope != null; }
 
     @Override

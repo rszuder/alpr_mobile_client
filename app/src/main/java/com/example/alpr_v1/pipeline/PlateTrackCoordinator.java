@@ -110,11 +110,13 @@ final class PlateTrackCoordinator {
         int attempts;
         float bestAttemptQuality;
         long lastAttemptFrame = Long.MIN_VALUE;
+        boolean zoomRetryPending;
     }
 
     private final MotionBoxTracker tracker = new MotionBoxTracker();
     private final Map<Long, State> states = new HashMap<>();
     private RecognitionProfile profile = RecognitionProfile.BALANCED;
+    private boolean zoomRetryPendingForNewTracks;
 
     PlateTrackCoordinator() {}
 
@@ -143,7 +145,12 @@ final class PlateTrackCoordinator {
             if (track.sourceIndex < 0) continue;
             Observation observation = byIndex.get(track.sourceIndex);
             if (observation == null) continue;
-            State state = states.computeIfAbsent(track.trackId, ignored -> new State());
+            State state = states.get(track.trackId);
+            if (state == null) {
+                state = new State();
+                state.zoomRetryPending = zoomRetryPendingForNewTracks;
+                states.put(track.trackId, state);
+            }
             TemporalCharacterAggregator.Result current =
                     state.aggregator.current();
 
@@ -164,6 +171,9 @@ final class PlateTrackCoordinator {
         while (iterator.hasNext()) {
             if (!activeIds.contains(iterator.next().getKey())) iterator.remove();
         }
+        if (!decisions.isEmpty()) {
+            zoomRetryPendingForNewTracks = false;
+        }
         return decisions;
     }
 
@@ -175,6 +185,7 @@ final class PlateTrackCoordinator {
             List<String> labels
     ) {
         State state = states.computeIfAbsent(trackId, ignored -> new State());
+        state.zoomRetryPending = false;
         state.attempts++;
         state.bestAttemptQuality = Math.max(state.bestAttemptQuality, quality);
         state.lastAttemptFrame = frameId;
@@ -183,6 +194,7 @@ final class PlateTrackCoordinator {
 
     synchronized void recordFailedAttempt(long trackId, float quality, long frameId) {
         State state = states.computeIfAbsent(trackId, ignored -> new State());
+        state.zoomRetryPending = false;
         state.attempts++;
         state.bestAttemptQuality = Math.max(state.bestAttemptQuality, quality);
         state.lastAttemptFrame = frameId;
@@ -191,6 +203,23 @@ final class PlateTrackCoordinator {
     synchronized void reset() {
         tracker.reset();
         states.clear();
+        zoomRetryPendingForNewTracks = false;
+    }
+
+    synchronized void applyCameraZoomTransform(float relativeRatio) {
+        tracker.applyCenteredZoom(relativeRatio);
+    }
+
+    /**
+     * Zoom-in został wykonany właśnie po to, aby uzyskać nowy crop dla MZ.
+     * Zachowujemy track i konsensus znaków, ale każdemu aktywnemu trackowi
+     * przyznajemy jedną świeżą próbę przy pierwszej poprawnej geometrii MT.
+     */
+    synchronized void requestFreshRecognitionAfterZoom() {
+        zoomRetryPendingForNewTracks = true;
+        for (State state : states.values()) {
+            state.zoomRetryPending = true;
+        }
     }
 
     synchronized void setProfile(RecognitionProfile profile) {
@@ -211,9 +240,21 @@ final class PlateTrackCoordinator {
          * której nie można bezpiecznie zrektyfikować,
          * ani dla bardzo słabego obrazu.
          */
-        if (!observation.validGeometry
-                || observation.quality < profile.minimumQuality) {
+        if (!observation.validGeometry) {
 
+            return false;
+        }
+
+        /*
+         * Jednorazowa próba po zoomie omija zwykły próg jakości i odstęp
+         * schedulera. Nadal wymagamy czterech bezpiecznych narożników, ponieważ
+         * bez nich nie można poprawnie zrektyfikować cropa dla MZ.
+         */
+        if (state.zoomRetryPending) {
+            return true;
+        }
+
+        if (observation.quality < profile.minimumQuality) {
             return false;
         }
 

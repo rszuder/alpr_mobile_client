@@ -11,12 +11,26 @@ import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
+import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class AlprPipeline {
     private static final String LOG_TAG = "AlprPipeline";
+
+    /**
+     * Lekki wynik etapu MT publikowany zanim silnik rozpocznie MZ.
+     * Callback działa na wątku analizatora i nie może blokować inferencji.
+     */
+    public interface PlateDetectionCallback {
+        void onPlateDetections(
+                List<OverlayItem> overlayItems,
+                int sourceWidth,
+                int sourceHeight
+        );
+    }
 
     /*
      * Etapy, których czasy nie nakładają się na siebie
@@ -114,6 +128,46 @@ public final class AlprPipeline {
             RoiBudgetPolicy.TWO_ROI;
 
     private volatile boolean rapidCameraMotion;
+    private volatile boolean cameraTransformInProgress;
+    private final Object cameraTransformLock = new Object();
+    private float pendingCameraZoomRatio = 1f;
+    private boolean cameraTransformFinishPending;
+    private volatile AutoZoomTargetConfig autoZoomTargetConfig =
+            AutoZoomTargetConfig.disabled(0L);
+
+    private static final class AutoZoomTargetConfig {
+        final boolean active;
+        final long revision;
+        final long trackId;
+        final float left;
+        final float top;
+        final float right;
+        final float bottom;
+
+        AutoZoomTargetConfig(
+                boolean active,
+                long revision,
+                long trackId,
+                float left,
+                float top,
+                float right,
+                float bottom
+        ) {
+            this.active = active;
+            this.revision = revision;
+            this.trackId = trackId;
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+        }
+
+        static AutoZoomTargetConfig disabled(long revision) {
+            return new AutoZoomTargetConfig(
+                    false, revision, 0L, 0f, 0f, 1f, 1f
+            );
+        }
+    }
 
     public AlprPipeline(
             Context context,
@@ -129,7 +183,18 @@ public final class AlprPipeline {
     }
 
     public synchronized PipelineResult process(ImageProxy image) {
+        return process(image, null);
+    }
+
+    public synchronized PipelineResult process(
+            ImageProxy image,
+            PlateDetectionCallback plateDetectionCallback
+    ) {
         metrics.observeSourceFrame(image.getWidth(), image.getHeight());
+        if (cameraTransformInProgress) {
+            metrics.frameDropped();
+            return null;
+        }
         long frameId = frameIds.incrementAndGet();
         if (!frameGate.shouldProcess(frameId)) {
             metrics.frameDropped();
@@ -186,7 +251,22 @@ public final class AlprPipeline {
                     engine.setRapidCameraMotion(
                             rapidCameraMotion
                     );
+
+                    engine.setCameraTransformInProgress(
+                            cameraTransformInProgress
+                    );
                 }
+
+                AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
+                engine.setAutoZoomTargetLock(
+                        targetConfig.active,
+                        targetConfig.revision,
+                        targetConfig.trackId,
+                        targetConfig.left,
+                        targetConfig.top,
+                        targetConfig.right,
+                        targetConfig.bottom
+                );
 
 
                 if (trackingResetRequested) {
@@ -195,6 +275,22 @@ public final class AlprPipeline {
 
                     trackingResetRequested =
                             false;
+                }
+
+                float pendingZoomRatio;
+                boolean finishPending;
+                synchronized (cameraTransformLock) {
+                    pendingZoomRatio = pendingCameraZoomRatio;
+                    finishPending = cameraTransformFinishPending;
+                    pendingCameraZoomRatio = 1f;
+                    cameraTransformFinishPending = false;
+                }
+                if (finishPending) {
+                    if (Math.abs(pendingZoomRatio - 1f) > 0.0001f) {
+                        engine.applyCameraZoomTransform(pendingZoomRatio);
+                    }
+                    engine.setCameraTransformInProgress(false);
+                    engine.resetSceneDetectorReference();
                 }
 
             } finally {
@@ -256,7 +352,8 @@ public final class AlprPipeline {
                 result =
                         engine.run(
                                 frame,
-                                trace
+                                trace,
+                                plateDetectionCallback
                         );
 
             } finally {
@@ -482,7 +579,10 @@ public final class AlprPipeline {
                                 + "MT_ROI=%d "
                                 + "MT_FULL=%d "
                                 + "MZ_RUNS=%d "
-                                + "SRC=%dx%d",
+                                + "SRC=%dx%d "
+                                + "LOCK_CAND=%d "
+                                + "LOCK_MISS=%d "
+                                + "LOCK_SCORE=%.3f",
 
                         trace.frameId(),
 
@@ -545,7 +645,17 @@ public final class AlprPipeline {
                                 .getOrDefault(
                                         "source_height",
                                         0L
-                                )
+                                ),
+
+                        trace.counters().getOrDefault(
+                                "auto_zoom_lock_candidates", 0L
+                        ),
+                        trace.counters().getOrDefault(
+                                "auto_zoom_lock_misses", 0L
+                        ),
+                        trace.confidences().getOrDefault(
+                                "auto_zoom_lock_score", 0.0
+                        )
                 )
         );
     }
@@ -692,9 +802,74 @@ public final class AlprPipeline {
         if (engine != null) engine.setRapidCameraMotion(rapid);
     }
 
+    public void setCameraTransformInProgress(boolean inProgress) {
+        cameraTransformInProgress = inProgress;
+    }
+
+    public void setAutoZoomTargetLock(
+            long targetTrackId,
+            float left,
+            float top,
+            float right,
+            float bottom
+    ) {
+        float safeLeft = clamp01(Math.min(left, right));
+        float safeTop = clamp01(Math.min(top, bottom));
+        float safeRight = clamp01(Math.max(left, right));
+        float safeBottom = clamp01(Math.max(top, bottom));
+        if (safeRight - safeLeft < 0.02f
+                || safeBottom - safeTop < 0.02f) {
+            clearAutoZoomTargetRoi();
+            return;
+        }
+        AutoZoomTargetConfig previous = autoZoomTargetConfig;
+        long revision = previous.active
+                ? previous.revision
+                : previous.revision + 1L;
+        autoZoomTargetConfig = new AutoZoomTargetConfig(
+                true,
+                revision,
+                targetTrackId,
+                safeLeft,
+                safeTop,
+                safeRight,
+                safeBottom
+        );
+    }
+
+    public void clearAutoZoomTargetRoi() {
+        AutoZoomTargetConfig previous = autoZoomTargetConfig;
+        if (!previous.active) return;
+        autoZoomTargetConfig = AutoZoomTargetConfig.disabled(
+                previous.revision + 1L
+        );
+    }
+
+    public synchronized void finishCameraTransform() {
+        cameraTransformInProgress = false;
+        if (engine != null) {
+            engine.setCameraTransformInProgress(false);
+            engine.resetSceneDetectorReference();
+        }
+    }
+
+    public void finishCameraTransform(float fromZoomRatio, float toZoomRatio) {
+        float from = Math.max(0.1f, fromZoomRatio);
+        float to = Math.max(0.1f, toZoomRatio);
+        synchronized (cameraTransformLock) {
+            pendingCameraZoomRatio *= to / from;
+            cameraTransformFinishPending = true;
+        }
+        cameraTransformInProgress = false;
+    }
+
     public synchronized void close() {
         if (engine != null) engine.close();
         engine = null;
         reloadRequested = false;
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 }

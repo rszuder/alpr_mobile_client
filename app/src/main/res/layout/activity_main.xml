@@ -7,6 +7,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black"
+    tools:ignore="Overdraw"
     tools:context=".MainActivity">
 
 
@@ -53,26 +54,50 @@
         z kamerą i eksperymentów. Pełna diagnostyka
         pozostaje w DiagnosticsActivity.
     -->
-    <TextView
-        android:id="@+id/live_hud"
+    <LinearLayout
+        android:id="@+id/live_hud_row"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
         android:layout_marginTop="10dp"
-        android:background="@drawable/live_hud_background"
-        android:fontFamily="monospace"
-        android:includeFontPadding="false"
-        android:maxWidth="350dp"
-        android:paddingStart="10dp"
-        android:paddingTop="7dp"
-        android:paddingEnd="10dp"
-        android:paddingBottom="7dp"
-        android:textColor="@color/white"
-        android:textSize="10sp"
+        android:baselineAligned="false"
+        android:gravity="top"
+        android:orientation="horizontal"
         android:visibility="gone"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/top_app_bar"
-        tools:text="R1 · EXP · 4000×3000 · 12,0 Mpix&#10;MP 0,38 s · MT 2,97 s · MZ 0,47 s&#10;PIPE 4,63 s · DROP 16" />
+        app:layout_constraintTop_toBottomOf="@id/top_app_bar">
+
+        <TextView
+            android:id="@+id/live_hud"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/live_hud_background"
+            android:fontFamily="monospace"
+            android:includeFontPadding="false"
+            android:maxWidth="230dp"
+            android:paddingStart="10dp"
+            android:paddingTop="7dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="7dp"
+            android:textColor="@color/white"
+            android:textSize="11sp"
+            tools:text="R1 · EXP · 4000×3000 · 12,0 Mpix&#10;MP 0,38 s · MT 2,97 s · MZ 0,47 s&#10;PIPE 4,63 s · DROP 16" />
+
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/auto_zoom_target"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:background="@drawable/bg_auto_zoom_glow"
+        android:contentDescription="@string/auto_zoom_target"
+        android:elevation="8dp"
+        android:padding="10dp"
+        android:src="@drawable/ic_auto_focus_zoom_24"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="@id/camera_preview"
+        app:layout_constraintTop_toTopOf="@id/camera_preview"
+        app:tint="@color/alpr_success" />
     <!--
         Krótki status pracy pipeline'u.
         Nie rozciągamy go już na całą szerokość.
@@ -93,7 +118,7 @@
         android:textSize="13sp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_hud" />
+        app:layout_constraintTop_toBottomOf="@id/live_hud_row" />
 
 
     <!-- Timer jest elementem eksperymentalnym i pojawia się tylko przy EXP. -->
@@ -121,7 +146,7 @@
         android:layout_width="wrap_content"
         android:layout_height="48dp"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="12dp"
+        android:layout_marginBottom="76dp"
         android:minWidth="0dp"
         android:paddingHorizontal="10dp"
         android:text="@string/experiment_thermal_button"
@@ -132,6 +157,39 @@
         app:iconSize="20dp"
         app:layout_constraintBottom_toBottomOf="@id/camera_preview"
         app:layout_constraintEnd_toEndOf="@id/camera_preview" />
+
+    <FrameLayout
+        android:id="@+id/auto_zoom_control"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/camera_preview"
+        app:layout_constraintEnd_toEndOf="@id/camera_preview">
+
+        <View
+            android:id="@+id/auto_zoom_glow"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_auto_zoom_glow"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/auto_zoom_button"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:contentDescription="@string/auto_zoom_enable"
+            android:gravity="center"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:padding="0dp"
+            android:text="@string/auto_zoom_symbol_ready"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </FrameLayout>
 
 
     <!--
@@ -158,7 +216,9 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:accessibilityLiveRegion="polite"
+            android:ellipsize="end"
             android:gravity="center"
+            android:lines="2"
             android:text="@string/recognition_searching"
             android:textColor="@color/alpr_text_secondary"
             android:textSize="12sp" />

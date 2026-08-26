@@ -1,10 +1,13 @@
 package com.example.alpr_v1;
 
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.Manifest;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.RectF;
@@ -17,6 +20,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ProgressBar;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.view.WindowManager;
@@ -49,6 +54,8 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
 import com.example.alpr_v1.camera.CameraController;
+import com.example.alpr_v1.camera.AutoZoomController;
+import com.example.alpr_v1.camera.AutoZoomRecognitionMemory;
 //do usuniecia po migracji
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
 //--------------------------------------------------------------
@@ -106,6 +113,8 @@ public final class MainActivity extends AppCompatActivity {
             "last_experiment_timer_seconds";
     private static final String KEY_LAST_EXPERIMENT_THERMAL_TENTHS =
             "last_experiment_thermal_tenths";
+    private static final String KEY_AUTO_ZOOM_ENABLED =
+            "auto_zoom_enabled";
 
     private static final long THERMAL_POLL_MS =
             1000L;
@@ -119,9 +128,18 @@ public final class MainActivity extends AppCompatActivity {
      */
     private static final long PREVIEW_SCENE_POLL_MS =
             160L;
+    private static final long PRE_ZOOM_OVERLAY_HOLD_MS =
+            120L;
 
 
     private final AtomicLong uiSceneGeneration =
+            new AtomicLong();
+    /*
+     * Zoom zmienia geometrię klatki, ale nie jej logiczną scenę. Osobna
+     * generacja odrzuca wyniki rozpoczęte dla poprzedniego poziomu zoomu bez
+     * zerowania tracków i stabilizacji tej samej sceny.
+     */
+    private final AtomicLong uiCameraTransformGeneration =
             new AtomicLong();
 
 
@@ -135,6 +153,10 @@ public final class MainActivity extends AppCompatActivity {
             new SceneChangeDetector();
 
     private final SceneAnchorGuard previewSceneAnchorGuard =
+            new SceneAnchorGuard();
+    private final SceneAnchorGuard autoZoomPreZoomSceneAnchorGuard =
+            new SceneAnchorGuard();
+    private final SceneAnchorGuard autoZoomZoomedSceneAnchorGuard =
             new SceneAnchorGuard();
 
 
@@ -156,6 +178,10 @@ public final class MainActivity extends AppCompatActivity {
      */
     private List<OverlayItem> latestPipelinePlateItems =
             java.util.Collections.emptyList();
+    private List<OverlayItem> autoZoomBaseMemoryOverlayItems =
+            java.util.Collections.emptyList();
+    private int latestOverlaySourceWidth;
+    private int latestOverlaySourceHeight;
 
 
     private boolean previewSceneMonitorRunning;
@@ -193,6 +219,42 @@ public final class MainActivity extends AppCompatActivity {
                         if (previewBitmap != null
                                 && !previewBitmap.isRecycled()) {
 
+                            if (isAutoZoomHoldingMemory()) {
+                                if (cameraTransformInProgress
+                                        && autoZoomController.state()
+                                        == AutoZoomController.State.ZOOM_SETTLING
+                                        && cameraMotionMonitor != null
+                                        && cameraMotionMonitor.isMoving()) {
+                                    invalidateAutoZoomForPhysicalCameraMotion();
+                                }
+                                /*
+                                 * Kontrolowany zoom zmienia cały obraz Preview.
+                                 * W tym czasie nie wolno interpretować tej
+                                 * transformacji jako zmiany sceny użytkownika.
+                                 */
+                                previewSceneDetector.reset();
+                                previewSceneAnchorGuard.reset();
+                                previewPlateTracker.reset();
+
+                            } else if (autoZoomReturnValidationPending) {
+                                /*
+                                 * Po powrocie do 1x porównujemy obraz z kotwicą
+                                 * sprzed zoomu. To rozstrzyga, czy nadal oglądamy
+                                 * tę samą scenę, zanim zwykły detektor zdąży
+                                 * uruchomić nową stabilizację.
+                                 */
+                                validateReturnedAutoZoomScene(previewBitmap);
+
+                            } else {
+
+                            if (autoZoomZoomedAnchorPending
+                                    && autoZoomController.state()
+                                    == AutoZoomController.State.ZOOMED_RETRY) {
+                                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                                autoZoomZoomedAnchorPending = false;
+                                autoZoomZoomedAnchorValid = true;
+                            }
+
                             /*
                              * Pierwsza klatka Preview po świeżej detekcji MT
                              * staje się stałą referencją sceny.
@@ -218,9 +280,59 @@ public final class MainActivity extends AppCompatActivity {
                                             previewBitmap
                                     );
 
+                            SceneAnchorGuard.Result zoomedAnchorResult =
+                                    autoZoomZoomedSceneAnchorGuard.evaluate(
+                                            previewBitmap
+                                    );
 
-                            if (scene.sceneChanged
-                                    || anchorResult.changed) {
+                            List<OverlayItem> trackedItems =
+                                    previewPlateTracker.update(
+                                            previewBitmap
+                                    );
+
+                            boolean zoomedRetry = autoZoomController.state()
+                                    == AutoZoomController.State.ZOOMED_RETRY;
+                            boolean targetStillTracked = zoomedRetry
+                                    && trackedItems != null
+                                    && !trackedItems.isEmpty()
+                                    && findAutoZoomTargetOverlay(trackedItems) != null;
+
+                            boolean changed = scene.sceneChanged
+                                    || anchorResult.changed
+                                    || (zoomedRetry && zoomedAnchorResult.changed);
+
+                            boolean shortMotionGrace = zoomedRetry
+                                    && cameraMotionMonitor != null
+                                    && cameraMotionMonitor.isMoving()
+                                    && autoZoomDynamicFrameGraceCount < 2;
+
+                            if (changed && (targetStillTracked || shortMotionGrace)) {
+
+                                /*
+                                 * Ruch całego kadru nie jest zmianą tożsamości celu,
+                                 * jeżeli lekki tracker nadal jednoznacznie widzi tę
+                                 * samą tablicę. Przenosimy kotwice na nowy kadr i
+                                 * zwiększamy niepewność tylko podczas krótkiej luki.
+                                 */
+                                autoZoomDynamicFrameGraceCount = targetStillTracked
+                                        ? 0
+                                        : autoZoomDynamicFrameGraceCount + 1;
+                                previewSceneDetector.reset();
+                                previewSceneDetector.update(previewBitmap);
+                                previewSceneAnchorGuard.anchor(previewBitmap);
+                                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                                if (targetStillTracked) {
+                                    presentTrackedPreviewOverlay(trackedItems);
+                                }
+                                android.util.Log.d(
+                                        "ALPR_SCENE_UI",
+                                        "ZOOM_MOTION_COMPENSATED targetTracked="
+                                                + targetStillTracked
+                                                + " grace="
+                                                + autoZoomDynamicFrameGraceCount
+                                );
+
+                            } else if (changed) {
 
                                 android.util.Log.d(
                                         "ALPR_SCENE_UI",
@@ -234,25 +346,20 @@ public final class MainActivity extends AppCompatActivity {
                                 );
 
 
+                                autoZoomDynamicFrameGraceCount = 0;
                                 invalidateUiForPreviewSceneChange(
-                                        scene
+                                        Math.max(scene.score, Math.max(
+                                                anchorResult.score,
+                                                zoomedAnchorResult.score
+                                        )),
+                                        Math.max(scene.changedFraction, Math.max(
+                                                anchorResult.changedFraction,
+                                                zoomedAnchorResult.changedFraction
+                                        ))
                                 );
 
                             } else {
-
-                                /*
-                                 * Scena nadal jest ta sama.
-                                 *
-                                 * Pomiędzy ciężkimi inferencjami próbujemy więc
-                                 * przesunąć ostatnio wykrytą tablicę na podstawie
-                                 * aktualnego obrazu PreviewView.
-                                 */
-                                List<OverlayItem> trackedItems =
-                                        previewPlateTracker.update(
-                                                previewBitmap
-                                        );
-
-
+                                autoZoomDynamicFrameGraceCount = 0;
                                 if (trackedItems != null) {
 
                                     /*
@@ -267,17 +374,12 @@ public final class MainActivity extends AppCompatActivity {
                                         invalidateUiForLostPreviewTracking();
 
                                     } else {
-
-                                        overlayView.setItems(
-                                                mergePreviewOverlay(
-                                                        trackedItems
-                                                ),
-                                                previewPlateTracker.sourceWidth(),
-                                                previewPlateTracker.sourceHeight()
-                                        );
+                                        presentTrackedPreviewOverlay(trackedItems);
                                     }
                                 }
-                            }                        }
+                            }
+                            }
+                        }
 
                     } catch (RuntimeException ignored) {
 
@@ -323,6 +425,29 @@ public final class MainActivity extends AppCompatActivity {
             new Handler(
                     Looper.getMainLooper()
             );
+
+    private final Handler autoZoomHandler =
+            new Handler(Looper.getMainLooper());
+
+    private final AutoZoomController autoZoomController =
+            new AutoZoomController();
+
+    private boolean cameraTransformInProgress;
+    private boolean autoZoomMemoryVisible;
+    private float currentCameraZoomRatio = 1f;
+    private float cameraTransformStartZoomRatio = 1f;
+    private float autoZoomTargetSceneX = 0.5f;
+    private float autoZoomTargetSceneY = 0.5f;
+    private String autoZoomBestText = "";
+    private double autoZoomBestConfidence;
+    private boolean abortAutoZoomAfterTransform;
+    private boolean resetAutoZoomSessionAfterReturn;
+    private boolean autoZoomPreZoomAnchorValid;
+    private boolean autoZoomZoomedAnchorPending;
+    private boolean autoZoomZoomedAnchorValid;
+    private boolean autoZoomReturnValidationPending;
+    private int autoZoomDynamicFrameGraceCount;
+    private Runnable pendingAutoZoomStartRunnable;
 
     private boolean thermalUiMonitorRunning;
 
@@ -372,6 +497,7 @@ public final class MainActivity extends AppCompatActivity {
     private DetectionOverlayView overlayView;
     private TextView liveStatus;
     private TextView liveHud;
+    private LinearLayout liveHudRow;
     private TextView recognitionHint;
     private MaterialButton collectionToggle;
     private MaterialButton galleryOpenButton;
@@ -398,6 +524,12 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton gallerySaveSelectedCropsButton;
     private MaterialButton experimentTimerButton;
     private MaterialButton experimentThermalButton;
+    private MaterialButton autoZoomButton;
+    private View autoZoomGlow;
+    private View autoZoomControl;
+    private ImageView autoZoomTarget;
+    private ObjectAnimator autoZoomGlowAnimator;
+    private ObjectAnimator autoZoomTargetAnimator;
     private PlateCaptureAdapter captureAdapter;
     private ProgressBar progress;
     private MaterialToolbar topAppBar;
@@ -474,7 +606,7 @@ public final class MainActivity extends AppCompatActivity {
                     new ActivityResultContracts.RequestPermission(),
                     granted -> {
                         if (granted) {
-                            startCamera(true);
+                            requestAnalysisStart();
                         } else {
                             liveStatus.setText(
                                     R.string.camera_permission_required
@@ -566,6 +698,12 @@ public final class MainActivity extends AppCompatActivity {
 
         uiPreferences = getSharedPreferences("alpr_ui", MODE_PRIVATE);
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
+        autoZoomController.setEnabled(
+                uiPreferences.getBoolean(
+                        KEY_AUTO_ZOOM_ENABLED,
+                        false
+                )
+        );
         configureRecognitionProfile();
 
         cameraResolutionCatalog =
@@ -651,6 +789,24 @@ public final class MainActivity extends AppCompatActivity {
                 findViewById(
                         R.id.live_hud
                 );
+
+        liveHudRow =
+                findViewById(
+                        R.id.live_hud_row
+                );
+
+        autoZoomButton =
+                findViewById(
+                        R.id.auto_zoom_button
+                );
+
+        autoZoomGlow =
+                findViewById(
+                        R.id.auto_zoom_glow
+                );
+
+        autoZoomControl = findViewById(R.id.auto_zoom_control);
+        autoZoomTarget = findViewById(R.id.auto_zoom_target);
 
         recognitionHint =
                 findViewById(
@@ -1128,6 +1284,18 @@ public final class MainActivity extends AppCompatActivity {
                 view ->
                         showExperimentTimerDialog()
         );
+        experimentThermalButton.setOnClickListener(
+                view ->
+                        showExperimentThermalDialog()
+        );
+        autoZoomButton.setOnClickListener(
+                view -> toggleAutoZoom()
+        );
+        autoZoomButton.setOnLongClickListener(view -> {
+            showAutoZoomModeDialog();
+            return true;
+        });
+        updateAutoZoomButton();
 
 
         /*
@@ -1139,6 +1307,10 @@ public final class MainActivity extends AppCompatActivity {
                     if (cameraStarted) {
 
                         stopAnalysis();
+
+                    } else if (waitingForThermalStart) {
+
+                        cancelThermalStartWaiting();
 
                     } else {
 
@@ -1177,19 +1349,25 @@ public final class MainActivity extends AppCompatActivity {
 
     private void renderAnalysisControls() {
 
-        /*
-         * Jeden CTA zamiast osobnych START i STOP.
-         */
         analysisStartButton.setText(
                 cameraStarted
+
                         ? R.string.analysis_stop
-                        : R.string.analysis_start
+
+                        : waitingForThermalStart
+
+                          ? R.string.analysis_cancel_waiting
+
+                          : R.string.analysis_start
         );
 
 
         analysisStartButton.setIconResource(
                 cameraStarted
+                        || waitingForThermalStart
+
                         ? R.drawable.ic_stop_24
+
                         : R.drawable.ic_camera_24
         );
 
@@ -1306,6 +1484,7 @@ public final class MainActivity extends AppCompatActivity {
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
+        resetAutoZoomForStoppedCamera();
         cameraStarted = false;
         liveHudAwaitingFreshResult =
                 true;
@@ -1521,7 +1700,7 @@ public final class MainActivity extends AppCompatActivity {
                 Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED) {
 
-            startCamera(true);
+            requestAnalysisStart();
             return;
         }
 
@@ -1622,6 +1801,20 @@ public final class MainActivity extends AppCompatActivity {
     private void invalidateUiForPreviewSceneChange(
             SceneChangeDetector.Result scene
     ) {
+        invalidateUiForPreviewSceneChange(scene.score, scene.changedFraction);
+    }
+
+    private void invalidateUiForPreviewSceneChange(
+            float sceneScore,
+            float changedFraction
+    ) {
+
+        if (isAutoZoomHoldingMemory()) {
+            previewSceneDetector.reset();
+            previewSceneAnchorGuard.reset();
+            previewPlateTracker.reset();
+            return;
+        }
 
 
         /*
@@ -1634,6 +1827,16 @@ public final class MainActivity extends AppCompatActivity {
         if (pipeline != null) {
 
             pipeline.requestTrackingReset();
+        }
+
+        clearAutoZoomRecognitionMemory();
+        if (currentCameraZoomRatio > 1.01f) {
+            recordInfo("Auto zoom przerwany: wykryto zmianę sceny");
+            resetAutoZoomSessionAfterReturn = true;
+            requestAutoZoomReturn(null);
+        } else {
+            /* Dopiero rzeczywista zmiana sceny otwiera tablice na kolejną próbę zoomu. */
+            autoZoomController.resetSession();
         }
 
 
@@ -1713,13 +1916,20 @@ public final class MainActivity extends AppCompatActivity {
                         Locale.ROOT,
                         "INVALIDATE generation=%d score=%.3f fraction=%.3f",
                         generation,
-                        scene.score,
-                        scene.changedFraction
+                        sceneScore,
+                        changedFraction
                 )
         );
     }
 
     private void invalidateUiForLostPreviewTracking() {
+
+        if (isAutoZoomHoldingMemory()) {
+            previewSceneDetector.reset();
+            previewSceneAnchorGuard.reset();
+            previewPlateTracker.reset();
+            return;
+        }
 
         /*
          * Tracker Preview stracił wszystkie tablice.
@@ -1740,6 +1950,12 @@ public final class MainActivity extends AppCompatActivity {
         if (pipeline != null) {
 
             pipeline.requestTrackingReset();
+        }
+
+        clearAutoZoomRecognitionMemory();
+        if (currentCameraZoomRatio > 1.01f) {
+            recordInfo("Auto zoom przerwany: utracono śledzoną tablicę");
+            requestAutoZoomReturn(null);
         }
 
 
@@ -1803,6 +2019,14 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startCamera(boolean beginNewMeasurement) {
         if (cameraStarted) return;
+        if (beginNewMeasurement) {
+            autoZoomHandler.removeCallbacksAndMessages(null);
+            autoZoomController.resetSession();
+            clearAutoZoomRecognitionMemory();
+            cameraTransformInProgress = false;
+            currentCameraZoomRatio = 1f;
+            pipeline.finishCameraTransform();
+        }
         if (beginNewMeasurement) {
             beginAnalysisMeasurement();
         }
@@ -1892,6 +2116,8 @@ public final class MainActivity extends AppCompatActivity {
                      */
                     final long sceneGenerationAtStart =
                             uiSceneGeneration.get();
+                    final long transformGenerationAtStart =
+                            uiCameraTransformGeneration.get();
 
 
                     long observationNanos =
@@ -1905,7 +2131,30 @@ public final class MainActivity extends AppCompatActivity {
 
                     PipelineResult result =
                             pipeline.process(
-                                    image
+                                    image,
+                                    (overlayItems, sourceWidth, sourceHeight) -> {
+                                        if (autoZoomController.state()
+                                                != AutoZoomController.State.ZOOMED_RETRY) {
+                                            return;
+                                        }
+                                        runOnUiThread(() -> {
+                                            if (!cameraStarted
+                                                    || sceneGenerationAtStart
+                                                    != uiSceneGeneration.get()
+                                                    || transformGenerationAtStart
+                                                    != uiCameraTransformGeneration.get()
+                                                    || cameraTransformInProgress
+                                                    || autoZoomController.state()
+                                                    != AutoZoomController.State.ZOOMED_RETRY) {
+                                                return;
+                                            }
+                                            presentZoomedMtStage(
+                                                    overlayItems,
+                                                    sourceWidth,
+                                                    sourceHeight
+                                            );
+                                        });
+                                    }
                             );
 
 
@@ -1923,7 +2172,9 @@ public final class MainActivity extends AppCompatActivity {
                      */
                     if (!cameraStarted
                             || sceneGenerationAtStart
-                            != uiSceneGeneration.get()) {
+                            != uiSceneGeneration.get()
+                            || transformGenerationAtStart
+                            != uiCameraTransformGeneration.get()) {
 
                         result.close();
 
@@ -1953,7 +2204,9 @@ public final class MainActivity extends AppCompatActivity {
                                      */
                                     if (!cameraStarted
                                             || sceneGenerationAtStart
-                                            != uiSceneGeneration.get()) {
+                                            != uiSceneGeneration.get()
+                                            || transformGenerationAtStart
+                                            != uiCameraTransformGeneration.get()) {
 
                                         result.close();
 
@@ -1989,7 +2242,9 @@ public final class MainActivity extends AppCompatActivity {
                                      */
                                     if (!cameraStarted
                                             || sceneGenerationAtStart
-                                            != uiSceneGeneration.get()) {
+                                            != uiSceneGeneration.get()
+                                            || transformGenerationAtStart
+                                            != uiCameraTransformGeneration.get()) {
 
                                         result.close();
 
@@ -2130,7 +2385,7 @@ public final class MainActivity extends AppCompatActivity {
 
         if (!cameraStarted) {
 
-            liveHud.setVisibility(
+            liveHudRow.setVisibility(
                     View.GONE
             );
 
@@ -2182,7 +2437,7 @@ public final class MainActivity extends AppCompatActivity {
             resolution =
                     String.format(
                             Locale.forLanguageTag("pl-PL"),
-                            "AUTO→%d×%d · %.2f Mpix",
+                            "AUTO→%d×%d · %.1fM",
                             width,
                             height,
                             megapixels
@@ -2193,7 +2448,7 @@ public final class MainActivity extends AppCompatActivity {
             resolution =
                     String.format(
                             Locale.forLanguageTag("pl-PL"),
-                            "%d×%d · %.2f Mpix",
+                            "%d×%d · %.1fM",
                             width,
                             height,
                             megapixels
@@ -2202,12 +2457,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
         String firstLine =
-                hudRoiLabel()
-                        + (
-                        experimentModeEnabled
-                                ? " · EXP"
-                                : ""
-                )
+                hudPipelineLabel()
                         + " · "
                         + resolution;
 
@@ -2239,18 +2489,6 @@ public final class MainActivity extends AppCompatActivity {
                 liveHudAwaitingFreshResult
                         ? Double.NaN
                         : snapshot.pipelineMs;
-        double inferenceSum =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.inferenceSumMs;
-
-
-        double auxiliarySum =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.auxiliarySumMs;
-
-
         String secondLine =
                 "MP "
                         + hudDuration(
@@ -2276,35 +2514,56 @@ public final class MainActivity extends AppCompatActivity {
                         + hudDuration(
                         pipelineInference
                 )
-                        + " · INF "
-                        + hudDuration(
-                        inferenceSum
-                );
-
-
-        String fourthLine =
-                "AUX "
-                        + hudDuration(
-                        auxiliarySum
-                )
                         + " · DROP "
                         + snapshot.droppedFrames;
 
-
-        liveHud.setText(
-                firstLine
-                        + "\n"
-                        + secondLine
-                        + "\n"
-                        + thirdLine
-                        + "\n"
-                        + fourthLine
-        );
+        StringBuilder hudText = new StringBuilder()
+                .append(firstLine)
+                .append('\n')
+                .append(secondLine)
+                .append('\n')
+                .append(thirdLine);
+        if (autoZoomController.enabled()) {
+            hudText.append('\n').append(autoZoomHudLabel());
+        }
+        liveHud.setText(hudText);
 
 
         liveHud.setVisibility(
                 View.VISIBLE
         );
+        liveHudRow.setVisibility(
+                View.VISIBLE
+        );
+        updateAutoZoomButton();
+    }
+    private String hudPipelineLabel() {
+        if (experimentModeEnabled) {
+            return "EXP " + hudRoiLabel();
+        }
+        return vehicleCascadeEnabled
+                ? "MP→MT→MZ"
+                : "MT→MZ";
+    }
+
+    private String autoZoomHudLabel() {
+        switch (autoZoomController.state()) {
+            case ZOOM_SETTLING:
+                return getString(R.string.hud_auto_zoom_focusing);
+            case ZOOMED_RETRY:
+                return getString(
+                        R.string.hud_auto_zoom_retry,
+                        currentCameraZoomRatio
+                );
+            case RETURNING:
+                return getString(R.string.hud_auto_zoom_returning);
+            case READY:
+            default:
+                return getString(
+                        R.string.hud_auto_zoom_ready,
+                        currentCameraZoomRatio
+                );
+        }
     }
     private String hudRoiLabel() {
 
@@ -2335,12 +2594,21 @@ public final class MainActivity extends AppCompatActivity {
 
         return String.format(
                 Locale.forLanguageTag("pl-PL"),
-                "%.2f s",
+                "%.1fs",
                 milliseconds / 1000.0
         );
     }
     private void presentResult(PipelineResult result, long observationNanos) {
-        if (result.sceneReset) {
+        if (result.sceneReset && !isAutoZoomHoldingMemory()) {
+
+            clearAutoZoomRecognitionMemory();
+
+            if (currentCameraZoomRatio > 1.01f) {
+                resetAutoZoomSessionAfterReturn = true;
+                requestAutoZoomReturn(null);
+            } else {
+                autoZoomController.resetSession();
+            }
 
             /*
              * Pipeline rozpoczął nową scenę.
@@ -2363,6 +2631,42 @@ public final class MainActivity extends AppCompatActivity {
                     java.util.Collections.emptyList()
             );
         }
+
+        if (autoZoomController.state()
+                == AutoZoomController.State.ZOOMED_RETRY) {
+            repositionAutoZoomTarget(result);
+            if (!hasFreshAutoZoomTargetRecognition(result)) {
+                liveStatus.setText(R.string.auto_zoom_waiting_fresh_mz);
+                recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+                renderLiveHud();
+                handleAutoZoomResult(result);
+                return;
+            }
+            rememberFreshAutoZoomRecognition(result);
+        }
+
+        /*
+         * Po powrocie do 1x nadal trzymamy wynik zoomu. Pierwszy sensowny
+         * odczyt MZ tej samej ramki może go jeszcze uaktualnić, ale pusty lub
+         * słabszy odczyt nie może wyczyścić tekstu widocznego na ekranie.
+         */
+        if (autoZoomMemoryVisible
+                && autoZoomController.state()
+                != AutoZoomController.State.ZOOMED_RETRY) {
+            rememberFreshAutoZoomRecognition(result);
+        }
+
+        if (autoZoomMemoryVisible
+                && (!hasAnyFreshRecognition(result)
+                || !hasRecognitionCompatibleWithZoomMemory(result))) {
+            transformMemoryOverlay(currentCameraZoomRatio);
+            liveStatus.setText(R.string.auto_zoom_waiting_fresh_mz);
+            recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+            renderLiveHud();
+            handleAutoZoomResult(result);
+            return;
+        }
+        autoZoomMemoryVisible = false;
 
 
         /*
@@ -2431,6 +2735,9 @@ public final class MainActivity extends AppCompatActivity {
                         pipelinePlateItems
                 );
 
+        latestOverlaySourceWidth = result.sourceWidth;
+        latestOverlaySourceHeight = result.sourceHeight;
+
 
 
         overlayView.setItems(
@@ -2484,6 +2791,1030 @@ public final class MainActivity extends AppCompatActivity {
         } else {
             recognitionHint.setText(R.string.recognition_searching);
         }
+
+        handleAutoZoomResult(result);
+    }
+
+    private boolean hasFreshAutoZoomTargetRecognition(PipelineResult result) {
+        AutoZoomController.Sample target =
+                autoZoomController.targetSample(autoZoomSamples(result));
+        return target != null && target.recognitionExecuted;
+    }
+
+    private boolean hasAnyFreshRecognition(PipelineResult result) {
+        for (PlateObservation observation : result.plateObservations) {
+            if (observation.timing != null) return true;
+        }
+        return false;
+    }
+
+    private void rememberFreshAutoZoomRecognition(PipelineResult result) {
+        AutoZoomController.Sample sample = autoZoomRecognitionSample(result);
+        if (sample == null
+                || !sample.recognitionExecuted) return;
+        AutoZoomRecognitionMemory.Result selected =
+                AutoZoomRecognitionMemory.choose(
+                        autoZoomBestText,
+                        autoZoomBestConfidence,
+                        sample.text,
+                        sample.recognitionConfidence,
+                        sample.confirmed
+                );
+        autoZoomBestText = selected.text;
+        autoZoomBestConfidence = selected.confidence;
+    }
+
+    private boolean hasRecognitionCompatibleWithZoomMemory(PipelineResult result) {
+        AutoZoomController.Sample sample = autoZoomRecognitionSample(result);
+        if (sample == null || !sample.recognitionExecuted) return false;
+        if (autoZoomBestText.isEmpty()) return !sample.text.isEmpty();
+        return autoZoomBestText.equals(sample.text)
+                && (sample.confirmed
+                || sample.recognitionConfidence + 0.08
+                >= autoZoomBestConfidence);
+    }
+
+    private AutoZoomController.Sample autoZoomRecognitionSample(
+            PipelineResult result
+    ) {
+        List<AutoZoomController.Sample> samples = autoZoomSamples(result);
+        AutoZoomController.State state = autoZoomController.state();
+        if (state == AutoZoomController.State.ZOOM_SETTLING
+                || state == AutoZoomController.State.ZOOMED_RETRY
+                || state == AutoZoomController.State.RETURNING) {
+            return autoZoomController.targetSample(samples);
+        }
+
+        OverlayItem target = findAutoZoomTargetOverlay(result.overlayItems);
+        if (target == null) return null;
+        for (AutoZoomController.Sample sample : samples) {
+            if (sample.trackId == target.trackId) return sample;
+        }
+        return null;
+    }
+
+    private void repositionAutoZoomTarget(PipelineResult result) {
+        AutoZoomController.Sample sample =
+                autoZoomController.targetSample(autoZoomSamples(result));
+        if (sample != null) {
+            updateAutoZoomTargetGeometry(sample.centerX, sample.centerY);
+        }
+    }
+
+    private void toggleAutoZoom() {
+        boolean enable = !autoZoomController.enabled();
+        uiPreferences.edit()
+                .putBoolean(KEY_AUTO_ZOOM_ENABLED, enable)
+                .apply();
+
+        if (enable) {
+            autoZoomController.setEnabled(true);
+            autoZoomController.resetSession();
+            recordInfo(getString(R.string.auto_zoom_enabled_log));
+        } else {
+            autoZoomController.setEnabled(false);
+            recordInfo(getString(R.string.auto_zoom_disabled_log));
+            if (currentCameraZoomRatio > 1.01f) {
+                requestAutoZoomReturn(null);
+            }
+        }
+        updateAutoZoomButton();
+        renderLiveHud();
+    }
+
+    private void showAutoZoomModeDialog() {
+        String[] modes = getResources().getStringArray(R.array.auto_zoom_modes);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.auto_zoom_mode_title)
+                .setSingleChoiceItems(modes, 0, (dialog, which) -> {
+                    if (which == 0) {
+                        dialog.dismiss();
+                        Toast.makeText(
+                                this,
+                                R.string.auto_zoom_mode_hold_full_selected,
+                                Toast.LENGTH_SHORT
+                        ).show();
+                    } else {
+                        Toast.makeText(
+                                this,
+                                R.string.auto_zoom_mode_requires_offline_pipeline,
+                                Toast.LENGTH_LONG
+                        ).show();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void updateAutoZoomButton() {
+        if (autoZoomButton == null) return;
+        boolean enabled = autoZoomController.enabled();
+        String symbol;
+        switch (autoZoomController.state()) {
+            case ZOOM_SETTLING:
+                symbol = getString(R.string.auto_zoom_symbol_focus);
+                break;
+            case ZOOMED_RETRY:
+                symbol = getString(R.string.auto_zoom_symbol_recognize);
+                break;
+            case RETURNING:
+                symbol = getString(R.string.auto_zoom_symbol_return);
+                break;
+            case READY:
+            case DISABLED:
+            default:
+                symbol = getString(R.string.auto_zoom_symbol_ready);
+                break;
+        }
+        autoZoomButton.setText(symbol);
+        int color = ContextCompat.getColor(
+                this,
+                enabled ? R.color.alpr_success : R.color.alpr_text_muted
+        );
+        autoZoomButton.setIconTint(ColorStateList.valueOf(color));
+        autoZoomButton.setStrokeColor(ColorStateList.valueOf(color));
+        autoZoomButton.setContentDescription(
+                getString(enabled
+                        ? R.string.auto_zoom_disable
+                        : R.string.auto_zoom_enable)
+        );
+        autoZoomButton.setEnabled(cameraStarted && !cameraTransformInProgress);
+        if (autoZoomControl != null) {
+            autoZoomControl.setVisibility(cameraStarted ? View.VISIBLE : View.GONE);
+        }
+        updateAutoZoomGlow(enabled);
+    }
+
+    private void updateAutoZoomGlow(boolean enabled) {
+        if (autoZoomGlow == null) return;
+        if (!enabled) {
+            if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
+            autoZoomGlow.setAlpha(0f);
+            autoZoomGlow.setVisibility(View.GONE);
+            return;
+        }
+        autoZoomGlow.setVisibility(View.VISIBLE);
+        if (autoZoomGlowAnimator == null) {
+            autoZoomGlowAnimator = ObjectAnimator.ofFloat(
+                    autoZoomGlow,
+                    View.ALPHA,
+                    0.28f,
+                    0.82f
+            );
+            autoZoomGlowAnimator.setDuration(1_450L);
+            autoZoomGlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            autoZoomGlowAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        }
+        if (!autoZoomGlowAnimator.isStarted()) {
+            autoZoomGlowAnimator.start();
+        }
+    }
+
+    private void handleAutoZoomResult(PipelineResult result) {
+        if (!cameraStarted || !autoZoomController.enabled()) return;
+        AutoZoomController.Decision decision = autoZoomController.evaluate(
+                autoZoomSamples(result),
+                System.nanoTime()
+        );
+        if (decision.action == AutoZoomController.Action.REQUEST_ZOOM) {
+            requestAutoZoom(decision);
+        } else if (decision.action == AutoZoomController.Action.RETURN_NORMAL) {
+            requestAutoZoomReturn(decision);
+        }
+    }
+
+    private List<AutoZoomController.Sample> autoZoomSamples(PipelineResult result) {
+        List<AutoZoomController.Sample> samples = new ArrayList<>();
+        for (PlateObservation observation : result.plateObservations) {
+            OverlayItem plate = null;
+            for (OverlayItem item : result.overlayItems) {
+                if (item.kind == OverlayItem.Kind.PLATE
+                        && item.trackId == observation.trackId) {
+                    plate = item;
+                    break;
+                }
+            }
+            if (plate == null) continue;
+            RectF bounds = plate.normalizedBounds;
+            samples.add(new AutoZoomController.Sample(
+                    observation.trackId,
+                    bounds.centerX(),
+                    bounds.centerY(),
+                    bounds.width(),
+                    observation.recognitionConfidence,
+                    observation.confirmed,
+                    observation.observations,
+                    plate.normalizedKeypoints.size() == 4,
+                    observation.timing != null,
+                    observation.text
+            ));
+        }
+        return samples;
+    }
+
+    private void requestAutoZoom(AutoZoomController.Decision decision) {
+        if (cameraTransformInProgress || cameraController == null) return;
+        if (cameraController.maximumZoomRatio() <= 1.01f) {
+            autoZoomController.onRequestFailed();
+            liveStatus.setText(R.string.auto_zoom_unavailable);
+            recordWarning(getString(R.string.auto_zoom_unavailable));
+            return;
+        }
+
+        autoZoomTargetSceneX = decision.centerX;
+        autoZoomTargetSceneY = decision.centerY;
+        autoZoomBestText = autoZoomController.targetText();
+        autoZoomBestConfidence = decision.beforeConfidence;
+        capturePreZoomSceneAnchor();
+        freezeCurrentOverlayAsMemory();
+        showAutoZoomTarget(decision.centerX, decision.centerY);
+        liveStatus.setText(getString(
+                R.string.auto_zoom_request_status,
+                AutoZoomController.REQUESTED_ZOOM_RATIO
+        ));
+        recordInfo(String.format(
+                Locale.ROOT,
+                "Auto zoom request track=%d reason=%s before=%.3f",
+                decision.trackId,
+                decision.reason,
+                decision.beforeConfidence
+        ));
+
+        final long scheduledSceneGeneration = uiSceneGeneration.get();
+        pendingAutoZoomStartRunnable = () -> {
+            pendingAutoZoomStartRunnable = null;
+            if (!cameraStarted
+                    || scheduledSceneGeneration != uiSceneGeneration.get()
+                    || autoZoomController.state()
+                    != AutoZoomController.State.ZOOM_SETTLING
+                    || cameraTransformInProgress) {
+                return;
+            }
+            startAutoZoomTransform(decision);
+        };
+
+        /*
+         * setItems() i start zoomu w jednym callbacku UI nie dają Androidowi
+         * szansy narysować ramki. Najpierw czekamy na klatkę renderowania, a
+         * następnie utrzymujemy overlay jeszcze przez krótki, widoczny moment.
+         */
+        overlayView.postOnAnimation(() -> {
+            Runnable pending = pendingAutoZoomStartRunnable;
+            if (pending != null) {
+                autoZoomHandler.postDelayed(pending, PRE_ZOOM_OVERLAY_HOLD_MS);
+            }
+        });
+    }
+
+    private void startAutoZoomTransform(AutoZoomController.Decision decision) {
+        if (!cameraStarted
+                || cameraController == null
+                || cameraTransformInProgress
+                || autoZoomController.state()
+                != AutoZoomController.State.ZOOM_SETTLING) {
+            return;
+        }
+
+        beginControlledCameraTransform();
+
+        android.graphics.PointF focusPoint =
+                overlayView.normalizedToViewPoint(decision.centerX, decision.centerY);
+        float focusX = overlayView.getWidth() <= 0
+                ? decision.centerX
+                : Math.max(0f, Math.min(1f,
+                focusPoint.x / overlayView.getWidth()));
+        float focusY = overlayView.getHeight() <= 0
+                ? decision.centerY
+                : Math.max(0f, Math.min(1f,
+                focusPoint.y / overlayView.getHeight()));
+
+        cameraController.zoomAndFocus(
+                AutoZoomController.REQUESTED_ZOOM_RATIO,
+                focusX,
+                focusY,
+                new CameraController.ControlCallback() {
+                    @Override
+                    public void onProgress(float appliedZoomRatio) {
+                        if (!cameraStarted) return;
+                        currentCameraZoomRatio = appliedZoomRatio;
+                        transformMemoryOverlay(appliedZoomRatio);
+                        showAutoZoomTarget(
+                                CameraController.zoomedCoordinate(
+                                        autoZoomTargetSceneX,
+                                        appliedZoomRatio
+                                ),
+                                CameraController.zoomedCoordinate(
+                                        autoZoomTargetSceneY,
+                                        appliedZoomRatio
+                                )
+                        );
+                    }
+
+                    @Override
+                    public void onSuccess(float appliedZoomRatio) {
+                        if (!cameraStarted) return;
+                        currentCameraZoomRatio = appliedZoomRatio;
+                        float zoomedCenterX = CameraController.zoomedCoordinate(
+                                decision.centerX,
+                                appliedZoomRatio
+                        );
+                        float zoomedCenterY = CameraController.zoomedCoordinate(
+                                decision.centerY,
+                                appliedZoomRatio
+                        );
+                        autoZoomController.onZoomApplied(zoomedCenterX, zoomedCenterY);
+                        transformMemoryOverlay(appliedZoomRatio);
+                        showAutoZoomTarget(
+                                zoomedCenterX,
+                                zoomedCenterY
+                        );
+                        updateAutoZoomAnalysisRoi(new RectF(
+                                Math.max(0f, zoomedCenterX - 0.06f),
+                                Math.max(0f, zoomedCenterY - 0.025f),
+                                Math.min(1f, zoomedCenterX + 0.06f),
+                                Math.min(1f, zoomedCenterY + 0.025f)
+                        ));
+                        updateAutoZoomTargetFromOverlayItems(
+                                latestPipelinePlateItems
+                        );
+                        autoZoomHandler.postDelayed(() -> {
+                            if (!cameraStarted) return;
+                            if (abortAutoZoomAfterTransform) {
+                                abortAutoZoomAfterTransform = false;
+                                finishControlledCameraTransform(false);
+                                requestAutoZoomReturn(null);
+                                return;
+                            }
+                            autoZoomController.onZoomSettled(System.nanoTime());
+                            finishControlledCameraTransform(true);
+                            liveStatus.setText(getString(
+                                    R.string.auto_zoom_retry_status,
+                                    currentCameraZoomRatio
+                            ));
+                        }, AutoZoomController.SETTLING_MILLIS);
+                    }
+
+                    @Override
+                    public void onError(Throwable error) {
+                        if (!cameraStarted) return;
+                        abortAutoZoomAfterTransform = false;
+                        autoZoomController.onRequestFailed();
+                        currentCameraZoomRatio = 1f;
+                        finishControlledCameraTransform(false);
+                        recordError("Nie udało się ustawić auto zoom", error);
+                    }
+                }
+        );
+    }
+
+    private void requestAutoZoomReturn(AutoZoomController.Decision decision) {
+        if (cameraTransformInProgress || cameraController == null) return;
+        cancelPendingAutoZoomStart();
+        pipeline.clearAutoZoomTargetRoi();
+        if (decision != null
+                && (!"timeout".equals(decision.reason)
+                || hasPresentedFreshMzForAutoZoomTarget())) {
+            freezeZoomResultForReturn();
+        } else if (decision != null) {
+            autoZoomMemoryVisible = !autoZoomBaseMemoryOverlayItems.isEmpty();
+            transformMemoryOverlay(currentCameraZoomRatio);
+        }
+        autoZoomController.requestReturn();
+        beginControlledCameraTransform();
+        liveStatus.setText(R.string.auto_zoom_return_status);
+
+        if (decision != null) {
+            recordInfo(String.format(
+                    Locale.ROOT,
+                    "Auto zoom result track=%d reason=%s confidence=%.3f->%.3f",
+                    decision.trackId,
+                    decision.reason,
+                    decision.beforeConfidence,
+                    decision.afterConfidence
+            ));
+        }
+
+        cameraController.setZoomRatio(
+                1f,
+                new CameraController.ControlCallback() {
+                    @Override
+                    public void onProgress(float appliedZoomRatio) {
+                        if (!cameraStarted) return;
+                        currentCameraZoomRatio = appliedZoomRatio;
+                        transformMemoryOverlay(appliedZoomRatio);
+                        showAutoZoomTarget(
+                                CameraController.zoomedCoordinate(
+                                        autoZoomTargetSceneX,
+                                        appliedZoomRatio
+                                ),
+                                CameraController.zoomedCoordinate(
+                                        autoZoomTargetSceneY,
+                                        appliedZoomRatio
+                                )
+                        );
+                    }
+
+                    @Override
+                    public void onSuccess(float appliedZoomRatio) {
+                        if (!cameraStarted) return;
+                        currentCameraZoomRatio = appliedZoomRatio;
+                        autoZoomHandler.postDelayed(() -> {
+                            autoZoomController.onReturnSettled();
+                            if (resetAutoZoomSessionAfterReturn) {
+                                resetAutoZoomSessionAfterReturn = false;
+                                autoZoomController.resetSession();
+                            }
+                            finishControlledCameraTransform(false);
+                        }, AutoZoomController.SETTLING_MILLIS);
+                    }
+
+                    @Override
+                    public void onError(Throwable error) {
+                        if (!cameraStarted) return;
+                        autoZoomController.onRequestFailed();
+                        finishControlledCameraTransform(false);
+                        recordError("Nie udało się przywrócić zoom 1.0", error);
+                    }
+                }
+        );
+    }
+
+    private boolean hasPresentedFreshMzForAutoZoomTarget() {
+        long targetTrackId = autoZoomController.targetTrackId();
+        for (OverlayItem item : latestPipelinePlateItems) {
+            if (item.trackId == targetTrackId
+                    && !item.carriedPrediction
+                    && item.label.contains("· MZ")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void beginControlledCameraTransform() {
+        cameraTransformStartZoomRatio = currentCameraZoomRatio;
+        cameraTransformInProgress = true;
+        pipeline.setCameraTransformInProgress(true);
+        uiCameraTransformGeneration.incrementAndGet();
+        previewSceneDetector.reset();
+        previewSceneAnchorGuard.reset();
+        previewPlateTracker.reset();
+        overlayTracker.reset();
+        liveHudAwaitingFreshResult = true;
+        updateAutoZoomButton();
+    }
+
+    private void finishControlledCameraTransform(boolean keepTarget) {
+        if (!keepTarget) hideAutoZoomTarget();
+        if (!keepTarget) pipeline.clearAutoZoomTargetRoi();
+        cameraTransformInProgress = false;
+        pipeline.finishCameraTransform(
+                cameraTransformStartZoomRatio,
+                currentCameraZoomRatio
+        );
+        uiCameraTransformGeneration.incrementAndGet();
+        previewSceneDetector.reset();
+        previewSceneAnchorGuard.reset();
+        previewPlateTracker.reset();
+        overlayTracker.reset();
+        previewSceneAnchorPending = false;
+        liveHudAwaitingFreshResult = true;
+        if (keepTarget) {
+            autoZoomZoomedAnchorPending = true;
+            autoZoomZoomedAnchorValid = false;
+            autoZoomReturnValidationPending = false;
+        } else {
+            autoZoomZoomedAnchorPending = false;
+            autoZoomZoomedAnchorValid = false;
+            autoZoomZoomedSceneAnchorGuard.reset();
+            autoZoomReturnValidationPending = autoZoomPreZoomAnchorValid;
+        }
+        if (!keepTarget && autoZoomReturnValidationPending) {
+            validateReturnedAutoZoomSceneNow();
+        }
+        updateAutoZoomButton();
+        renderLiveHud();
+    }
+
+    private boolean isAutoZoomHoldingMemory() {
+        /*
+         * Maskujemy detektor sceny podczas faktycznej zmiany zoomu oraz przez
+         * krótki etap, w którym ramki są już pokazane, ale animacja jeszcze nie
+         * ruszyła. Zmiana tekstu statusu może wtedy przebudować PreviewView i nie
+         * może zostać pomylona ze zmianą fizycznej sceny.
+         *
+         * Po ustabilizowaniu obrazu ZOOMED_RETRY jest normalnym kadrem i musi
+         * natychmiast reagować na ruch telefonu, zniknięcie tablicy lub nową scenę.
+         */
+        return cameraTransformInProgress
+                || pendingAutoZoomStartRunnable != null;
+    }
+
+    private void invalidateAutoZoomForPhysicalCameraMotion() {
+        if (abortAutoZoomAfterTransform) return;
+        abortAutoZoomAfterTransform = true;
+        autoZoomController.requestReturn();
+        clearAutoZoomRecognitionMemory();
+        uiSceneGeneration.incrementAndGet();
+        if (pipeline != null) pipeline.requestTrackingReset();
+        overlayTracker.reset();
+        previewPlateTracker.reset();
+        latestDiagnosticOverlayItems = java.util.Collections.emptyList();
+        latestPipelinePlateItems = java.util.Collections.emptyList();
+        overlayView.setItems(java.util.Collections.emptyList());
+        liveHudAwaitingFreshResult = true;
+        liveStatus.setText(R.string.scene_change_analyzing);
+        recognitionHint.setText(R.string.recognition_stabilizing);
+        recordInfo("Auto zoom przerwany: telefon zmienił kadr podczas zbliżenia");
+    }
+
+    private void freezeCurrentOverlayAsMemory() {
+        if (latestOverlaySourceWidth <= 0 || latestOverlaySourceHeight <= 0) return;
+        List<OverlayItem> frozen = memoryOverlayItems(
+                overlayItemsWithAutoZoomRecognitionMemory(currentOverlayItems()),
+                false
+        );
+        autoZoomBaseMemoryOverlayItems = java.util.Collections.unmodifiableList(frozen);
+        autoZoomMemoryVisible = containsPlate(frozen);
+        applyVisibleOverlay(frozen, latestOverlaySourceWidth, latestOverlaySourceHeight);
+        recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+    }
+
+    private void transformMemoryOverlay(float zoomRatio) {
+        if (!autoZoomMemoryVisible
+                || latestOverlaySourceWidth <= 0
+                || latestOverlaySourceHeight <= 0) return;
+        List<OverlayItem> transformed = transformOverlayItems(
+                autoZoomBaseMemoryOverlayItems,
+                Math.max(0.1f, zoomRatio),
+                true
+        );
+        applyVisibleOverlay(
+                transformed,
+                latestOverlaySourceWidth,
+                latestOverlaySourceHeight
+        );
+    }
+
+    private void freezeZoomResultForReturn() {
+        List<OverlayItem> visible = currentOverlayItems();
+        if (!containsPlate(visible)) return;
+        float inverseRatio = 1f / Math.max(1f, currentCameraZoomRatio);
+        List<OverlayItem> sceneItems = transformOverlayItems(
+                memoryOverlayItems(visible, true),
+                inverseRatio,
+                true
+        );
+        autoZoomBaseMemoryOverlayItems =
+                java.util.Collections.unmodifiableList(sceneItems);
+        autoZoomMemoryVisible = true;
+        transformMemoryOverlay(currentCameraZoomRatio);
+    }
+
+    private void presentZoomedMtStage(
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight
+    ) {
+        if (overlayItems == null
+                || sourceWidth <= 0
+                || sourceHeight <= 0
+                || !containsPlate(overlayItems)) return;
+
+        latestOverlaySourceWidth = sourceWidth;
+        latestOverlaySourceHeight = sourceHeight;
+        List<OverlayItem> visibleItems =
+                overlayItemsWithAutoZoomRecognitionMemory(overlayItems);
+        applyVisibleOverlay(visibleItems, sourceWidth, sourceHeight);
+        updateAutoZoomTargetFromOverlayItems(visibleItems);
+
+        float inverseRatio = 1f / Math.max(1f, currentCameraZoomRatio);
+        autoZoomBaseMemoryOverlayItems = java.util.Collections.unmodifiableList(
+                transformOverlayItems(
+                        memoryOverlayItems(visibleItems, true),
+                        inverseRatio,
+                        true
+                )
+        );
+        autoZoomMemoryVisible = true;
+
+        if (previewPlateTracker.anchor(visibleItems, sourceWidth, sourceHeight)) {
+            previewSceneAnchorPending = true;
+        }
+        if (!autoZoomZoomedAnchorValid) {
+            autoZoomZoomedAnchorPending = true;
+        }
+        recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+    }
+
+    private List<OverlayItem> overlayItemsWithAutoZoomRecognitionMemory(
+            List<OverlayItem> items
+    ) {
+        if (items == null || items.isEmpty() || autoZoomBestText.isEmpty()) {
+            return items == null
+                    ? java.util.Collections.emptyList()
+                    : items;
+        }
+
+        OverlayItem target = findAutoZoomTargetOverlay(items);
+        if (target == null) return items;
+
+        List<OverlayItem> result = new ArrayList<>(items.size());
+        String rememberedLabel = String.format(
+                Locale.ROOT,
+                "%s · pamięć MZ %.0f%%",
+                autoZoomBestText,
+                autoZoomBestConfidence * 100.0
+        );
+        for (OverlayItem item : items) {
+            if (item == target) {
+                result.add(new OverlayItem(
+                        item.kind,
+                        item.normalizedBounds,
+                        item.normalizedKeypoints,
+                        rememberedLabel,
+                        item.trackId,
+                        item.carriedPrediction
+                ));
+            } else {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    private List<OverlayItem> currentOverlayItems() {
+        List<OverlayItem> visible = new ArrayList<>(latestDiagnosticOverlayItems);
+        visible.addAll(latestPipelinePlateItems);
+        return visible;
+    }
+
+    private void applyVisibleOverlay(
+            List<OverlayItem> items,
+            int sourceWidth,
+            int sourceHeight
+    ) {
+        List<OverlayItem> diagnostics = new ArrayList<>();
+        List<OverlayItem> plates = new ArrayList<>();
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                plates.add(item);
+            } else {
+                diagnostics.add(item);
+            }
+        }
+        latestDiagnosticOverlayItems =
+                java.util.Collections.unmodifiableList(diagnostics);
+        latestPipelinePlateItems =
+                java.util.Collections.unmodifiableList(plates);
+        overlayView.setItems(items, sourceWidth, sourceHeight);
+    }
+
+    private static List<OverlayItem> memoryOverlayItems(
+            List<OverlayItem> items,
+            boolean zoomResult
+    ) {
+        List<OverlayItem> memory = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            String label = item.label;
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                if (zoomResult) {
+                    label = zoomMemoryLabel(label);
+                } else if (!label.contains("pamięć")) {
+                    label = label + " · pamięć";
+                }
+            }
+            memory.add(new OverlayItem(
+                    item.kind,
+                    item.normalizedBounds,
+                    item.normalizedKeypoints,
+                    label,
+                    item.trackId,
+                    item.kind == OverlayItem.Kind.PLATE || item.carriedPrediction
+            ));
+        }
+        return memory;
+    }
+
+    private static List<OverlayItem> transformOverlayItems(
+            List<OverlayItem> items,
+            float scaleRatio,
+            boolean preserveAsMemory
+    ) {
+        List<OverlayItem> transformed = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            RectF source = item.normalizedBounds;
+            RectF bounds = new RectF(
+                    CameraController.scaledCoordinate(source.left, scaleRatio),
+                    CameraController.scaledCoordinate(source.top, scaleRatio),
+                    CameraController.scaledCoordinate(source.right, scaleRatio),
+                    CameraController.scaledCoordinate(source.bottom, scaleRatio)
+            );
+            List<android.graphics.PointF> points = new ArrayList<>();
+            for (android.graphics.PointF point : item.normalizedKeypoints) {
+                points.add(new android.graphics.PointF(
+                        CameraController.scaledCoordinate(point.x, scaleRatio),
+                        CameraController.scaledCoordinate(point.y, scaleRatio)
+                ));
+            }
+            transformed.add(new OverlayItem(
+                    item.kind,
+                    bounds,
+                    points,
+                    item.label,
+                    item.trackId,
+                    preserveAsMemory
+                            ? item.kind == OverlayItem.Kind.PLATE
+                            || item.carriedPrediction
+                            : item.carriedPrediction
+            ));
+        }
+        return transformed;
+    }
+
+    private static boolean containsPlate(List<OverlayItem> items) {
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE) return true;
+        }
+        return false;
+    }
+
+    private static List<OverlayItem> activeTrackingOverlayItems(
+            List<OverlayItem> items
+    ) {
+        List<OverlayItem> active = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            active.add(new OverlayItem(
+                    item.kind,
+                    item.normalizedBounds,
+                    item.normalizedKeypoints,
+                    item.label,
+                    item.trackId,
+                    item.kind == OverlayItem.Kind.PLATE
+                            ? false
+                            : item.carriedPrediction
+            ));
+        }
+        return active;
+    }
+
+    private static String zoomMemoryLabel(String label) {
+        String value = label == null ? "" : label.trim();
+        int separator = value.lastIndexOf(' ');
+        if (separator > 0 && value.substring(separator + 1).matches("\\d{1,3}%")) {
+            return value.substring(0, separator) + " · zoom "
+                    + value.substring(separator + 1);
+        }
+        return value + " · zoom";
+    }
+
+    private void clearAutoZoomRecognitionMemory() {
+        cancelPendingAutoZoomStart();
+        if (pipeline != null) pipeline.clearAutoZoomTargetRoi();
+        autoZoomMemoryVisible = false;
+        autoZoomBaseMemoryOverlayItems = java.util.Collections.emptyList();
+        autoZoomBestText = "";
+        autoZoomBestConfidence = 0.0;
+        autoZoomPreZoomSceneAnchorGuard.reset();
+        autoZoomZoomedSceneAnchorGuard.reset();
+        autoZoomPreZoomAnchorValid = false;
+        autoZoomZoomedAnchorPending = false;
+        autoZoomZoomedAnchorValid = false;
+        autoZoomReturnValidationPending = false;
+        autoZoomDynamicFrameGraceCount = 0;
+    }
+
+    private void cancelPendingAutoZoomStart() {
+        if (pendingAutoZoomStartRunnable != null) {
+            autoZoomHandler.removeCallbacks(pendingAutoZoomStartRunnable);
+            pendingAutoZoomStartRunnable = null;
+        }
+    }
+
+    private void capturePreZoomSceneAnchor() {
+        autoZoomPreZoomSceneAnchorGuard.reset();
+        autoZoomPreZoomAnchorValid = false;
+        Bitmap bitmap = null;
+        try {
+            bitmap = previewView == null ? null : previewView.getBitmap();
+            if (bitmap != null && !bitmap.isRecycled()) {
+                autoZoomPreZoomSceneAnchorGuard.anchor(bitmap);
+                autoZoomPreZoomAnchorValid = true;
+            }
+        } catch (RuntimeException ignored) {
+            // PreviewView może jeszcze nie mieć gotowej klatki.
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        }
+    }
+
+    private void validateReturnedAutoZoomScene(Bitmap previewBitmap) {
+        autoZoomReturnValidationPending = false;
+        if (!autoZoomPreZoomAnchorValid) return;
+
+        SceneAnchorGuard.Result returned =
+                autoZoomPreZoomSceneAnchorGuard.evaluate(previewBitmap);
+        if (returned.changed) {
+            recordInfo("Auto zoom: po powrocie wykryto inną scenę");
+            invalidateUiForPreviewSceneChange(
+                    returned.score,
+                    returned.changedFraction
+            );
+            return;
+        }
+
+        /* Ta sama scena: zachowujemy wynik i jedynie ponownie kotwiczymy UI. */
+        previewSceneDetector.reset();
+        previewSceneDetector.update(previewBitmap);
+        previewSceneAnchorGuard.anchor(previewBitmap);
+        previewSceneAnchorPending = false;
+
+        if (autoZoomMemoryVisible) {
+            List<OverlayItem> returnedOverlay = transformOverlayItems(
+                    autoZoomBaseMemoryOverlayItems,
+                    1f,
+                    true
+            );
+            applyVisibleOverlay(
+                    returnedOverlay,
+                    latestOverlaySourceWidth,
+                    latestOverlaySourceHeight
+            );
+            if (previewPlateTracker.anchor(
+                    activeTrackingOverlayItems(returnedOverlay),
+                    latestOverlaySourceWidth,
+                    latestOverlaySourceHeight
+            )) {
+                previewPlateTracker.update(previewBitmap);
+            }
+        }
+
+        liveHudAwaitingFreshResult = false;
+        liveStatus.setText(R.string.auto_zoom_same_scene_status);
+        recognitionHint.setText(R.string.auto_zoom_same_scene_hint);
+        renderLiveHud();
+        recordInfo("Auto zoom: powrót do tej samej sceny, zachowano ramki i wynik");
+    }
+
+    private void validateReturnedAutoZoomSceneNow() {
+        Bitmap bitmap = null;
+        try {
+            bitmap = previewView == null ? null : previewView.getBitmap();
+            if (bitmap != null && !bitmap.isRecycled()) {
+                validateReturnedAutoZoomScene(bitmap);
+            }
+        } catch (RuntimeException ignored) {
+            // Lekki monitor Preview ponowi walidację na najbliższej klatce.
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        }
+    }
+
+    private void updateAutoZoomTargetFromOverlayItems(
+            List<OverlayItem> items
+    ) {
+        OverlayItem target = findAutoZoomTargetOverlay(items);
+        if (target == null) return;
+        updateAutoZoomTargetGeometry(
+                target.normalizedBounds.centerX(),
+                target.normalizedBounds.centerY()
+        );
+        updateAutoZoomAnalysisRoi(target.normalizedBounds);
+    }
+
+    private OverlayItem findAutoZoomTargetOverlay(List<OverlayItem> items) {
+        if (items == null || items.isEmpty()) return null;
+        long targetTrackId = autoZoomController.targetTrackId();
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && item.trackId == targetTrackId) {
+                return item;
+            }
+        }
+
+        float expectedX = CameraController.zoomedCoordinate(
+                autoZoomTargetSceneX,
+                currentCameraZoomRatio
+        );
+        float expectedY = CameraController.zoomedCoordinate(
+                autoZoomTargetSceneY,
+                currentCameraZoomRatio
+        );
+        OverlayItem nearest = null;
+        float bestDistance = Float.MAX_VALUE;
+        for (OverlayItem item : items) {
+            if (item.kind != OverlayItem.Kind.PLATE) continue;
+            float dx = item.normalizedBounds.centerX() - expectedX;
+            float dy = item.normalizedBounds.centerY() - expectedY;
+            float distance = dx * dx + dy * dy;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                nearest = item;
+            }
+        }
+        return bestDistance <= 0.20f * 0.20f ? nearest : null;
+    }
+
+    private void presentTrackedPreviewOverlay(List<OverlayItem> trackedItems) {
+        List<OverlayItem> trackedOverlay = mergePreviewOverlay(trackedItems);
+        overlayView.setItems(
+                trackedOverlay,
+                previewPlateTracker.sourceWidth(),
+                previewPlateTracker.sourceHeight()
+        );
+        if (autoZoomController.state()
+                == AutoZoomController.State.ZOOMED_RETRY) {
+            updateAutoZoomTargetFromOverlayItems(trackedOverlay);
+        }
+    }
+
+    private void updateAutoZoomAnalysisRoi(RectF plateBounds) {
+        if (pipeline == null
+                || currentCameraZoomRatio <= 1.01f
+                || plateBounds == null) return;
+
+        pipeline.setAutoZoomTargetLock(
+                autoZoomController.targetTrackId(),
+                plateBounds.left,
+                plateBounds.top,
+                plateBounds.right,
+                plateBounds.bottom
+        );
+    }
+
+    private void updateAutoZoomTargetGeometry(
+            float zoomedCenterX,
+            float zoomedCenterY
+    ) {
+        float inverseRatio = 1f / Math.max(1f, currentCameraZoomRatio);
+        autoZoomTargetSceneX = CameraController.scaledCoordinate(
+                zoomedCenterX,
+                inverseRatio
+        );
+        autoZoomTargetSceneY = CameraController.scaledCoordinate(
+                zoomedCenterY,
+                inverseRatio
+        );
+        autoZoomController.onZoomApplied(zoomedCenterX, zoomedCenterY);
+        showAutoZoomTarget(zoomedCenterX, zoomedCenterY);
+    }
+
+    private void showAutoZoomTarget(float normalizedX, float normalizedY) {
+        if (autoZoomTarget == null) return;
+        android.graphics.PointF point =
+                overlayView.normalizedToViewPoint(normalizedX, normalizedY);
+        float minimumX = overlayView.getX();
+        float minimumY = overlayView.getY();
+        float maximumX = minimumX + overlayView.getWidth()
+                - autoZoomTarget.getWidth();
+        float maximumY = minimumY + overlayView.getHeight()
+                - autoZoomTarget.getHeight();
+        float x = minimumX + point.x - autoZoomTarget.getWidth() / 2f;
+        float y = minimumY + point.y - autoZoomTarget.getHeight() / 2f;
+        autoZoomTarget.setX(Math.max(minimumX, Math.min(maximumX, x)));
+        autoZoomTarget.setY(Math.max(minimumY, Math.min(maximumY, y)));
+        autoZoomTarget.setVisibility(View.VISIBLE);
+        if (autoZoomTargetAnimator == null) {
+            autoZoomTargetAnimator = ObjectAnimator.ofFloat(
+                    autoZoomTarget,
+                    View.ALPHA,
+                    0.35f,
+                    1f
+            );
+            autoZoomTargetAnimator.setDuration(360L);
+            autoZoomTargetAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            autoZoomTargetAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        }
+        if (!autoZoomTargetAnimator.isStarted()) {
+            autoZoomTargetAnimator.start();
+        }
+    }
+
+    private void hideAutoZoomTarget() {
+        if (autoZoomTargetAnimator != null) autoZoomTargetAnimator.cancel();
+        if (autoZoomTarget != null) {
+            autoZoomTarget.setAlpha(1f);
+            autoZoomTarget.setVisibility(View.GONE);
+        }
+    }
+
+    private void resetAutoZoomForStoppedCamera() {
+        autoZoomHandler.removeCallbacksAndMessages(null);
+        if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
+        cameraTransformInProgress = false;
+        clearAutoZoomRecognitionMemory();
+        currentCameraZoomRatio = 1f;
+        cameraTransformStartZoomRatio = 1f;
+        autoZoomTargetSceneX = 0.5f;
+        autoZoomTargetSceneY = 0.5f;
+        abortAutoZoomAfterTransform = false;
+        resetAutoZoomSessionAfterReturn = false;
+        autoZoomController.resetSession();
+        if (pipeline != null) pipeline.finishCameraTransform();
+        if (liveHudRow != null) liveHudRow.setVisibility(View.GONE);
+        if (autoZoomControl != null) autoZoomControl.setVisibility(View.GONE);
+        hideAutoZoomTarget();
+        updateAutoZoomButton();
     }
 
     private void configureCaptureCollection() {
@@ -2640,7 +3971,7 @@ public final class MainActivity extends AppCompatActivity {
         View content =
                 getLayoutInflater().inflate(
                         R.layout.bottom_sheet_gallery,
-                        null,
+                        (ViewGroup) findViewById(android.R.id.content),
                         false
                 );
 
@@ -2850,6 +4181,7 @@ public final class MainActivity extends AppCompatActivity {
                     previous,
                     observation.text,
                     observation.confirmed,
+                    observation.recognitionConfidence,
                     observation.sharpness,
                     observation.capturedElapsedNanos
             )) continue;
@@ -2872,7 +4204,9 @@ public final class MainActivity extends AppCompatActivity {
                     observation.capturedAtMillis,
                     observation.capturedElapsedNanos,
                     observation.sharpness,
-                    observation.timing
+                    observation.timing,
+                    currentCameraZoomRatio,
+                    autoZoomController.captureSource()
             );
             try {
                 captured.miniReportJson = CropMiniReport.create(
@@ -2896,6 +4230,7 @@ public final class MainActivity extends AppCompatActivity {
             lastCaptureByTrack.put(observation.trackId, new CropSamplingPolicy.Previous(
                     observation.text,
                     observation.confirmed,
+                    observation.recognitionConfidence,
                     observation.sharpness,
                     observation.capturedElapsedNanos
             ));
@@ -3711,8 +5046,6 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onResume() {
-
-        stopThermalUiMonitor();
         super.onResume();
 
         applySettingsRevision();
@@ -3888,6 +5221,14 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        /*
+         * Monitor termiczny nie może odświeżać UI ani uruchomić
+         * kamery, kiedy Activity nie znajduje się na pierwszym planie.
+         * stopThermalUiMonitor() zeruje również rozpoczęty okres
+         * stabilizacji, więc po powrocie warunek musi być spełniony
+         * ponownie przez pełny wymagany czas.
+         */
+        stopThermalUiMonitor();
         retainCaptureGalleryState();
         stopPreviewSceneMonitor();
         if (cameraMotionMonitor != null) cameraMotionMonitor.stop();
@@ -3906,6 +5247,21 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        /*
+         * Wywołanie defensywne. Standardowo monitor został już
+         * zatrzymany w onPause(), ale usunięcie callbacków również
+         * tutaj chroni przed utrzymaniem zniszczonej Activity przez
+         * Handler w nietypowej sekwencji cyklu życia.
+         */
+        stopThermalUiMonitor();
+        autoZoomHandler.removeCallbacksAndMessages(null);
+        if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
+        cameraTransformInProgress = false;
+        clearAutoZoomRecognitionMemory();
+        if (pipeline != null) {
+            pipeline.finishCameraTransform();
+        }
+
         AppLog.info(
                 this,
                 LOG_TAG,
@@ -4597,20 +5953,51 @@ public final class MainActivity extends AppCompatActivity {
                 || !snapshot.available()) {
 
             experimentThermalButton.setText(
-                    "TEMP —"
+                    R.string.experiment_thermal_button
             );
 
             return;
         }
 
-        String text =
-                String.format(
-                        Locale.ROOT,
-                        "TEMP %.1f°C · TH%d",
-                        snapshot.batteryTemperatureC,
-                        snapshot.thermalStatus
-                );
+        String headroomText =
+                snapshot.headroomAvailable()
 
+                        ? String.format(
+                        Locale.ROOT,
+                        "%.2f",
+                        snapshot.thermalHeadroom
+                )
+
+                        : "—";
+
+        String text;
+
+
+
+        if (experimentThermalConfig.enabled()) {
+
+            text =
+                    String.format(
+                            Locale.ROOT,
+                            "BAT %.1f°C · TH%d · HEAD %s\nCEL ≤%.1f°C · TH0",
+                            snapshot.batteryTemperatureC,
+                            snapshot.thermalStatus,
+                            headroomText,
+                            experimentThermalConfig
+                                    .maxBatteryTemperatureC()
+                    );
+
+        } else {
+
+            text =
+                    String.format(
+                            Locale.ROOT,
+                            "BAT %.1f°C · TH%d · HEAD %s",
+                            snapshot.batteryTemperatureC,
+                            snapshot.thermalStatus,
+                            headroomText
+                    );
+        }
         experimentThermalButton.setText(
                 text
         );
@@ -4665,7 +6052,7 @@ public final class MainActivity extends AppCompatActivity {
                     -1L;
 
             liveStatus.setText(
-                    "Oczekiwanie na odczyt temperatury…"
+                    R.string.experiment_thermal_waiting_reading
             );
 
             return;
@@ -4796,5 +6183,229 @@ public final class MainActivity extends AppCompatActivity {
          */
         thermalReadySinceElapsedMillis =
                 -1L;
+    }
+
+    private void showExperimentThermalDialog() {
+
+        if (cameraStarted
+                || waitingForThermalStart
+                || !experimentModeEnabled) {
+            return;
+        }
+
+
+        final int[] temperaturesTenths = {
+                0,
+                300,
+                310,
+                320,
+                330,
+                340
+        };
+
+
+        CharSequence[] labels = {
+                "Bez warunku",
+                "≤ 30.0°C · TH0",
+                "≤ 31.0°C · TH0",
+                "≤ 32.0°C · TH0",
+                "≤ 33.0°C · TH0",
+                "≤ 34.0°C · TH0"
+        };
+
+
+        int rememberedTenths =
+                uiPreferences.getInt(
+                        KEY_LAST_EXPERIMENT_THERMAL_TENTHS,
+                        320
+                );
+
+
+        int currentTenths =
+                experimentThermalConfig.enabled()
+
+                        ? (int) Math.round(
+                        experimentThermalConfig
+                                .maxBatteryTemperatureC()
+                        * 10.0
+                )
+
+                        : rememberedTenths;
+
+
+        int initialIndex =
+                0;
+
+
+        if (experimentThermalConfig.enabled()) {
+
+            for (int i = 1;
+                 i < temperaturesTenths.length;
+                 i++) {
+
+                if (temperaturesTenths[i]
+                        == currentTenths) {
+
+                    initialIndex =
+                            i;
+
+                    break;
+                }
+            }
+        }
+
+
+        final int[] selectedIndex = {
+                initialIndex
+        };
+
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(
+                        "Warunek temperatury"
+                )
+                .setSingleChoiceItems(
+                        labels,
+                        initialIndex,
+                        (dialog, which) ->
+                                selectedIndex[0] =
+                                        which
+                )
+                .setNegativeButton(
+                        "Anuluj",
+                        null
+                )
+                .setPositiveButton(
+                        android.R.string.ok,
+                        (dialog, which) -> {
+
+                            int temperatureTenths =
+                                    temperaturesTenths[
+                                            selectedIndex[0]
+                                            ];
+
+
+                            if (temperatureTenths <= 0) {
+
+                                experimentThermalConfig =
+                                        ThermalConfig.disabled();
+
+                                recordInfo(
+                                        "Wyłączono warunek termiczny eksperymentu"
+                                );
+
+                            } else {
+
+                                double temperature =
+                                        temperatureTenths
+                                                / 10.0;
+
+
+                                experimentThermalConfig =
+                                        ThermalConfig.of(
+                                                true,
+                                                temperature,
+                                                0,
+                                                5
+                                        );
+
+
+                                uiPreferences.edit()
+                                        .putInt(
+                                                KEY_LAST_EXPERIMENT_THERMAL_TENTHS,
+                                                temperatureTenths
+                                        )
+                                        .apply();
+
+
+                                recordInfo(
+                                        String.format(
+                                                Locale.ROOT,
+                                                "Warunek termiczny: BAT <= %.1f°C, TH <= 0, stabilizacja 5 s",
+                                                temperature
+                                        )
+                                );
+                            }
+
+
+                            updateExperimentThermalButton();
+                        }
+                )
+                .show();
+    }
+
+    private void requestAnalysisStart() {
+
+        /*
+         * Poza trybem eksperymentalnym warunek
+         * termiczny nie ma znaczenia.
+         */
+        if (!experimentModeEnabled
+                || !experimentThermalConfig.enabled()) {
+
+            startCamera(
+                    true
+            );
+
+            return;
+        }
+
+
+        /*
+         * Kamera jeszcze nie startuje.
+         * Nie uruchamiamy również MetricsCollector,
+         * ExperimentSession ani timera.
+         */
+        waitingForThermalStart =
+                true;
+
+        thermalReadySinceElapsedMillis =
+                -1L;
+
+
+        liveStatus.setText(
+                R.string.experiment_thermal_waiting_cooling
+        );
+
+
+        renderAnalysisControls();
+
+
+        /*
+         * Nie czekamy na kolejny tick monitora,
+         * tylko od razu oceniamy bieżący stan.
+         */
+        latestThermalSnapshot =
+                thermalMonitor.read();
+
+
+        updateExperimentThermalButton();
+
+
+        evaluateThermalStartCondition(
+                latestThermalSnapshot
+        );
+    }
+
+    private void cancelThermalStartWaiting() {
+
+        waitingForThermalStart =
+                false;
+
+        thermalReadySinceElapsedMillis =
+                -1L;
+
+
+        liveStatus.setText(
+                R.string.analysis_idle
+        );
+
+
+        renderAnalysisControls();
+
+
+        recordInfo(
+                "Anulowano oczekiwanie na warunek termiczny"
+        );
     }
 }

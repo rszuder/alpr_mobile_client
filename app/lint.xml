@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+        Wersje Androida i runtime'ów ML są przypięte świadomie. API 37 nie jest
+        częścią zainstalowanego toolchainu, a podnoszenie CameraX/LiteRT/ONNX
+        wymaga osobnego testu zgodności modeli i urządzeń, nie automatycznej
+        poprawki wykonywanej przez lint.
+    -->
+    <issue id="OldTargetApi" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+</lint>

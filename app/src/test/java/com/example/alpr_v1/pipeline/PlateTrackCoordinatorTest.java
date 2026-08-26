@@ -130,6 +130,40 @@ public class PlateTrackCoordinatorTest {
         assertFalse(decisions.get(0).recognize);
     }
 
+    @Test
+    public void zoomForcesFreshMzWithoutClearingExistingConsensus() {
+        PlateTrackCoordinator coordinator =
+                new PlateTrackCoordinator(RecognitionProfile.FAST);
+
+        PlateTrackCoordinator.Decision first = update(coordinator, 1, 0.8f);
+        assertTrue(first.recognize);
+        coordinator.recordRecognition(
+                first.trackId,
+                0.8f,
+                1,
+                characters(),
+                Arrays.asList("A", "1")
+        );
+
+        PlateTrackCoordinator.Decision second = update(coordinator, 2, 0.8f);
+        assertTrue(second.recognize);
+        coordinator.recordRecognition(
+                second.trackId,
+                0.8f,
+                2,
+                characters(),
+                Arrays.asList("A", "1")
+        );
+
+        assertFalse(update(coordinator, 3, 0.8f).recognize);
+
+        coordinator.requestFreshRecognitionAfterZoom();
+        PlateTrackCoordinator.Decision zoomed = update(coordinator, 4, 0.10f);
+
+        assertTrue(zoomed.recognize);
+        assertTrue(zoomed.currentResult.stable);
+    }
+
     private static PlateTrackCoordinator.Decision update(
             PlateTrackCoordinator coordinator, long frame, float quality
     ) {

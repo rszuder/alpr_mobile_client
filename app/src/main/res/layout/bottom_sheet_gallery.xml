@@ -2,10 +2,12 @@
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/alpr_panel"
     android:orientation="vertical"
+    tools:ignore="Overdraw"
     android:paddingStart="16dp"
     android:paddingTop="10dp"
     android:paddingEnd="16dp"
@@ -44,7 +46,7 @@
             android:minWidth="38dp"
             android:paddingHorizontal="10dp"
             android:paddingVertical="5dp"
-            android:text="0"
+            android:text="@string/result_count_zero"
             android:textColor="@color/alpr_accent"
             android:textSize="13sp"
             android:textStyle="bold" />

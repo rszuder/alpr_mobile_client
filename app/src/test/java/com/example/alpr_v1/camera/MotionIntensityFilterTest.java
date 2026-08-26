@@ -16,4 +16,13 @@ public class MotionIntensityFilterTest {
         assertTrue(filter.isRapid(1_030_000_000L));
         assertFalse(filter.isRapid(1_400_000_001L));
     }
+
+    @Test
+    public void recognizesModerateCameraMovementWithoutCallingItRapid() {
+        MotionIntensityFilter filter = new MotionIntensityFilter();
+        filter.update(0.45f, 0f, 0f, 2_000_000_000L);
+
+        assertTrue(filter.isMoving(2_010_000_000L));
+        assertFalse(filter.isRapid(2_010_000_000L));
+    }
 }

@@ -257,6 +257,31 @@ public final class DetectionOverlayView extends View {
         overlayAnimator.start();
     }
 
+    /**
+     * Mapuje punkt ze znormalizowanych współrzędnych obrazu źródłowego do
+     * lokalnych współrzędnych widoku dokładnie tą samą transformacją fillCenter,
+     * której używają ramki. Celownik i overlay nie mogą stosować dwóch różnych
+     * układów współrzędnych.
+     */
+    public PointF normalizedToViewPoint(float normalizedX, float normalizedY) {
+        float viewWidth = getWidth();
+        float viewHeight = getHeight();
+        if (viewWidth <= 0f || viewHeight <= 0f) {
+            return new PointF(0f, 0f);
+        }
+
+        float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
+        float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
+        float scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+        float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
+        float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
+
+        return new PointF(
+                offsetX + normalizedX * imageWidth * scale,
+                offsetY + normalizedY * imageHeight * scale
+        );
+    }
+
     private static List<OverlayItem> interpolateItems(
             List<OverlayItem> previousItems,
             List<OverlayItem> targetItems,
@@ -923,7 +948,7 @@ public final class DetectionOverlayView extends View {
                 fontHeight(confidenceTextPaint)
         );
         for (RenderItem renderItem : prepared) {
-            if (renderItem.item.label.isEmpty() || renderItem.item.carriedPrediction) continue;
+            if (renderItem.item.label.isEmpty()) continue;
             float confidenceWidth = confidenceTextPaint.measureText(renderItem.parts.confidence);
             float textGap = renderItem.parts.confidence.isEmpty() ? 0f : dp(5);
             float labelWidth = Math.min(

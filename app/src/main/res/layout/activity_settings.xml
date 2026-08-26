@@ -6,6 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/bg_screen_gradient"
+    tools:ignore="TooManyViews"
     tools:context=".SettingsActivity">
 
     <com.google.android.material.appbar.MaterialToolbar
@@ -415,7 +416,7 @@
                             android:maxLines="3"
                             android:minWidth="0dp"
                             android:paddingHorizontal="3dp"
-                            android:text="MP\nBrak"
+                            android:text="@string/settings_node_vehicle_missing"
                             android:textAllCaps="false"
                             android:textSize="11sp" />
                         <com.google.android.material.chip.Chip
@@ -426,7 +427,7 @@
                             android:layout_marginTop="4dp"
                             android:minWidth="0dp"
                             android:text="@string/settings_node_badge_missing"
-                            android:textSize="10sp"
+                            android:textSize="11sp"
                             android:checkable="true"
                             app:chipMinHeight="28dp"
                             app:ensureMinTouchTargetSize="false" />
@@ -435,7 +436,7 @@
                             android:layout_width="24dp"
                             android:layout_height="wrap_content"
                             android:gravity="center"
-                            android:text="→"
+                            android:text="@string/settings_pipeline_arrow"
                             android:textColor="@color/alpr_success"
                             android:textSize="20sp"
                             android:textStyle="bold" />
@@ -455,7 +456,7 @@
                             android:maxLines="3"
                             android:minWidth="0dp"
                             android:paddingHorizontal="3dp"
-                            android:text="MT\nBrak"
+                            android:text="@string/settings_node_plate_missing"
                             android:textAllCaps="false"
                             android:textSize="11sp" />
                         <com.google.android.material.chip.Chip
@@ -468,7 +469,7 @@
                             android:focusable="false"
                             android:minWidth="0dp"
                             android:text="@string/settings_node_badge_missing"
-                            android:textSize="10sp"
+                            android:textSize="11sp"
                             android:checkable="true"
                             app:chipMinHeight="28dp"
                             app:ensureMinTouchTargetSize="false" />
@@ -477,7 +478,7 @@
                             android:layout_width="24dp"
                             android:layout_height="wrap_content"
                             android:gravity="center"
-                            android:text="→"
+                            android:text="@string/settings_pipeline_arrow"
                             android:textColor="@color/alpr_success"
                             android:textSize="20sp"
                             android:textStyle="bold" />
@@ -497,7 +498,7 @@
                             android:maxLines="3"
                             android:minWidth="0dp"
                             android:paddingHorizontal="3dp"
-                            android:text="MZ\nBrak"
+                            android:text="@string/settings_node_character_missing"
                             android:textAllCaps="false"
                             android:textSize="11sp" />
                         <com.google.android.material.chip.Chip
@@ -510,7 +511,7 @@
                             android:focusable="false"
                             android:minWidth="0dp"
                             android:text="@string/settings_node_badge_missing"
-                            android:textSize="10sp"
+                            android:textSize="11sp"
                             android:checkable="true"
                             app:chipMinHeight="28dp"
                             app:ensureMinTouchTargetSize="false" />

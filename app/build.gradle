@@ -3,8 +3,8 @@ plugins {
 }
 
 android {
-    namespace 'com.example.alpr_v1'
-    ndkVersion '29.0.14033849'
+    namespace = 'com.example.alpr_v1'
+    ndkVersion = '29.0.14033849'
     compileSdk {
         version = release(36)
     }
@@ -43,7 +43,7 @@ android {
     externalNativeBuild {
         cmake {
             path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
+            version = '3.22.1'
         }
     }
 }

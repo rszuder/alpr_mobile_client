@@ -808,13 +808,19 @@ public final class SettingsActivity extends AppCompatActivity {
                         ? "--"
                         : baseModel.manifest().variants().get(0).runtime().wireName()
                         .toUpperCase(java.util.Locale.ROOT);
-                button.setText(roleName + "\n" + runtime + "\n"
-                        + getString(R.string.settings_node_inactive));
+                button.setText(getString(
+                        R.string.settings_node_inactive_lines,
+                        roleName,
+                        runtime
+                ));
                 button.setContentDescription(roleName + ": "
                         + baseModel.manifest().modelId() + ", " + runtime
                         + ", " + getString(R.string.settings_node_inactive));
             } else {
-                button.setText(roleName + "\n" + getString(R.string.settings_node_missing));
+                button.setText(getString(
+                        R.string.settings_node_missing_lines,
+                        roleName
+                ));
                 button.setContentDescription(roleName + ": "
                         + getString(R.string.settings_node_missing));
             }
@@ -823,7 +829,12 @@ public final class SettingsActivity extends AppCompatActivity {
         ModelVariant variant = autoTuneManager.chosenVariant(model);
         String runtime = variant.runtime().wireName().toUpperCase(java.util.Locale.ROOT);
         String precision = variant.precision().toUpperCase(java.util.Locale.ROOT);
-        button.setText(roleName + "\n" + runtime + "\n" + precision);
+        button.setText(getString(
+                R.string.settings_node_active_lines,
+                roleName,
+                runtime,
+                precision
+        ));
         button.setContentDescription(
                 roleName + ": " + model.manifest().modelId()
                         + ", " + variant.id()

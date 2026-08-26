@@ -141,6 +141,28 @@ public final class MotionBoxTracker {
         nextTrackId = 1L;
     }
 
+    /** Przelicza aktywne tracki po kontrolowanym zoomie względem środka sensora. */
+    public synchronized void applyCenteredZoom(float relativeRatio) {
+        float ratio = Math.max(0.1f, Math.min(10f, relativeRatio));
+        for (Track track : tracks) {
+            track.box = transform(track.box, ratio);
+            track.velocityX = 0f;
+            track.velocityY = 0f;
+            track.velocityWidth = 0f;
+            track.velocityHeight = 0f;
+            track.missedFrames = 0;
+        }
+    }
+
+    private static Box transform(Box source, float ratio) {
+        return new Box(
+                0.5f + ratio * (source.left - 0.5f),
+                0.5f + ratio * (source.top - 0.5f),
+                0.5f + ratio * (source.right - 0.5f),
+                0.5f + ratio * (source.bottom - 0.5f)
+        );
+    }
+
     private int bestMatch(Box observation, long observationNanos, boolean[] matched) {
         int bestIndex = -1;
         float bestScore = Float.NEGATIVE_INFINITY;

@@ -108,13 +108,13 @@ public final class SceneChangeDetector {
         }
 
         /*
-         * Zmiana rozdzielczości / orientacji przerywa
-         * ciągłość poprzedniej sceny.
+         * PreviewView może zmienić rozmiar po przebudowie layoutu, np. gdy
+         * komunikat pod kamerą zajmie inną liczbę wierszy. Sama zmiana wymiarów
+         * bitmapy nie jest dowodem zmiany fizycznej sceny. Ustawiamy więc nową
+         * referencję i ponownie uzbrajamy detektor na kolejnej stabilnej klatce.
+         * Zmiany orientacji i lifecycle są niezależnie obsługiwane przez Activity.
          */
         if (width != previousWidth || height != previousHeight) {
-
-            boolean changed = armed;
-
             previousSamples = currentSamples;
             previousWidth = width;
             previousHeight = height;
@@ -122,11 +122,11 @@ public final class SceneChangeDetector {
 
             return new Result(
                     true,
-                    changed,
-                    true,
                     false,
-                    1f,
-                    1f,
+                    false,
+                    false,
+                    0f,
+                    0f,
                     0f
             );
         }

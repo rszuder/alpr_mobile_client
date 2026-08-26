@@ -15,15 +15,7 @@
     <string name="status_starting">Uruchamianie…</string>
     <string name="models_missing">Zaimportuj model tablic i model znaków</string>
     <string name="camera_content_description">Podgląd obrazu z kamery</string>
-    <string name="recognition_result_label">Cropy sesji</string>
     <string name="result_count_zero">0</string>
-    <string name="collection_empty">Galeria jest pusta · Start rozpoczyna zbieranie cropów</string>
-    <string name="gallery_show">Pokaż</string>
-    <string name="gallery_hide">Ukryj</string>
-    <string name="gallery_show_description">Pokaż galerię cropów</string>
-    <string name="gallery_hide_description">Ukryj galerię cropów</string>
-    <string name="gallery_maximize_description">Maksymalizuj galerię cropów</string>
-    <string name="gallery_restore_description">Przywróć galerię do paska</string>
     <string name="collection_start">Zbieraj cropy</string>
     <string name="collection_stop">Wstrzymaj</string>
     <string name="gallery_open_zero">Cropy · 0</string>
@@ -50,9 +42,6 @@
     <string name="gallery_collection_paused">
     Zbieranie wstrzymane · %1$d/%2$d
 </string>
-    <string name="collection_ready">Zbieranie zatrzymane</string>
-    <string name="collection_running">Sesja %1$s · %2$d/%3$d</string>
-    <string name="collection_paused">Wstrzymano · %1$d/%2$d</string>
     <string name="inference_time_format">Pipeline %1$.1f ms · MZ %2$.1f ms</string>
     <string name="inference_time_unavailable">Czas inferencji niedostępny</string>
     <string name="crop_save_action">Zapisz trwale</string>
@@ -96,20 +85,15 @@
     <string name="analysis_start">Uruchom analizę</string>
     <string name="analysis_stop">Zatrzymaj analizę</string>
     <string name="analysis_idle">Analiza zatrzymana</string>
-    <string name="analysis_running">Analiza aktywna</string>
     <string name="analysis_idle_hint">Naciśnij „Uruchom analizę”, aby rozpocząć pracę kamery i pipeline’u.</string>
     <string name="persistent_log_label">Dziennik aplikacji</string>
     <string name="persistent_log_empty">Brak zapisanych zdarzeń</string>
     <string name="menu_recognition_profile">Tryb rozpoznawania</string>
-    <string name="pipeline_models_title">Model pojazdów i pipeline</string>
     <string name="menu_resolution_profile">Rozdzielczość kamery</string>
     <string name="menu_crop_limit">Limit cropów sesji</string>
     <string name="menu_capture_directory">Katalog trwałego zapisu</string>
     <string name="crop_limit_changed">Nowy limit galerii: %1$d</string>
     <string name="capture_directory_error">Nie udało się zachować dostępu do wybranego katalogu</string>
-    <string name="resolution_profile_auto">Automatyczna</string>
-    <string name="resolution_profile_fast">Szybka · 640×480</string>
-    <string name="resolution_profile_distant">Daleki odczyt · 1920×1080</string>
     <string name="resolution_profile_changed">Wybrano jakość obrazu: %1$s</string>
     <string name="vehicle_cascade_enabled">Włączono kaskadę pojazd → ROI → MT → MZ</string>
     <string name="vehicle_cascade_disabled">Wyłączono kaskadę pojazdu; MT analizuje pełną klatkę</string>
@@ -157,14 +141,19 @@
     <string name="settings_distant_short">Daleki plan</string>
     <string name="settings_models_title">Modele YOLO</string>
     <string name="settings_models_description">MP → MT → MZ, bez modułu OCR</string>
-    <string name="settings_select_vehicle">Model pojazdu</string>
-    <string name="settings_configure_composition">Kompozycja i formaty</string>
     <string name="settings_restore_base_package">Przywróć pakiet bazowy</string>
     <string name="settings_node_actions_title">Węzeł %1$s</string>
     <string name="settings_node_choose_model">Zmień model lub format</string>
     <string name="settings_node_import_model">Importuj model dla %1$s</string>
     <string name="settings_node_missing">Brak</string>
     <string name="settings_node_inactive">Nieaktywny</string>
+    <string name="settings_node_vehicle_missing">MP\nBrak</string>
+    <string name="settings_node_plate_missing">MT\nBrak</string>
+    <string name="settings_node_character_missing">MZ\nBrak</string>
+    <string name="settings_pipeline_arrow">→</string>
+    <string name="settings_node_active_lines">%1$s\n%2$s\n%3$s</string>
+    <string name="settings_node_inactive_lines">%1$s\n%2$s\nNieaktywny</string>
+    <string name="settings_node_missing_lines">%1$s\nBrak</string>
     <string name="settings_node_imported">Zaimportowano i aktywowano model %1$s: %2$s</string>
     <string name="settings_node_role_mismatch">Wybrany model ma rolę %1$s, a węzeł wymaga %2$s</string>
     <string name="settings_node_role_missing">Wybrany pakiet nie zawiera modelu dla węzła %1$s</string>
@@ -175,7 +164,6 @@
     <string name="settings_node_badge_state_disabled">wyłączony</string>
     <string name="settings_node_badge_state_missing">brak modelu</string>
     <string name="settings_node_badge_description">%1$s w kaskadzie: %2$s</string>
-    <string name="settings_composition_role_title">Wybierz etap kompozycji</string>
     <string name="settings_select_model_title">Wybierz model %1$s</string>
     <string name="settings_select_variant_title">Wariant wykonawczy %1$s</string>
     <string name="settings_variant_auto">Automatyczny (zalecany)</string>
@@ -195,13 +183,60 @@
     <string name="settings_import_complete_partial_runtime">Zaimportowano pakiet: %1$s. Aktywowano MT+MZ; MP pozostaje nieaktywny, ponieważ nie zawiera TFLite ani ONNX.</string>
     <string name="settings_import_partial">Zaimportowano model: %1$s</string>
     <string name="settings_import_rejected">Import odrzucony: %1$s</string>
-    <string name="settings_no_vehicle_models">Brak zaimportowanych modeli pojazdów</string>
     <string name="settings_vehicle_none">Bez modelu pojazdu</string>
     <string name="diagnostics_title">Diagnostyka</string>
     <string name="diagnostics_subtitle">Stan urządzenia i pipeline’u</string>
     <string name="diagnostics_overview">PRZEGLĄD SYSTEMU</string>
     <string name="diagnostics_models">Aktywne modele i runtime</string>
+    <string name="diagnostics_models_column_stage">ETAP</string>
+    <string name="diagnostics_models_column_model">MODEL</string>
+    <string name="diagnostics_models_column_execution">WYKONANIE</string>
+    <string name="diagnostics_model_stage_vehicle">MP</string>
+    <string name="diagnostics_model_stage_plate">MT</string>
+    <string name="diagnostics_model_stage_character">MZ</string>
+    <string name="diagnostics_model_optional">opcjonalny</string>
+    <string name="diagnostics_model_required">wymagany</string>
+    <string name="diagnostics_model_missing">Brak aktywnego modelu</string>
+    <string name="diagnostics_model_missing_optional">Etap MP jest pomijany</string>
+    <string name="diagnostics_model_missing_required">Pipeline jest niekompletny</string>
+    <string name="diagnostics_model_unavailable">Niedostępny</string>
+    <string name="diagnostics_model_backend_missing">Brak obsługi backendu</string>
+    <string name="diagnostics_model_value_unavailable">—</string>
+    <string name="diagnostics_model_stage_skipped">Etap nie jest wykonywany</string>
+    <string name="diagnostics_model_pipeline_blocked">Uruchomienie pipeline’u zablokowane</string>
+    <string name="diagnostics_model_package_modified">Kompozycja zmodyfikowana · baza: %1$s v%2$s</string>
+    <string name="diagnostics_model_package_ready">Komplet gotowy: %1$s v%2$s%3$s</string>
+    <string name="diagnostics_model_package_individual">Pipeline z pojedynczych pakietów · MT i MZ aktywne</string>
+    <string name="diagnostics_model_package_partial">Tryb częściowy · brakuje modelu MT lub MZ</string>
+    <string name="diagnostics_model_package_date"> · %1$s</string>
+    <string name="diagnostics_model_family_params">%1$s · %2$.2f mln parametrów</string>
+    <string name="diagnostics_model_family_only">%1$s</string>
+    <string name="diagnostics_model_params_only">%1$.2f mln parametrów</string>
+    <string name="diagnostics_model_no_metadata">Brak dodatkowych metadanych</string>
+    <string name="diagnostics_model_runtime_precision">%1$s · %2$s</string>
+    <string name="diagnostics_model_profile_manual">ręczny</string>
+    <string name="diagnostics_model_profile_autotune">AutoTune</string>
+    <string name="diagnostics_model_profile_default">domyślny</string>
+    <string name="diagnostics_model_hardware_gpu">GPU</string>
+    <string name="diagnostics_model_hardware_cpu">CPU ×%1$d</string>
+    <string name="diagnostics_model_execution_detail">%1$s · %2$s\n%3$s\n%4$d×%5$d · conf %6$.2f\nIoU %7$.2f</string>
     <string name="diagnostics_refresh">Odśwież</string>
+    <string name="diagnostics_log_experiment_header">EKSPERYMENT %1$d · %2$s</string>
+    <string name="diagnostics_log_previous_experiment">POPRZEDNI EKSPERYMENT · FRAGMENT</string>
+    <string name="diagnostics_log_group_marker">┃</string>
+    <string name="diagnostics_log_prefix">[%1$02d] %2$s</string>
+    <string name="diagnostics_log_experiment_start">START · sesja %1$s · %2$s</string>
+    <string name="diagnostics_log_experiment_end">KONIEC · %1$s · %2$.2f s · sesja %3$s</string>
+    <string name="diagnostics_log_experiment_end_without_time">KONIEC · %1$s · sesja %2$s</string>
+    <string name="diagnostics_log_timer_limit_reached">Osiągnięto limit czasu eksperymentu</string>
+    <string name="diagnostics_log_variant_r0">R0 · PEŁNA KLATKA</string>
+    <string name="diagnostics_log_variant_r1">R1 · 1 ROI</string>
+    <string name="diagnostics_log_variant_r2">R2 · 2 ROI</string>
+    <string name="diagnostics_log_variant_unknown">WARIANT NIEZNANY</string>
+    <string name="diagnostics_log_reason_manual">ręcznie</string>
+    <string name="diagnostics_log_reason_timer">timer</string>
+    <string name="diagnostics_log_reason_error">błąd</string>
+    <string name="diagnostics_log_reason_unknown">powód nieznany</string>
     <string name="diagnostics_health_ready">System gotowy</string>
     <string name="diagnostics_health_partial">Pipeline wymaga uwagi</string>
     <string name="diagnostics_health_ready_detail">Modele MT i MZ są aktywne. Diagnostyka działa lokalnie.</string>
@@ -250,31 +285,44 @@
     <string name="roi_budget_r1">R1 · MP + maksymalnie 1 ROI</string>
     <string name="roi_budget_r2">R2 · MP + maksymalnie 2 ROI</string>
 
-    <string name="roi_budget_policy_changed">Strategia badawcza: %1$s</string>
-
-    <string name="settings_experiment_timer_title">Czas eksperymentu</string>
-
-    <string name="settings_experiment_timer_description">
-    Opcjonalny warunek automatycznego zakończenia przebiegu. Restart kamery nie zeruje timera.
-</string>
-
-    <string name="settings_experiment_timer_switch">
-    Zakończ eksperyment automatycznie
-</string>
-
-
-
     <string name="experiment_timer_button">Timer</string>
     <string name="experiment_timer_dialog_title">Timer eksperymentu</string>
     <string name="experiment_timer_none">Bez timera</string>
-    <string name="experiment_timer_armed">Timer: %1$s</string>
-    <string name="experiment_timer_running">%1$s</string>
     <string name="experiment_timer_disabled_log">Wyłączono timer eksperymentu</string>
     <string name="experiment_timer_armed_log">Ustawiono timer eksperymentu: %1$d s</string>
     <string name="export_short">Eksport sesji</string>
 
     <string name="experiment_thermal_button">TEMP —</string>
+    <string name="experiment_thermal_waiting_reading">Oczekiwanie na odczyt temperatury…</string>
+    <string name="experiment_thermal_waiting_cooling">Oczekiwanie na schłodzenie urządzenia…</string>
     <string name="analysis_cancel_waiting">Anuluj oczekiwanie</string>
-    <string name="experiment_thermal_title">Warunek temperatury</string>
-    <string name="experiment_thermal_none">Bez warunku</string>
+    <string name="auto_zoom_enable">Włącz adaptacyjny zoom</string>
+    <string name="auto_zoom_target">Cel autofocusu i zbliżenia</string>
+    <string name="auto_zoom_waiting_fresh_mz">Zoom aktywny · MT gotowe · MZ pracuje w tle</string>
+    <string name="auto_zoom_symbol_ready">AZ</string>
+    <string name="auto_zoom_symbol_focus">AF</string>
+    <string name="auto_zoom_symbol_recognize">MZ</string>
+    <string name="auto_zoom_symbol_return">1×</string>
+    <string name="auto_zoom_disable">Wyłącz adaptacyjny zoom</string>
+    <string name="auto_zoom_enabled_log">Włączono adaptacyjny zoom</string>
+    <string name="auto_zoom_disabled_log">Wyłączono adaptacyjny zoom</string>
+    <string name="auto_zoom_request_status">Auto zoom %1$.1f× · ustawianie AF/AE</string>
+    <string name="auto_zoom_retry_status">Auto zoom %1$.1f× · ponowna próba MT/MZ</string>
+    <string name="auto_zoom_return_status">Auto zoom zakończony · powrót do 1,0×</string>
+    <string name="auto_zoom_same_scene_status">Auto zoom zakończony · ta sama scena</string>
+    <string name="auto_zoom_same_scene_hint">Ramki i najlepszy wynik zoomu zachowane · analiza trwa</string>
+    <string name="auto_zoom_unavailable">Zoom aparatu jest niedostępny</string>
+    <string name="auto_zoom_mode_title">Tryb adaptacyjnego zoomu</string>
+    <string name="auto_zoom_mode_hold_full_selected">Aktywny tryb: zoom → MT → MZ → płynny powrót</string>
+    <string name="auto_zoom_mode_requires_offline_pipeline">Ten wariant wymaga jeszcze bezpiecznej ścieżki offline dla zapisanego cropu. Pozostaje aktywny tryb MT → MZ na zoomie.</string>
+    <string-array name="auto_zoom_modes">
+        <item>Trzymaj zoom · MT → MZ (aktywny)</item>
+        <item>Trzymaj zoom · MZ cropu (w przygotowaniu)</item>
+        <item>Zapisz crop i wróć · MT → MZ (w przygotowaniu)</item>
+        <item>Zapisz crop i wróć · MZ cropu (w przygotowaniu)</item>
+    </string-array>
+    <string name="hud_auto_zoom_ready">AZ %1$.1f× · GOTOWY</string>
+    <string name="hud_auto_zoom_focusing">AZ 1,8× · ZOOM + AF/AE…</string>
+    <string name="hud_auto_zoom_retry">AZ %1$.1f× · RETRY MT/MZ</string>
+    <string name="hud_auto_zoom_returning">AZ · POWRÓT DO 1,0×…</string>
 </resources>

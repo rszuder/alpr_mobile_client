@@ -50,6 +50,8 @@ public final class CropMiniReport {
         json.put("plate_confidence", item.plateConfidence);
         json.put("recognition_confidence", item.recognitionConfidence);
         json.put("sharpness", item.sharpness);
+        json.put("camera_zoom_ratio", item.cameraZoomRatio);
+        json.put("capture_source", item.captureSource);
         json.put("human_verification", humanVerificationJson(item));
         JSONObject image = new JSONObject();
         image.put("width", item.bitmap.getWidth());

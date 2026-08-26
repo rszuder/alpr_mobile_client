@@ -378,6 +378,8 @@ public final class MetricsCollector {
             record.put("plate_confidence", item.plateConfidence);
             record.put("recognition_confidence", item.recognitionConfidence);
             record.put("sharpness", item.sharpness);
+            record.put("camera_zoom_ratio", item.cameraZoomRatio);
+            record.put("capture_source", item.captureSource);
             record.put("persisted", false);
             record.put("human_verification", verificationJson(item));
             JSONArray characters = new JSONArray();
@@ -1399,4 +1401,3 @@ public final class MetricsCollector {
         return safe;
     }
 }
-

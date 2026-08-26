@@ -9,12 +9,11 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.GridLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TableLayout;
+import android.widget.TableRow;
 import android.widget.TextView;
 import android.graphics.Typeface;
-import android.text.Spannable;
-import android.text.SpannableStringBuilder;
-import android.text.style.ForegroundColorSpan;
-import android.text.style.StyleSpan;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,11 +28,18 @@ import androidx.core.view.WindowInsetsCompat;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
+import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.DeviceProfile;
+import com.example.alpr_v1.model.InstalledAlprPackage;
+import com.example.alpr_v1.model.InstalledModel;
+import com.example.alpr_v1.model.ModelInputSpec;
+import com.example.alpr_v1.model.ModelManifest;
+import com.example.alpr_v1.model.ModelOutputSpec;
 import com.example.alpr_v1.model.ModelRegistry;
+import com.example.alpr_v1.model.ModelRole;
+import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
-import com.example.alpr_v1.ui.ModelStatusFormatter;
 import com.google.android.material.appbar.MaterialToolbar;
 
 
@@ -51,7 +57,8 @@ public final class DiagnosticsActivity extends AppCompatActivity {
     private TextView health;
     private TextView healthDetail;
     private TextView models;
-    private TextView log;
+    private TableLayout modelsTable;
+    private LinearLayout log;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,6 +73,7 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         health = findViewById(R.id.diagnostics_health);
         healthDetail = findViewById(R.id.diagnostics_health_detail);
         models = findViewById(R.id.diagnostics_models_value);
+        modelsTable = findViewById(R.id.diagnostics_models_table);
         log = findViewById(R.id.diagnostics_log);
 
         findViewById(R.id.diagnostics_refresh).setOnClickListener(view -> refresh());
@@ -171,18 +179,304 @@ public final class DiagnosticsActivity extends AppCompatActivity {
                 sessionDetail
         );
 
-        models.setText(ModelStatusFormatter.format(registry, autoTune));
-        log.setText(
-                formatRecentLog(
-                        AppLog.recentEvents(this, 20)
-                )
+        renderModelsTable(registry, autoTune);
+        renderRecentLog(
+                AppLog.recentEvents(this, 20)
         );
     }
 
-    private CharSequence formatRecentLog(String rawLog) {
+    private void renderModelsTable(
+            ModelRegistry registry,
+            AutoTuneManager autoTune
+    ) {
+        models.setText(
+                modelCompositionSummary(registry)
+        );
+
+        /*
+         * Pierwszym dzieckiem jest statyczny nagłówek kolumn.
+         * Odświeżenie diagnostyki wymienia wyłącznie wiersze danych.
+         */
+        while (modelsTable.getChildCount() > 1) {
+            modelsTable.removeViewAt(1);
+        }
+
+        addModelRow(
+                registry,
+                autoTune,
+                ModelRole.VEHICLE,
+                R.string.diagnostics_model_stage_vehicle,
+                R.string.diagnostics_model_optional,
+                R.drawable.bg_icon_blue,
+                R.color.alpr_primary,
+                R.color.alpr_card_blue
+        );
+
+        addModelRow(
+                registry,
+                autoTune,
+                ModelRole.PLATE,
+                R.string.diagnostics_model_stage_plate,
+                R.string.diagnostics_model_required,
+                R.drawable.bg_icon_violet,
+                R.color.alpr_secondary,
+                R.color.alpr_card_violet
+        );
+
+        addModelRow(
+                registry,
+                autoTune,
+                ModelRole.CHARACTER,
+                R.string.diagnostics_model_stage_character,
+                R.string.diagnostics_model_required,
+                R.drawable.bg_icon_pink,
+                R.color.alpr_magenta,
+                R.color.alpr_card_magenta
+        );
+    }
+
+    private void addModelRow(
+            ModelRegistry registry,
+            AutoTuneManager autoTune,
+            ModelRole role,
+            int stageLabel,
+            int requirementLabel,
+            int stageBackground,
+            int stageColor,
+            int rowColor
+    ) {
+        TableRow row = (TableRow) LayoutInflater.from(this).inflate(
+                R.layout.item_model_runtime_row,
+                modelsTable,
+                false
+        );
+
+        TextView stage = row.findViewById(R.id.model_runtime_stage);
+        TextView requirement = row.findViewById(R.id.model_runtime_requirement);
+        TextView modelName = row.findViewById(R.id.model_runtime_name);
+        TextView modelDetail = row.findViewById(R.id.model_runtime_model_detail);
+        TextView execution = row.findViewById(R.id.model_runtime_execution);
+        TextView executionDetail = row.findViewById(R.id.model_runtime_execution_detail);
+
+        stage.setText(stageLabel);
+        stage.setBackgroundResource(stageBackground);
+        stage.setTextColor(
+                ContextCompat.getColor(
+                        this,
+                        stageColor
+                )
+        );
+        requirement.setText(requirementLabel);
+
+        InstalledModel activeModel = registry.getActive(role);
+        InstalledModel displayedModel = activeModel;
+        boolean unavailableBaseModel = false;
+
+        if (role == ModelRole.VEHICLE
+                && displayedModel == null
+                && registry.getBasePackage() != null
+                && registry.getBasePackage().vehicleModel() != null) {
+            displayedModel = registry.getBasePackage().vehicleModel();
+            unavailableBaseModel = true;
+        }
+
+        if (displayedModel == null) {
+            row.setBackgroundColor(
+                    ContextCompat.getColor(
+                            this,
+                            R.color.alpr_card_warning
+                    )
+            );
+            modelName.setText(R.string.diagnostics_model_missing);
+            modelDetail.setText(
+                    role == ModelRole.VEHICLE
+                            ? R.string.diagnostics_model_missing_optional
+                            : R.string.diagnostics_model_missing_required
+            );
+            execution.setText(R.string.diagnostics_model_value_unavailable);
+            execution.setTextColor(
+                    ContextCompat.getColor(
+                            this,
+                            R.color.alpr_warning
+                    )
+            );
+            executionDetail.setText(
+                    role == ModelRole.VEHICLE
+                            ? R.string.diagnostics_model_stage_skipped
+                            : R.string.diagnostics_model_pipeline_blocked
+            );
+            modelsTable.addView(row);
+            return;
+        }
+
+        row.setBackgroundColor(
+                ContextCompat.getColor(
+                        this,
+                        unavailableBaseModel
+                                ? R.color.alpr_card_warning
+                                : rowColor
+                )
+        );
+
+        ModelManifest manifest = displayedModel.manifest();
+        modelName.setText(manifest.modelId());
+        modelDetail.setText(
+                modelDetail(manifest)
+        );
+
+        if (unavailableBaseModel) {
+            execution.setText(R.string.diagnostics_model_unavailable);
+            execution.setTextColor(
+                    ContextCompat.getColor(
+                            this,
+                            R.color.alpr_warning
+                    )
+            );
+            executionDetail.setText(R.string.diagnostics_model_backend_missing);
+            modelsTable.addView(row);
+            return;
+        }
+
+        ModelVariant selected = autoTune.chosenVariant(displayedModel);
+        ExecutionProfile profile = autoTune.chosenProfile(displayedModel);
+        ModelInputSpec input = selected.input(manifest.input());
+        ModelOutputSpec output = selected.output(manifest.output());
+
+        execution.setText(
+                getString(
+                        R.string.diagnostics_model_runtime_precision,
+                        selected.runtime().wireName().toUpperCase(Locale.ROOT),
+                        selected.precision().toUpperCase(Locale.ROOT)
+                )
+        );
+        execution.setTextColor(
+                ContextCompat.getColor(
+                        this,
+                        stageColor
+                )
+        );
+
+        String profileLabel = getString(
+                autoTune.isVariantPinned(displayedModel)
+                        ? R.string.diagnostics_model_profile_manual
+                        : autoTune.hasProfile(displayedModel)
+                        ? R.string.diagnostics_model_profile_autotune
+                        : R.string.diagnostics_model_profile_default
+        );
+
+        String hardwareLabel = profile.gpu
+                ? getString(R.string.diagnostics_model_hardware_gpu)
+                : getString(
+                        R.string.diagnostics_model_hardware_cpu,
+                        profile.cpuThreads
+                );
+
+        executionDetail.setText(
+                getString(
+                        R.string.diagnostics_model_execution_detail,
+                        selected.id(),
+                        profileLabel,
+                        hardwareLabel,
+                        input.width(),
+                        input.height(),
+                        output.confidenceThreshold(),
+                        output.iouThreshold()
+                )
+        );
+
+        modelsTable.addView(row);
+    }
+
+    private CharSequence modelCompositionSummary(
+            ModelRegistry registry
+    ) {
+        InstalledAlprPackage activePackage = registry.getActivePackage();
+        InstalledAlprPackage basePackage = registry.getBasePackage();
+
+        if (basePackage != null
+                && registry.isCompositionModified()) {
+            return getString(
+                    R.string.diagnostics_model_package_modified,
+                    basePackage.manifest().name(),
+                    basePackage.manifest().version()
+            );
+        }
+
+        if (activePackage != null) {
+            String createdAt = shortDate(
+                    activePackage.manifest().createdAt()
+            );
+            String dateSuffix = createdAt.isEmpty()
+                    ? ""
+                    : getString(
+                            R.string.diagnostics_model_package_date,
+                            createdAt
+                    );
+            return getString(
+                    R.string.diagnostics_model_package_ready,
+                    activePackage.manifest().name(),
+                    activePackage.manifest().version(),
+                    dateSuffix
+            );
+        }
+
+        return getString(
+                registry.hasRequiredPipeline()
+                        ? R.string.diagnostics_model_package_individual
+                        : R.string.diagnostics_model_package_partial
+        );
+    }
+
+    private CharSequence modelDetail(
+            ModelManifest manifest
+    ) {
+        String family = manifest.yoloFamily();
+        long parameterCount = manifest.parameterCount();
+        String specification;
+
+        if (!family.isEmpty()
+                && parameterCount > 0L) {
+            specification = getString(
+                    R.string.diagnostics_model_family_params,
+                    family,
+                    parameterCount / 1_000_000.0
+            );
+        } else if (!family.isEmpty()) {
+            specification = getString(
+                    R.string.diagnostics_model_family_only,
+                    family
+            );
+        } else if (parameterCount > 0L) {
+            specification = getString(
+                    R.string.diagnostics_model_params_only,
+                    parameterCount / 1_000_000.0
+            );
+        } else {
+            specification = getString(
+                    R.string.diagnostics_model_no_metadata
+            );
+        }
+
+        return specification;
+    }
+
+    private static String shortDate(String value) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        return trimmed.length() >= 10
+                ? trimmed.substring(0, 10)
+                : trimmed;
+    }
+
+    private void renderRecentLog(String rawLog) {
+        log.removeAllViews();
+
         if (rawLog == null || rawLog.trim().isEmpty()
                 || rawLog.equals("Brak zapisanych zdarzeń")) {
-            return getString(R.string.persistent_log_empty);
+            addEmptyLogRow();
+            return;
         }
 
         String[] sourceLines = rawLog.split("\\R");
@@ -194,35 +488,123 @@ public final class DiagnosticsActivity extends AppCompatActivity {
             }
         }
 
-        SpannableStringBuilder result =
-                new SpannableStringBuilder();
+        int experimentNumber = 0;
+        int activeExperimentColor = 0;
+        boolean experimentOpen = false;
 
-        for (int i = 0; i < lines.size(); i++) {
-            if (i > 0) {
-                result.append('\n');
-            }
-
-            appendStyledLogLine(
-                    result,
-                    i + 1,
-                    lines.get(i)
+        if (historyStartsInsideExperiment(lines)) {
+            activeExperimentColor = R.color.alpr_warning;
+            addExperimentHeader(
+                    getString(
+                            R.string.diagnostics_log_previous_experiment
+                    ),
+                    activeExperimentColor,
+                    R.color.alpr_card_warning
             );
+            experimentOpen = true;
         }
 
-        return result;
+        for (int i = 0; i < lines.size(); i++) {
+            String rawLine = lines.get(i);
+            String message = extractLogMessage(rawLine);
+            boolean experimentStart = message.startsWith(
+                    "Rozpoczęto eksperyment"
+            );
+            boolean experimentEnd = message.startsWith(
+                    "Zakończono eksperyment"
+            );
+
+            if (experimentStart) {
+                experimentNumber++;
+                activeExperimentColor = experimentAccentColor(
+                        experimentNumber
+                );
+                addExperimentHeader(
+                        getString(
+                                R.string.diagnostics_log_experiment_header,
+                                experimentNumber,
+                                experimentVariantLabel(message)
+                        ),
+                        activeExperimentColor,
+                        experimentBackgroundColor(experimentNumber)
+                );
+                experimentOpen = true;
+
+            } else if (experimentEnd
+                    && !experimentOpen) {
+                activeExperimentColor = R.color.alpr_warning;
+                addExperimentHeader(
+                        getString(
+                                R.string.diagnostics_log_previous_experiment
+                        ),
+                        activeExperimentColor,
+                        R.color.alpr_card_warning
+                );
+                experimentOpen = true;
+            }
+
+            addLogEventRow(
+                    i + 1,
+                    rawLine,
+                    experimentOpen
+                            ? activeExperimentColor
+                            : 0
+            );
+
+            if (experimentEnd) {
+                addLogSpacer();
+                experimentOpen = false;
+                activeExperimentColor = 0;
+            }
+        }
     }
 
-    private void appendStyledLogLine(
-            SpannableStringBuilder target,
-            int number,
-            String rawLine
+    private static boolean historyStartsInsideExperiment(
+            List<String> lines
     ) {
-        /*
-         * Format AppLog:
-         *
-         * 2026-08-23T19:21:12.123+02:00 INFO/MainActivity Treść
-         */
+        for (String line : lines) {
+            String message = extractLogMessage(line);
+            if (message.startsWith("Rozpoczęto eksperyment")) {
+                return false;
+            }
+            if (message.startsWith("Zakończono eksperyment")) {
+                return true;
+            }
+        }
+        return false;
+    }
 
+    private void addExperimentHeader(
+            String label,
+            int accentColor,
+            int backgroundColor
+    ) {
+        TextView header = (TextView) LayoutInflater.from(this).inflate(
+                R.layout.item_diagnostic_log_header,
+                log,
+                false
+        );
+        header.setText(label);
+        header.setTextColor(
+                ContextCompat.getColor(
+                        this,
+                        accentColor
+                )
+        );
+        header.setBackgroundColor(
+                ContextCompat.getColor(
+                        this,
+                        backgroundColor
+                )
+        );
+        log.addView(header);
+    }
+
+    private void addLogEventRow(
+            int number,
+            String rawLine,
+            int experimentColor
+    ) {
         int levelSeparator = rawLine.indexOf(' ');
         int messageSeparator = levelSeparator < 0
                 ? -1
@@ -253,92 +635,294 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         }
 
         String shortTime = extractTime(timestamp);
+        String displayMessage = formatLogMessage(message);
 
-        /*
-         * Numer zdarzenia.
-         */
-        int numberStart = target.length();
-
-        target.append(
-                String.format(
-                        Locale.ROOT,
-                        "[%02d] ",
-                        number
-                )
+        View row = LayoutInflater.from(this).inflate(
+                R.layout.item_diagnostic_log_event,
+                log,
+                false
+        );
+        TextView marker = row.findViewById(
+                R.id.diagnostic_log_marker
+        );
+        TextView prefix = row.findViewById(
+                R.id.diagnostic_log_prefix
+        );
+        TextView messageView = row.findViewById(
+                R.id.diagnostic_log_message
         );
 
-        target.setSpan(
-                new ForegroundColorSpan(
-                        ContextCompat.getColor(
-                                this,
-                                R.color.alpr_text_muted
-                        )
-                ),
-                numberStart,
-                target.length(),
-                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        marker.setVisibility(
+                experimentColor == 0
+                        ? View.INVISIBLE
+                        : View.VISIBLE
         );
-
-        /*
-         * Godzina.
-         */
-        if (!shortTime.isEmpty()) {
-            int timeStart = target.length();
-
-            target.append(shortTime);
-            target.append("  ");
-
-            target.setSpan(
-                    new ForegroundColorSpan(
-                            ContextCompat.getColor(
-                                    this,
-                                    R.color.alpr_text_muted
-                            )
-                    ),
-                    timeStart,
-                    target.length(),
-                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        if (experimentColor != 0) {
+            marker.setTextColor(
+                    ContextCompat.getColor(
+                            this,
+                            experimentColor
+                    )
             );
         }
 
-        /*
-         * Treść zdarzenia.
-         */
-        int messageStart = target.length();
+        prefix.setText(
+                getString(
+                        R.string.diagnostics_log_prefix,
+                        number,
+                        shortTime
+                )
+        );
+        messageView.setText(displayMessage);
 
-        target.append(message);
-
-        int messageColor =
-                resolveLogMessageColor(
+        int messageColor = experimentColor != 0
+                && (message.startsWith("Rozpoczęto eksperyment")
+                || message.startsWith("Zakończono eksperyment"))
+                ? experimentColor
+                : resolveLogMessageColor(
                         levelAndTag,
                         message
                 );
-
-        target.setSpan(
-                new ForegroundColorSpan(
-                        ContextCompat.getColor(
-                                this,
-                                messageColor
-                        )
-                ),
-                messageStart,
-                target.length(),
-                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        messageView.setTextColor(
+                ContextCompat.getColor(
+                        this,
+                        messageColor
+                )
         );
 
-        /*
-         * Najważniejsze zdarzenia eksperymentalne
-         * dodatkowo wyróżniamy pogrubieniem.
-         */
         if (message.startsWith("Rozpoczęto eksperyment")
                 || message.startsWith("Zakończono eksperyment")) {
-
-            target.setSpan(
-                    new StyleSpan(Typeface.BOLD),
-                    messageStart,
-                    target.length(),
-                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            messageView.setTypeface(
+                    messageView.getTypeface(),
+                    Typeface.BOLD
             );
+        }
+
+        log.addView(row);
+    }
+
+    private void addLogSpacer() {
+        View spacer = new View(this);
+        spacer.setLayoutParams(
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        Math.round(
+                                8f
+                                        * getResources()
+                                        .getDisplayMetrics()
+                                        .density
+                        )
+                )
+        );
+        log.addView(spacer);
+    }
+
+    private void addEmptyLogRow() {
+        View row = LayoutInflater.from(this).inflate(
+                R.layout.item_diagnostic_log_event,
+                log,
+                false
+        );
+        row.findViewById(
+                R.id.diagnostic_log_marker
+        ).setVisibility(View.GONE);
+        row.findViewById(
+                R.id.diagnostic_log_prefix
+        ).setVisibility(View.GONE);
+        ((TextView) row.findViewById(
+                R.id.diagnostic_log_message
+        )).setText(R.string.persistent_log_empty);
+        log.addView(row);
+    }
+
+    private String formatLogMessage(String message) {
+        if (message.startsWith("Rozpoczęto eksperyment")) {
+            return getString(
+                    R.string.diagnostics_log_experiment_start,
+                    shortSessionId(
+                            firstValueAfter(
+                                    message,
+                                    "Rozpoczęto eksperyment"
+                            )
+                    ),
+                    experimentVariantLabel(message)
+            );
+        }
+
+        if (message.startsWith("Zakończono eksperyment")) {
+            String sessionId = shortSessionId(
+                    firstValueAfter(
+                            message,
+                            "Zakończono eksperyment"
+                    )
+            );
+            String reason = experimentReasonLabel(
+                    tokenValue(message, "reason=")
+            );
+            long durationMillis = parseLong(
+                    tokenValue(message, "durationMs=")
+            );
+
+            if (durationMillis >= 0L) {
+                return getString(
+                        R.string.diagnostics_log_experiment_end,
+                        reason,
+                        durationMillis / 1000.0,
+                        sessionId
+                );
+            }
+
+            return getString(
+                    R.string.diagnostics_log_experiment_end_without_time,
+                    reason,
+                    sessionId
+            );
+        }
+
+        if (message.startsWith("Upłynął czas eksperymentu")) {
+            return getString(
+                    R.string.diagnostics_log_timer_limit_reached
+            );
+        }
+
+        return message;
+    }
+
+    private String experimentVariantLabel(String message) {
+        String variant = tokenValue(message, "variant=");
+
+        switch (variant) {
+            case "r0_full_frame":
+                return getString(
+                        R.string.diagnostics_log_variant_r0
+                );
+
+            case "r1_one_roi":
+                return getString(
+                        R.string.diagnostics_log_variant_r1
+                );
+
+            case "r2_two_roi":
+                return getString(
+                        R.string.diagnostics_log_variant_r2
+                );
+
+            default:
+                return variant.isEmpty()
+                        ? getString(
+                                R.string.diagnostics_log_variant_unknown
+                        )
+                        : variant.toUpperCase(Locale.ROOT);
+        }
+    }
+
+    private String experimentReasonLabel(String reason) {
+        switch (reason) {
+            case "manual":
+                return getString(
+                        R.string.diagnostics_log_reason_manual
+                );
+
+            case "timer":
+                return getString(
+                        R.string.diagnostics_log_reason_timer
+                );
+
+            case "error":
+                return getString(
+                        R.string.diagnostics_log_reason_error
+                );
+
+            default:
+                return reason.isEmpty()
+                        ? getString(
+                                R.string.diagnostics_log_reason_unknown
+                        )
+                        : reason;
+        }
+    }
+
+    private static String extractLogMessage(String rawLine) {
+        int levelSeparator = rawLine.indexOf(' ');
+        int messageSeparator = levelSeparator < 0
+                ? -1
+                : rawLine.indexOf(' ', levelSeparator + 1);
+        return messageSeparator < 0
+                ? rawLine
+                : rawLine.substring(messageSeparator + 1);
+    }
+
+    private static String firstValueAfter(
+            String source,
+            String prefix
+    ) {
+        if (!source.startsWith(prefix)) {
+            return "";
+        }
+        String remainder = source.substring(prefix.length()).trim();
+        int separator = remainder.indexOf(' ');
+        return separator < 0
+                ? remainder
+                : remainder.substring(0, separator);
+    }
+
+    private static String tokenValue(
+            String source,
+            String prefix
+    ) {
+        int start = source.indexOf(prefix);
+        if (start < 0) {
+            return "";
+        }
+        start += prefix.length();
+        int end = source.indexOf(' ', start);
+        return (end < 0
+                ? source.substring(start)
+                : source.substring(start, end)).trim();
+    }
+
+    private static String shortSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isEmpty()) {
+            return "—";
+        }
+        return sessionId.length() <= 10
+                ? sessionId
+                : "…" + sessionId.substring(sessionId.length() - 9);
+    }
+
+    private static long parseLong(String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return -1L;
+        }
+    }
+
+    private static int experimentAccentColor(int experimentNumber) {
+        switch ((experimentNumber - 1) % 4) {
+            case 1:
+                return R.color.alpr_secondary;
+            case 2:
+                return R.color.alpr_magenta;
+            case 3:
+                return R.color.alpr_success;
+            case 0:
+            default:
+                return R.color.alpr_primary;
+        }
+    }
+
+    private static int experimentBackgroundColor(int experimentNumber) {
+        switch ((experimentNumber - 1) % 4) {
+            case 1:
+                return R.color.alpr_card_violet;
+            case 2:
+                return R.color.alpr_card_magenta;
+            case 3:
+                return R.color.alpr_card_green;
+            case 0:
+            default:
+                return R.color.alpr_card_blue;
         }
     }
     private void addMetric(

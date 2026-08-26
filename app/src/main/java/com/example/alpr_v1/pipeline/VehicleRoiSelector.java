@@ -91,6 +91,39 @@ final class VehicleRoiSelector {
         );
     }
 
+    static Region normalizedRegion(
+            int imageWidth,
+            int imageHeight,
+            float normalizedLeft,
+            float normalizedTop,
+            float normalizedRight,
+            float normalizedBottom
+    ) {
+        int safeWidth = Math.max(1, imageWidth);
+        int safeHeight = Math.max(1, imageHeight);
+        int left = clamp(
+                (int) Math.floor(normalizedLeft * safeWidth),
+                0,
+                safeWidth - 1
+        );
+        int top = clamp(
+                (int) Math.floor(normalizedTop * safeHeight),
+                0,
+                safeHeight - 1
+        );
+        int right = clamp(
+                (int) Math.ceil(normalizedRight * safeWidth),
+                left + 1,
+                safeWidth
+        );
+        int bottom = clamp(
+                (int) Math.ceil(normalizedBottom * safeHeight),
+                top + 1,
+                safeHeight
+        );
+        return new Region(left, top, right, bottom, null);
+    }
+
     private static double priority(Detection detection) {
         return detection.confidence
                 * Math.sqrt(Math.max(1.0, detection.width() * detection.height()));

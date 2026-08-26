@@ -142,11 +142,63 @@
                         android:id="@+id/diagnostics_models_value"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
+                        android:layout_marginTop="12dp"
                         android:fontFamily="sans"
-                        android:textColor="@color/alpr_text_primary"
+                        android:textColor="@color/alpr_text_secondary"
                         android:textIsSelectable="true"
                         android:textSize="12sp" />
+
+                    <TableLayout
+                        android:id="@+id/diagnostics_models_table"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:background="@color/alpr_table_header"
+                        android:divider="@drawable/model_table_divider"
+                        android:showDividers="middle"
+                        android:shrinkColumns="1,2"
+                        android:stretchColumns="1,2">
+
+                        <TableRow
+                            android:id="@+id/diagnostics_models_table_header"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:paddingStart="8dp"
+                            android:paddingTop="9dp"
+                            android:paddingEnd="8dp"
+                            android:paddingBottom="9dp">
+
+                            <TextView
+                                android:layout_width="64dp"
+                                android:layout_height="wrap_content"
+                                android:text="@string/diagnostics_models_column_stage"
+                                android:textColor="@color/alpr_text_muted"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1.15"
+                                android:paddingStart="6dp"
+                                android:paddingEnd="6dp"
+                                android:text="@string/diagnostics_models_column_model"
+                                android:textColor="@color/alpr_text_muted"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:paddingStart="6dp"
+                                android:paddingEnd="2dp"
+                                android:text="@string/diagnostics_models_column_execution"
+                                android:textColor="@color/alpr_text_muted"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+                        </TableRow>
+                    </TableLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -188,17 +240,13 @@
                             android:textSize="16sp"
                             android:textStyle="bold" />
                     </LinearLayout>
-                    <TextView
+                    <LinearLayout
                         android:id="@+id/diagnostics_log"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="14dp"
-                        android:fontFamily="monospace"
                         android:minHeight="96dp"
-                        android:text="@string/persistent_log_empty"
-                        android:textColor="@color/alpr_text_muted"
-                        android:textIsSelectable="true"
-                        android:textSize="11sp" />
+                        android:orientation="vertical" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -207,22 +255,39 @@
                 android:layout_height="wrap_content"
                 android:layout_margin="5dp"
                 android:layout_marginTop="12dp"
+                android:baselineAligned="false"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/diagnostics_refresh"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.Material3.Button"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
+                    android:gravity="center"
+                    android:layout_gravity="center_vertical"
+                    android:maxLines="2"
+                    android:minHeight="64dp"
+                    android:minLines="2"
                     android:text="@string/diagnostics_refresh"
-                    app:icon="@drawable/ic_refresh_24" />
+                    android:textColor="@color/alpr_primary"
+                    app:backgroundTint="@color/alpr_card"
+                    app:icon="@drawable/ic_refresh_24"
+                    app:iconTint="@color/alpr_primary"
+                    app:strokeColor="@color/alpr_outline"
+                    app:strokeWidth="1dp" />
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/diagnostics_export"
                     style="@style/Widget.Material3.Button"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
                     android:layout_marginStart="10dp"
                     android:layout_weight="1"
+                    android:gravity="center"
+                    android:maxLines="2"
+                    android:minHeight="64dp"
+                    android:minLines="2"
                     android:text="@string/export_report"
                     app:icon="@drawable/ic_export_24" />
             </LinearLayout>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="top"
+    android:orientation="horizontal"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <TextView
+        android:id="@+id/diagnostic_log_marker"
+        android:layout_width="14dp"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:gravity="start"
+        android:singleLine="true"
+        android:text="@string/diagnostics_log_group_marker"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/diagnostic_log_prefix"
+        android:layout_width="98dp"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:textColor="@color/alpr_text_muted"
+        android:textSize="11sp" />
+
+    <TextView
+        android:id="@+id/diagnostic_log_message"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:breakStrategy="simple"
+        android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
+        android:textColor="@color/alpr_text_primary"
+        android:textIsSelectable="true"
+        android:textSize="11sp" />
+</LinearLayout>

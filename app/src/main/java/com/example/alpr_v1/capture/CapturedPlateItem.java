@@ -38,6 +38,8 @@ public final class CapturedPlateItem {
     public final long capturedElapsedNanos;
     public final float sharpness;
     public final CropInferenceTiming timing;
+    public final float cameraZoomRatio;
+    public final String captureSource;
     public volatile SaveState saveState = SaveState.NOT_SAVED;
     public volatile boolean selectedForSave;
     public volatile Uri savedImageUri;
@@ -64,6 +66,42 @@ public final class CapturedPlateItem {
             float sharpness,
             CropInferenceTiming timing
     ) {
+        this(
+                captureId,
+                sessionId,
+                trackId,
+                bitmap,
+                text,
+                plateConfidence,
+                recognitionConfidence,
+                confirmed,
+                characters,
+                capturedAtMillis,
+                capturedElapsedNanos,
+                sharpness,
+                timing,
+                1f,
+                "normal"
+        );
+    }
+
+    public CapturedPlateItem(
+            String captureId,
+            String sessionId,
+            long trackId,
+            Bitmap bitmap,
+            String text,
+            double plateConfidence,
+            double recognitionConfidence,
+            boolean confirmed,
+            List<PlateCharacter> characters,
+            long capturedAtMillis,
+            long capturedElapsedNanos,
+            float sharpness,
+            CropInferenceTiming timing,
+            float cameraZoomRatio,
+            String captureSource
+    ) {
         this.captureId = captureId;
         this.sessionId = sessionId;
         this.trackId = trackId;
@@ -77,6 +115,8 @@ public final class CapturedPlateItem {
         this.capturedElapsedNanos = capturedElapsedNanos;
         this.sharpness = sharpness;
         this.timing = timing;
+        this.cameraZoomRatio = Math.max(1f, cameraZoomRatio);
+        this.captureSource = captureSource == null ? "normal" : captureSource;
     }
 
     public boolean isProtectedFromEviction() {

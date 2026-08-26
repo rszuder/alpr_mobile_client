@@ -2002,6 +2002,223 @@ Pozostało:
   trybów pracy (`MP only` albo `MT bez OCR`); nie jest to obecnie ukryte pod
   nieaktywnymi badge'ami.
 
+### 2026-08-26 — ciągły auto-zoom celu, blokada tablicy i pamięć odczytu MZ
+
+Problem:
+- pierwsza wersja auto-zoomu traktowała zbliżenie podobnie do zmiany sceny;
+- ramki potrafiły zniknąć przed zoomem albo po powrocie do `1x`;
+- celownik nie zawsze pozostawał na tablicy, która wywołała zbliżenie;
+- świeży wynik MT zastępował etykietę numeru tekstem `tablica · MT`;
+- MZ mógł analizować inne tablice widoczne w kadrze zamiast wybranego celu;
+- tracker ruchu przy drżeniu telefonu potrafił akumulować błąd i przesuwać
+  ramkę poza tablicę;
+- kontrolowany zoom-in i zoom-out bywał interpretowany jako zmiana sceny;
+- pusty albo słabszy odczyt po zmianie skali usuwał wcześniej widoczny numer.
+
+Wymagany przebieg:
+
+```text
+MT wykrywa tablicę i UI pokazuje ramkę
+  -> ramka oraz dostępny numer pozostają widoczne
+  -> płynny zoom-in z celownikiem na tej samej tablicy
+  -> świeże MT aktualizuje geometrię celu
+  -> MZ ponawia odczyt wyłącznie dla zablokowanego celu
+  -> płynny zoom-out z zachowaniem ramki i najlepszego numeru
+  -> powrót do tej samej sceny bez zbędnej ponownej stabilizacji
+```
+
+Rozwiązanie — rozdzielenie geometrii, tożsamości celu i tekstu:
+
+```text
+geometria ramki       <- świeże MT i lekki tracker Preview
+tożsamość celu        <- AutoZoomTargetLock
+najlepszy numer       <- AutoZoomRecognitionMemory / konsensus MZ
+```
+
+- świeże MT może poprawić położenie ramki bez kasowania tekstu;
+- brak znaków w bieżącej próbie MZ nie usuwa ostatniego sensownego odczytu;
+- przed zbliżeniem `MainActivity` zapamiętuje numer i confidence celu,
+  zamraża overlay oraz przechowuje współrzędne w przestrzeni sceny;
+- podczas zmiany skali ramki pamięci są transformowane razem z obrazem;
+- po świeżym MT geometria jest aktualizowana, ale tekst pozostaje w pamięci do
+  czasu zaakceptowania nowego wyniku MZ.
+
+Rozwiązanie — blokada pojedynczego celu:
+
+Dodano `AutoZoomTargetLock` ze stanami:
+
+```text
+DISABLED -> ACQUIRING -> LOCKED -> UNCERTAIN -> LOST
+```
+
+Kandydat celu jest oceniany na podstawie:
+- przewidywanego położenia i ruchu środka;
+- IoU z przewidywaną ramką;
+- zgodności skali i proporcji;
+- podobieństwa prostego deskryptora wyglądu;
+- confidence MT i poprawności geometrii keypointów.
+
+Blokada korzysta z dynamicznego obszaru poszukiwania. W stanie niepewnym może
+go rozszerzyć, ale odrzuca kandydatów zbyt odległych, o niezgodnej skali albo
+niejednoznacznych względem drugiego najlepszego dopasowania. Brak pewnego
+dopasowania nie powoduje natychmiastowego przełączenia na inną tablicę.
+
+Aktywna blokada ogranicza obszar przekazywany do MT/MZ. Inne tablice w pełnym
+kadrze nie powinny uczestniczyć w ponownej próbie MZ celu auto-zoomu.
+
+Celownik jest aktualizowany ze świeżej geometrii MT albo kontrolowanej
+predykcji trackera. Współrzędne są przeliczane pomiędzy przestrzenią sceny,
+aktualnym zoomem i `PreviewView`.
+
+Rozwiązanie — ograniczenie dryfu trackera Preview:
+
+Dodano `PreviewTrackerDriftGuard`, który porównuje:
+- ruch przyrostowy pomiędzy sąsiednimi klatkami;
+- niezależny ruch bezwzględny względem ostatniej ramki zakotwiczonej przez MT.
+
+Korekta jest przyjmowana wyłącznie przy wystarczającym wsparciu punktów. Zbyt
+duży skok, nadmierny offset skumulowany albo niezgodność estymacji
+przyrostowej z kotwicą MT unieważnia aktualizację zamiast przesuwać ramkę poza
+tablicę. Tracker Preview zapewnia ciągłość wizualną pomiędzy ciężkimi
+inferencjami, ale nie zastępuje ponownej detekcji MT.
+
+Rozwiązanie — zoom jako transformacja tej samej sceny:
+
+- kontrolowana zmiana zoomu ma własną generację transformacji kamery;
+- wyniki rozpoczęte dla poprzedniej skali są odrzucane bez czyszczenia całej
+  logicznej sceny;
+- przechowywane są osobne kotwice obrazu sprzed zoomu i po ustabilizowaniu
+  zbliżenia;
+- podczas transformacji detektor zmiany sceny jest maskowany;
+- po zoom-out obraz jest porównywany z kotwicą sprzed zbliżenia;
+- niewielka różnica oznacza tę samą scenę i zachowanie ramek oraz wyniku;
+- duża różnica oznacza rzeczywistą zmianę kadru i uruchamia normalny reset;
+- dynamiczny ruch może być chwilowo kompensowany, jeżeli tracker nadal
+  jednoznacznie utrzymuje cel.
+
+Rozwiązanie — trwała pamięć numeru:
+
+Dodano `AutoZoomRecognitionMemory`. Numer rozpoznany przed zbliżeniem jest
+inicjalizacją pamięci i nie jest zerowany przy rozpoczęciu zoomu.
+
+Pusty wynik MT/MZ nie kasuje numeru. Nowy tekst może zastąpić pamięć, jeżeli:
+- po normalizacji ma od 4 do 10 znaków alfanumerycznych;
+- jest potwierdzony temporalnie albo jego confidence wynosi co najmniej
+  `0,45`;
+- tekst różny od pamięci jest potwierdzony i nie jest istotnie słabszy albo
+  ma confidence co najmniej `0,72` oraz przewagę co najmniej `0,10`.
+
+Ten sam tekst może podnieść zapamiętane confidence, ale słabsza obserwacja nie
+obniża wcześniejszej wartości. Dopasowanie wyniku odbywa się do ramki celu, a
+nie do dowolnej tablicy w kadrze. Pierwszy sensowny wynik MZ po powrocie do
+`1x` może jeszcze zaktualizować numer.
+
+Obsłużony pozostaje przypadek:
+
+```text
+MT wykrywa tablicę, ale nie ma tekstu
+  -> zoom-in nadal jest dozwolony
+  -> świeży crop po zbliżeniu dostaje wymuszoną próbę MZ
+  -> pierwszy sensowny odczyt MZ inicjalizuje pamięć numeru
+```
+
+Doprecyzowanie — znaczenie `confirmed` przy zapisanym cropie:
+
+Pole `confirmed` nie opisuje jakości samego pliku cropa i nie oznacza ręcznej
+weryfikacji numeru. Jest kopią stanu `stable` temporalnego konsensusu MZ dla
+całego tracku tablicy.
+
+`TemporalCharacterAggregator` rozdziela obserwacje według struktury tablicy,
+czyli liczby wierszy i znaków w każdym wierszu. Wynik otrzymuje `stable=true`,
+gdy:
+- dominująca struktura ma co najmniej dwie obserwacje MZ;
+- dla każdej pozycji wybrany znak otrzymał co najmniej dwa głosy;
+- przy równej liczbie głosów wygrywa wariant z większą sumą confidence.
+
+Przykład pierwszego potwierdzenia:
+
+```text
+MZ #1: WA1234 -> wynik wstępny
+MZ #2: WA1234 -> wynik potwierdzony temporalnie
+```
+
+Jeżeli jedna pozycja jest sporna, np. `WA1234` i `WA1284`, wynik nie jest
+jeszcze stabilny. Po większej liczbie obserwacji całe sekwencje nie muszą być
+identyczne klatka po klatce; stabilność jest wyliczana z głosów dla
+poszczególnych pozycji dominującej struktury.
+
+Confidence wyniku jest minimum ze średnich confidence zwycięskich znaków na
+poszczególnych pozycjach. Warunek `stable` nie ma osobnego minimalnego progu
+confidence ponad progi wcześniejszego postprocessingu MZ.
+
+Istotne ograniczenie aktualnego modelu danych:
+- `PlateObservation.confirmed` pochodzi ze stanu tracku;
+- `MainActivity` kopiuje flagę do `CapturedPlateItem.confirmed`;
+- gdy bieżąca próba MZ nie wykryje znaków, agregator zwraca wcześniejszy wynik
+  tracku;
+- bieżący crop może więc otrzymać `confirmed=true` oraz tekst z pamięci, mimo
+  że właśnie ten crop nie dostarczył znaków wspierających odczyt.
+
+Etykieta galerii `Potwierdzona` oznacza obecnie **stabilny wynik tracku**, a
+nie „ten crop samodzielnie potwierdza numer”. Jest niezależna od ręcznej
+walidacji:
+
+```text
+confirmed / stable          -> automatyczny konsensus temporalny MZ
+VerificationStatus.ACCEPTED -> użytkownik oznaczył odczyt jako poprawny
+VerificationStatus.CORRECTED -> użytkownik podał poprawiony ground truth
+```
+
+Docelowo kontrakt powinien rozdzielić:
+
+```text
+trackConfirmed            -> stabilność numeru w historii tracku
+freshMzSuccessful         -> MZ wykrył znaki na bieżącym cropie
+cropSupportsConsensus     -> bieżący odczyt wspiera numer tracku
+manualVerificationStatus  -> niezależna ocena użytkownika
+```
+
+Zmiana nazw i pól nie została jeszcze wdrożona. Opis dokumentuje rzeczywistą
+semantykę aktualnego kodu i zapobiega traktowaniu `confirmed` jako ground
+truth.
+
+Decyzje:
+- zoom jest transformacją kamery w obrębie tej samej sceny, dopóki analiza
+  obrazu nie wykaże rzeczywistej zmiany kadru;
+- geometria MT może być aktualizowana niezależnie od tekstu MZ;
+- brak świeżego tekstu nie unieważnia automatycznie wcześniejszego odczytu;
+- nowy numer musi przejść konserwatywną bramkę jakości i być przypisany do
+  zablokowanego celu;
+- blokada może odmówić wyboru, zamiast przeskoczyć na najbliższą tablicę;
+- tracker Preview zapewnia ciągłość, a MT pozostaje źródłem dokładnej
+  geometrii;
+- `confirmed` nie jest metryką dokładności ani ground truth.
+
+Weryfikacja:
+- dodano `AutoZoomControllerTest`;
+- dodano `AutoZoomOverlayTransformTest`;
+- dodano `AutoZoomTargetLockTest`;
+- dodano `PreviewTrackerDriftGuardTest`;
+- dodano `AutoZoomRecognitionMemoryTest`, obejmujący pusty MZ, słabszy odmienny
+  tekst, wyraźnie lepszy tekst i odrzucenie zbyt krótkiego odczytu;
+- pełne `testDebugUnitTest` zakończyło się powodzeniem;
+- `lintDebug` zakończył się powodzeniem.
+
+Najnowsza korekta pamięci numeru nie została jeszcze potwierdzona wizualnie na
+fizycznym urządzeniu. Zielone testy JVM i lint potwierdzają logikę oraz
+integrację kompilacyjną, ale nie zastępują próby kamera–monitor.
+
+Pozostało:
+- wykonać na urządzeniu pełną sekwencję: detekcja z daleka, zoom-in, świeże
+  MT, świeże MZ, zoom-out i ponowny wynik przy `1x`;
+- sprawdzić utrzymanie celownika przy drżeniu i zmianie kadru;
+- sprawdzić scenę z kilkoma tablicami;
+- sprawdzić przypadek bez znaków przed zoomem i z odczytem dopiero po zoomie;
+- zweryfikować progi `AutoZoomRecognitionMemory` na rzeczywistych błędach MZ;
+- rozdzielić stabilność tracku od wsparcia bieżącego cropa i ręcznej
+  walidacji;
+- po rozdzieleniu flag zaktualizować eksport, miniraport i etykiety galerii.
+
 ## 9. Zasady aktualizowania dziennika
 
 Po większej zmianie należy dopisać wpis zawierający:

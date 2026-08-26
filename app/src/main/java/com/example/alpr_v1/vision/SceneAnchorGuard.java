@@ -93,10 +93,26 @@ public final class SceneAnchorGuard {
         if (frame.getWidth() != anchorWidth
                 || frame.getHeight() != anchorHeight) {
 
+            /*
+             * Zmiana wysokości PreviewView może wynikać wyłącznie z layoutu UI.
+             * Nie unieważniamy wtedy sceny — przeliczamy kotwicę dla nowego
+             * rozmiaru i kontynuujemy obserwację od następnej klatki.
+             */
+            anchorSamples =
+                    sampleLuminance(
+                            frame
+                    );
+
+            anchorWidth =
+                    frame.getWidth();
+
+            anchorHeight =
+                    frame.getHeight();
+
             return new Result(
-                    true,
-                    1f,
-                    1f
+                    false,
+                    0f,
+                    0f
             );
         }
 

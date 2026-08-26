@@ -98,6 +98,39 @@ public class MotionBoxTrackerTest {
         assertTrue(result.get(0).box.centerX() < 0.21f);
     }
 
+    @Test
+    public void preservesTrackIdentityAcrossControlledZoomAndReturn() {
+        MotionBoxTracker tracker = new MotionBoxTracker();
+        List<MotionBoxTracker.Result> initial = tracker.update(
+                Collections.singletonList(
+                        observation(0.40f, 0.42f, 0.60f, 0.52f, "A", 0)
+                ),
+                1_000_000_000L,
+                1_000_000_000L
+        );
+        long trackId = initial.get(0).trackId;
+
+        tracker.applyCenteredZoom(1.8f);
+        List<MotionBoxTracker.Result> zoomed = tracker.update(
+                Collections.singletonList(
+                        observation(0.32f, 0.356f, 0.68f, 0.536f, "A", 0)
+                ),
+                1_100_000_000L,
+                1_100_000_000L
+        );
+        assertEquals(trackId, zoomed.get(0).trackId);
+
+        tracker.applyCenteredZoom(1f / 1.8f);
+        List<MotionBoxTracker.Result> returned = tracker.update(
+                Collections.singletonList(
+                        observation(0.40f, 0.42f, 0.60f, 0.52f, "A", 0)
+                ),
+                1_200_000_000L,
+                1_200_000_000L
+        );
+        assertEquals(trackId, returned.get(0).trackId);
+    }
+
     private static MotionBoxTracker.Observation observation(
             float left,
             float top,

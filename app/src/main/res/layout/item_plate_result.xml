@@ -38,6 +38,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="3dp"
+            android:baselineAligned="false"
             android:gravity="center"
             android:orientation="horizontal">
 
@@ -73,7 +74,7 @@
                     android:layout_marginTop="2dp"
                     android:text="@string/verification_accept_short"
                     android:textColor="@color/alpr_text_secondary"
-                    android:textSize="10sp" />
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -108,7 +109,7 @@
                     android:layout_marginTop="2dp"
                     android:text="@string/verification_reject_short"
                     android:textColor="@color/alpr_text_secondary"
-                    android:textSize="10sp" />
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -142,7 +143,7 @@
                     android:layout_marginTop="2dp"
                     android:text="@string/verification_edit_short"
                     android:textColor="@color/alpr_text_secondary"
-                    android:textSize="10sp" />
+                    android:textSize="11sp" />
             </LinearLayout>
         </LinearLayout>
 

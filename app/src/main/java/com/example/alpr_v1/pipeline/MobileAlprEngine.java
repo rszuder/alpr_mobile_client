@@ -69,8 +69,12 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
+    private final Map<Long, float[]> plateAppearanceByTrack = new java.util.HashMap<>();
+    private final AutoZoomTargetLock autoZoomTargetLock = new AutoZoomTargetLock();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
+    private long appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
     private volatile boolean rapidCameraMotion;
+    private volatile boolean cameraTransformInProgress;
 
     private static final class PlateCandidate {
         final Detection detection;
@@ -168,6 +172,9 @@ final class MobileAlprEngine implements AutoCloseable {
     private void resetSceneDependentState() {
         trackCoordinator.reset();
         cachedVehicleRegions.clear();
+        plateAppearanceByTrack.clear();
+        autoZoomTargetLock.clear();
+        appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
         lastVehicleDetectionFrame = Long.MIN_VALUE;
     }
 
@@ -180,9 +187,60 @@ final class MobileAlprEngine implements AutoCloseable {
         rapidCameraMotion = rapid;
     }
 
-    PipelineResult run(Bitmap frame, InferenceTrace trace) {
+    void setCameraTransformInProgress(boolean inProgress) {
+        cameraTransformInProgress = inProgress;
+    }
+
+    void setAutoZoomTargetLock(
+            boolean active,
+            long revision,
+            long targetTrackId,
+            float left,
+            float top,
+            float right,
+            float bottom
+    ) {
+        AutoZoomTargetLock.Box prediction =
+                new AutoZoomTargetLock.Box(left, top, right, bottom);
+        if (revision != appliedAutoZoomTargetLockRevision) {
+            appliedAutoZoomTargetLockRevision = revision;
+            if (active) {
+                autoZoomTargetLock.begin(
+                        prediction,
+                        plateAppearanceByTrack.get(targetTrackId)
+                );
+            } else {
+                autoZoomTargetLock.clear();
+            }
+        } else if (active) {
+            autoZoomTargetLock.updatePrediction(prediction);
+        } else {
+            autoZoomTargetLock.clear();
+        }
+    }
+
+    void resetSceneDetectorReference() {
+        sceneChangeDetector.reset();
+    }
+
+    void applyCameraZoomTransform(float relativeRatio) {
+        trackCoordinator.applyCameraZoomTransform(relativeRatio);
+        if (relativeRatio > 1.001f) {
+            trackCoordinator.requestFreshRecognitionAfterZoom();
+        }
+    }
+
+    PipelineResult run(
+            Bitmap frame,
+            InferenceTrace trace,
+            AlprPipeline.PlateDetectionCallback plateDetectionCallback
+    ) {
         SceneChangeDetector.Result scene =
                 sceneChangeDetector.update(frame);
+
+        boolean effectiveSceneChanged =
+                scene.sceneChanged
+                        && !cameraTransformInProgress;
 
         trace.putConfidence(
                 "scene_change_score",
@@ -211,7 +269,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         "frame=%d changed=%s candidate=%s armed=%s "
                                 + "score=%.3f fraction=%.3f brightness=%.3f size=%dx%d",
                         trace.frameId(),
-                        scene.sceneChanged,
+                        effectiveSceneChanged,
                         scene.rawCandidate,
                         scene.armed,
                         scene.score,
@@ -222,7 +280,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 )
         );
 
-        if (scene.sceneChanged) {
+        trace.putCount(
+                "camera_transform_in_progress",
+                cameraTransformInProgress ? 1 : 0
+        );
+
+        if (effectiveSceneChanged) {
 
             resetSceneDependentState();
 
@@ -239,10 +302,43 @@ final class MobileAlprEngine implements AutoCloseable {
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoiSelector.Region> plateRegions = new ArrayList<>();
+        boolean targetRoiActive = autoZoomTargetLock.active();
         boolean useVehicleRegions =
                 roiBudgetPolicy.usesVehicleCascade()
                         && vehicleBackend != null;
-        if (useVehicleRegions) {
+        if (targetRoiActive) {
+            AutoZoomTargetLock.Box targetSearchBox =
+                    autoZoomTargetLock.searchBox();
+            VehicleRoiSelector.Region targetRegion =
+                    VehicleRoiSelector.normalizedRegion(
+                            frame.getWidth(),
+                            frame.getHeight(),
+                            targetSearchBox.left,
+                            targetSearchBox.top,
+                            targetSearchBox.right,
+                            targetSearchBox.bottom
+                    );
+            plateRegions.add(targetRegion);
+            overlays.add(new OverlayItem(
+                    OverlayItem.Kind.VEHICLE_ROI,
+                    new RectF(
+                            targetRegion.left / (float) frame.getWidth(),
+                            targetRegion.top / (float) frame.getHeight(),
+                            targetRegion.right / (float) frame.getWidth(),
+                            targetRegion.bottom / (float) frame.getHeight()
+                    ),
+                    Collections.emptyList(),
+                    "ROI AUTO ZOOM",
+                    0L,
+                    false
+            ));
+            trace.putCount("auto_zoom_target_roi", 1);
+            trace.putConfidence(
+                    "auto_zoom_target_roi_area_ratio",
+                    targetRegion.area()
+                            / (double) ((long) frame.getWidth() * frame.getHeight())
+            );
+        } else if (useVehicleRegions) {
             boolean refreshVehicles = cachedVehicleRegions.isEmpty()
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
@@ -308,9 +404,12 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.putCount("plate_roi_runs", roiPass ? plateRegions.size() : 0);
         trace.putCount("plate_full_frame_runs", roiPass ? 0 : 1);
 
-        boolean periodicFallback = roiPass
+        boolean periodicFallback = !targetRoiActive
+                && roiPass
                 && trace.frameId() % FULL_FRAME_FALLBACK_FRAMES == 0;
-        if (roiPass && (plates.isEmpty() || periodicFallback)) {
+        if (!targetRoiActive
+                && roiPass
+                && (plates.isEmpty() || periodicFallback)) {
             plates.addAll(detectPlates(frame, fullFrameRegion(frame), plateDurations));
             trace.putCount("plate_full_frame_runs", 1);
             trace.putCount("full_frame_fallbacks", 1);
@@ -373,6 +472,56 @@ final class MobileAlprEngine implements AutoCloseable {
                 )
         );
 
+        if (targetRoiActive && !plates.isEmpty()) {
+            List<AutoZoomTargetLock.Candidate> targetCandidates = new ArrayList<>();
+            for (int index = 0; index < plates.size(); index++) {
+                Detection detection = plates.get(index);
+                List<Point2> corners = new ArrayList<>(
+                        detection.keypoints.subList(
+                                0,
+                                Math.min(4, detection.keypoints.size())
+                        )
+                );
+                targetCandidates.add(new AutoZoomTargetLock.Candidate(
+                        index,
+                        new AutoZoomTargetLock.Box(
+                                detection.left / frame.getWidth(),
+                                detection.top / frame.getHeight(),
+                                detection.right / frame.getWidth(),
+                                detection.bottom / frame.getHeight()
+                        ),
+                        detection.confidence,
+                        corners.size() == 4 && cornersInsideFrame(
+                                corners,
+                                frame.getWidth(),
+                                frame.getHeight()
+                        ),
+                        PlateAppearanceDescriptor.from(frame, detection)
+                ));
+            }
+            AutoZoomTargetLock.Selection selection =
+                    autoZoomTargetLock.select(targetCandidates);
+            trace.putCount("auto_zoom_lock_candidates", selection.candidateCount);
+            trace.putCount("auto_zoom_lock_misses", autoZoomTargetLock.misses());
+            trace.putConfidence("auto_zoom_lock_score", selection.score);
+            trace.putConfidence("auto_zoom_lock_second_score", selection.secondScore);
+            trace.putConfidence("auto_zoom_lock_confidence", autoZoomTargetLock.confidence());
+            if (selection.candidate == null) {
+                plates = new ArrayList<>();
+            } else {
+                plates = new ArrayList<>(Collections.singletonList(
+                        plates.get(selection.candidate.sourceIndex)
+                ));
+            }
+        } else if (targetRoiActive) {
+            AutoZoomTargetLock.Selection selection =
+                    autoZoomTargetLock.select(Collections.emptyList());
+            trace.putCount("auto_zoom_lock_candidates", 0);
+            trace.putCount("auto_zoom_lock_misses", autoZoomTargetLock.misses());
+            trace.putConfidence("auto_zoom_lock_score", selection.score);
+            trace.putConfidence("auto_zoom_lock_confidence", autoZoomTargetLock.confidence());
+        }
+
 
         /*
          * To są już dokładnie detekcje, które mogą
@@ -390,7 +539,7 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.finish("no_plate", "");
             return new PipelineResult(
                     "no_plate", "Nie wykryto tablicy", "", 0,
-                    overlays, frame.getWidth(), frame.getHeight(), scene.sceneChanged
+                    overlays, frame.getWidth(), frame.getHeight(), effectiveSceneChanged
             );
         }
         trace.putConfidence("plate", plates.get(0).confidence);
@@ -438,6 +587,55 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.frameId(),
                 SystemClock.elapsedRealtimeNanos()
         );
+
+        for (PlateTrackCoordinator.Decision decision : decisions) {
+            if (decision.sourceIndex < 0
+                    || decision.sourceIndex >= candidates.size()) continue;
+            float[] appearance = PlateAppearanceDescriptor.from(
+                    frame,
+                    candidates.get(decision.sourceIndex).detection
+            );
+            if (appearance != null) {
+                plateAppearanceByTrack.put(
+                        decision.trackId,
+                        PlateAppearanceDescriptor.blend(
+                                plateAppearanceByTrack.get(decision.trackId),
+                                appearance,
+                                0.08f
+                        )
+                );
+            }
+        }
+
+        /*
+         * MT jest już zakończone, natomiast MZ jeszcze się nie rozpoczęło.
+         * Publikujemy teraz samą geometrię, aby UI nie czekało na OCR i mogło
+         * utrzymywać świeżą ramkę przez cały dalszy przebieg auto-zoomu.
+         */
+        if (plateDetectionCallback != null && !decisions.isEmpty()) {
+            List<OverlayItem> mtOverlays = new ArrayList<>(overlays);
+            for (PlateTrackCoordinator.Decision decision : decisions) {
+                if (decision.sourceIndex < 0
+                        || decision.sourceIndex >= candidates.size()) continue;
+                PlateCandidate candidate = candidates.get(decision.sourceIndex);
+                mtOverlays.add(overlayBox(
+                        frame,
+                        candidate.detection.left,
+                        candidate.detection.top,
+                        candidate.detection.right,
+                        candidate.detection.bottom,
+                        candidate.corners,
+                        "tablica · MT",
+                        candidate.detection.confidence,
+                        decision.trackId
+                ));
+            }
+            plateDetectionCallback.onPlateDetections(
+                    Collections.unmodifiableList(mtOverlays),
+                    frame.getWidth(),
+                    frame.getHeight()
+            );
+        }
 
         List<PlateRecognition> recognitions = new ArrayList<>();
         List<PlateObservation> plateObservations = new ArrayList<>();
@@ -574,22 +772,32 @@ final class MobileAlprEngine implements AutoCloseable {
              * 2. MZ został wykonany w tej klatce.
              * 3. Tekst pochodzi z pamięci temporalnej tracka.
              */
-            if (visibleText.isEmpty()) {
+            if (visibleText.isEmpty() && decision.recognize) {
 
                 overlayText =
-                        "tablica";
+                        "brak odczytu · MZ";
+
+            } else if (visibleText.isEmpty()) {
+
+                overlayText =
+                        "tablica · MT";
 
             } else if (decision.recognize) {
 
                 overlayText =
-                        visibleText;
+                        visibleText
+                                + " · MZ";
 
             } else {
 
                 overlayText =
                         visibleText
-                                + " · pamięć";
+                                + " · pamięć MZ";
             }
+
+            float overlayConfidence = visibleText.isEmpty()
+                    ? candidate.detection.confidence
+                    : (float) trackResult.confidence;
 
 
             overlays.add(
@@ -601,7 +809,8 @@ final class MobileAlprEngine implements AutoCloseable {
                             candidate.detection.bottom,
                             candidate.corners,
                             overlayText,
-                            candidate.detection.confidence
+                            overlayConfidence,
+                            decision.trackId
                     )
             );
         }
@@ -684,7 +893,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                     plates.size(), characterRuns
                             ),
                     recognitions, overlays, frame.getWidth(), frame.getHeight(),
-                    plateObservations, scene.sceneChanged
+                    plateObservations, effectiveSceneChanged
             );
         }
 
@@ -760,7 +969,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 frame.getWidth(),
                 frame.getHeight(),
                 plateObservations,
-                scene.sceneChanged
+                effectiveSceneChanged
         );
     }
 
@@ -1427,7 +1636,8 @@ final class MobileAlprEngine implements AutoCloseable {
             float bottom,
             List<Point2> corners,
             String name,
-            float confidence
+            float confidence,
+            long trackId
     ) {
         float width = frame.getWidth();
         float height = frame.getHeight();
@@ -1436,7 +1646,9 @@ final class MobileAlprEngine implements AutoCloseable {
         return new OverlayItem(
                 new RectF(left / width, top / height, right / width, bottom / height),
                 points,
-                String.format(Locale.ROOT, "%s %.0f%%", name, confidence * 100)
+                String.format(Locale.ROOT, "%s %.0f%%", name, confidence * 100),
+                trackId,
+                false
         );
     }
 

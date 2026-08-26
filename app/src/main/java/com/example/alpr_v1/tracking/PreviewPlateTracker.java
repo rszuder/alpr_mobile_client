@@ -36,6 +36,9 @@ public final class PreviewPlateTracker {
     private static final int SEARCH_RADIUS =
             14;
 
+    private static final int ANCHOR_SEARCH_RADIUS =
+            22;
+
     private static final float MAX_MEAN_ERROR =
             34f;
 
@@ -57,6 +60,9 @@ public final class PreviewPlateTracker {
         List<PointF> trackedPoints =
                 Collections.emptyList();
 
+        List<PointF> anchorPoints =
+                Collections.emptyList();
+
         int consecutiveFailures;
 
 
@@ -75,6 +81,7 @@ public final class PreviewPlateTracker {
 
 
     private byte[] previousGray;
+    private byte[] anchorGray;
 
     private int trackerWidth;
     private int trackerHeight;
@@ -233,7 +240,7 @@ public final class PreviewPlateTracker {
             for (TrackState track :
                     tracks) {
 
-                track.trackedPoints =
+                List<PointF> initialPoints =
                         initialTrackerPoints(
                                 track.basePlate,
                                 preview.getWidth(),
@@ -242,12 +249,21 @@ public final class PreviewPlateTracker {
                                 trackerHeight
                         );
 
+                track.anchorPoints =
+                        initialPoints;
+
+                track.trackedPoints =
+                        initialPoints;
+
                 track.consecutiveFailures =
                         0;
             }
 
 
             previousGray =
+                    current.gray;
+
+            anchorGray =
                     current.gray;
 
 
@@ -272,13 +288,41 @@ public final class PreviewPlateTracker {
             }
 
 
-            TrackUpdate update =
+            TrackUpdate incrementalUpdate =
                     updateTrack(
-                            track,
+                            track.trackedPoints,
                             previousGray,
                             current.gray,
                             trackerWidth,
-                            trackerHeight
+                            trackerHeight,
+                            SEARCH_RADIUS
+                    );
+
+            TrackUpdate anchorUpdate =
+                    updateTrack(
+                            track.anchorPoints,
+                            anchorGray,
+                            current.gray,
+                            trackerWidth,
+                            trackerHeight,
+                            ANCHOR_SEARCH_RADIUS
+                    );
+
+            int currentAbsoluteDx = Math.round(
+                    track.trackedPoints.get(0).x
+                            - track.anchorPoints.get(0).x
+            );
+            int currentAbsoluteDy = Math.round(
+                    track.trackedPoints.get(0).y
+                            - track.anchorPoints.get(0).y
+            );
+
+            PreviewTrackerDriftGuard.Decision update =
+                    PreviewTrackerDriftGuard.reconcile(
+                            currentAbsoluteDx,
+                            currentAbsoluteDy,
+                            driftMotion(incrementalUpdate),
+                            driftMotion(anchorUpdate)
                     );
 
 
@@ -330,12 +374,12 @@ public final class PreviewPlateTracker {
 
 
             for (PointF point :
-                    track.trackedPoints) {
+                    track.anchorPoints) {
 
                 moved.add(
                         new PointF(
-                                point.x + update.dx,
-                                point.y + update.dy
+                                point.x + update.absoluteDx,
+                                point.y + update.absoluteDy
                         )
                 );
             }
@@ -371,10 +415,12 @@ public final class PreviewPlateTracker {
                     "ALPR_PREVIEW_TRACK",
                     "track="
                             + track.basePlate.trackId
-                            + " dx="
-                            + update.dx
-                            + " dy="
-                            + update.dy
+                            + " absoluteDx="
+                            + update.absoluteDx
+                            + " absoluteDy="
+                            + update.absoluteDy
+                            + " anchored="
+                            + update.anchored
                             + " support="
                             + update.support
             );
@@ -414,11 +460,12 @@ public final class PreviewPlateTracker {
 
 
     private static TrackUpdate updateTrack(
-            TrackState track,
+            List<PointF> referencePoints,
             byte[] previous,
             byte[] current,
             int width,
-            int height
+            int height,
+            int searchRadius
     ) {
 
         List<Match> matches =
@@ -437,9 +484,8 @@ public final class PreviewPlateTracker {
                             current,
                             width,
                             height,
-                            track.trackedPoints.get(
-                                    index
-                            )
+                            referencePoints.get(index),
+                            searchRadius
                     )
             );
         }
@@ -524,6 +570,17 @@ public final class PreviewPlateTracker {
                 medianDx,
                 medianDy,
                 support
+        );
+    }
+
+    private static PreviewTrackerDriftGuard.Motion driftMotion(
+            TrackUpdate update
+    ) {
+        return new PreviewTrackerDriftGuard.Motion(
+                update.valid,
+                update.dx,
+                update.dy,
+                update.support
         );
     }
 
@@ -704,6 +761,9 @@ public final class PreviewPlateTracker {
         previousGray =
                 null;
 
+        anchorGray =
+                null;
+
         trackerWidth =
                 0;
 
@@ -729,7 +789,8 @@ public final class PreviewPlateTracker {
             byte[] current,
             int width,
             int height,
-            PointF point
+            PointF point,
+            int searchRadius
     ) {
 
         int sourceX =
@@ -757,25 +818,25 @@ public final class PreviewPlateTracker {
         int minimumX =
                 Math.max(
                         PATCH_RADIUS,
-                        sourceX - SEARCH_RADIUS
+                        sourceX - searchRadius
                 );
 
         int maximumX =
                 Math.min(
                         width - PATCH_RADIUS - 1,
-                        sourceX + SEARCH_RADIUS
+                        sourceX + searchRadius
                 );
 
         int minimumY =
                 Math.max(
                         PATCH_RADIUS,
-                        sourceY - SEARCH_RADIUS
+                        sourceY - searchRadius
                 );
 
         int maximumY =
                 Math.min(
                         height - PATCH_RADIUS - 1,
-                        sourceY + SEARCH_RADIUS
+                        sourceY + searchRadius
                 );
 
 
