@@ -113,7 +113,18 @@ public final class ModelManifest {
             if (role == ModelRole.PLATE && task.equals("pose") && resolvedOutput.keypointCount() < 4) {
                 throw new JSONException("Wariant " + variant.id() + " nie zwraca czterech narożników tablicy");
             }
-            variant.input(defaultInput); // Wymusza walidację obecności poprawnego wejścia.
+            ModelInputSpec resolvedInput = variant.input(defaultInput);
+            try {
+                ModelVariantContract.validate(
+                        variant.runtime(),
+                        variant.precision(),
+                        resolvedInput
+                );
+            } catch (IllegalArgumentException error) {
+                throw new JSONException(
+                        "Wariant " + variant.id() + ": " + error.getMessage()
+                );
+            }
         }
 
         return new ModelManifest(

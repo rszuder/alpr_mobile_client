@@ -2219,6 +2219,85 @@ Pozostało:
   walidacji;
 - po rozdzieleniu flag zaktualizować eksport, miniraport i etykiety galerii.
 
+### 2026-08-26 — import statycznie kwantyzowanego ONNX INT8 QDQ
+
+Problem:
+- eksporter desktopowy otrzymał nowy wariant `runtime=onnx`,
+  `precision=int8`;
+- dotychczasowy klient rozpoznawał rozszerzenie `.onnx`, ale nie walidował
+  jawnie pary runtime/precyzja ani rzeczywistego kontraktu grafu QDQ;
+- samo pole `int8` mogło zostać błędnie zinterpretowane jako wejście `INT8`,
+  podczas gdy statyczna kwantyzacja ONNX Runtime zachowuje publiczne wejście i
+  wyjście `FLOAT32`;
+- przed aktywacją należało sprawdzić, czy ONNX Runtime Android potrafi otworzyć
+  wszystkie operatory kwantyzowanego grafu.
+
+Kontrakt eksportera:
+
+```text
+runtime   = onnx
+precision = int8
+format    = statyczne S8S8 QDQ
+wejście   = FLOAT32, zwykle NCHW
+wyjście   = FLOAT32
+wnętrze   = QuantizeLinear / DequantizeLinear + operatory INT8
+plik      = variants/onnx_int8/model.onnx
+```
+
+Rozwiązanie:
+- dodano `ModelVariantContract`, który akceptuje dla ONNX wyłącznie `fp32` i
+  `int8`, a dla ONNX INT8 wymaga publicznego wejścia `FLOAT32`;
+- `ModelManifest` waliduje kombinację runtime'u, precyzji i wejścia każdego
+  wariantu, także gdy wejście pochodzi z wartości domyślnej manifestu;
+- dodano `OnnxModelCompatibilityValidator`;
+- importer sprawdza obecność ciągów operatorów `QuantizeLinear` i
+  `DequantizeLinear`, dzięki czemu zwykły model FP32 błędnie opisany jako
+  `int8` nie przechodzi importu;
+- importer otwiera model przez ONNX Runtime Android `1.26.0`; utworzenie sesji
+  jest bramką obsługi operatorów QDQ na docelowym runtime;
+- walidowane są: dokładnie jedno wejście, statyczny kształt zgodny z
+  `width/height/channels/layout`, wejście `FLOAT32`, obecność wyjścia,
+  tensorowy typ wyjść, statyczne wymiary i wyjścia `FLOAT32`;
+- ten sam kontrakt sesji jest ponownie sprawdzany przy tworzeniu
+  `OnnxBackend`, co chroni również modele odtworzone z lokalnego rejestru;
+- zachowano wybór wariantu na podstawie listy `variants`; opcjonalne pole
+  `format_quantizations` nie zastępuje konkretnych wpisów wariantów;
+- zaktualizowano `docs/alpr-model-v1.schema.json` i
+  `docs/model_package_v1.md` o wariant ONNX INT8 QDQ.
+
+Decyzje:
+- `precision=int8` opisuje kwantyzację wnętrza grafu, nie typ bufora
+  przekazywanego przez Androida;
+- klient obsługuje obecnie format QDQ dostarczany przez eksporter, a nie
+  alternatywny format QOperator;
+- model oznaczony jako ONNX INT8 bez obu operatorów QDQ jest odrzucany;
+- wszystkie zadeklarowane warianty pakietu muszą być spójne; niekompatybilny
+  opcjonalny ONNX INT8 powoduje czytelny błąd importu zamiast późniejszej
+  awarii pipeline'u;
+- wariant INT8 pozostaje osobnym kandydatem badawczym i może zostać wybrany
+  ręcznie albo użyty, gdy pakiet nie ma wykonywalnego FP32; istniejąca bramka
+  jakości nadal nie wybiera automatycznie INT8 ponad dostępny FP32 wyłącznie
+  na podstawie czasu.
+
+Weryfikacja:
+- dodano `ModelVariantContractTest` dla poprawnego ONNX INT8 QDQ, błędnego
+  wejścia `INT8`, nieobsługiwanej precyzji i zachowania TFLite INT8;
+- dodano `OnnxModelCompatibilityValidatorTest` dla NCHW, NHWC oraz markerów
+  QDQ;
+- schemat JSON przechodzi parsowanie;
+- `git diff --check` nie zgłasza błędów;
+- pełne `testDebugUnitTest`, `lintDebug` i `assembleDebug` zakończyły się
+  powodzeniem;
+- zbudowano natywne biblioteki dla `arm64-v8a` i `armeabi-v7a`.
+
+Pozostało:
+- wyeksportować rzeczywisty pakiet zawierający ONNX INT8 QDQ dla MP, MT albo
+  MZ i wykonać import na fizycznym urządzeniu;
+- uruchomić inferencję tego samego checkpointu jako ONNX FP32 oraz ONNX INT8;
+- porównać czas ładowania, cold inference, medianę, p95, pamięć i jakość;
+- nie traktować mniejszego pliku ani krótszego czasu jako wystarczającej
+  bramki jakości bez porównania detekcji, keypointów, CER i exact match.
+
 ## 9. Zasady aktualizowania dziennika
 
 Po większej zmianie należy dopisać wpis zawierający:

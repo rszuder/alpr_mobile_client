@@ -72,7 +72,10 @@ public final class SettingsActivity extends AppCompatActivity {
     private ModelRegistry modelRegistry;
     private AlprPackageImporter packageImporter;
     private AutoTuneManager autoTuneManager;
-    private TextView modelStatus;
+    private TextView modelStatusSummary;
+    private TextView vehicleModelStatus;
+    private TextView plateModelStatus;
+    private TextView characterModelStatus;
     private TextView storagePath;
     private View progress;
     private MaterialButton importButton;
@@ -127,7 +130,10 @@ public final class SettingsActivity extends AppCompatActivity {
 
         MaterialToolbar toolbar = findViewById(R.id.settings_toolbar);
         toolbar.setNavigationOnClickListener(view -> finish());
-        modelStatus = findViewById(R.id.settings_model_status);
+        modelStatusSummary = findViewById(R.id.settings_model_status_summary);
+        vehicleModelStatus = findViewById(R.id.settings_model_status_vehicle);
+        plateModelStatus = findViewById(R.id.settings_model_status_plate);
+        characterModelStatus = findViewById(R.id.settings_model_status_character);
         storagePath = findViewById(R.id.settings_storage_path);
         progress = findViewById(R.id.settings_progress);
         importButton = findViewById(R.id.settings_import_model);
@@ -669,7 +675,32 @@ public final class SettingsActivity extends AppCompatActivity {
 
     private void refreshModelStatus() {
         modelRegistry.reload();
-        modelStatus.setText(ModelStatusFormatter.format(modelRegistry, autoTuneManager));
+        ModelStatusFormatter.Presentation status =
+                ModelStatusFormatter.presentation(modelRegistry, autoTuneManager);
+        modelStatusSummary.setText(status.summary);
+        vehicleModelStatus.setText(status.vehicle);
+        plateModelStatus.setText(status.plate);
+        characterModelStatus.setText(status.character);
+        modelStatusSummary.setTextColor(getColor(
+                modelRegistry.hasRequiredPipeline()
+                        ? R.color.alpr_success
+                        : R.color.alpr_warning
+        ));
+        vehicleModelStatus.setTextColor(getColor(
+                modelRegistry.getActive(ModelRole.VEHICLE) == null
+                        ? R.color.alpr_text_muted
+                        : R.color.alpr_text_secondary
+        ));
+        plateModelStatus.setTextColor(getColor(
+                modelRegistry.getActive(ModelRole.PLATE) == null
+                        ? R.color.alpr_warning
+                        : R.color.alpr_text_secondary
+        ));
+        characterModelStatus.setTextColor(getColor(
+                modelRegistry.getActive(ModelRole.CHARACTER) == null
+                        ? R.color.alpr_warning
+                        : R.color.alpr_text_secondary
+        ));
         updateNode(vehicleNode, ModelRole.VEHICLE);
         updateNode(plateNode, ModelRole.PLATE);
         updateNode(characterNode, ModelRole.CHARACTER);

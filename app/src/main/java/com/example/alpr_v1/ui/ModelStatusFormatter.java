@@ -2,7 +2,6 @@ package com.example.alpr_v1.ui;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.inference.ExecutionProfile;
-import com.example.alpr_v1.inference.RuntimeBackendFactory;
 import com.example.alpr_v1.model.InstalledAlprPackage;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelInputSpec;
@@ -18,14 +17,26 @@ public final class ModelStatusFormatter {
     private ModelStatusFormatter() {}
 
     public static String format(ModelRegistry registry, AutoTuneManager autoTuneManager) {
+        Presentation value = presentation(registry, autoTuneManager);
+        return value.summary
+                + "\nMP: " + value.vehicle
+                + "\nMT: " + value.plate
+                + "\nMZ: " + value.character;
+    }
+
+    public static Presentation presentation(
+            ModelRegistry registry,
+            AutoTuneManager autoTuneManager
+    ) {
         InstalledAlprPackage activePackage = registry.getActivePackage();
         InstalledAlprPackage basePackage = registry.getBasePackage();
         String header;
         if (basePackage != null && registry.isCompositionModified()) {
-            header = "Kompozycja zmodyfikowana · baza: " + basePackage.manifest().name()
+            header = "Kompozycja zmodyfikowana · baza: "
+                    + displayName(basePackage.manifest().name())
                     + " v" + basePackage.manifest().version();
         } else if (activePackage != null) {
-            header = "Komplet gotowy: " + activePackage.manifest().name()
+            header = "Komplet gotowy: " + displayName(activePackage.manifest().name())
                     + " v" + activePackage.manifest().version();
             String createdAt = shortDate(activePackage.manifest().createdAt());
             if (!createdAt.isEmpty()) header += " • " + createdAt;
@@ -38,75 +49,87 @@ public final class ModelStatusFormatter {
         String vehicleDescription = activeVehicle == null
                 && basePackage != null
                 && basePackage.vehicleModel() != null
-                ? describeUnavailableBase("MP", basePackage.vehicleModel())
-                : describe("MP", activeVehicle, autoTuneManager);
-        return header
-                + "\n" + vehicleDescription
-                + "\n" + describe("MT", registry.getActive(ModelRole.PLATE), autoTuneManager)
-                + "\n" + describe("MZ", registry.getActive(ModelRole.CHARACTER), autoTuneManager);
+                ? describeUnavailableBase(basePackage.vehicleModel())
+                : describe(activeVehicle, autoTuneManager, false);
+        return new Presentation(
+                header,
+                vehicleDescription,
+                describe(registry.getActive(ModelRole.PLATE), autoTuneManager, true),
+                describe(registry.getActive(ModelRole.CHARACTER), autoTuneManager, true)
+        );
     }
 
-    private static String describe(String label, InstalledModel model, AutoTuneManager autoTuneManager) {
-        if (model == null) return label + ": brak";
+    private static String describe(
+            InstalledModel model,
+            AutoTuneManager autoTuneManager,
+            boolean required
+    ) {
+        if (model == null) {
+            return required
+                    ? "Brak aktywnego modelu\nModel wymagany do uruchomienia pipeline’u"
+                    : "Brak aktywnego modelu\nEtap opcjonalny — pipeline może działać bez MP";
+        }
         ModelManifest manifest = model.manifest();
         ModelVariant selected = autoTuneManager.chosenVariant(model);
         ExecutionProfile profile = autoTuneManager.chosenProfile(model);
         ModelInputSpec input = selected.input(manifest.input());
         ModelOutputSpec output = selected.output(manifest.output());
 
-        StringBuilder first = new StringBuilder(label).append(": ").append(manifest.modelId());
+        StringBuilder first = new StringBuilder(displayName(manifest.name()));
         if (!manifest.yoloFamily().isEmpty()) first.append(" • ").append(manifest.yoloFamily());
         if (manifest.parameterCount() > 0L) {
             first.append(String.format(Locale.ROOT, " %.2fM", manifest.parameterCount() / 1_000_000.0));
         }
-        first.append(" • aktywny ").append(selected.id())
-                .append(autoTuneManager.isVariantPinned(model) ? " (ręczny)" : " (auto)")
-                .append('/').append(profile.gpu ? "GPU" : "CPU")
-                .append(" • ").append(input.width()).append('×').append(input.height())
-                .append(String.format(
-                        Locale.ROOT,
-                        " • conf %.2f / IoU %.2f",
-                        output.confidenceThreshold(), output.iouThreshold()
-                ));
 
-        StringBuilder second = new StringBuilder("   warianty: ");
-        boolean firstVariant = true;
-        for (ModelVariant variant : manifest.variants()) {
-            if (!firstVariant) second.append(", ");
-            second.append(variant.id());
-            if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
-                second.append(" [niedostępny]");
-            }
-            firstVariant = false;
-        }
+        String hardware = profile.gpu ? "GPU" : "CPU ×" + profile.cpuThreads;
+        String second = selected.runtime().wireName().toUpperCase(Locale.ROOT)
+                + " · " + selected.precision().toUpperCase(Locale.ROOT)
+                + " · " + hardware
+                + " • " + input.width() + '×' + input.height()
+                + (autoTuneManager.isVariantPinned(model) ? " • ręczny" : " • AutoTune");
+
+        StringBuilder third = new StringBuilder(String.format(
+                Locale.ROOT,
+                "conf %.2f • IoU %.2f",
+                output.confidenceThreshold(),
+                output.iouThreshold()
+        ));
         double map = manifest.metric("best_map50_95");
-        if (!Double.isNaN(map)) second.append(String.format(Locale.ROOT, " • mAP50-95 %.3f", map));
-        String exportedAt = shortDate(manifest.exportedAt());
-        if (!exportedAt.isEmpty()) second.append(" • eksport ").append(exportedAt);
-        return first.append('\n').append(second).toString();
+        if (!Double.isNaN(map)) third.append(String.format(Locale.ROOT, " • mAP50–95 %.3f", map));
+        return first.append('\n').append(second).append('\n').append(third).toString();
     }
 
-    private static String describeUnavailableBase(String label, InstalledModel model) {
-        StringBuilder value = new StringBuilder(label)
-                .append(": ")
-                .append(model.manifest().modelId())
-                .append(" · nieaktywny (brak backendu)")
-                .append("\n   warianty: ");
-        boolean first = true;
-        for (ModelVariant variant : model.manifest().variants()) {
-            if (!first) value.append(", ");
-            value.append(variant.id());
-            if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
-                value.append(" [niedostępny]");
-            }
-            first = false;
-        }
+    private static String describeUnavailableBase(InstalledModel model) {
+        ModelManifest manifest = model.manifest();
+        StringBuilder value = new StringBuilder(displayName(manifest.name()));
+        value.append("\nNieaktywny • brak obsługi backendu dla wariantów z pakietu");
         return value.toString();
+    }
+
+    private static String displayName(String value) {
+        if (value == null) return "";
+        int technicalSuffix = value.indexOf('|');
+        String display = technicalSuffix >= 0 ? value.substring(0, technicalSuffix) : value;
+        return display.trim();
     }
 
     private static String shortDate(String value) {
         if (value == null) return "";
         String trimmed = value.trim();
         return trimmed.length() >= 10 ? trimmed.substring(0, 10) : trimmed;
+    }
+
+    public static final class Presentation {
+        public final String summary;
+        public final String vehicle;
+        public final String plate;
+        public final String character;
+
+        private Presentation(String summary, String vehicle, String plate, String character) {
+            this.summary = summary;
+            this.vehicle = vehicle;
+            this.plate = plate;
+            this.character = character;
+        }
     }
 }

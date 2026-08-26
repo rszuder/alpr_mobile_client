@@ -91,6 +91,24 @@
       "anyOf": [
         { "required": ["file"] },
         { "required": ["files"] }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "runtime": { "const": "onnx" } },
+            "required": ["runtime"]
+          },
+          "then": {
+            "properties": {
+              "precision": { "enum": ["fp32", "int8"] },
+              "input": {
+                "properties": {
+                  "data_type": { "const": "FLOAT32" }
+                }
+              }
+            }
+          }
+        }
       ]
     }
   }

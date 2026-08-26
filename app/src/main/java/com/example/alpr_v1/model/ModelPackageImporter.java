@@ -4,6 +4,8 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
 
+import com.example.alpr_v1.inference.OnnxModelCompatibilityValidator;
+
 import org.json.JSONException;
 
 import java.io.BufferedInputStream;
@@ -197,6 +199,7 @@ public final class ModelPackageImporter {
         for (ModelVariant variant : manifest.variants()) {
             boolean hasParam = false;
             boolean hasBin = false;
+            Path primaryPath = null;
             for (String relative : variant.files()) {
                 validateZipPath(relative);
                 Path path = root.resolve(relative).normalize();
@@ -206,6 +209,7 @@ public final class ModelPackageImporter {
                 String lower = relative.toLowerCase(Locale.ROOT);
                 if (lower.endsWith(".param")) hasParam = true;
                 if (lower.endsWith(".bin")) hasBin = true;
+                if (relative.equals(variant.primaryFile())) primaryPath = path;
 
                 String expected = variant.sha256().get(relative);
                 if (expected == null || !expected.matches("[0-9a-f]{64}")) {
@@ -225,6 +229,21 @@ public final class ModelPackageImporter {
             }
             if (variant.runtime() == ModelRuntime.NCNN && (!hasParam || !hasBin)) {
                 throw new ModelPackageException("Wariant NCNN wymaga plików .param i .bin");
+            }
+            if (ModelVariantContract.isOnnxInt8(variant)) {
+                try {
+                    OnnxModelCompatibilityValidator.validateQuantizedModel(
+                            primaryPath == null ? null : primaryPath.toFile(),
+                            variant.input(manifest.input())
+                    );
+                } catch (IllegalArgumentException error) {
+                    throw new ModelPackageException(
+                            "Wariant " + variant.id()
+                                    + " jest niezgodny z ONNX INT8 QDQ: "
+                                    + error.getMessage(),
+                            error
+                    );
+                }
             }
         }
     }

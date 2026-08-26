@@ -10,6 +10,7 @@ model.alprmodel
 └── variants/
     ├── tflite/model.tflite
     ├── onnx/model.onnx
+    ├── onnx_int8/model.onnx
     └── ncnn/model.param + model.bin
 ```
 
@@ -75,6 +76,25 @@ model.alprmodel
       "sha256": {
         "variants/onnx/model.onnx": "SUMA_SHA256_UZUPELNIANA_PRZEZ_EKSPORTER"
       }
+    },
+    {
+      "id": "onnx-int8",
+      "runtime": "onnx",
+      "precision": "int8",
+      "file": "variants/onnx_int8/model.onnx",
+      "input": {
+        "width": 640,
+        "height": 640,
+        "channels": 3,
+        "layout": "NCHW",
+        "color": "RGB",
+        "data_type": "FLOAT32",
+        "scale": 0.0039215686,
+        "offset": 0.0
+      },
+      "sha256": {
+        "variants/onnx_int8/model.onnx": "SUMA_SHA256_UZUPELNIANA_PRZEZ_EKSPORTER"
+      }
     }
   ]
 }
@@ -94,6 +114,14 @@ wartości `"detections_first"`. Pole `keypoint_dimensions` określa, czy każdy 
 zawiera `x, y`, czy `x, y, confidence`.
 
 Pola `input` i `output` z poziomu pakietu są wartościami domyślnymi. Wariant może je nadpisać, co jest potrzebne np. wtedy, gdy TFLite przyjmuje tensor `NHWC`, a ONNX tensor `NCHW`.
+
+Wariant `onnx-int8` jest statycznie kwantyzowanym grafem S8S8 w formacie QDQ.
+`precision: int8` opisuje operatory i wagi wewnątrz grafu. Publiczne wejście i
+wyjście pozostają `FLOAT32`; klient wykonuje zwykły preprocessing float, a
+`QuantizeLinear` i `DequantizeLinear` realizują przejście do i z INT8 wewnątrz
+modelu. Importer sprawdza obecność grafu QDQ, statyczny kształt tensorów oraz
+otwiera model przez ONNX Runtime 1.26, aby zweryfikować dostępność operatorów
+na Androidzie.
 
 ## Zasady porównania formatów
 

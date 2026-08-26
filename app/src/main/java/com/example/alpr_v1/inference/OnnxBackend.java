@@ -47,6 +47,15 @@ public final class OnnxBackend implements InferenceBackend {
                 session.close();
                 throw new IllegalArgumentException("Backend ONNX v1 wymaga wejścia FLOAT32");
             }
+            try {
+                OnnxModelCompatibilityValidator.validateSessionContract(
+                        session,
+                        variant.input(model.manifest().input())
+                );
+            } catch (IllegalArgumentException error) {
+                session.close();
+                throw error;
+            }
             inputInfo = tensorInfo(0, info);
         } catch (OrtException e) {
             throw new IllegalStateException("Nie można otworzyć modelu ONNX: " + e.getMessage(), e);

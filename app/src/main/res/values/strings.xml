@@ -141,6 +141,10 @@
     <string name="settings_distant_short">Daleki plan</string>
     <string name="settings_models_title">Modele YOLO</string>
     <string name="settings_models_description">MP → MT → MZ, bez modułu OCR</string>
+    <string name="settings_active_composition">Aktywna kompozycja</string>
+    <string name="settings_model_optional_missing">Brak aktywnego modelu\nEtap opcjonalny — pipeline może działać bez MP</string>
+    <string name="settings_model_required_missing">Brak aktywnego modelu\nModel wymagany do uruchomienia pipeline’u</string>
+    <string name="settings_model_node_hint">Dotknij węzła grafu, aby zmienić model lub wariant wykonawczy.</string>
     <string name="settings_restore_base_package">Przywróć pakiet bazowy</string>
     <string name="settings_node_actions_title">Węzeł %1$s</string>
     <string name="settings_node_choose_model">Zmień model lub format</string>
