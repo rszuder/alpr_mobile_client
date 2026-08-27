@@ -76,6 +76,37 @@ public class VehicleTrackingCoordinatorTest {
     }
 
     @Test
+    public void predictionMovesBackgroundVehicleWhileFocusedTargetSkipsMt() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_000_000_000L,
+                java.util.Arrays.asList(observation(0.10f), observation(0.55f))
+        );
+        VehicleTrackingFrame measured = coordinator.updateFromMp(
+                2L,
+                1_100_000_000L,
+                1_100_000_000L,
+                java.util.Arrays.asList(observation(0.10f), observation(0.60f))
+        );
+        VehicleCandidate backgroundBefore = rightmost(measured.candidates);
+
+        VehicleTrackingFrame predicted = coordinator.predict(
+                3L,
+                1_200_000_000L,
+                1_200_000_000L
+        );
+        VehicleCandidate backgroundAfter = candidateByEntity(
+                predicted.candidates, backgroundBefore.entityId
+        );
+
+        assertTrue(backgroundAfter.predicted);
+        assertTrue(backgroundAfter.bounds.left > backgroundBefore.bounds.left);
+        assertEquals(measured.candidates.size(), predicted.candidates.size());
+    }
+
+    @Test
     public void emitsBoundedLifecycleEventsWithSceneIdentity() {
         VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
         coordinator.updateFromMp(
@@ -141,5 +172,23 @@ public class VehicleTrackingCoordinatorTest {
                 new AppearanceDescriptor(new float[]{1f, 0f}),
                 0
         );
+    }
+
+    private static VehicleCandidate rightmost(List<VehicleCandidate> candidates) {
+        VehicleCandidate result = candidates.get(0);
+        for (VehicleCandidate candidate : candidates) {
+            if (candidate.bounds.left > result.bounds.left) result = candidate;
+        }
+        return result;
+    }
+
+    private static VehicleCandidate candidateByEntity(
+            List<VehicleCandidate> candidates,
+            long entityId
+    ) {
+        for (VehicleCandidate candidate : candidates) {
+            if (candidate.entityId == entityId) return candidate;
+        }
+        throw new AssertionError("Missing entityId=" + entityId);
     }
 }

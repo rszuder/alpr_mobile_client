@@ -307,6 +307,13 @@ final class MobileAlprEngine implements AutoCloseable {
         lastVehicleDetectionFrame = Long.MIN_VALUE;
     }
 
+    void invalidateVehicleBackgroundAfterCameraTransform() {
+        cachedVehicleRois.clear();
+        cachedVehicleDetections.clear();
+        lastVehicleDetectionFrame = Long.MIN_VALUE;
+        mtInferenceScheduler.forceRefresh("camera_transform_settled");
+    }
+
     PipelineResult run(
             Bitmap frame,
             InferenceTrace trace,
@@ -431,6 +438,21 @@ final class MobileAlprEngine implements AutoCloseable {
             ));
             recordSchedulerDecision(trace, mtDecision, liveTarget);
             if (!mtDecision.runsMt()) {
+                if (vehicleTrackingPolicy == VehicleTrackingPolicy.TRACKED_MP
+                        && roiBudgetPolicy.usesVehicleCascade()
+                        && !cameraTransformInProgress) {
+                    refreshPredictedVehicleCache(
+                            frame, trace, sourceTimestampNanos
+                    );
+                    trace.putAttribute(
+                            "vehicle_background_state", "PREDICTED"
+                    );
+                } else if (cameraTransformInProgress) {
+                    trace.putAttribute(
+                            "vehicle_background_state",
+                            "FROZEN_BY_CAMERA_TRANSFORM"
+                    );
+                }
                 trackCoordinator.onMtEvent(
                         PlateTrackCoordinator.MtStateEvent.NO_MT_RUN,
                         SystemClock.elapsedRealtimeNanos()

@@ -1185,6 +1185,7 @@ public final class AlprPipeline {
         sourceSceneDetector.reset();
         if (engine != null) {
             engine.setCameraTransformInProgress(false);
+            engine.invalidateVehicleBackgroundAfterCameraTransform();
             engine.resetSceneDetectorReference();
         }
     }
