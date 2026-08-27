@@ -3,6 +3,7 @@ package com.example.alpr_v1.pipeline;
 import androidx.camera.core.ImageProxy;
 
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.content.Context;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
@@ -12,6 +13,9 @@ import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.vision.SceneChangeDetector;
+
+import java.nio.ByteBuffer;
 
 import java.util.Collections;
 import java.util.List;
@@ -30,6 +34,10 @@ public final class AlprPipeline {
                 int sourceWidth,
                 int sourceHeight
         );
+    }
+
+    public interface SceneChangeCallback {
+        void onSceneChanged(float score, float changedFraction);
     }
 
     /*
@@ -90,7 +98,12 @@ public final class AlprPipeline {
     private final MetricsCollector metrics;
     private final AutoTuneManager autoTuneManager;
     private final AdaptiveFrameGate frameGate;
+    private final SceneChangeDetector sourceSceneDetector = new SceneChangeDetector();
     private final AtomicLong frameIds = new AtomicLong();
+    private final AtomicLong trackingResetRevision = new AtomicLong();
+    private final AtomicLong previewTrackingUpdates = new AtomicLong();
+    private final AtomicLong lastPreviewTrackingNanos = new AtomicLong();
+    private final AtomicLong lastTracedPreviewTrackingUpdates = new AtomicLong();
     private MobileAlprEngine engine;
     private volatile boolean reloadRequested;
     /*
@@ -129,6 +142,9 @@ public final class AlprPipeline {
 
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraTransformInProgress;
+    private volatile float currentCameraZoomRatio = 1f;
+    private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
+    private volatile double overlayUpdateFps;
     private final Object cameraTransformLock = new Object();
     private float pendingCameraZoomRatio = 1f;
     private boolean cameraTransformFinishPending;
@@ -190,19 +206,56 @@ public final class AlprPipeline {
             ImageProxy image,
             PlateDetectionCallback plateDetectionCallback
     ) {
-        metrics.observeSourceFrame(image.getWidth(), image.getHeight());
+        return process(image, plateDetectionCallback, null);
+    }
+
+    public synchronized PipelineResult process(
+            ImageProxy image,
+            PlateDetectionCallback plateDetectionCallback,
+            SceneChangeCallback sceneChangeCallback
+    ) {
+        metrics.observeSourceFrame(
+                image.getWidth(),
+                image.getHeight(),
+                image.getImageInfo().getTimestamp()
+        );
         if (cameraTransformInProgress) {
-            metrics.frameDropped();
+            metrics.frameSkippedByCameraTransform();
             return null;
         }
         long frameId = frameIds.incrementAndGet();
+        SceneChangeDetector.Result sourceScene = sourceSceneDetector.updateSamples(
+                sampleLuminance(image),
+                image.getWidth(),
+                image.getHeight()
+        );
+        if (sourceScene.sceneChanged) {
+            requestTrackingReset();
+            metrics.frameSkippedBySceneChange();
+            if (sceneChangeCallback != null) {
+                sceneChangeCallback.onSceneChanged(
+                        sourceScene.score,
+                        sourceScene.changedFraction
+                );
+            }
+            return null;
+        }
         if (!frameGate.shouldProcess(frameId)) {
-            metrics.frameDropped();
+            metrics.frameSkippedByGate();
             return null;
         }
         InferenceTrace trace = new InferenceTrace(frameId);
         trace.putCount("source_width", image.getWidth());
         trace.putCount("source_height", image.getHeight());
+        trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
+        long trackingUpdateCount = previewTrackingUpdates.get();
+        long previousTrackingUpdateCount =
+                lastTracedPreviewTrackingUpdates.getAndSet(trackingUpdateCount);
+        trace.putCount(
+                "tracker_updates",
+                Math.max(0L, trackingUpdateCount - previousTrackingUpdateCount)
+        );
+        trace.putConfidence("overlay_update_fps", overlayUpdateFps);
         trace.start("total");
         if (!registry.hasRequiredPipeline()) {
             trace.stop("total");
@@ -277,6 +330,8 @@ public final class AlprPipeline {
                             false;
                 }
 
+                engine.setTargetSnapshot(targetSnapshot);
+
                 float pendingZoomRatio;
                 boolean finishPending;
                 synchronized (cameraTransformLock) {
@@ -341,6 +396,7 @@ public final class AlprPipeline {
                 );
             }
             PipelineResult result;
+            final long processingRevision = trackingResetRevision.get();
 
 
             trace.start(
@@ -353,7 +409,8 @@ public final class AlprPipeline {
                         engine.run(
                                 frame,
                                 trace,
-                                plateDetectionCallback
+                                plateDetectionCallback,
+                                () -> trackingResetRevision.get() != processingRevision
                         );
 
             } finally {
@@ -396,6 +453,14 @@ public final class AlprPipeline {
             trace.captureMemoryAfterMeasurement();
             metrics.add(trace);
             return result;
+        } catch (MobileAlprEngine.ProcessingCancelledException cancelled) {
+            trace.stop("total");
+            appendTimingAudit(trace);
+            trace.finish("scene_superseded", "");
+            trace.captureMemoryAfterMeasurement();
+            metrics.add(trace);
+            frameGate.requestImmediateFrame();
+            return null;
         } catch (Exception e) {
             AppLog.errorRateLimited(
                     context,
@@ -421,6 +486,178 @@ public final class AlprPipeline {
             );
         } finally {
             if (frame != null) frame.recycle();
+        }
+    }
+
+    /**
+     * Przetwarza własnościowy Bitmap po zamknięciu ImageProxy. Umożliwia to
+     * odblokowanie analizatora CameraX i ciągły dopływ małych klatek YUV do
+     * live trackera podczas długiej inferencji MP/MT/MZ.
+     */
+    public synchronized PipelineResult processBitmap(
+            Bitmap frame,
+            long sourceTimestampNanos,
+            long cameraToBitmapNanos,
+            long cameraRotationNanos,
+            int cameraRotationDegrees,
+            PlateDetectionCallback plateDetectionCallback,
+            SceneChangeCallback sceneChangeCallback
+    ) {
+        if (frame == null || frame.isRecycled()) return null;
+        metrics.observeSourceFrame(frame.getWidth(), frame.getHeight(), sourceTimestampNanos);
+        if (cameraTransformInProgress) {
+            metrics.frameSkippedByCameraTransform();
+            return null;
+        }
+        long frameId = frameIds.incrementAndGet();
+        SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
+        if (sourceScene.sceneChanged) {
+            requestTrackingReset();
+            metrics.frameSkippedBySceneChange();
+            if (sceneChangeCallback != null) {
+                sceneChangeCallback.onSceneChanged(sourceScene.score, sourceScene.changedFraction);
+            }
+            return null;
+        }
+        if (!frameGate.shouldProcess(frameId)) {
+            metrics.frameSkippedByGate();
+            return null;
+        }
+
+        InferenceTrace trace = new InferenceTrace(frameId);
+        trace.putCount("source_width", frame.getWidth());
+        trace.putCount("source_height", frame.getHeight());
+        trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
+        long trackingUpdateCount = previewTrackingUpdates.get();
+        long previousTrackingUpdateCount =
+                lastTracedPreviewTrackingUpdates.getAndSet(trackingUpdateCount);
+        trace.putCount("tracker_updates",
+                Math.max(0L, trackingUpdateCount - previousTrackingUpdateCount));
+        trace.putConfidence("overlay_update_fps", overlayUpdateFps);
+        trace.putDurationNanos("camera_to_bitmap", cameraToBitmapNanos);
+        trace.putDurationNanos("camera_rotation", cameraRotationNanos);
+        trace.putDurationNanos(
+                "camera_conversion",
+                Math.max(0L, cameraToBitmapNanos) + Math.max(0L, cameraRotationNanos)
+        );
+        trace.putCount("camera_rotation_degrees", cameraRotationDegrees);
+        trace.start("total");
+        if (!registry.hasRequiredPipeline()) {
+            trace.stop("total");
+            trace.finish("models_missing", "");
+            trace.captureMemoryAfterMeasurement();
+            metrics.add(trace);
+            return PipelineResult.waitingForModels();
+        }
+
+        try {
+            trace.start("engine_setup");
+            try {
+                if (reloadRequested) {
+                    if (engine != null) engine.close();
+                    engine = null;
+                    reloadRequested = false;
+                }
+                if (engine == null) {
+                    engine = new MobileAlprEngine(
+                            registry,
+                            autoTuneManager,
+                            effectiveRoiBudgetPolicy()
+                    );
+                    engine.setRecognitionProfile(recognitionProfile);
+                    engine.setRapidCameraMotion(rapidCameraMotion);
+                    engine.setCameraTransformInProgress(cameraTransformInProgress);
+                }
+                AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
+                engine.setAutoZoomTargetLock(
+                        targetConfig.active,
+                        targetConfig.revision,
+                        targetConfig.trackId,
+                        targetConfig.left,
+                        targetConfig.top,
+                        targetConfig.right,
+                        targetConfig.bottom
+                );
+                if (trackingResetRequested) {
+                    engine.resetTracking();
+                    trackingResetRequested = false;
+                }
+                engine.setTargetSnapshot(targetSnapshot);
+                float pendingZoomRatio;
+                boolean finishPending;
+                synchronized (cameraTransformLock) {
+                    pendingZoomRatio = pendingCameraZoomRatio;
+                    finishPending = cameraTransformFinishPending;
+                    pendingCameraZoomRatio = 1f;
+                    cameraTransformFinishPending = false;
+                }
+                if (finishPending) {
+                    if (Math.abs(pendingZoomRatio - 1f) > 0.0001f) {
+                        engine.applyCameraZoomTransform(pendingZoomRatio);
+                    }
+                    engine.setCameraTransformInProgress(false);
+                    engine.resetSceneDetectorReference();
+                }
+            } finally {
+                trace.stop("engine_setup");
+            }
+
+            final long processingRevision = trackingResetRevision.get();
+            trace.start("engine_total");
+            PipelineResult result;
+            try {
+                result = engine.run(
+                        frame,
+                        trace,
+                        plateDetectionCallback,
+                        () -> trackingResetRevision.get() != processingRevision
+                );
+            } finally {
+                trace.stop("engine_total");
+            }
+            trace.start("pipeline_finalize");
+            try {
+                metrics.recordRecognitionState(
+                        !result.recognitions.isEmpty(),
+                        result.hasConfirmedRecognition()
+                );
+            } finally {
+                trace.stop("pipeline_finalize");
+            }
+            trace.stop("total");
+            appendTimingAudit(trace);
+            trace.captureMemoryAfterMeasurement();
+            metrics.add(trace);
+            return result;
+        } catch (MobileAlprEngine.ProcessingCancelledException cancelled) {
+            trace.stop("total");
+            appendTimingAudit(trace);
+            trace.finish("scene_superseded", "");
+            trace.captureMemoryAfterMeasurement();
+            metrics.add(trace);
+            frameGate.requestImmediateFrame();
+            return null;
+        } catch (Exception error) {
+            AppLog.errorRateLimited(
+                    context,
+                    "pipeline_error",
+                    LOG_TAG,
+                    "Błąd pipeline'u w klatce " + frameId + ": " + error.getMessage(),
+                    error,
+                    5_000L
+            );
+            trace.stop("total");
+            appendTimingAudit(trace);
+            trace.finish("pipeline_error", "");
+            trace.captureMemoryAfterMeasurement();
+            metrics.add(trace);
+            return new PipelineResult(
+                    "pipeline_error",
+                    "Błąd pipeline'u: " + error.getMessage(),
+                    "",
+                    0,
+                    Collections.emptyList()
+            );
         }
     }
 
@@ -708,6 +945,9 @@ public final class AlprPipeline {
 
         trackingResetRequested =
                 true;
+        targetSnapshot = TargetSnapshot.searching();
+        trackingResetRevision.incrementAndGet();
+        frameGate.requestImmediateFrame();
     }
 
 
@@ -718,6 +958,8 @@ public final class AlprPipeline {
 
     public synchronized void resetTracking() {
         if (engine != null) engine.resetTracking();
+        targetSnapshot = TargetSnapshot.searching();
+        sourceSceneDetector.reset();
     }
 
 
@@ -806,6 +1048,28 @@ public final class AlprPipeline {
         cameraTransformInProgress = inProgress;
     }
 
+    public void setCurrentCameraZoomRatio(float zoomRatio) {
+        currentCameraZoomRatio = Math.max(1f, zoomRatio);
+    }
+
+    public void setTargetSnapshot(TargetSnapshot snapshot) {
+        targetSnapshot = snapshot == null ? TargetSnapshot.searching() : snapshot;
+        long now = System.nanoTime();
+        long previous = lastPreviewTrackingNanos.getAndSet(now);
+        if (previous > 0L && now > previous) {
+            double instantFps = Math.min(120.0, 1_000_000_000.0 / (now - previous));
+            overlayUpdateFps = overlayUpdateFps <= 0.0
+                    ? instantFps
+                    : 0.82 * overlayUpdateFps + 0.18 * instantFps;
+        }
+        previewTrackingUpdates.incrementAndGet();
+    }
+
+    public void requestImmediateTargetRecovery() {
+        trackingResetRevision.incrementAndGet();
+        frameGate.requestImmediateFrame();
+    }
+
     public void setAutoZoomTargetLock(
             long targetTrackId,
             float left,
@@ -847,6 +1111,7 @@ public final class AlprPipeline {
 
     public synchronized void finishCameraTransform() {
         cameraTransformInProgress = false;
+        sourceSceneDetector.reset();
         if (engine != null) {
             engine.setCameraTransformInProgress(false);
             engine.resetSceneDetectorReference();
@@ -861,12 +1126,49 @@ public final class AlprPipeline {
             cameraTransformFinishPending = true;
         }
         cameraTransformInProgress = false;
+        sourceSceneDetector.reset();
     }
 
     public synchronized void close() {
         if (engine != null) engine.close();
         engine = null;
         reloadRequested = false;
+        sourceSceneDetector.reset();
+    }
+
+    private static float[] sampleLuminance(ImageProxy image) {
+        final int gridX = 20;
+        final int gridY = 20;
+        float[] samples = new float[gridX * gridY];
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
+        if (planes == null || planes.length == 0) return samples;
+        ImageProxy.PlaneProxy yPlane = planes[0];
+        ByteBuffer buffer = yPlane.getBuffer().duplicate();
+        Rect crop = image.getCropRect();
+        int cropWidth = Math.max(1, crop.width());
+        int cropHeight = Math.max(1, crop.height());
+        int rowStride = yPlane.getRowStride();
+        int pixelStride = yPlane.getPixelStride();
+        int base = buffer.position();
+        int limit = buffer.limit();
+        int output = 0;
+        for (int gy = 0; gy < gridY; gy++) {
+            int y = crop.top + Math.min(
+                    cropHeight - 1,
+                    Math.round((gy + 0.5f) * cropHeight / gridY)
+            );
+            for (int gx = 0; gx < gridX; gx++) {
+                int x = crop.left + Math.min(
+                        cropWidth - 1,
+                        Math.round((gx + 0.5f) * cropWidth / gridX)
+                );
+                int index = base + y * rowStride + x * pixelStride;
+                samples[output++] = index >= base && index < limit
+                        ? buffer.get(index) & 0xff
+                        : 0f;
+            }
+        }
+        return samples;
     }
 
     private static float clamp01(float value) {

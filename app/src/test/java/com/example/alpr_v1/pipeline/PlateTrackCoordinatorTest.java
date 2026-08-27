@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
 
 public class PlateTrackCoordinatorTest {
     @Test
@@ -30,6 +31,7 @@ public class PlateTrackCoordinatorTest {
         assertTrue(
                 first.recognize
         );
+        assertEquals(1, first.mzAttemptIndex);
 
 
         coordinator.recordRecognition(
@@ -54,6 +56,7 @@ public class PlateTrackCoordinatorTest {
         assertTrue(
                 second.recognize
         );
+        assertEquals(2, second.mzAttemptIndex);
 
 
         coordinator.recordRecognition(

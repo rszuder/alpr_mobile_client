@@ -14,6 +14,38 @@ Na czas zapisu kolektor zostaje wstrzymany, a snapshot cropów jest chroniony
 przed wyparciem. `manifest.json` jest ostatnim wpisem archiwum i zawiera
 SHA-256 wszystkich wcześniejszych wpisów.
 
+Pełny `.alprsession` zawiera obecnie również trzy addytywne strumienie
+telemetrii `alpr.mobile_experiment_telemetry.v1`:
+
+- `thermal.csv` — próbki termiki, baterii i dostępnej pamięci niezależne od FPS;
+- `frame_flow.csv` — jednosekundowe buckety klatek odebranych, przetworzonych,
+  pominiętych przez gate/transformację/szybki reset sceny oraz estymowanych luk upstream;
+- `events.jsonl` — uporządkowane zdarzenia tracków, prób MZ, konsensusu,
+  zmiany sceny i autozoomu.
+
+Nowe wpisy są objęte `manifest.json/entry_sha256`. Klasyczny raport ZIP pozostaje
+bez zmian strukturalnych dla zgodności wstecznej.
+
+## Tożsamość i kompletność eksperymentu
+
+Sekcja `report.json/experiment` przechowuje zamrożone przy starcie:
+`series_id`, `scenario_id`, `variant`, `replicate_index`, notatkę operatora,
+timer, warunek termiczny oraz konfigurację autozoomu. `app_build` dodaje SHA
+commita, typ buildu i czas zbudowania aplikacji.
+
+`data_retention` raportuje pojemność ring buffera, całkowitą liczbę trace'ów,
+liczbę zachowaną i usuniętą oraz zakres czasu zachowanych rekordów. Utrata
+najstarszych trace'ów ustawia `data_completeness.status = incomplete`; nie jest
+już cicha. Brak etapu pozostaje brakiem pola/pustą komórką, a nie zerem.
+
+## Geometria i trudność obrazu
+
+Rekordy cropów oraz `samples/annotations.jsonl` zawierają bbox w pikselach,
+cztery narożniki znormalizowane, udział bbox/quad w powierzchni klatki,
+stan konsensusu i numer próby MZ. Metryki luminancji, kontrastu i ekspozycji są
+liczone tylko dla zapisywanego cropa; raportowany jest również koszt ich
+wyliczenia w `image_difficulty.computation_ms`.
+
 ## Ground truth
 
 Każdy crop ma niezależny stan:

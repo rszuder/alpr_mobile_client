@@ -54,12 +54,39 @@ public final class ResearchArchive {
             List<CapturedPlateItem> crops,
             ModelRegistry registry
     ) throws Exception {
+        writeResearchSession(
+                destination,
+                reportJson,
+                tracesCsv,
+                "experiment_session_id,elapsed_ms,battery_temperature_c,thermal_status,thermal_headroom,headroom_available,battery_percent,charging,available_memory_bytes\n",
+                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_gate,frames_skipped_camera_transform,frames_skipped_scene_change,estimated_upstream_gaps\n",
+                "",
+                applicationLog,
+                crops,
+                registry
+        );
+    }
+
+    public static void writeResearchSession(
+            OutputStream destination,
+            String reportJson,
+            String tracesCsv,
+            String thermalCsv,
+            String frameFlowCsv,
+            String eventsJsonl,
+            String applicationLog,
+            List<CapturedPlateItem> crops,
+            ModelRegistry registry
+    ) throws Exception {
         JSONObject report = new JSONObject(reportJson);
         ArchiveWriter archive = new ArchiveWriter(destination);
         boolean exactSource = false;
         try {
             archive.writeText("report.json", reportJson);
             archive.writeText("traces.csv", tracesCsv);
+            archive.writeText("thermal.csv", thermalCsv == null ? "" : thermalCsv);
+            archive.writeText("frame_flow.csv", frameFlowCsv == null ? "" : frameFlowCsv);
+            archive.writeText("events.jsonl", eventsJsonl == null ? "" : eventsJsonl);
             archive.writeText("application.log", applicationLog == null ? "" : applicationLog);
             archive.writeText("README.md", researchReadme());
             archive.writeText("protocol.json", protocolJson(report).toString(2));
@@ -108,6 +135,7 @@ public final class ResearchArchive {
             }
 
             JSONObject manifest = baseManifest(RESEARCH_SCHEMA, report, archive.hashes());
+            manifest.put("telemetry_schema", "alpr.mobile_experiment_telemetry.v1");
             manifest.put("self_contained", hasRequiredModels(registry));
             manifest.put("exact_source_package_embedded", exactSource);
             manifest.put("crop_count", crops.size());
@@ -221,7 +249,7 @@ public final class ResearchArchive {
 
     private static String cropIndexCsv(List<CapturedPlateItem> crops) {
         StringBuilder csv = new StringBuilder(
-                "capture_id,session_id,track_id,captured_at_ms,prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms\n"
+                "capture_id,session_id,track_id,captured_at_ms,prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms\n"
         );
         for (CapturedPlateItem item : crops) {
             csv.append(csv(item.captureId)).append(',')
@@ -237,7 +265,27 @@ public final class ResearchArchive {
                     .append(item.timing == null ? "" : format(item.timing.totalMilliseconds())).append(',')
                     .append(item.timing == null ? "" : format(
                             item.timing.characterInferenceNanos / 1_000_000.0
-                    )).append('\n');
+                    )).append(',')
+                    .append(format(item.cameraZoomRatio)).append(',')
+                    .append(csv(item.captureSource)).append(',')
+                    .append(item.trackConfirmed).append(',')
+                    .append(item.freshMzSuccessful).append(',')
+                    .append(item.cropSupportsConsensus).append(',')
+                    .append(item.consensusObservations).append(',')
+                    .append(item.mzAttemptIndex).append(',')
+                    .append(csv(item.layout)).append(',')
+                    .append(csv(item.rowCounts.toString())).append(',')
+                    .append(item.plateGeometry.available() ? format(item.plateGeometry.bboxWidthPx()) : "").append(',')
+                    .append(item.plateGeometry.available() ? format(item.plateGeometry.bboxHeightPx()) : "").append(',')
+                    .append(item.plateGeometry.available() ? format(item.plateGeometry.bboxAreaRatio) : "").append(',')
+                    .append(item.plateGeometry.available() ? format(item.plateGeometry.quadAreaRatio) : "").append(',')
+                    .append(csv(corners(item))).append(',')
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.meanLuminance) : "").append(',')
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.luminanceStddev) : "").append(',')
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.underexposedRatio) : "").append(',')
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.overexposedRatio) : "").append(',')
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.computationMs) : "")
+                    .append('\n');
         }
         return csv.toString();
     }
@@ -254,6 +302,18 @@ public final class ResearchArchive {
             record.put("plate_confidence", item.plateConfidence);
             record.put("recognition_confidence", item.recognitionConfidence);
             record.put("sharpness", item.sharpness);
+            record.put("camera_zoom_ratio", item.cameraZoomRatio);
+            record.put("capture_source", item.captureSource);
+            record.put("track_confirmed", item.trackConfirmed);
+            record.put("fresh_mz_successful", item.freshMzSuccessful);
+            record.put("crop_supports_consensus", item.cropSupportsConsensus);
+            record.put("consensus_observations", item.consensusObservations);
+            record.put("mz_attempt_index", item.mzAttemptIndex);
+            record.put("layout", item.layout);
+            record.put("row_counts", new JSONArray(item.rowCounts));
+            record.put("fresh_prediction", item.freshPrediction);
+            record.put("plate_geometry", item.plateGeometry.toJson());
+            record.put("image_difficulty", item.imageDifficulty.toJson());
             record.put("verification_status", item.verificationStatus.wireName());
             record.put("ground_truth_text", item.groundTruthText);
             record.put("verified_at_ms", item.verifiedAtMillis);
@@ -427,7 +487,8 @@ public final class ResearchArchive {
     private static String researchReadme() {
         return "# Mobilny ALPR -- pakiet badawczy\n\n"
                 + "Schemat: " + RESEARCH_SCHEMA + ". Archiwum zawiera raport, surowe ślady, "
-                + "cropy, adnotacje człowieka, aktywne modele i SHA-256 wpisów. "
+                + "termikę 1 Hz, przepływ klatek w bucketach 1 s, zdarzenia track/MZ/konsensusu, "
+                + "cropy z geometrią, adnotacje człowieka, aktywne modele i SHA-256 wpisów. "
                 + "protocol.json opisuje metodykę inspirowaną MLPerf Mobile; wynik nie jest "
                 + "oficjalnym wynikiem MLPerf. Exact match i CER są liczone wyłącznie dla "
                 + "rekordów accepted/corrected z ground truth.\n";
@@ -446,6 +507,15 @@ public final class ResearchArchive {
     private static String csv(String value) {
         String safe = value == null ? "" : value.replace("\"", "\"\"");
         return '"' + safe + '"';
+    }
+
+    private static String corners(CapturedPlateItem item) {
+        StringBuilder value = new StringBuilder();
+        for (com.example.alpr_v1.vision.Point2 point : item.plateGeometry.cornersNorm) {
+            if (value.length() > 0) value.append(';');
+            value.append(format(point.x)).append(':').append(format(point.y));
+        }
+        return value.toString();
     }
 
     private static String format(double value) {

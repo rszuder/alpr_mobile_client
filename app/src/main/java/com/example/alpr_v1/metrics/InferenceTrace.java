@@ -13,10 +13,12 @@ import java.util.Map;
 public final class InferenceTrace {
     private final long frameId;
     private final long timestampMillis;
+    private final long elapsedRealtimeNanos;
     private final Map<String, Long> stageStarts = new LinkedHashMap<>();
     private final Map<String, Long> durationsNanos = new LinkedHashMap<>();
     private final Map<String, Double> confidences = new LinkedHashMap<>();
     private final Map<String, Long> counters = new LinkedHashMap<>();
+    private final Map<String, String> attributes = new LinkedHashMap<>();
     private String status = "started";
     private String recognizedText = "";
     private final long pssStartKb;
@@ -28,6 +30,7 @@ public final class InferenceTrace {
     public InferenceTrace(long frameId) {
         this.frameId = frameId;
         this.timestampMillis = System.currentTimeMillis();
+        this.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
         this.memorySampled = frameId % 30 == 1;
         this.pssStartKb = memorySampled ? Debug.getPss() : -1;
         this.nativeHeapStartBytes = memorySampled ? Debug.getNativeHeapAllocatedSize() : -1;
@@ -60,6 +63,11 @@ public final class InferenceTrace {
         counters.put(name, Math.max(0L, value));
     }
 
+    public void putAttribute(String name, String value) {
+        if (name == null || name.trim().isEmpty()) return;
+        attributes.put(name, value == null ? "" : value);
+    }
+
     public void finish(String status, String recognizedText) {
         this.status = status == null ? "unknown" : status;
         this.recognizedText = recognizedText == null ? "" : recognizedText;
@@ -73,6 +81,7 @@ public final class InferenceTrace {
 
     public long frameId() { return frameId; }
     public long timestampMillis() { return timestampMillis; }
+    public long elapsedRealtimeNanos() { return elapsedRealtimeNanos; }
     public String status() { return status; }
     public String recognizedText() { return recognizedText; }
     public Map<String, Long> durationsNanos() { return Collections.unmodifiableMap(durationsNanos); }
@@ -83,6 +92,7 @@ public final class InferenceTrace {
     }
     public Map<String, Double> confidences() { return Collections.unmodifiableMap(confidences); }
     public Map<String, Long> counters() { return Collections.unmodifiableMap(counters); }
+    public Map<String, String> attributes() { return Collections.unmodifiableMap(attributes); }
     public long pssStartKb() { return pssStartKb; }
     public long pssEndKb() { return pssEndKb; }
     public long nativeHeapStartBytes() { return nativeHeapStartBytes; }
@@ -92,6 +102,7 @@ public final class InferenceTrace {
         JSONObject json = new JSONObject();
         json.put("frame_id", frameId);
         json.put("timestamp_ms", timestampMillis);
+        json.put("elapsed_realtime_ns", elapsedRealtimeNanos);
         json.put("status", status);
         json.put("text", recognizedText);
         JSONObject stages = new JSONObject();
@@ -101,6 +112,7 @@ public final class InferenceTrace {
         json.put("stage_ms", stages);
         json.put("confidence", new JSONObject(confidences));
         json.put("counters", new JSONObject(counters));
+        json.put("attributes", new JSONObject(attributes));
         JSONObject memory = new JSONObject();
         memory.put("sampled", memorySampled);
         memory.put("pss_start_kb", pssStartKb);

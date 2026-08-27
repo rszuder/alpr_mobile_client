@@ -9,6 +9,7 @@ import java.util.List;
 /** Migawka tracku przekazywana do trwałej galerii wyników w UI. */
 public final class PlateObservation {
     public final long trackId;
+    public final long frameId;
     public final Bitmap previewBitmap;
     public final String text;
     public final double plateConfidence;
@@ -19,10 +20,22 @@ public final class PlateObservation {
     public final long capturedAtMillis;
     public final long capturedElapsedNanos;
     public final float sharpness;
+    public final float[] appearanceDescriptor;
     public final CropInferenceTiming timing;
+    public final PlateGeometry geometry;
+    public final boolean freshMzAttempted;
+    public final boolean freshMzSuccessful;
+    public final String freshPrediction;
+    public final boolean cropSupportsConsensus;
+    public final int mzAttemptIndex;
+    public final String layout;
+    public final List<Integer> rowCounts;
+    public final String predictionBefore;
+    public final String predictionAfter;
 
     public PlateObservation(
             long trackId,
+            long frameId,
             Bitmap previewBitmap,
             String text,
             double plateConfidence,
@@ -33,9 +46,21 @@ public final class PlateObservation {
             long capturedAtMillis,
             long capturedElapsedNanos,
             float sharpness,
-            CropInferenceTiming timing
+            float[] appearanceDescriptor,
+            CropInferenceTiming timing,
+            PlateGeometry geometry,
+            boolean freshMzAttempted,
+            boolean freshMzSuccessful,
+            String freshPrediction,
+            boolean cropSupportsConsensus,
+            int mzAttemptIndex,
+            String layout,
+            List<Integer> rowCounts,
+            String predictionBefore,
+            String predictionAfter
     ) {
         this.trackId = trackId;
+        this.frameId = frameId;
         this.previewBitmap = previewBitmap;
         this.text = text == null ? "" : text;
         this.plateConfidence = plateConfidence;
@@ -46,7 +71,21 @@ public final class PlateObservation {
         this.capturedAtMillis = capturedAtMillis;
         this.capturedElapsedNanos = capturedElapsedNanos;
         this.sharpness = Math.max(0f, Math.min(1f, sharpness));
+        this.appearanceDescriptor = appearanceDescriptor == null
+                ? null : appearanceDescriptor.clone();
         this.timing = timing;
+        this.geometry = geometry == null ? PlateGeometry.unavailable() : geometry;
+        this.freshMzAttempted = freshMzAttempted;
+        this.freshMzSuccessful = freshMzSuccessful;
+        this.freshPrediction = freshPrediction == null ? "" : freshPrediction;
+        this.cropSupportsConsensus = cropSupportsConsensus;
+        this.mzAttemptIndex = Math.max(0, mzAttemptIndex);
+        this.layout = layout == null ? TemporalCharacterAggregator.LAYOUT_UNKNOWN : layout;
+        this.rowCounts = Collections.unmodifiableList(new ArrayList<>(
+                rowCounts == null ? Collections.emptyList() : rowCounts
+        ));
+        this.predictionBefore = predictionBefore == null ? "" : predictionBefore;
+        this.predictionAfter = predictionAfter == null ? "" : predictionAfter;
     }
 
     void recyclePreview() {

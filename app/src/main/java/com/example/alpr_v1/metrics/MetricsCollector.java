@@ -1,5 +1,8 @@
 package com.example.alpr_v1.metrics;
 
+import android.os.SystemClock;
+
+import com.example.alpr_v1.BuildConfig;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.capture.CapturedPlateItem;
 import com.example.alpr_v1.inference.ExecutionProfile;
@@ -11,6 +14,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.experiment.ExperimentSession;
+import com.example.alpr_v1.experiment.ThermalMonitor;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -28,6 +32,19 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class MetricsCollector {
+    private static final class FrameFlowBucket {
+        final long elapsedMs;
+        long framesReceived;
+        long framesProcessed;
+        long framesSkippedGate;
+        long framesSkippedCameraTransform;
+        long framesSkippedSceneChange;
+        long estimatedUpstreamGaps;
+
+        FrameFlowBucket(long elapsedMs) {
+            this.elapsedMs = elapsedMs;
+        }
+    }
     public static final class LiveSnapshot {
 
         public final int sourceWidth;
@@ -93,11 +110,27 @@ public final class MetricsCollector {
     private static final int MAX_TRACES = 5_000;
     private long sessionStartedMillis = System.currentTimeMillis();
     private long sessionStartedNanos = System.nanoTime();
+    private long sessionStartedElapsedNanos = SystemClock.elapsedRealtimeNanos();
 
     private long sessionFinishedMillis = -1L;
     private boolean measurementSessionActive;
     private final Deque<InferenceTrace> traces = new ArrayDeque<>();
     private long droppedFrames;
+    private long traceTotalSeen;
+    private long traceRecordsEvicted;
+    private long framesReceived;
+    private long framesProcessed;
+    private long framesSkippedGate;
+    private long framesSkippedCameraTransform;
+    private long framesSkippedSceneChange;
+    private long estimatedUpstreamGaps;
+    private long lastSourceTimestampNanos = -1L;
+    private double expectedSourceIntervalNanos = Double.NaN;
+    private final Map<Long, FrameFlowBucket> frameFlowBuckets = new LinkedHashMap<>();
+    private final List<JSONObject> thermalSamples = new ArrayList<>();
+    private final List<JSONObject> eventRecords = new ArrayList<>();
+    private long eventSequence;
+    private String experimentSessionId = "";
     private String recognitionProfile = "balanced";
     private boolean vehicleCascadeEnabled;
 
@@ -111,6 +144,16 @@ public final class MetricsCollector {
     private int actualSourceWidth;
     private int actualSourceHeight;
     private boolean motionSensorAvailable;
+    private String frozenRecognitionProfile = "balanced";
+    private boolean frozenVehicleCascadeEnabled;
+    private String frozenRoiBudgetPolicy = "r0_full_frame";
+    private boolean frozenExperimentModeEnabled;
+    private String frozenExperimentRoiBudgetPolicy = "r2_two_roi";
+    private String frozenCaptureProfile = "auto";
+    private int frozenRequestedSourceWidth;
+    private int frozenRequestedSourceHeight;
+    private boolean frozenCaptureHighResolutionRequested;
+    private boolean frozenMotionSensorAvailable;
     private long firstPreliminaryResultNanos = -1L;
     private long firstConfirmedResultNanos = -1L;
     private String cropSessionId = "";
@@ -120,8 +163,33 @@ public final class MetricsCollector {
 
     public synchronized void startMeasurementSession() {
         traces.clear();
+        frameFlowBuckets.clear();
+        thermalSamples.clear();
+        eventRecords.clear();
 
         droppedFrames = 0L;
+        traceTotalSeen = 0L;
+        traceRecordsEvicted = 0L;
+        framesReceived = 0L;
+        framesProcessed = 0L;
+        framesSkippedGate = 0L;
+        framesSkippedCameraTransform = 0L;
+        framesSkippedSceneChange = 0L;
+        estimatedUpstreamGaps = 0L;
+        lastSourceTimestampNanos = -1L;
+        expectedSourceIntervalNanos = Double.NaN;
+        eventSequence = 0L;
+        experimentSessionId = "";
+        frozenRecognitionProfile = recognitionProfile;
+        frozenVehicleCascadeEnabled = vehicleCascadeEnabled;
+        frozenRoiBudgetPolicy = roiBudgetPolicy;
+        frozenExperimentModeEnabled = experimentModeEnabled;
+        frozenExperimentRoiBudgetPolicy = experimentRoiBudgetPolicy;
+        frozenCaptureProfile = captureProfile;
+        frozenRequestedSourceWidth = requestedSourceWidth;
+        frozenRequestedSourceHeight = requestedSourceHeight;
+        frozenCaptureHighResolutionRequested = captureHighResolutionRequested;
+        frozenMotionSensorAvailable = motionSensorAvailable;
 
         firstPreliminaryResultNanos = -1L;
         firstConfirmedResultNanos = -1L;
@@ -134,6 +202,9 @@ public final class MetricsCollector {
 
         sessionStartedNanos =
                 System.nanoTime();
+
+        sessionStartedElapsedNanos =
+                SystemClock.elapsedRealtimeNanos();
 
         sessionFinishedMillis = -1L;
 
@@ -162,16 +233,41 @@ public final class MetricsCollector {
             return;
         }
 
+        traceTotalSeen++;
+        framesProcessed++;
+        currentFrameFlowBucket().framesProcessed++;
+
         while (traces.size() >= MAX_TRACES) {
             traces.removeFirst();
+            traceRecordsEvicted++;
         }
 
         traces.addLast(trace);
     }
+    public synchronized void frameSkippedByGate() {
+        if (!measurementSessionActive) return;
+        droppedFrames++;
+        framesSkippedGate++;
+        currentFrameFlowBucket().framesSkippedGate++;
+    }
+
+    public synchronized void frameSkippedByCameraTransform() {
+        if (!measurementSessionActive) return;
+        droppedFrames++;
+        framesSkippedCameraTransform++;
+        currentFrameFlowBucket().framesSkippedCameraTransform++;
+    }
+
+    public synchronized void frameSkippedBySceneChange() {
+        if (!measurementSessionActive) return;
+        droppedFrames++;
+        framesSkippedSceneChange++;
+        currentFrameFlowBucket().framesSkippedSceneChange++;
+    }
+
+    /** Zachowany alias dla starszych wywołań; nowe miejsca powinny podawać przyczynę. */
     public synchronized void frameDropped() {
-        if (measurementSessionActive) {
-            droppedFrames++;
-        }
+        frameSkippedByGate();
     }
 
     public synchronized int size() { return traces.size(); }
@@ -337,8 +433,106 @@ public final class MetricsCollector {
                 highResolutionRequested;
     }
     public synchronized void observeSourceFrame(int width, int height) {
+        observeSourceFrame(width, height, -1L);
+    }
+
+    public synchronized void observeSourceFrame(int width, int height, long sourceTimestampNanos) {
         actualSourceWidth = Math.max(0, width);
         actualSourceHeight = Math.max(0, height);
+        if (!measurementSessionActive) return;
+        framesReceived++;
+        FrameFlowBucket bucket = currentFrameFlowBucket();
+        bucket.framesReceived++;
+        if (sourceTimestampNanos > 0L && lastSourceTimestampNanos > 0L) {
+            long interval = sourceTimestampNanos - lastSourceTimestampNanos;
+            if (interval > 0L && interval < 1_000_000_000L) {
+                if (!Double.isNaN(expectedSourceIntervalNanos)
+                        && interval > expectedSourceIntervalNanos * 1.5) {
+                    long gaps = Math.max(0L, Math.round(interval / expectedSourceIntervalNanos) - 1L);
+                    estimatedUpstreamGaps += gaps;
+                    bucket.estimatedUpstreamGaps += gaps;
+                }
+                expectedSourceIntervalNanos = Double.isNaN(expectedSourceIntervalNanos)
+                        ? interval
+                        : expectedSourceIntervalNanos * 0.9 + interval * 0.1;
+            }
+        }
+        if (sourceTimestampNanos > 0L) lastSourceTimestampNanos = sourceTimestampNanos;
+    }
+
+    public synchronized void setExperimentSessionId(String sessionId) {
+        experimentSessionId = sessionId == null ? "" : sessionId;
+    }
+
+    public synchronized void recordThermalSample(ThermalMonitor.Snapshot snapshot) {
+        if (!measurementSessionActive || snapshot == null) return;
+        try {
+            JSONObject sample = new JSONObject();
+            sample.put("experiment_session_id", experimentSessionId);
+            sample.put("elapsed_ms", elapsedMillis(snapshot.capturedElapsedMillis));
+            putFiniteOrNull(sample, "battery_temperature_c", snapshot.batteryTemperatureC);
+            sample.put("thermal_status", snapshot.thermalStatus >= 0
+                    ? snapshot.thermalStatus : JSONObject.NULL);
+            putFiniteOrNull(sample, "thermal_headroom", snapshot.thermalHeadroom);
+            sample.put("headroom_available", snapshot.headroomAvailable());
+            sample.put("battery_percent", snapshot.batteryPercent >= 0
+                    ? snapshot.batteryPercent : JSONObject.NULL);
+            sample.put("charging", snapshot.charging);
+            sample.put("available_memory_bytes", snapshot.availableMemoryBytes >= 0L
+                    ? snapshot.availableMemoryBytes : JSONObject.NULL);
+            thermalSamples.add(sample);
+        } catch (JSONException ignored) {
+            // Wszystkie pola pochodzą z kontrolowanych typów prostych.
+        }
+    }
+
+    public synchronized void recordEvent(
+            String eventType,
+            long frameId,
+            long trackId,
+            JSONObject details
+    ) {
+        if (!measurementSessionActive) return;
+        try {
+            JSONObject event = new JSONObject();
+            event.put("experiment_session_id", experimentSessionId);
+            event.put("event_seq", ++eventSequence);
+            event.put("elapsed_ms", elapsedMillis(SystemClock.elapsedRealtime()));
+            if (frameId > 0L) event.put("frame_id", frameId);
+            if (trackId > 0L) event.put("track_id", trackId);
+            event.put("event_type", eventType == null ? "unknown" : eventType);
+            if (details != null) {
+                java.util.Iterator<String> keys = details.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    event.put(key, details.opt(key));
+                }
+            }
+            eventRecords.add(event);
+        } catch (JSONException ignored) {
+            // Rekord zdarzenia pozostaje opcjonalną telemetrią.
+        }
+    }
+
+    private FrameFlowBucket currentFrameFlowBucket() {
+        long elapsed = elapsedMillis(SystemClock.elapsedRealtime());
+        long bucketStart = (elapsed / 1_000L) * 1_000L;
+        FrameFlowBucket bucket = frameFlowBuckets.get(bucketStart);
+        if (bucket == null) {
+            bucket = new FrameFlowBucket(bucketStart);
+            frameFlowBuckets.put(bucketStart, bucket);
+        }
+        return bucket;
+    }
+
+    private long elapsedMillis(long elapsedRealtimeMillis) {
+        return Math.max(0L, elapsedRealtimeMillis - sessionStartedElapsedNanos / 1_000_000L);
+    }
+
+    private static void putFiniteOrNull(JSONObject target, String key, double value)
+            throws JSONException {
+        target.put(key, Double.isNaN(value) || Double.isInfinite(value)
+                ? JSONObject.NULL : value);
     }
 
     public synchronized void setMotionSensorAvailable(boolean available) {
@@ -375,11 +569,21 @@ public final class MetricsCollector {
             record.put("track_id", item.trackId);
             record.put("text", item.text);
             record.put("confirmed", item.confirmed);
+            record.put("track_confirmed", item.trackConfirmed);
+            record.put("fresh_mz_successful", item.freshMzSuccessful);
+            record.put("crop_supports_consensus", item.cropSupportsConsensus);
+            record.put("consensus_observations", item.consensusObservations);
+            record.put("mz_attempt_index", item.mzAttemptIndex);
+            record.put("layout", item.layout);
+            record.put("row_counts", new JSONArray(item.rowCounts));
+            record.put("fresh_prediction", item.freshPrediction);
             record.put("plate_confidence", item.plateConfidence);
             record.put("recognition_confidence", item.recognitionConfidence);
             record.put("sharpness", item.sharpness);
             record.put("camera_zoom_ratio", item.cameraZoomRatio);
             record.put("capture_source", item.captureSource);
+            record.put("plate_geometry", item.plateGeometry.toJson());
+            record.put("image_difficulty", item.imageDifficulty.toJson());
             record.put("persisted", false);
             record.put("human_verification", verificationJson(item));
             JSONArray characters = new JSONArray();
@@ -474,11 +678,21 @@ public final class MetricsCollector {
         report.put("variant_id", variantId);
         report.put("measured_at", Instant.ofEpochMilli(finishedMillis).toString());
         report.put("app_version", device.appVersion);
+        JSONObject appBuild = new JSONObject();
+        appBuild.put("git_commit", BuildConfig.GIT_COMMIT);
+        appBuild.put("build_type", BuildConfig.BUILD_TYPE);
+        appBuild.put("built_at_utc", BuildConfig.BUILT_AT_UTC);
+        appBuild.put("version_name", BuildConfig.VERSION_NAME);
+        appBuild.put("version_code", BuildConfig.VERSION_CODE);
+        report.put("app_build", appBuild);
         report.put("device", device.toJson());
         report.put("runtime", commonValue(plateExecution, characterExecution, "runtime"));
         report.put("delegate", commonValue(plateExecution, characterExecution, "delegate"));
         report.put("warmup_runs", 0);
         report.put("measured_runs", traces.size());
+        report.put("trace_total_seen", traceTotalSeen);
+        report.put("trace_records_retained", traces.size());
+        report.put("trace_records_evicted", traceRecordsEvicted);
         report.put("autotune_warmup_runs", AutoTuneManager.warmupRuns());
         report.put("autotune_measured_runs_per_candidate", AutoTuneManager.measuredRunsPerCandidate());
         report.put("session_started_ms", sessionStartedMillis);
@@ -496,18 +710,18 @@ public final class MetricsCollector {
                 measurementSessionActive
         );
         report.put("dropped_frames", droppedFrames);
-        report.put("recognition_profile", recognitionProfile);
+        report.put("recognition_profile", frozenRecognitionProfile);
 
         /*
          * Zachowujemy efektywną politykę również na najwyższym poziomie
          * dla zgodności z wcześniejszymi raportami.
          */
-        report.put("roi_budget_policy", roiBudgetPolicy);
+        report.put("roi_budget_policy", frozenRoiBudgetPolicy);
 
         JSONObject normalConfiguration = new JSONObject();
         normalConfiguration.put(
                 "vehicle_cascade_enabled",
-                vehicleCascadeEnabled
+                frozenVehicleCascadeEnabled
         );
         report.put(
                 "normal_configuration",
@@ -538,7 +752,7 @@ public final class MetricsCollector {
                         experimentSession.experimentType
                 )
                         ? experimentSession.variant
-                        : experimentRoiBudgetPolicy;
+                        : frozenExperimentRoiBudgetPolicy;
 
         String reportedEffectiveRoiPolicy =
                 hasExperimentSession
@@ -546,7 +760,7 @@ public final class MetricsCollector {
                         experimentSession.experimentType
                 )
                         ? experimentSession.variant
-                        : roiBudgetPolicy;
+                        : frozenRoiBudgetPolicy;
 
 
         /*
@@ -556,7 +770,7 @@ public final class MetricsCollector {
          */
         experiment.put(
                 "enabled",
-                experimentModeEnabled || hasExperimentSession
+                frozenExperimentModeEnabled || hasExperimentSession
         );
 
         experiment.put(
@@ -580,6 +794,13 @@ public final class MetricsCollector {
          * gdy rzeczywiście uruchomiono eksperyment.
          */
         if (hasExperimentSession) {
+            experiment.put("series_id", experimentSession.seriesId);
+            experiment.put("scenario_id", experimentSession.scenarioId);
+            experiment.put("variant", experimentSession.variant);
+            experiment.put("replicate_index", experimentSession.replicateIndex);
+            if (!experimentSession.notes.isEmpty()) {
+                experiment.put("notes", experimentSession.notes);
+            }
             JSONObject session = new JSONObject();
 
             session.put(
@@ -627,6 +848,29 @@ public final class MetricsCollector {
                     "variant",
                     experimentSession.variant
             );
+            session.put("series_id", experimentSession.seriesId);
+            session.put("scenario_id", experimentSession.scenarioId);
+            session.put("replicate_index", experimentSession.replicateIndex);
+            session.put("completion_status", experimentSession.completionStatus);
+            if (!experimentSession.notes.isEmpty()) {
+                session.put("notes", experimentSession.notes);
+            }
+            JSONObject autoZoom = new JSONObject();
+            autoZoom.put("enabled", experimentSession.autoZoomEnabled);
+            autoZoom.put("max_zoom_ratio", experimentSession.maxZoomRatio);
+            session.put("auto_zoom", autoZoom);
+            JSONObject thermalStart = new JSONObject();
+            thermalStart.put("enabled", experimentSession.thermalStartConditionEnabled);
+            thermalStart.put(
+                    "max_battery_temperature_c",
+                    experimentSession.maxStartBatteryTemperatureC
+            );
+            thermalStart.put("max_thermal_status", experimentSession.maxStartThermalStatus);
+            thermalStart.put(
+                    "stabilization_ms",
+                    experimentSession.thermalStabilizationMillis
+            );
+            session.put("thermal_start_condition", thermalStart);
             JSONObject timer = new JSONObject();
 
             timer.put(
@@ -666,10 +910,10 @@ public final class MetricsCollector {
          * "explicit" -> użytkownik wskazał konkretny format WxH.
          */
         boolean automaticResolutionSelection =
-                captureProfile == null
-                        || captureProfile.trim().isEmpty()
+                frozenCaptureProfile == null
+                        || frozenCaptureProfile.trim().isEmpty()
                         || "auto".equalsIgnoreCase(
-                        captureProfile.trim()
+                        frozenCaptureProfile.trim()
                 );
 
 
@@ -682,7 +926,7 @@ public final class MetricsCollector {
         String selectedResolution =
                 automaticResolutionSelection
                         ? "auto"
-                        : captureProfile;
+                        : frozenCaptureProfile;
 
 
         /*
@@ -708,18 +952,18 @@ public final class MetricsCollector {
          */
         capture.put(
                 "profile",
-                captureProfile
+                frozenCaptureProfile
         );
 
 
         capture.put(
                 "requested_width",
-                requestedSourceWidth
+                frozenRequestedSourceWidth
         );
 
         capture.put(
                 "requested_height",
-                requestedSourceHeight
+                frozenRequestedSourceHeight
         );
 
         capture.put(
@@ -744,7 +988,7 @@ public final class MetricsCollector {
          */
         capture.put(
                 "extended_high_resolution_mode_requested",
-                captureHighResolutionRequested
+                frozenCaptureHighResolutionRequested
         );
 
 
@@ -756,7 +1000,7 @@ public final class MetricsCollector {
          */
         capture.put(
                 "high_resolution_mode_requested",
-                captureHighResolutionRequested
+                frozenCaptureHighResolutionRequested
         );
 
 
@@ -769,9 +1013,9 @@ public final class MetricsCollector {
                 actualAvailable
                         && (
                         (
-                                requestedSourceWidth
+                                frozenRequestedSourceWidth
                                         == actualSourceWidth
-                                        && requestedSourceHeight
+                                        && frozenRequestedSourceHeight
                                         == actualSourceHeight
                         )
                                 ||
@@ -780,9 +1024,9 @@ public final class MetricsCollector {
                                          * Obrót urządzenia nie oznacza
                                          * innej rozdzielczości źródłowej.
                                          */
-                                        requestedSourceWidth
+                                        frozenRequestedSourceWidth
                                                 == actualSourceHeight
-                                                && requestedSourceHeight
+                                                && frozenRequestedSourceHeight
                                                 == actualSourceWidth
                                 )
                 );
@@ -814,7 +1058,7 @@ public final class MetricsCollector {
 
         capture.put(
                 "gyroscope_available",
-                motionSensorAvailable
+                frozenMotionSensorAvailable
         );
 
 
@@ -885,7 +1129,9 @@ public final class MetricsCollector {
         long peakPssKb = -1L;
         int recognizedFrames = 0;
         for (InferenceTrace trace : traces) {
-            traceArray.put(trace.toJson());
+            JSONObject traceJson = trace.toJson();
+            traceJson.put("elapsed_ms", traceElapsedMillis(trace));
+            traceArray.put(traceJson);
             statuses.put(trace.status(), statuses.getOrDefault(trace.status(), 0) + 1);
             if ("recognized".equals(trace.status())) recognizedFrames++;
             peakPssKb = Math.max(peakPssKb, Math.max(trace.pssStartKb(), trace.pssEndKb()));
@@ -902,12 +1148,58 @@ public final class MetricsCollector {
         }
 
         JSONObject summary = new JSONObject();
-        summary.put("processed_frames", traces.size());
+        summary.put("processed_frames", framesProcessed);
         summary.put("statuses", new JSONObject(statuses));
         summary.put("stages", stageSummaryJson(stageValues));
         summary.put("counters", new JSONObject(counterTotals));
         report.put("summary", summary);
         report.put("latency", latencyJson(stageValues));
+
+        JSONObject frameFlow = new JSONObject();
+        frameFlow.put("frames_received", framesReceived);
+        frameFlow.put("frames_processed", framesProcessed);
+        frameFlow.put("frames_skipped_gate", framesSkippedGate);
+        frameFlow.put("frames_skipped_camera_transform", framesSkippedCameraTransform);
+        frameFlow.put("frames_skipped_scene_change", framesSkippedSceneChange);
+        frameFlow.put("estimated_upstream_gaps", estimatedUpstreamGaps);
+        frameFlow.put("upstream_gaps_are_estimated", true);
+        frameFlow.put("bucket_ms", 1_000);
+        report.put("frame_flow", frameFlow);
+
+        report.put("thermal", thermalSummaryJson());
+
+        JSONObject retention = new JSONObject();
+        retention.put("trace_capacity", MAX_TRACES);
+        retention.put("trace_total_seen", traceTotalSeen);
+        retention.put("trace_records_retained", traces.size());
+        retention.put("trace_records_evicted", traceRecordsEvicted);
+        retention.put("complete", traceRecordsEvicted == 0L);
+        if (traceRecordsEvicted > 0L) {
+            retention.put("reason", "trace_ring_buffer_evicted_oldest_records");
+        }
+        InferenceTrace firstRetained = traces.peekFirst();
+        InferenceTrace lastRetained = traces.peekLast();
+        if (firstRetained != null) {
+            retention.put("retained_from_elapsed_ms", traceElapsedMillis(firstRetained));
+        }
+        if (lastRetained != null) {
+            retention.put("retained_to_elapsed_ms", traceElapsedMillis(lastRetained));
+        }
+        report.put("data_retention", retention);
+
+        JSONObject completeness = new JSONObject();
+        completeness.put("status", traceRecordsEvicted == 0L ? "complete" : "incomplete");
+        completeness.put("time_series_complete", traceRecordsEvicted == 0L);
+        completeness.put(
+                "session_completion_status",
+                hasExperimentSession
+                        ? experimentSession.completionStatus
+                        : (measurementSessionActive ? "running" : "stopped_manual")
+        );
+        if (traceRecordsEvicted > 0L) {
+            completeness.put("reason", "trace_records_evicted");
+        }
+        report.put("data_completeness", completeness);
 
         JSONObject memory = new JSONObject();
         if (peakPssKb >= 0L) memory.put("ram_peak_mb", peakPssKb / 1024.0);
@@ -1324,26 +1616,139 @@ public final class MetricsCollector {
         }
     }
 
+    private long traceElapsedMillis(InferenceTrace trace) {
+        return Math.max(
+                0L,
+                (trace.elapsedRealtimeNanos() - sessionStartedElapsedNanos) / 1_000_000L
+        );
+    }
+
+    private JSONObject thermalSummaryJson() throws JSONException {
+        JSONObject summary = new JSONObject();
+        summary.put("sample_count", thermalSamples.size());
+        summary.put("sampling_independent_of_processed_fps", true);
+        if (thermalSamples.isEmpty()) {
+            summary.put("available", false);
+            return summary;
+        }
+        summary.put("available", true);
+        double minTemperature = Double.POSITIVE_INFINITY;
+        double maxTemperature = Double.NEGATIVE_INFINITY;
+        int transitions = 0;
+        int previousStatus = Integer.MIN_VALUE;
+        for (JSONObject sample : thermalSamples) {
+            double temperature = sample.optDouble("battery_temperature_c", Double.NaN);
+            if (!Double.isNaN(temperature)) {
+                minTemperature = Math.min(minTemperature, temperature);
+                maxTemperature = Math.max(maxTemperature, temperature);
+            }
+            int status = sample.optInt("thermal_status", Integer.MIN_VALUE);
+            if (previousStatus != Integer.MIN_VALUE
+                    && status != Integer.MIN_VALUE
+                    && status != previousStatus) {
+                transitions++;
+            }
+            if (status != Integer.MIN_VALUE) previousStatus = status;
+        }
+        JSONObject first = thermalSamples.get(0);
+        JSONObject last = thermalSamples.get(thermalSamples.size() - 1);
+        if (!Double.isInfinite(minTemperature)) {
+            summary.put("battery_temperature_min_c", minTemperature);
+            summary.put("battery_temperature_max_c", maxTemperature);
+        }
+        summary.put("start", new JSONObject(first.toString()));
+        summary.put("end", new JSONObject(last.toString()));
+        summary.put("thermal_status_transitions", transitions);
+        return summary;
+    }
+
+    public synchronized String createThermalCsv() {
+        StringBuilder csv = new StringBuilder(
+                "experiment_session_id,elapsed_ms,battery_temperature_c,thermal_status,thermal_headroom,headroom_available,battery_percent,charging,available_memory_bytes\n"
+        );
+        for (JSONObject sample : thermalSamples) {
+            csv.append(csvCell(sample.optString("experiment_session_id", ""))).append(',')
+                    .append(jsonCell(sample, "elapsed_ms")).append(',')
+                    .append(jsonCell(sample, "battery_temperature_c")).append(',')
+                    .append(jsonCell(sample, "thermal_status")).append(',')
+                    .append(jsonCell(sample, "thermal_headroom")).append(',')
+                    .append(jsonCell(sample, "headroom_available")).append(',')
+                    .append(jsonCell(sample, "battery_percent")).append(',')
+                    .append(jsonCell(sample, "charging")).append(',')
+                    .append(jsonCell(sample, "available_memory_bytes")).append('\n');
+        }
+        return csv.toString();
+    }
+
+    public synchronized String createFrameFlowCsv() {
+        StringBuilder csv = new StringBuilder(
+                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_gate,frames_skipped_camera_transform,frames_skipped_scene_change,estimated_upstream_gaps\n"
+        );
+        for (FrameFlowBucket bucket : frameFlowBuckets.values()) {
+            csv.append(csvCell(experimentSessionId)).append(',')
+                    .append(bucket.elapsedMs).append(',')
+                    .append(bucket.framesReceived).append(',')
+                    .append(bucket.framesProcessed).append(',')
+                    .append(bucket.framesSkippedGate).append(',')
+                    .append(bucket.framesSkippedCameraTransform).append(',')
+                    .append(bucket.framesSkippedSceneChange).append(',')
+                    .append(bucket.estimatedUpstreamGaps).append('\n');
+        }
+        return csv.toString();
+    }
+
+    public synchronized String createEventsJsonl() {
+        StringBuilder jsonl = new StringBuilder();
+        for (JSONObject event : eventRecords) {
+            jsonl.append(event).append('\n');
+        }
+        return jsonl.toString();
+    }
+
+    private static String jsonCell(JSONObject source, String key) {
+        if (!source.has(key) || source.isNull(key)) return "";
+        Object value = source.opt(key);
+        return value == null || value == JSONObject.NULL ? "" : csvCell(String.valueOf(value));
+    }
+
     public synchronized String createCsvReport() {
         String[] stages = new String[]{
-                "total", "camera_conversion", "vehicle_preprocess", "vehicle_inference", "vehicle_postprocess",
+                "total", "engine_setup", "camera_conversion", "camera_to_bitmap", "camera_rotation",
+                "vehicle_preprocess", "vehicle_inference", "vehicle_postprocess",
                 "plate_preprocess", "plate_inference", "plate_postprocess",
-                "rectification", "character_preprocess", "character_inference", "character_postprocess"
+                "rectification", "character_preprocess", "character_inference", "character_postprocess",
+                "engine_total", "pipeline_finalize", "measured_stage_sum", "inference_sum",
+                "auxiliary_sum", "engine_measured_sum", "pipeline_overhead", "engine_overhead"
         };
         StringBuilder csv = new StringBuilder();
-        csv.append("frame_id,timestamp_ms,status,text");
+        csv.append("frame_id,timestamp_ms,elapsed_ms,status,text");
         for (String stage : stages) csv.append(',').append(stage).append("_ms");
         csv.append(",vehicle_confidence,vehicle_roi_area_ratio,plate_confidence,plate_fit,plate_sharpness,characters_min,characters_mean")
+                .append(",pipeline_overhead_ratio,scene_change_score,scene_change_fraction,scene_brightness_delta")
+                .append(",camera_zoom_ratio,auto_zoom_target_roi_area_ratio,auto_zoom_lock_score,auto_zoom_lock_second_score,auto_zoom_lock_confidence")
                 .append(",mz_runs,mz_skipped,invalid_plate_geometry")
                 .append(",vehicle_runs,vehicle_skipped,vehicle_unavailable")
                 .append(",plate_roi_runs,plate_full_frame_runs,full_frame_fallbacks")
-                .append(",source_width,source_height")
+                .append(",scene_change_candidate,scene_reset,camera_transform_in_progress")
+                .append(",auto_zoom_target_roi,auto_zoom_lock_candidates,auto_zoom_lock_misses")
+                .append(",plate_detections_raw,plate_detections_after_dedup,plate_detections_suppressed")
+                .append(",vehicle_detections_raw,vehicle_detections_used,vehicle_detections_diagnostic,vehicle_detections_rejected_class,vehicle_regions_selected")
+                .append(",source_width,source_height,camera_rotation_degrees")
                 .append(",rapid_motion_frames")
+                .append(",mt_scheduler_reason,target_state,target_transition_reason")
+                .append(",tracker_quality,tracker_support_ratio,overlay_update_fps,target_roi_area_ratio")
+                .append(",tracker_updates,tracker_failures,tracker_inliers")
+                .append(",mt_skipped_by_tracker,mt_forced_by_quality,mt_periodic_refresh")
+                .append(",mt_scheduler_queue_size,mt_runs_this_frame,mt_deferred_fallbacks,mt_staggered_roi_runs")
+                .append(",target_lock_age_frames,target_roi_mt_runs")
+                .append(",target_recoveries_level_1,target_recoveries_level_2,target_recoveries_level_3,target_recoveries_level_4")
+                .append(",locked_track_id,lock_switches,lock_losses,lock_reassociations,frames_to_lock,time_to_lock_ms")
                 .append(",pss_start_kb,pss_end_kb,pss_delta_kb")
                 .append(",native_heap_start_bytes,native_heap_end_bytes,native_heap_delta_bytes\n");
         for (InferenceTrace trace : traces) {
             csv.append(trace.frameId()).append(',')
                     .append(trace.timestampMillis()).append(',')
+                    .append(traceElapsedMillis(trace)).append(',')
                     .append(csvCell(trace.status())).append(',')
                     .append(csvCell(trace.recognizedText()));
             for (String stage : stages) {
@@ -1358,6 +1763,15 @@ public final class MetricsCollector {
             appendConfidence(csv, trace, "plate_sharpness");
             appendConfidence(csv, trace, "characters_min");
             appendConfidence(csv, trace, "characters_mean");
+            appendConfidence(csv, trace, "pipeline_overhead_ratio");
+            appendConfidence(csv, trace, "scene_change_score");
+            appendConfidence(csv, trace, "scene_change_fraction");
+            appendConfidence(csv, trace, "scene_brightness_delta");
+            appendConfidence(csv, trace, "camera_zoom_ratio");
+            appendConfidence(csv, trace, "auto_zoom_target_roi_area_ratio");
+            appendConfidence(csv, trace, "auto_zoom_lock_score");
+            appendConfidence(csv, trace, "auto_zoom_lock_second_score");
+            appendConfidence(csv, trace, "auto_zoom_lock_confidence");
             appendCount(csv, trace, "mz_runs");
             appendCount(csv, trace, "mz_skipped");
             appendCount(csv, trace, "invalid_plate_geometry");
@@ -1367,9 +1781,53 @@ public final class MetricsCollector {
             appendCount(csv, trace, "plate_roi_runs");
             appendCount(csv, trace, "plate_full_frame_runs");
             appendCount(csv, trace, "full_frame_fallbacks");
+            appendCount(csv, trace, "scene_change_candidate");
+            appendCount(csv, trace, "scene_reset");
+            appendCount(csv, trace, "camera_transform_in_progress");
+            appendCount(csv, trace, "auto_zoom_target_roi");
+            appendCount(csv, trace, "auto_zoom_lock_candidates");
+            appendCount(csv, trace, "auto_zoom_lock_misses");
+            appendCount(csv, trace, "plate_detections_raw");
+            appendCount(csv, trace, "plate_detections_after_dedup");
+            appendCount(csv, trace, "plate_detections_suppressed");
+            appendCount(csv, trace, "vehicle_detections_raw");
+            appendCount(csv, trace, "vehicle_detections_used");
+            appendCount(csv, trace, "vehicle_detections_diagnostic");
+            appendCount(csv, trace, "vehicle_detections_rejected_class");
+            appendCount(csv, trace, "vehicle_regions_selected");
             appendCount(csv, trace, "source_width");
             appendCount(csv, trace, "source_height");
+            appendCount(csv, trace, "camera_rotation_degrees");
             appendCount(csv, trace, "rapid_motion_frames");
+            appendAttribute(csv, trace, "mt_scheduler_reason");
+            appendAttribute(csv, trace, "target_state");
+            appendAttribute(csv, trace, "target_transition_reason");
+            appendConfidence(csv, trace, "tracker_quality");
+            appendConfidence(csv, trace, "tracker_support_ratio");
+            appendConfidence(csv, trace, "overlay_update_fps");
+            appendConfidence(csv, trace, "target_roi_area_ratio");
+            appendCount(csv, trace, "tracker_updates");
+            appendCount(csv, trace, "tracker_failures");
+            appendCount(csv, trace, "tracker_inliers");
+            appendCount(csv, trace, "mt_skipped_by_tracker");
+            appendCount(csv, trace, "mt_forced_by_quality");
+            appendCount(csv, trace, "mt_periodic_refresh");
+            appendCount(csv, trace, "mt_scheduler_queue_size");
+            appendCount(csv, trace, "mt_runs_this_frame");
+            appendCount(csv, trace, "mt_deferred_fallbacks");
+            appendCount(csv, trace, "mt_staggered_roi_runs");
+            appendCount(csv, trace, "target_lock_age_frames");
+            appendCount(csv, trace, "target_roi_mt_runs");
+            appendCount(csv, trace, "target_recoveries_level_1");
+            appendCount(csv, trace, "target_recoveries_level_2");
+            appendCount(csv, trace, "target_recoveries_level_3");
+            appendCount(csv, trace, "target_recoveries_level_4");
+            appendCount(csv, trace, "locked_track_id");
+            appendCount(csv, trace, "lock_switches");
+            appendCount(csv, trace, "lock_losses");
+            appendCount(csv, trace, "lock_reassociations");
+            appendCount(csv, trace, "frames_to_lock");
+            appendCount(csv, trace, "time_to_lock_ms");
             csv.append(',').append(trace.pssStartKb())
                     .append(',').append(trace.pssEndKb())
                     .append(',').append(trace.pssEndKb() - trace.pssStartKb())
@@ -1385,6 +1843,12 @@ public final class MetricsCollector {
         csv.append(',');
         Double value = trace.confidences().get(key);
         if (value != null) csv.append(value);
+    }
+
+    private static void appendAttribute(StringBuilder csv, InferenceTrace trace, String key) {
+        csv.append(',');
+        String value = trace.attributes().get(key);
+        if (value != null) csv.append(csvCell(value));
     }
 
     private static void appendCount(StringBuilder csv, InferenceTrace trace, String key) {

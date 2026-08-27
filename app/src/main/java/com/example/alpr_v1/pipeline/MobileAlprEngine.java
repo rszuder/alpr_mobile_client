@@ -44,11 +44,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 final class MobileAlprEngine implements AutoCloseable {
+    static final class ProcessingCancelledException extends RuntimeException {
+        ProcessingCancelledException() {
+            super("scene_superseded", null, false, false);
+        }
+    }
     private static final int VEHICLE_REFRESH_FRAMES = 3;
-    private static final int FULL_FRAME_FALLBACK_FRAMES = 15;
-
     private static final float VEHICLE_REGION_MARGIN = 0.18f;
     private final InstalledModel vehicleModel;
     private final InstalledModel plateModel;
@@ -69,12 +73,32 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
+    private final List<Detection> cachedVehicleDetections = new ArrayList<>();
     private final Map<Long, float[]> plateAppearanceByTrack = new java.util.HashMap<>();
     private final AutoZoomTargetLock autoZoomTargetLock = new AutoZoomTargetLock();
+    private final MtInferenceScheduler mtInferenceScheduler = new MtInferenceScheduler();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
     private long appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
+    private int reportedTargetLockSwitches;
+    private int reportedTargetLockLosses;
+    private int reportedTargetLockReassociations;
+    private long reportedTargetLockRevision;
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraTransformInProgress;
+    private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
+
+    private static final class VehicleDetectionResult {
+        final List<Detection> vehicles;
+        final List<VehicleRoiSelector.Region> selectedRegions;
+
+        VehicleDetectionResult(
+                List<Detection> vehicles,
+                List<VehicleRoiSelector.Region> selectedRegions
+        ) {
+            this.vehicles = vehicles;
+            this.selectedRegions = selectedRegions;
+        }
+    }
 
     private static final class PlateCandidate {
         final Detection detection;
@@ -172,9 +196,16 @@ final class MobileAlprEngine implements AutoCloseable {
     private void resetSceneDependentState() {
         trackCoordinator.reset();
         cachedVehicleRegions.clear();
+        cachedVehicleDetections.clear();
         plateAppearanceByTrack.clear();
         autoZoomTargetLock.clear();
+        mtInferenceScheduler.reset();
+        targetSnapshot = TargetSnapshot.searching();
         appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
+        reportedTargetLockSwitches = 0;
+        reportedTargetLockLosses = 0;
+        reportedTargetLockReassociations = 0;
+        reportedTargetLockRevision = 0L;
         lastVehicleDetectionFrame = Long.MIN_VALUE;
     }
 
@@ -189,6 +220,10 @@ final class MobileAlprEngine implements AutoCloseable {
 
     void setCameraTransformInProgress(boolean inProgress) {
         cameraTransformInProgress = inProgress;
+    }
+
+    void setTargetSnapshot(TargetSnapshot snapshot) {
+        targetSnapshot = snapshot == null ? TargetSnapshot.searching() : snapshot;
     }
 
     void setAutoZoomTargetLock(
@@ -209,6 +244,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         prediction,
                         plateAppearanceByTrack.get(targetTrackId)
                 );
+                mtInferenceScheduler.forceRefresh("target_lock_acquired");
             } else {
                 autoZoomTargetLock.clear();
             }
@@ -225,6 +261,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     void applyCameraZoomTransform(float relativeRatio) {
         trackCoordinator.applyCameraZoomTransform(relativeRatio);
+        mtInferenceScheduler.forceRefresh("zoom_transform");
         if (relativeRatio > 1.001f) {
             trackCoordinator.requestFreshRecognitionAfterZoom();
         }
@@ -234,6 +271,15 @@ final class MobileAlprEngine implements AutoCloseable {
             Bitmap frame,
             InferenceTrace trace,
             AlprPipeline.PlateDetectionCallback plateDetectionCallback
+    ) {
+        return run(frame, trace, plateDetectionCallback, () -> false);
+    }
+
+    PipelineResult run(
+            Bitmap frame,
+            InferenceTrace trace,
+            AlprPipeline.PlateDetectionCallback plateDetectionCallback,
+            BooleanSupplier cancellationRequested
     ) {
         SceneChangeDetector.Result scene =
                 sceneChangeDetector.update(frame);
@@ -284,6 +330,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 "camera_transform_in_progress",
                 cameraTransformInProgress ? 1 : 0
         );
+        cancelIfRequested(cancellationRequested);
 
         if (effectiveSceneChanged) {
 
@@ -301,122 +348,179 @@ final class MobileAlprEngine implements AutoCloseable {
         }
 
         List<OverlayItem> overlays = new ArrayList<>();
-        List<VehicleRoiSelector.Region> plateRegions = new ArrayList<>();
+        List<VehicleRoiSelector.Region> vehicleRegions = new ArrayList<>();
         boolean targetRoiActive = autoZoomTargetLock.active();
-        boolean useVehicleRegions =
-                roiBudgetPolicy.usesVehicleCascade()
-                        && vehicleBackend != null;
-        if (targetRoiActive) {
-            AutoZoomTargetLock.Box targetSearchBox =
-                    autoZoomTargetLock.searchBox();
-            VehicleRoiSelector.Region targetRegion =
-                    VehicleRoiSelector.normalizedRegion(
-                            frame.getWidth(),
-                            frame.getHeight(),
-                            targetSearchBox.left,
-                            targetSearchBox.top,
-                            targetSearchBox.right,
-                            targetSearchBox.bottom
-                    );
-            plateRegions.add(targetRegion);
-            overlays.add(new OverlayItem(
-                    OverlayItem.Kind.VEHICLE_ROI,
-                    new RectF(
-                            targetRegion.left / (float) frame.getWidth(),
-                            targetRegion.top / (float) frame.getHeight(),
-                            targetRegion.right / (float) frame.getWidth(),
-                            targetRegion.bottom / (float) frame.getHeight()
-                    ),
-                    Collections.emptyList(),
-                    "ROI AUTO ZOOM",
-                    0L,
-                    false
+        TargetSnapshot liveTarget = targetSnapshot == null
+                ? TargetSnapshot.searching() : targetSnapshot;
+        boolean trackedGeometryAvailable = !effectiveSceneChanged
+                && liveTarget.trackId > 0L
+                && liveTarget.overlayItem != null;
+        boolean anyTargetGeometry = trackedGeometryAvailable || targetRoiActive;
+        boolean vehicleRecoveryRequested =
+                mtInferenceScheduler.requiresVehicleRecovery();
+
+        MtInferenceScheduler.Decision mtDecision = null;
+        if (anyTargetGeometry && !vehicleRecoveryRequested) {
+            mtDecision = mtInferenceScheduler.plan(new MtInferenceScheduler.Input(
+                    trace.frameId(),
+                    true,
+                    trackedGeometryAvailable
+                            ? liveTarget.state : TargetSnapshot.State.DEGRADED,
+                    trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
+                    trackedGeometryAvailable ? liveTarget.consecutiveFailures : 1,
+                    effectiveSceneChanged,
+                    rapidCameraMotion,
+                    cameraTransformInProgress,
+                    0
             ));
-            trace.putCount("auto_zoom_target_roi", 1);
-            trace.putConfidence(
-                    "auto_zoom_target_roi_area_ratio",
-                    targetRegion.area()
-                            / (double) ((long) frame.getWidth() * frame.getHeight())
-            );
-        } else if (useVehicleRegions) {
+            recordSchedulerDecision(trace, mtDecision, liveTarget);
+            if (!mtDecision.runsMt()) {
+                trace.putCount("mt_skipped_by_tracker", 1);
+                trace.putCount("mt_runs_this_frame", 0);
+                addVehicleDiagnostics(
+                        overlays,
+                        cachedVehicleDetections,
+                        cachedVehicleRegions,
+                        frame,
+                        roiBudgetPolicy
+                );
+                if (liveTarget.overlayItem != null) {
+                    overlays.add(carriedTargetOverlay(liveTarget.overlayItem));
+                }
+                trace.finish("tracking", "");
+                return new PipelineResult(
+                        "tracking",
+                        "Śledzenie celu — MT pominięte",
+                        "",
+                        0.0,
+                        overlays,
+                        frame.getWidth(),
+                        frame.getHeight(),
+                        effectiveSceneChanged
+                );
+            }
+        }
+
+        boolean useVehicleRegions = (!anyTargetGeometry || vehicleRecoveryRequested)
+                && roiBudgetPolicy.usesVehicleCascade()
+                && vehicleBackend != null;
+        if (useVehicleRegions) {
             boolean refreshVehicles = cachedVehicleRegions.isEmpty()
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
             if (refreshVehicles) {
+                VehicleDetectionResult vehicleResult =
+                        detectVehicleRegions(frame, trace);
                 cachedVehicleRegions.clear();
-                cachedVehicleRegions.addAll(detectVehicleRegions(frame, trace));
+                cachedVehicleRegions.addAll(vehicleResult.selectedRegions);
+                cachedVehicleDetections.clear();
+                cachedVehicleDetections.addAll(vehicleResult.vehicles);
                 lastVehicleDetectionFrame = trace.frameId();
                 trace.putCount("vehicle_runs", 1);
             } else {
                 trace.putCount("vehicle_skipped", 1);
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
-            plateRegions.addAll(cachedVehicleRegions);
-
-            for (VehicleRoiSelector.Region region : cachedVehicleRegions) {
-                if (region.vehicle == null) continue;
-
-                Detection vehicle = region.vehicle;
-
-                overlays.add(new OverlayItem(
-                        OverlayItem.Kind.VEHICLE,
-                        new RectF(
-                                vehicle.left / frame.getWidth(),
-                                vehicle.top / frame.getHeight(),
-                                vehicle.right / frame.getWidth(),
-                                vehicle.bottom / frame.getHeight()
-                        ),
-                        Collections.emptyList(),
-                        String.format(
-                                Locale.ROOT,
-                                "pojazd %.0f%%",
-                                vehicle.confidence * 100f
-                        ),
-                        0L,
-                        false
-                ));
-
-                overlays.add(new OverlayItem(
-                        OverlayItem.Kind.VEHICLE_ROI,
-                        new RectF(
-                                region.left / (float) frame.getWidth(),
-                                region.top / (float) frame.getHeight(),
-                                region.right / (float) frame.getWidth(),
-                                region.bottom / (float) frame.getHeight()
-                        ),
-                        Collections.emptyList(),
-                        "ROI MP→MT",
-                        0L,
-                        false
-                ));
-            }
-        } else if (roiBudgetPolicy.usesVehicleCascade()) {
+            vehicleRegions.addAll(cachedVehicleRegions);
+            addVehicleDiagnostics(
+                    overlays,
+                    cachedVehicleDetections,
+                    cachedVehicleRegions,
+                    frame,
+                    roiBudgetPolicy
+            );
+        } else if ((!anyTargetGeometry || vehicleRecoveryRequested)
+                && roiBudgetPolicy.usesVehicleCascade()) {
             trace.putCount("vehicle_unavailable", 1);
+        } else if (anyTargetGeometry) {
+            trace.putCount("vehicle_skipped", 1);
+            addVehicleDiagnostics(
+                    overlays,
+                    cachedVehicleDetections,
+                    cachedVehicleRegions,
+                    frame,
+                    roiBudgetPolicy
+            );
+        }
+        cancelIfRequested(cancellationRequested);
+
+        if (mtDecision == null) {
+            mtDecision = mtInferenceScheduler.plan(new MtInferenceScheduler.Input(
+                    trace.frameId(),
+                    anyTargetGeometry,
+                    trackedGeometryAvailable
+                            ? liveTarget.state : TargetSnapshot.State.SEARCHING,
+                    trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
+                    trackedGeometryAvailable ? liveTarget.consecutiveFailures : 0,
+                    effectiveSceneChanged,
+                    rapidCameraMotion,
+                    cameraTransformInProgress,
+                    vehicleRegions.size()
+            ));
+            recordSchedulerDecision(trace, mtDecision, liveTarget);
         }
 
-        boolean roiPass = !plateRegions.isEmpty();
-        if (!roiPass) plateRegions.add(fullFrameRegion(frame));
+        VehicleRoiSelector.Region scheduledRegion;
+        switch (mtDecision.kind) {
+            case TARGET_ROI:
+                scheduledRegion = targetRegion(
+                        frame,
+                        liveTarget,
+                        targetRoiActive,
+                        mtDecision.targetMargin
+                );
+                overlays.add(roiOverlay(
+                        scheduledRegion,
+                        frame,
+                        targetRoiActive ? "ROI AUTO ZOOM" : "ROI TARGET"
+                ));
+                trace.putCount("target_roi_mt_runs", 1);
+                trace.putConfidence(
+                        "target_roi_area_ratio",
+                        scheduledRegion.area()
+                                / (double) ((long) frame.getWidth() * frame.getHeight())
+                );
+                if (targetRoiActive) trace.putCount("auto_zoom_target_roi", 1);
+                break;
+            case VEHICLE_ROI:
+                int regionIndex = Math.min(
+                        Math.max(0, mtDecision.vehicleRegionIndex),
+                        Math.max(0, vehicleRegions.size() - 1)
+                );
+                scheduledRegion = vehicleRegions.isEmpty()
+                        ? fullFrameRegion(frame)
+                        : vehicleRegions.get(regionIndex);
+                trace.putCount("mt_staggered_roi_runs", vehicleRegions.size() > 1 ? 1 : 0);
+                break;
+            case FULL_FRAME:
+            default:
+                scheduledRegion = fullFrameRegion(frame);
+                if (mtDecision.reason.contains("deferred")) {
+                    trace.putCount("mt_deferred_fallbacks", 1);
+                    trace.putCount("full_frame_fallbacks", 1);
+                }
+                break;
+        }
+
         long[] plateDurations = new long[3];
-        List<Detection> plates = new ArrayList<>();
-        for (VehicleRoiSelector.Region region : plateRegions) {
-            plates.addAll(detectPlates(frame, region, plateDurations));
-        }
-        trace.putCount("plate_roi_runs", roiPass ? plateRegions.size() : 0);
+        List<Detection> plates = new ArrayList<>(
+                detectPlates(frame, scheduledRegion, plateDurations)
+        );
+        cancelIfRequested(cancellationRequested);
+        boolean roiPass = mtDecision.kind != MtInferenceScheduler.Kind.FULL_FRAME;
+        trace.putCount("mt_runs_this_frame", 1);
+        trace.putCount("plate_roi_runs", roiPass ? 1 : 0);
         trace.putCount("plate_full_frame_runs", roiPass ? 0 : 1);
-
-        boolean periodicFallback = !targetRoiActive
-                && roiPass
-                && trace.frameId() % FULL_FRAME_FALLBACK_FRAMES == 0;
-        if (!targetRoiActive
-                && roiPass
-                && (plates.isEmpty() || periodicFallback)) {
-            plates.addAll(detectPlates(frame, fullFrameRegion(frame), plateDurations));
-            trace.putCount("plate_full_frame_runs", 1);
-            trace.putCount("full_frame_fallbacks", 1);
-            if (plates.isEmpty()) {
-                cachedVehicleRegions.clear();
-                lastVehicleDetectionFrame = Long.MIN_VALUE;
-            }
+        mtInferenceScheduler.onMtResult(
+                mtDecision,
+                trace.frameId(),
+                !plates.isEmpty()
+        );
+        if (plates.isEmpty()
+                && mtDecision.kind == MtInferenceScheduler.Kind.FULL_FRAME) {
+            cachedVehicleRegions.clear();
+            cachedVehicleDetections.clear();
+            lastVehicleDetectionFrame = Long.MIN_VALUE;
         }
         trace.putDurationNanos("plate_preprocess", plateDurations[0]);
         trace.putDurationNanos("plate_inference", plateDurations[1]);
@@ -532,6 +636,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 plates,
                 trace.frameId()
         );
+        cancelIfRequested(cancellationRequested);
         if (plates.isEmpty()) {
             trackCoordinator.update(
                     Collections.emptyList(), trace.frameId(), SystemClock.elapsedRealtimeNanos()
@@ -589,6 +694,7 @@ final class MobileAlprEngine implements AutoCloseable {
         );
 
         for (PlateTrackCoordinator.Decision decision : decisions) {
+            cancelIfRequested(cancellationRequested);
             if (decision.sourceIndex < 0
                     || decision.sourceIndex >= candidates.size()) continue;
             float[] appearance = PlateAppearanceDescriptor.from(
@@ -653,8 +759,10 @@ final class MobileAlprEngine implements AutoCloseable {
             if (decision.sourceIndex < 0 || decision.sourceIndex >= candidates.size()) continue;
             PlateCandidate candidate = candidates.get(decision.sourceIndex);
             TemporalCharacterAggregator.Result trackResult = decision.currentResult;
+            String predictionBefore = trackResult == null ? "" : trackResult.text;
             Bitmap observationBitmap = null;
             List<PlateCharacter> observedCharacters = Collections.emptyList();
+            String freshPrediction = "";
             CropInferenceTiming cropTiming = null;
             long cropRectificationNanos = 0L;
             long cropCharacterPreprocessNanos = 0L;
@@ -680,6 +788,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
                     started = SystemClock.elapsedRealtimeNanos();
                     InferenceRunResult characterRun = characterBackend.run(characterInput.buffer);
+                    cancelIfRequested(cancellationRequested);
                     cropCharacterInferenceNanos = SystemClock.elapsedRealtimeNanos() - started;
                     characterInferenceNanos += cropCharacterInferenceNanos;
                     characterRuns++;
@@ -717,6 +826,11 @@ final class MobileAlprEngine implements AutoCloseable {
                             rectified.getWidth(),
                             rectified.getHeight()
                     );
+                    StringBuilder freshText = new StringBuilder();
+                    for (PlateCharacter character : observedCharacters) {
+                        freshText.append(character.label);
+                    }
+                    freshPrediction = freshText.toString();
                     observationBitmap = rectified.copy(Bitmap.Config.ARGB_8888, false);
                     cropTiming = new CropInferenceTiming(
                             trace.frameId(),
@@ -750,6 +864,7 @@ final class MobileAlprEngine implements AutoCloseable {
             }
             plateObservations.add(new PlateObservation(
                     decision.trackId,
+                    trace.frameId(),
                     observationBitmap,
                     visibleText,
                     candidate.detection.confidence,
@@ -760,7 +875,27 @@ final class MobileAlprEngine implements AutoCloseable {
                     System.currentTimeMillis(),
                     SystemClock.elapsedRealtimeNanos(),
                     candidate.sharpness,
-                    cropTiming
+                    plateAppearanceByTrack.get(decision.trackId),
+                    cropTiming,
+                    PlateGeometry.from(
+                            frame.getWidth(),
+                            frame.getHeight(),
+                            candidate.detection,
+                            candidate.corners
+                    ),
+                    decision.recognize,
+                    decision.recognize && !freshPrediction.isEmpty(),
+                    freshPrediction,
+                    !freshPrediction.isEmpty() && freshPrediction.equals(visibleText),
+                    decision.mzAttemptIndex,
+                    trackResult == null
+                            ? decision.expectedLayout
+                            : trackResult.layout,
+                    trackResult == null
+                            ? decision.expectedRowCounts
+                            : trackResult.rowCounts,
+                    predictionBefore,
+                    visibleText
             ));
             String overlayText;
 
@@ -973,6 +1108,180 @@ final class MobileAlprEngine implements AutoCloseable {
         );
     }
 
+    private void recordSchedulerDecision(
+            InferenceTrace trace,
+            MtInferenceScheduler.Decision decision,
+            TargetSnapshot target
+    ) {
+        trace.putAttribute("mt_scheduler_reason", decision.reason);
+        trace.putAttribute(
+                "target_state",
+                target == null ? "SEARCHING" : target.state.name()
+        );
+        trace.putCount("mt_scheduler_queue_size", decision.runsMt() ? 1 : 0);
+        trace.putCount("target_recovery_level", decision.recoveryLevel);
+        if (target != null) {
+            trace.putAttribute("target_transition_reason", target.transitionReason);
+            trace.putConfidence("tracker_quality", target.trackingQuality);
+            trace.putConfidence("tracker_support_ratio", target.supportRatio);
+            trace.putCount("tracker_inliers", target.trackerInliers);
+            trace.putCount("target_lock_age_frames", target.ageFrames);
+            trace.putCount("tracker_failures", target.consecutiveFailures);
+            trace.putCount("locked_track_id", target.lockedTrackId);
+
+            int switchDelta = Math.max(
+                    0,
+                    target.lockSwitches - reportedTargetLockSwitches
+            );
+            int lossDelta = Math.max(
+                    0,
+                    target.lockLosses - reportedTargetLockLosses
+            );
+            int reassociationDelta = Math.max(
+                    0,
+                    target.lockReassociations
+                            - reportedTargetLockReassociations
+            );
+            trace.putCount("lock_switches", switchDelta);
+            trace.putCount("lock_losses", lossDelta);
+            trace.putCount("lock_reassociations", reassociationDelta);
+            reportedTargetLockSwitches = target.lockSwitches;
+            reportedTargetLockLosses = target.lockLosses;
+            reportedTargetLockReassociations = target.lockReassociations;
+
+            if (target.lockRevision > 0L
+                    && target.lockRevision != reportedTargetLockRevision) {
+                trace.putCount("frames_to_lock", target.framesToLock);
+                trace.putCount("time_to_lock_ms", target.timeToLockMillis);
+                reportedTargetLockRevision = target.lockRevision;
+            } else {
+                trace.putCount("frames_to_lock", 0);
+                trace.putCount("time_to_lock_ms", 0);
+            }
+        }
+        if ("periodic_refresh".equals(decision.reason)) {
+            trace.putCount("mt_periodic_refresh", 1);
+        } else if (decision.reason.contains("degraded")
+                || decision.reason.contains("invalid")) {
+            trace.putCount("mt_forced_by_quality", 1);
+        }
+        if (decision.recoveryLevel > 0) {
+            trace.putCount(
+                    "target_recoveries_level_" + decision.recoveryLevel,
+                    1
+            );
+        }
+    }
+
+    private VehicleRoiSelector.Region targetRegion(
+            Bitmap frame,
+            TargetSnapshot target,
+            boolean autoZoomActive,
+            float margin
+    ) {
+        if (autoZoomActive) {
+            AutoZoomTargetLock.Box box = autoZoomTargetLock.searchBox();
+            return VehicleRoiSelector.normalizedRegion(
+                    frame.getWidth(), frame.getHeight(),
+                    box.left, box.top, box.right, box.bottom
+            );
+        }
+        RectF bounds = target == null ? new RectF(0f, 0f, 1f, 1f)
+                : target.normalizedBounds;
+        float marginX = bounds.width() * Math.max(0f, margin);
+        float marginY = bounds.height() * Math.max(0f, margin);
+        return VehicleRoiSelector.normalizedRegion(
+                frame.getWidth(),
+                frame.getHeight(),
+                bounds.left - marginX,
+                bounds.top - marginY,
+                bounds.right + marginX,
+                bounds.bottom + marginY
+        );
+    }
+
+    private static void addVehicleDiagnostics(
+            List<OverlayItem> overlays,
+            List<Detection> vehicles,
+            List<VehicleRoiSelector.Region> selectedRegions,
+            Bitmap frame,
+            RoiBudgetPolicy policy
+    ) {
+        for (Detection vehicle : vehicles) {
+            overlays.add(new OverlayItem(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(
+                            vehicle.left / frame.getWidth(),
+                            vehicle.top / frame.getHeight(),
+                            vehicle.right / frame.getWidth(),
+                            vehicle.bottom / frame.getHeight()
+                    ),
+                    Collections.emptyList(),
+                    String.format(
+                            Locale.ROOT,
+                            "MP pojazd %.0f%%",
+                            vehicle.confidence * 100f
+                    ),
+                    0L,
+                    false
+            ));
+        }
+
+        int selectedCount = selectedRegions.size();
+        String profile = policy == RoiBudgetPolicy.TWO_ROI
+                ? "R2" : policy == RoiBudgetPolicy.ONE_ROI ? "R1" : "R0";
+        for (int index = 0; index < selectedCount; index++) {
+            overlays.add(roiOverlay(
+                    selectedRegions.get(index),
+                    frame,
+                    String.format(
+                            Locale.ROOT,
+                            "%s ROI %d/%d",
+                            profile,
+                            index + 1,
+                            selectedCount
+                    )
+            ));
+        }
+    }
+
+    private static OverlayItem roiOverlay(
+            VehicleRoiSelector.Region region,
+            Bitmap frame,
+            String label
+    ) {
+        return new OverlayItem(
+                OverlayItem.Kind.VEHICLE_ROI,
+                new RectF(
+                        region.left / (float) frame.getWidth(),
+                        region.top / (float) frame.getHeight(),
+                        region.right / (float) frame.getWidth(),
+                        region.bottom / (float) frame.getHeight()
+                ),
+                Collections.emptyList(),
+                label,
+                0L,
+                false
+        );
+    }
+
+    private static OverlayItem carriedTargetOverlay(OverlayItem source) {
+        return new OverlayItem(
+                OverlayItem.Kind.PLATE,
+                source.normalizedBounds,
+                source.normalizedKeypoints,
+                source.label,
+                source.trackId,
+                true
+        );
+    }
+
+    private static void cancelIfRequested(BooleanSupplier cancellationRequested) {
+        if (cancellationRequested != null && cancellationRequested.getAsBoolean()) {
+            throw new ProcessingCancelledException();
+        }
+    }
+
     private static List<PlateCharacter> plateCharacters(
             List<Detection> detections,
             List<String> labels,
@@ -994,7 +1303,7 @@ final class MobileAlprEngine implements AutoCloseable {
         return result;
     }
 
-    private List<VehicleRoiSelector.Region> detectVehicleRegions(
+    private VehicleDetectionResult detectVehicleRegions(
             Bitmap frame,
             InferenceTrace trace
     ) {
@@ -1120,9 +1429,29 @@ final class MobileAlprEngine implements AutoCloseable {
                         + ", allowedClassIds=" + vehicleClassIds
         );
 
-        List<VehicleRoiSelector.Region> regions =
+        List<VehicleRoiSelector.Region> allDiagnosticRegions =
                 VehicleRoiSelector.select(
                         vehicles,
+                        frame.getWidth(),
+                        frame.getHeight(),
+                        Integer.MAX_VALUE,
+                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
+                        vehicleOutputSpec.iouThreshold()
+                );
+        List<Detection> diagnosticVehicles = new ArrayList<>(
+                allDiagnosticRegions.size()
+        );
+        for (VehicleRoiSelector.Region region : allDiagnosticRegions) {
+            if (region.vehicle != null) diagnosticVehicles.add(region.vehicle);
+        }
+        trace.putCount(
+                "vehicle_detections_diagnostic",
+                diagnosticVehicles.size()
+        );
+
+        List<VehicleRoiSelector.Region> regions =
+                VehicleRoiSelector.select(
+                        diagnosticVehicles,
                         frame.getWidth(),
                         frame.getHeight(),
                         roiBudgetPolicy.maximumRegions(),
@@ -1159,7 +1488,10 @@ final class MobileAlprEngine implements AutoCloseable {
                     Math.min(1.0, totalArea / (double) ((long) frame.getWidth() * frame.getHeight()))
             );
         }
-        return regions;
+        return new VehicleDetectionResult(
+                diagnosticVehicles,
+                regions
+        );
     }
 
     private static Set<Integer> resolveVehicleClassIds(List<String> labels) {

@@ -29,6 +29,7 @@
     "package_id": { "type": "string" },
     "variant_id": { "type": "string" },
     "hash_algorithm": { "const": "SHA-256" },
+    "telemetry_schema": { "const": "alpr.mobile_experiment_telemetry.v1" },
     "self_contained": { "type": "boolean" },
     "exact_source_package_embedded": { "type": "boolean" },
     "crop_count": { "type": "integer", "minimum": 0 },

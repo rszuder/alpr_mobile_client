@@ -52,7 +52,7 @@ public class AutoZoomControllerTest {
                 AutoZoomController.Action.NONE,
                 controller.evaluate(
                         Collections.singletonList(new AutoZoomController.Sample(
-                                1L, 0.5f, 0.5f, 0.12f, 0.30, false, 1, true, true, "WA1234"
+                                1L, 0.5f, 0.5f, 0.12f, 0.30, false, 1, true, true, true, "WA1234"
                         )),
                         1L
                 ).action
@@ -61,7 +61,7 @@ public class AutoZoomControllerTest {
                 AutoZoomController.Action.REQUEST_ZOOM,
                 controller.evaluate(
                         Collections.singletonList(new AutoZoomController.Sample(
-                                2L, 0.5f, 0.5f, 0.12f, 0.90, true, 4, true, true, "WA5678"
+                                2L, 0.5f, 0.5f, 0.12f, 0.90, true, 4, true, true, true, "WA5678"
                         )),
                         2L
                 ).action
@@ -136,11 +136,11 @@ public class AutoZoomControllerTest {
 
         AutoZoomController.Sample nearbyWrong = new AutoZoomController.Sample(
                 9L, 0.51f, 0.5f, 0.16f,
-                0.95, true, 3, true, true, "OTHER"
+                0.95, true, 3, true, true, true, "OTHER"
         );
         AutoZoomController.Sample exactTrack = new AutoZoomController.Sample(
                 7L, 0.58f, 0.5f, 0.16f,
-                0.60, false, 3, true, true, "WA1234"
+                0.60, false, 3, true, true, true, "WA1234"
         );
 
         assertEquals(
@@ -149,6 +149,57 @@ public class AutoZoomControllerTest {
                         Arrays.asList(nearbyWrong, exactTrack)
                 ).trackId
         );
+    }
+
+    @Test
+    public void failedFirstMzAttemptStartsRescueWithoutConsensus() {
+        AutoZoomController controller = new AutoZoomController();
+        controller.setEnabled(true);
+
+        AutoZoomController.Decision decision = controller.evaluate(
+                Collections.singletonList(new AutoZoomController.Sample(
+                        41L,
+                        0.5f,
+                        0.5f,
+                        0.30f,
+                        0.0,
+                        false,
+                        0,
+                        true,
+                        true,
+                        false,
+                        ""
+                )),
+                1L
+        );
+
+        assertEquals(AutoZoomController.Action.REQUEST_ZOOM, decision.action);
+        assertEquals("mz_no_detection", decision.reason);
+    }
+
+    @Test
+    public void doesNotTreatSkippedMzAsFailedAttempt() {
+        AutoZoomController controller = new AutoZoomController();
+        controller.setEnabled(true);
+
+        AutoZoomController.Decision decision = controller.evaluate(
+                Collections.singletonList(new AutoZoomController.Sample(
+                        42L,
+                        0.5f,
+                        0.5f,
+                        0.30f,
+                        0.0,
+                        false,
+                        0,
+                        true,
+                        false,
+                        false,
+                        ""
+                )),
+                1L
+        );
+
+        assertEquals(AutoZoomController.Action.NONE, decision.action);
     }
 
     private static AutoZoomController.Sample sample(
@@ -164,6 +215,7 @@ public class AutoZoomControllerTest {
                 confidence,
                 confirmed,
                 3,
+                true,
                 true,
                 true,
                 "WA1234"

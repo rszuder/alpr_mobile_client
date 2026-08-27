@@ -31,12 +31,23 @@ public final class ExperimentSession {
         public final String state;
         public final String experimentType;
         public final String variant;
+        public final String seriesId;
+        public final String scenarioId;
+        public final int replicateIndex;
+        public final String notes;
+        public final boolean autoZoomEnabled;
+        public final double maxZoomRatio;
+        public final boolean thermalStartConditionEnabled;
+        public final double maxStartBatteryTemperatureC;
+        public final int maxStartThermalStatus;
+        public final long thermalStabilizationMillis;
 
         public final long startedAtMillis;
         public final long finishedAtMillis;
         public final long durationMillis;
 
         public final String completionReason;
+        public final String completionStatus;
 
         public final boolean timerEnabled;
         public final long timerDurationMillis;
@@ -46,10 +57,21 @@ public final class ExperimentSession {
                 String state,
                 String experimentType,
                 String variant,
+                String seriesId,
+                String scenarioId,
+                int replicateIndex,
+                String notes,
+                boolean autoZoomEnabled,
+                double maxZoomRatio,
+                boolean thermalStartConditionEnabled,
+                double maxStartBatteryTemperatureC,
+                int maxStartThermalStatus,
+                long thermalStabilizationMillis,
                 long startedAtMillis,
                 long finishedAtMillis,
                 long durationMillis,
                 String completionReason,
+                String completionStatus,
                 boolean timerEnabled,
                 long timerDurationMillis
         ) {
@@ -57,10 +79,21 @@ public final class ExperimentSession {
             this.state = state;
             this.experimentType = experimentType;
             this.variant = variant;
+            this.seriesId = seriesId;
+            this.scenarioId = scenarioId;
+            this.replicateIndex = replicateIndex;
+            this.notes = notes;
+            this.autoZoomEnabled = autoZoomEnabled;
+            this.maxZoomRatio = maxZoomRatio;
+            this.thermalStartConditionEnabled = thermalStartConditionEnabled;
+            this.maxStartBatteryTemperatureC = maxStartBatteryTemperatureC;
+            this.maxStartThermalStatus = maxStartThermalStatus;
+            this.thermalStabilizationMillis = thermalStabilizationMillis;
             this.startedAtMillis = startedAtMillis;
             this.finishedAtMillis = finishedAtMillis;
             this.durationMillis = durationMillis;
             this.completionReason = completionReason;
+            this.completionStatus = completionStatus;
             this.timerEnabled = timerEnabled;
             this.timerDurationMillis = timerDurationMillis;
         }
@@ -77,6 +110,8 @@ public final class ExperimentSession {
     private String sessionId = "";
     private String experimentType = "";
     private String variant = "";
+    private ExperimentIdentity identity = ExperimentIdentity.defaults();
+    private ThermalConfig thermalConfig = ThermalConfig.disabled();
 
     private long startedAtMillis = -1L;
     private long finishedAtMillis = -1L;
@@ -105,6 +140,30 @@ public final class ExperimentSession {
             String variant,
             TimerConfig timerConfig
     ) {
+        return start(
+                experimentType,
+                variant,
+                timerConfig,
+                ExperimentIdentity.defaults()
+        );
+    }
+
+    public synchronized boolean start(
+            String experimentType,
+            String variant,
+            TimerConfig timerConfig,
+            ExperimentIdentity identity
+    ) {
+        return start(experimentType, variant, timerConfig, ThermalConfig.disabled(), identity);
+    }
+
+    public synchronized boolean start(
+            String experimentType,
+            String variant,
+            TimerConfig timerConfig,
+            ThermalConfig thermalConfig,
+            ExperimentIdentity identity
+    ) {
         if (state == State.RUNNING) {
             return false;
         }
@@ -124,6 +183,13 @@ public final class ExperimentSession {
 
         this.variant =
                 normalize(variant);
+
+        this.identity = identity == null
+                ? ExperimentIdentity.defaults()
+                : identity;
+        this.thermalConfig = thermalConfig == null
+                ? ThermalConfig.disabled()
+                : thermalConfig;
 
         TimerConfig effectiveTimer =
                 timerConfig == null
@@ -182,6 +248,8 @@ public final class ExperimentSession {
         sessionId = "";
         experimentType = "";
         variant = "";
+        identity = ExperimentIdentity.defaults();
+        thermalConfig = ThermalConfig.disabled();
 
         startedAtMillis = -1L;
         finishedAtMillis = -1L;
@@ -247,10 +315,21 @@ public final class ExperimentSession {
                 stateWireName(),
                 experimentType,
                 variant,
+                identity.seriesId,
+                identity.scenarioId,
+                identity.replicateIndex,
+                identity.notes,
+                identity.autoZoomEnabled,
+                identity.maxZoomRatio,
+                thermalConfig.enabled(),
+                thermalConfig.maxBatteryTemperatureC(),
+                thermalConfig.maxThermalStatus(),
+                thermalConfig.stabilizationMillis(),
                 startedAtMillis,
                 finishedAtMillis,
                 durationMillis(),
                 completionReasonWireName(),
+                completionStatusWireName(),
                 timerEnabled,
                 timerDurationMillis
         );
@@ -277,6 +356,14 @@ public final class ExperimentSession {
 
         return (endNanos - startedElapsedNanos)
                 / 1_000_000L;
+    }
+
+    public synchronized String completionStatusWireName() {
+        if (state == State.RUNNING) return "running";
+        if (state == State.IDLE) return "not_started";
+        if (completionReason == CompletionReason.TIMER) return "timer";
+        if (completionReason == CompletionReason.ERROR) return "error";
+        return "stopped_manual";
     }
 
     private static String normalize(String value) {

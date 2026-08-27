@@ -44,6 +44,25 @@ public class VehicleRoiSelectorTest {
     }
 
     @Test
+    public void diagnosticSelectionCanKeepAllVehiclesBeyondR2Budget() {
+        Detection first = detection(0.95f, 10, 10, 80, 80);
+        Detection second = detection(0.85f, 100, 10, 170, 80);
+        Detection third = detection(0.75f, 190, 10, 235, 75);
+
+        List<VehicleRoiSelector.Region> budgeted = VehicleRoiSelector.select(
+                Arrays.asList(first, second, third),
+                240, 120, 2, 0f, 0.5f
+        );
+        List<VehicleRoiSelector.Region> diagnostic = VehicleRoiSelector.select(
+                Arrays.asList(first, second, third),
+                240, 120, Integer.MAX_VALUE, 0f, 0.5f
+        );
+
+        assertEquals(2, budgeted.size());
+        assertEquals(3, diagnostic.size());
+    }
+
+    @Test
     public void convertsNormalizedAutoZoomRoiToSourcePixels() {
         VehicleRoiSelector.Region region = VehicleRoiSelector.normalizedRegion(
                 1000,

@@ -28,7 +28,7 @@ import java.util.List;
 public final class PreviewPlateTracker {
 
     private static final int MAX_TRACK_WIDTH =
-            320;
+            240;
 
     private static final int PATCH_RADIUS =
             3;
@@ -63,7 +63,27 @@ public final class PreviewPlateTracker {
         List<PointF> anchorPoints =
                 Collections.emptyList();
 
+        List<SparsePyramidalFlow.Point> flowAnchorPoints =
+                Collections.emptyList();
+
+        List<SparsePyramidalFlow.Point> currentFlowPoints =
+                Collections.emptyList();
+
+        RobustAffineTransform.Result affineTransform =
+                RobustAffineTransform.Result.identity();
+
+        final PlateBoxKalman kalman = new PlateBoxKalman();
+
+        OverlayItem lastTrackedOverlay;
+
+        int trackerInliers;
+
         int consecutiveFailures;
+        int ageFrames;
+        int framesSinceMtAnchor;
+        float trackingQuality = 1f;
+        float supportRatio = 1f;
+        float meanMatchError;
 
 
         TrackState(
@@ -191,6 +211,18 @@ public final class PreviewPlateTracker {
     public synchronized List<OverlayItem> update(
             Bitmap preview
     ) {
+        PreviewTrackingFrame frame = updateTracking(preview);
+        return frame == null ? null : frame.overlayItems;
+    }
+
+
+    /**
+     * Techniczna aktualizacja trackera. Oprócz geometrii overlay zwraca jakość,
+     * błędy i wiek kotwicy potrzebne schedulerowi MT.
+     */
+    public synchronized PreviewTrackingFrame updateTracking(
+            Bitmap preview
+    ) {
 
         if (preview == null
                 || preview.isRecycled()
@@ -211,6 +243,20 @@ public final class PreviewPlateTracker {
             return null;
         }
 
+        return updateGrayFrame(
+                current,
+                preview.getWidth(),
+                preview.getHeight()
+        );
+    }
+
+
+    private PreviewTrackingFrame updateGrayFrame(
+            GrayFrame current,
+            int previewWidth,
+            int previewHeight
+    ) {
+
 
         /*
          * Pierwsza klatka po nowym wyniku MT
@@ -220,9 +266,9 @@ public final class PreviewPlateTracker {
                 || trackerWidth != current.width
                 || trackerHeight != current.height
                 || previousPreviewWidth
-                != preview.getWidth()
+                != previewWidth
                 || previousPreviewHeight
-                != preview.getHeight()) {
+                != previewHeight) {
 
             trackerWidth =
                     current.width;
@@ -231,10 +277,10 @@ public final class PreviewPlateTracker {
                     current.height;
 
             previousPreviewWidth =
-                    preview.getWidth();
+                    previewWidth;
 
             previousPreviewHeight =
-                    preview.getHeight();
+                    previewHeight;
 
 
             for (TrackState track :
@@ -243,8 +289,8 @@ public final class PreviewPlateTracker {
                 List<PointF> initialPoints =
                         initialTrackerPoints(
                                 track.basePlate,
-                                preview.getWidth(),
-                                preview.getHeight(),
+                                previewWidth,
+                                previewHeight,
                                 trackerWidth,
                                 trackerHeight
                         );
@@ -255,8 +301,28 @@ public final class PreviewPlateTracker {
                 track.trackedPoints =
                         initialPoints;
 
+                track.flowAnchorPoints =
+                        initialFlowPoints(initialPoints);
+
+                track.currentFlowPoints =
+                        track.flowAnchorPoints;
+
+                track.affineTransform =
+                        RobustAffineTransform.Result.identity();
+
+                track.kalman.reset();
+
+                track.lastTrackedOverlay = null;
+
+                track.trackerInliers = 0;
+
                 track.consecutiveFailures =
                         0;
+                track.ageFrames = 0;
+                track.framesSinceMtAnchor = 0;
+                track.trackingQuality = 1f;
+                track.supportRatio = 1f;
+                track.meanMatchError = 0f;
             }
 
 
@@ -277,6 +343,11 @@ public final class PreviewPlateTracker {
         List<OverlayItem> visible =
                 new ArrayList<>();
 
+        List<TrackedPlate> technicalResults =
+                new ArrayList<>();
+
+        long updatedAtNanos = System.nanoTime();
+
 
         for (TrackState track :
                 tracks) {
@@ -285,6 +356,57 @@ public final class PreviewPlateTracker {
                     < 4) {
 
                 continue;
+            }
+
+            AffineTrackUpdate affineUpdate = updateAffineTrack(
+                    track,
+                    previousGray,
+                    anchorGray,
+                    current.gray,
+                    trackerWidth,
+                    trackerHeight
+            );
+
+            if (affineUpdate.valid) {
+                track.consecutiveFailures = 0;
+                track.ageFrames++;
+                track.framesSinceMtAnchor++;
+                track.affineTransform = affineUpdate.transform;
+                track.currentFlowPoints = transformedPoints(
+                        track.flowAnchorPoints,
+                        affineUpdate.transform
+                );
+                track.trackedPoints = firstFourAndroidPoints(track.currentFlowPoints);
+                track.supportRatio = affineUpdate.supportRatio;
+                track.meanMatchError = affineUpdate.meanError;
+                track.trackerInliers = affineUpdate.inliers;
+                track.trackingQuality = affineTrackingQuality(
+                        affineUpdate,
+                        track.framesSinceMtAnchor
+                );
+
+                OverlayItem affinePlate = buildAffineTrackedPlate(
+                        track,
+                        previewWidth,
+                        previewHeight
+                );
+                if (affinePlate != null) {
+                    track.lastTrackedOverlay = affinePlate;
+                    visible.add(affinePlate);
+                    technicalResults.add(
+                            technicalResult(track, affinePlate, updatedAtNanos)
+                    );
+                    survivingTracks.add(track);
+                    android.util.Log.d(
+                            "ALPR_PREVIEW_TRACK",
+                            "track=" + track.basePlate.trackId
+                                    + " mode=KLT_AFFINE"
+                                    + " inliers=" + affineUpdate.inliers
+                                    + " support=" + affineUpdate.supportRatio
+                                    + " quality=" + track.trackingQuality
+                    );
+                    continue;
+                }
             }
 
 
@@ -329,6 +451,20 @@ public final class PreviewPlateTracker {
             if (!update.valid) {
 
                 track.consecutiveFailures++;
+                track.ageFrames++;
+                track.framesSinceMtAnchor++;
+                track.trackingQuality = Math.max(
+                        0f,
+                        track.trackingQuality * 0.62f
+                );
+                track.supportRatio = Math.max(
+                        incrementalUpdate.support,
+                        anchorUpdate.support
+                ) / 4f;
+                track.meanMatchError = Math.min(
+                        finiteError(incrementalUpdate.meanError),
+                        finiteError(anchorUpdate.meanError)
+                );
 
 
                 /*
@@ -339,17 +475,29 @@ public final class PreviewPlateTracker {
                         < MAX_CONSECUTIVE_FAILURES) {
 
                     OverlayItem unchanged =
-                            buildTrackedPlate(
+                            buildKalmanPrediction(
                                     track,
-                                    preview.getWidth(),
-                                    preview.getHeight()
+                                    previewWidth,
+                                    previewHeight
                             );
+
+                    if (unchanged == null) {
+                        unchanged = buildTrackedPlate(
+                                track,
+                                previewWidth,
+                                previewHeight
+                        );
+                    }
 
 
                     if (unchanged != null) {
 
                         visible.add(
                                 unchanged
+                        );
+
+                        technicalResults.add(
+                                technicalResult(track, unchanged, updatedAtNanos)
                         );
 
                         survivingTracks.add(
@@ -365,6 +513,19 @@ public final class PreviewPlateTracker {
 
             track.consecutiveFailures =
                     0;
+            track.ageFrames++;
+            track.framesSinceMtAnchor++;
+            track.supportRatio = update.support / 4f;
+            track.trackerInliers = update.support;
+            track.meanMatchError = update.anchored
+                    ? anchorUpdate.meanError
+                    : incrementalUpdate.meanError;
+            track.trackingQuality = trackingQuality(
+                    track.supportRatio,
+                    track.meanMatchError,
+                    update.anchored,
+                    track.framesSinceMtAnchor
+            );
 
 
             List<PointF> moved =
@@ -394,15 +555,21 @@ public final class PreviewPlateTracker {
             OverlayItem trackedPlate =
                     buildTrackedPlate(
                             track,
-                            preview.getWidth(),
-                            preview.getHeight()
+                            previewWidth,
+                            previewHeight
                     );
 
 
             if (trackedPlate != null) {
 
+                track.lastTrackedOverlay = trackedPlate;
+
                 visible.add(
                         trackedPlate
+                );
+
+                technicalResults.add(
+                        technicalResult(track, trackedPlate, updatedAtNanos)
                 );
 
                 survivingTracks.add(
@@ -449,12 +616,40 @@ public final class PreviewPlateTracker {
          */
         if (visible.isEmpty()) {
 
-            return Collections.emptyList();
+            return new PreviewTrackingFrame(
+                    Collections.emptyList(),
+                    updatedAtNanos
+            );
         }
 
 
-        return Collections.unmodifiableList(
-                visible
+        return new PreviewTrackingFrame(
+                technicalResults,
+                updatedAtNanos
+        );
+    }
+
+
+    /**
+     * Aktualizacja bez odczytu GPU/PreviewView. Wejściem jest mała płaszczyzna
+     * luminancji skopiowana bezpośrednio z ImageAnalysis CameraX.
+     */
+    public synchronized PreviewTrackingFrame updateLuma(
+            byte[] gray,
+            int width,
+            int height
+    ) {
+        if (gray == null || width <= 0 || height <= 0
+                || gray.length < width * height
+                || tracks.isEmpty()) return null;
+        return updateGrayFrame(
+                new GrayFrame(
+                        width,
+                        height,
+                        gray
+                ),
+                width,
+                height
         );
     }
 
@@ -537,6 +732,9 @@ public final class PreviewPlateTracker {
         int support =
                 0;
 
+        float errorSum =
+                0f;
+
 
         for (Match match :
                 matches) {
@@ -555,6 +753,7 @@ public final class PreviewPlateTracker {
             ) <= DISPLACEMENT_CONSISTENCY) {
 
                 support++;
+                errorSum += match.error;
             }
         }
 
@@ -569,8 +768,376 @@ public final class PreviewPlateTracker {
                 true,
                 medianDx,
                 medianDy,
-                support
+                support,
+                errorSum / Math.max(1, support)
         );
+    }
+
+
+    private static AffineTrackUpdate updateAffineTrack(
+            TrackState track,
+            byte[] previous,
+            byte[] anchor,
+            byte[] current,
+            int width,
+            int height
+    ) {
+        if (track.flowAnchorPoints.size() < 4
+                || track.currentFlowPoints.size() < 4) {
+            return AffineTrackUpdate.invalid();
+        }
+
+        SparsePyramidalFlow.Result anchoredFlow = SparsePyramidalFlow.track(
+                anchor,
+                current,
+                width,
+                height,
+                track.flowAnchorPoints,
+                track.ageFrames % 3 == 0
+        );
+        RobustAffineTransform.Result anchoredTransform =
+                RobustAffineTransform.estimate(anchoredFlow.matches);
+        if (anchoredTransform.valid
+                && RobustAffineTransform.reasonableQuad(
+                anchoredTransform,
+                track.flowAnchorPoints,
+                width,
+                height
+        )) {
+            return new AffineTrackUpdate(
+                    true,
+                    anchoredTransform,
+                    anchoredFlow.supportRatio,
+                    anchoredFlow.meanError,
+                    anchoredTransform.inlierCount,
+                    true
+            );
+        }
+
+        SparsePyramidalFlow.Result incrementalFlow = SparsePyramidalFlow.track(
+                previous,
+                current,
+                width,
+                height,
+                track.currentFlowPoints,
+                track.ageFrames % 3 == 0
+        );
+        RobustAffineTransform.Result incrementalTransform =
+                RobustAffineTransform.estimate(incrementalFlow.matches);
+        RobustAffineTransform.Result composed = incrementalTransform.valid
+                ? incrementalTransform.compose(track.affineTransform)
+                : RobustAffineTransform.Result.invalid();
+        if (composed.valid
+                && RobustAffineTransform.reasonableQuad(
+                composed,
+                track.flowAnchorPoints,
+                width,
+                height
+        )) {
+            return new AffineTrackUpdate(
+                    true,
+                    composed,
+                    incrementalFlow.supportRatio,
+                    incrementalFlow.meanError,
+                    incrementalTransform.inlierCount,
+                    false
+            );
+        }
+        return AffineTrackUpdate.invalid();
+    }
+
+
+    private static List<SparsePyramidalFlow.Point> initialFlowPoints(
+            List<PointF> quad
+    ) {
+        if (quad == null || quad.size() < 4) return Collections.emptyList();
+        List<SparsePyramidalFlow.Point> points = new ArrayList<>(8);
+        float left = Float.POSITIVE_INFINITY;
+        float top = Float.POSITIVE_INFINITY;
+        float right = Float.NEGATIVE_INFINITY;
+        float bottom = Float.NEGATIVE_INFINITY;
+        for (int index = 0; index < 4; index++) {
+            PointF point = quad.get(index);
+            points.add(new SparsePyramidalFlow.Point(point.x, point.y));
+            left = Math.min(left, point.x);
+            top = Math.min(top, point.y);
+            right = Math.max(right, point.x);
+            bottom = Math.max(bottom, point.y);
+        }
+        float[] xFractions = {0.33f, 0.67f};
+        float[] yFractions = {0.33f, 0.67f};
+        for (float yFraction : yFractions) {
+            for (float xFraction : xFractions) {
+                points.add(new SparsePyramidalFlow.Point(
+                        left + (right - left) * xFraction,
+                        top + (bottom - top) * yFraction
+                ));
+            }
+        }
+        return Collections.unmodifiableList(points);
+    }
+
+
+    private static List<SparsePyramidalFlow.Point> transformedPoints(
+            List<SparsePyramidalFlow.Point> source,
+            RobustAffineTransform.Result transform
+    ) {
+        List<SparsePyramidalFlow.Point> result = new ArrayList<>(source.size());
+        for (SparsePyramidalFlow.Point point : source) result.add(transform.apply(point));
+        return Collections.unmodifiableList(result);
+    }
+
+
+    private static List<PointF> firstFourAndroidPoints(
+            List<SparsePyramidalFlow.Point> source
+    ) {
+        if (source == null || source.size() < 4) return Collections.emptyList();
+        List<PointF> result = new ArrayList<>(4);
+        for (int index = 0; index < 4; index++) {
+            SparsePyramidalFlow.Point point = source.get(index);
+            result.add(new PointF(point.x, point.y));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+
+    private OverlayItem buildAffineTrackedPlate(
+            TrackState track,
+            int previewWidth,
+            int previewHeight
+    ) {
+        if (track.currentFlowPoints.size() < 4) return null;
+        float left = Float.POSITIVE_INFINITY;
+        float top = Float.POSITIVE_INFINITY;
+        float right = Float.NEGATIVE_INFINITY;
+        float bottom = Float.NEGATIVE_INFINITY;
+        for (int index = 0; index < 4; index++) {
+            SparsePyramidalFlow.Point point = track.currentFlowPoints.get(index);
+            left = Math.min(left, point.x);
+            top = Math.min(top, point.y);
+            right = Math.max(right, point.x);
+            bottom = Math.max(bottom, point.y);
+        }
+        if (right - left < 2f || bottom - top < 2f) return null;
+        PlateBoxKalman.Box filtered = track.kalman.update(new PlateBoxKalman.Box(
+                (left + right) * 0.5f,
+                (top + bottom) * 0.5f,
+                right - left,
+                bottom - top
+        ));
+        List<PointF> normalizedPoints = normalizedFilteredQuad(
+                track.currentFlowPoints,
+                left,
+                top,
+                right,
+                bottom,
+                filtered,
+                previewWidth,
+                previewHeight
+        );
+        return overlayFromPoints(track.basePlate, normalizedPoints, false);
+    }
+
+
+    private OverlayItem buildKalmanPrediction(
+            TrackState track,
+            int previewWidth,
+            int previewHeight
+    ) {
+        if (track.lastTrackedOverlay == null) return null;
+        PlateBoxKalman.Box predicted = track.kalman.predict();
+        if (predicted == null) return null;
+        SparsePyramidalFlow.Point topLeft = trackerToNormalizedPoint(
+                predicted.centerX - predicted.width * 0.5f,
+                predicted.centerY - predicted.height * 0.5f,
+                previewWidth,
+                previewHeight
+        );
+        SparsePyramidalFlow.Point bottomRight = trackerToNormalizedPoint(
+                predicted.centerX + predicted.width * 0.5f,
+                predicted.centerY + predicted.height * 0.5f,
+                previewWidth,
+                previewHeight
+        );
+        RectF predictedBounds = new RectF(
+                clamp(topLeft.x, 0f, 1f),
+                clamp(topLeft.y, 0f, 1f),
+                clamp(bottomRight.x, 0f, 1f),
+                clamp(bottomRight.y, 0f, 1f)
+        );
+        RectF previousBounds = track.lastTrackedOverlay.normalizedBounds;
+        if (predictedBounds.width() <= 0f || predictedBounds.height() <= 0f
+                || previousBounds.width() <= 0f || previousBounds.height() <= 0f) {
+            return null;
+        }
+        List<PointF> points = new ArrayList<>();
+        for (PointF point : track.lastTrackedOverlay.normalizedKeypoints) {
+            float relativeX = (point.x - previousBounds.left) / previousBounds.width();
+            float relativeY = (point.y - previousBounds.top) / previousBounds.height();
+            points.add(new PointF(
+                    predictedBounds.left + relativeX * predictedBounds.width(),
+                    predictedBounds.top + relativeY * predictedBounds.height()
+            ));
+        }
+        OverlayItem prediction = new OverlayItem(
+                OverlayItem.Kind.PLATE,
+                predictedBounds,
+                points,
+                track.lastTrackedOverlay.label,
+                track.basePlate.trackId,
+                true
+        );
+        track.lastTrackedOverlay = prediction;
+        return prediction;
+    }
+
+
+    private List<PointF> normalizedFilteredQuad(
+            List<SparsePyramidalFlow.Point> currentPoints,
+            float rawLeft,
+            float rawTop,
+            float rawRight,
+            float rawBottom,
+            PlateBoxKalman.Box filtered,
+            int previewWidth,
+            int previewHeight
+    ) {
+        float filteredLeft = filtered.centerX - filtered.width * 0.5f;
+        float filteredTop = filtered.centerY - filtered.height * 0.5f;
+        List<PointF> result = new ArrayList<>(4);
+        for (int index = 0; index < 4; index++) {
+            SparsePyramidalFlow.Point point = currentPoints.get(index);
+            float relativeX = (point.x - rawLeft) / Math.max(1f, rawRight - rawLeft);
+            float relativeY = (point.y - rawTop) / Math.max(1f, rawBottom - rawTop);
+            SparsePyramidalFlow.Point normalized = trackerToNormalizedPoint(
+                    filteredLeft + relativeX * filtered.width,
+                    filteredTop + relativeY * filtered.height,
+                    previewWidth,
+                    previewHeight
+            );
+            result.add(new PointF(
+                    clamp(normalized.x, 0f, 1f),
+                    clamp(normalized.y, 0f, 1f)
+            ));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+
+    private SparsePyramidalFlow.Point trackerToNormalizedPoint(
+            float x,
+            float y,
+            int previewWidth,
+            int previewHeight
+    ) {
+        PointF normalized = trackerToNormalized(
+                new PointF(x, y),
+                sourceWidth,
+                sourceHeight,
+                previewWidth,
+                previewHeight,
+                trackerWidth,
+                trackerHeight
+        );
+        return new SparsePyramidalFlow.Point(normalized.x, normalized.y);
+    }
+
+
+    private static OverlayItem overlayFromPoints(
+            OverlayItem base,
+            List<PointF> points,
+            boolean carried
+    ) {
+        if (points == null || points.size() < 4) return null;
+        float left = Float.POSITIVE_INFINITY;
+        float top = Float.POSITIVE_INFINITY;
+        float right = Float.NEGATIVE_INFINITY;
+        float bottom = Float.NEGATIVE_INFINITY;
+        for (PointF point : points) {
+            left = Math.min(left, point.x);
+            top = Math.min(top, point.y);
+            right = Math.max(right, point.x);
+            bottom = Math.max(bottom, point.y);
+        }
+        if (right - left < 0.002f || bottom - top < 0.002f) return null;
+        return new OverlayItem(
+                OverlayItem.Kind.PLATE,
+                new RectF(left, top, right, bottom),
+                points,
+                base.label,
+                base.trackId,
+                carried
+        );
+    }
+
+
+    private static float affineTrackingQuality(
+            AffineTrackUpdate update,
+            int framesSinceMtAnchor
+    ) {
+        float errorScore = 1f - clamp(update.meanError / 32f, 0f, 1f);
+        float inlierScore = Math.min(1f, update.inliers / 10f);
+        float anchorScore = update.anchored ? 1f : 0.78f;
+        float ageScore = Math.max(0.65f, 1f - framesSinceMtAnchor * 0.01f);
+        return clamp(
+                0.32f * update.supportRatio
+                        + 0.27f * inlierScore
+                        + 0.23f * errorScore
+                        + 0.10f * anchorScore
+                        + 0.08f * ageScore,
+                0f,
+                1f
+        );
+    }
+
+
+    private static TrackedPlate technicalResult(
+            TrackState track,
+            OverlayItem overlay,
+            long updatedAtNanos
+    ) {
+        return new TrackedPlate(
+                overlay,
+                track.trackingQuality,
+                track.supportRatio,
+                track.meanMatchError,
+                track.trackerInliers,
+                track.consecutiveFailures,
+                track.ageFrames,
+                track.framesSinceMtAnchor,
+                updatedAtNanos
+        );
+    }
+
+
+    private static float trackingQuality(
+            float supportRatio,
+            float meanError,
+            boolean anchored,
+            int framesSinceMtAnchor
+    ) {
+        float errorScore = 1f - clamp(
+                finiteError(meanError) / MAX_MEAN_ERROR,
+                0f,
+                1f
+        );
+        float anchorConsistency = anchored ? 1f : 0.70f;
+        float ageScore = Math.max(0.65f, 1f - framesSinceMtAnchor * 0.01f);
+        return clamp(
+                0.40f * clamp(supportRatio, 0f, 1f)
+                        + 0.35f * errorScore
+                        + 0.15f * anchorConsistency
+                        + 0.10f * ageScore,
+                0f,
+                1f
+        );
+    }
+
+
+    private static float finiteError(float error) {
+        return Float.isNaN(error) || Float.isInfinite(error)
+                ? MAX_MEAN_ERROR
+                : Math.max(0f, error);
     }
 
     private static PreviewTrackerDriftGuard.Motion driftMotion(
@@ -862,89 +1429,63 @@ public final class PreviewPlateTracker {
                         * (PATCH_RADIUS * 2 + 1);
 
 
+        /*
+         * Wyszukiwanie grubo-dokładne ogranicza liczbę porównań patchy około
+         * 5–7 razy, zachowując ten sam maksymalny promień ruchu. To pozwala
+         * wykonywać tracker poza cyklem ciężkiej inferencji z częstotliwością
+         * zbliżoną do PreviewView.
+         */
+        int coarseStep = searchRadius >= 8 ? 3 : 2;
         for (int candidateY = minimumY;
              candidateY <= maximumY;
-             candidateY++) {
-
+             candidateY += coarseStep) {
             for (int candidateX = minimumX;
                  candidateX <= maximumX;
-                 candidateX++) {
-
-                int currentCenter =
-                        current[
-                                candidateY * width
-                                        + candidateX
-                                ] & 0xff;
-
-
-                int brightnessShift =
-                        currentCenter
-                                - previousCenter;
-
-
-                int error =
-                        0;
-
-
-                for (int patchY = -PATCH_RADIUS;
-                     patchY <= PATCH_RADIUS;
-                     patchY++) {
-
-                    int previousRow =
-                            (sourceY + patchY)
-                                    * width;
-
-                    int currentRow =
-                            (candidateY + patchY)
-                                    * width;
-
-
-                    for (int patchX = -PATCH_RADIUS;
-                         patchX <= PATCH_RADIUS;
-                         patchX++) {
-
-                        int oldValue =
-                                previous[
-                                        previousRow
-                                                + sourceX
-                                                + patchX
-                                        ] & 0xff;
-
-                        int newValue =
-                                current[
-                                        currentRow
-                                                + candidateX
-                                                + patchX
-                                        ] & 0xff;
-
-
-                        error +=
-                                Math.abs(
-                                        oldValue
-                                                - (
-                                                newValue
-                                                        - brightnessShift
-                                        )
-                                );
-                    }
-                }
-
-
-                float meanError =
-                        error
-                                / (float) sampleCount;
-
-
+                 candidateX += coarseStep) {
+                float meanError = patchMeanError(
+                        previous,
+                        current,
+                        width,
+                        sourceX,
+                        sourceY,
+                        candidateX,
+                        candidateY,
+                        previousCenter,
+                        sampleCount
+                );
                 if (meanError < bestError) {
+                    bestError = meanError;
+                    bestX = candidateX;
+                    bestY = candidateY;
+                }
+            }
+        }
 
-                    bestError =
-                            meanError;
-
-                    bestX =
-                            candidateX;
-
-                    bestY =
-                            candidateY;
+        int fineMinimumX = Math.max(minimumX, bestX - coarseStep);
+        int fineMaximumX = Math.min(maximumX, bestX + coarseStep);
+        int fineMinimumY = Math.max(minimumY, bestY - coarseStep);
+        int fineMaximumY = Math.min(maximumY, bestY + coarseStep);
+        for (int candidateY = fineMinimumY;
+             candidateY <= fineMaximumY;
+             candidateY++) {
+            for (int candidateX = fineMinimumX;
+                 candidateX <= fineMaximumX;
+                 candidateX++) {
+                float meanError = patchMeanError(
+                        previous,
+                        current,
+                        width,
+                        sourceX,
+                        sourceY,
+                        candidateX,
+                        candidateY,
+                        previousCenter,
+                        sampleCount
+                );
+                if (meanError < bestError) {
+                    bestError = meanError;
+                    bestX = candidateX;
+                    bestY = candidateY;
                 }
             }
         }
@@ -963,6 +1504,33 @@ public final class PreviewPlateTracker {
                 bestY - sourceY,
                 bestError
         );
+    }
+
+
+    private static float patchMeanError(
+            byte[] previous,
+            byte[] current,
+            int width,
+            int sourceX,
+            int sourceY,
+            int candidateX,
+            int candidateY,
+            int previousCenter,
+            int sampleCount
+    ) {
+        int currentCenter = current[candidateY * width + candidateX] & 0xff;
+        int brightnessShift = currentCenter - previousCenter;
+        int error = 0;
+        for (int patchY = -PATCH_RADIUS; patchY <= PATCH_RADIUS; patchY++) {
+            int previousRow = (sourceY + patchY) * width;
+            int currentRow = (candidateY + patchY) * width;
+            for (int patchX = -PATCH_RADIUS; patchX <= PATCH_RADIUS; patchX++) {
+                int oldValue = previous[previousRow + sourceX + patchX] & 0xff;
+                int newValue = current[currentRow + candidateX + patchX] & 0xff;
+                error += Math.abs(oldValue - (newValue - brightnessShift));
+            }
+        }
+        return error / (float) sampleCount;
     }
 
 
@@ -1362,19 +1930,58 @@ public final class PreviewPlateTracker {
     }
 
 
+    private static final class AffineTrackUpdate {
+        final boolean valid;
+        final RobustAffineTransform.Result transform;
+        final float supportRatio;
+        final float meanError;
+        final int inliers;
+        final boolean anchored;
+
+        AffineTrackUpdate(
+                boolean valid,
+                RobustAffineTransform.Result transform,
+                float supportRatio,
+                float meanError,
+                int inliers,
+                boolean anchored
+        ) {
+            this.valid = valid;
+            this.transform = transform;
+            this.supportRatio = supportRatio;
+            this.meanError = meanError;
+            this.inliers = inliers;
+            this.anchored = anchored;
+        }
+
+        static AffineTrackUpdate invalid() {
+            return new AffineTrackUpdate(
+                    false,
+                    RobustAffineTransform.Result.invalid(),
+                    0f,
+                    Float.POSITIVE_INFINITY,
+                    0,
+                    false
+            );
+        }
+    }
+
+
     private static final class TrackUpdate {
 
         final boolean valid;
         final int dx;
         final int dy;
         final int support;
+        final float meanError;
 
 
         TrackUpdate(
                 boolean valid,
                 int dx,
                 int dy,
-                int support
+                int support,
+                float meanError
         ) {
 
             this.valid =
@@ -1388,6 +1995,9 @@ public final class PreviewPlateTracker {
 
             this.support =
                     support;
+
+            this.meanError =
+                    meanError;
         }
 
 
@@ -1397,7 +2007,8 @@ public final class PreviewPlateTracker {
                     false,
                     0,
                     0,
-                    0
+                    0,
+                    Float.POSITIVE_INFINITY
             );
         }
     }

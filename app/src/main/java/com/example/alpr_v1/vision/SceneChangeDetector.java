@@ -85,6 +85,23 @@ public final class SceneChangeDetector {
 
         float[] currentSamples = sampleLuminance(frame);
 
+        return updateSamples(currentSamples, width, height);
+    }
+
+    /**
+     * Wariant bez Bitmap używany bezpośrednio na lekkich próbkach płaszczyzny Y.
+     * Pozwala wykryć zmianę sceny przed kosztowną konwersją i inferencją.
+     */
+    public synchronized Result updateSamples(
+            float[] currentSamples,
+            int width,
+            int height
+    ) {
+        if (currentSamples == null || currentSamples.length == 0
+                || width <= 0 || height <= 0) {
+            return new Result(false, false, false, armed, 0f, 0f, 0f);
+        }
+
         /*
          * Pierwsza klatka tworzy tylko punkt odniesienia.
          * Nie wolno jeszcze zgłaszać zmiany sceny.

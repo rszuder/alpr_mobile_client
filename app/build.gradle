@@ -2,6 +2,18 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+def resolvedGitCommit = "unknown"
+try {
+    def gitProcess = ["git", "rev-parse", "HEAD"].execute(null, rootDir)
+    gitProcess.waitFor()
+    if (gitProcess.exitValue() == 0) {
+        resolvedGitCommit = gitProcess.in.text.trim()
+    }
+} catch (Exception ignored) {
+    // Archiwum źródłowe bez katalogu .git pozostaje budowalne.
+}
+def resolvedBuiltAtUtc = java.time.Instant.now().toString()
+
 android {
     namespace = 'com.example.alpr_v1'
     ndkVersion = '29.0.14033849'
@@ -15,6 +27,8 @@ android {
         targetSdk 36
         versionCode 1
         versionName "1.0"
+        buildConfigField "String", "GIT_COMMIT", "\"${resolvedGitCommit}\""
+        buildConfigField "String", "BUILT_AT_UTC", "\"${resolvedBuiltAtUtc}\""
 
         // Urządzeniem docelowym jest smartfon ARM. Pominięcie bibliotek x86
         // istotnie zmniejsza APK zawierający dwa lokalne runtime'y ML.
@@ -28,6 +42,9 @@ android {
         }
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {

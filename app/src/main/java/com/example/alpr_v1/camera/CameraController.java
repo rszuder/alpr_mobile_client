@@ -36,6 +36,11 @@ public final class CameraController implements AutoCloseable {
         void onFrame(@NonNull ImageProxy image);
     }
 
+    public interface LumaFrameHandler {
+        void onLumaFrame(@NonNull LumaFrame frame);
+        default void onUnavailable() {}
+    }
+
     public interface ErrorHandler {
         void onError(Throwable error);
     }
@@ -62,11 +67,21 @@ public final class CameraController implements AutoCloseable {
     }
 
     public void start(FrameHandler frameHandler, ErrorHandler errorHandler, Size analysisSize,  boolean allowHighResolution) {
+        start(frameHandler, null, errorHandler, analysisSize, allowHighResolution);
+    }
+
+    public void start(
+            FrameHandler frameHandler,
+            LumaFrameHandler lumaFrameHandler,
+            ErrorHandler errorHandler,
+            Size analysisSize,
+            boolean allowHighResolution
+    ) {
         ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(context);
         providerFuture.addListener(() -> {
             try {
                 cameraProvider = providerFuture.get();
-                bind(frameHandler, analysisSize, allowHighResolution);
+                bind(frameHandler, lumaFrameHandler, analysisSize, allowHighResolution);
             } catch (Exception e) {
                 errorHandler.onError(e);
             }
@@ -75,6 +90,7 @@ public final class CameraController implements AutoCloseable {
 
     private void bind(
             FrameHandler frameHandler,
+            LumaFrameHandler lumaFrameHandler,
             Size analysisSize,
             boolean allowHighResolution
     ) {
@@ -197,6 +213,12 @@ public final class CameraController implements AutoCloseable {
                 image -> {
 
                     try {
+                        if (lumaFrameHandler != null) {
+                            LumaFrame lumaFrame = LumaFrame.copyFrom(image, 240);
+                            if (lumaFrame != null) {
+                                lumaFrameHandler.onLumaFrame(lumaFrame);
+                            }
+                        }
                         frameHandler.onFrame(
                                 image
                         );
@@ -207,9 +229,7 @@ public final class CameraController implements AutoCloseable {
                 }
         );
 
-
         cameraProvider.unbindAll();
-
 
         camera = cameraProvider.bindToLifecycle(
                 lifecycleOwner,
@@ -367,6 +387,54 @@ public final class CameraController implements AutoCloseable {
         float transformed = 0.5f
                 + Math.max(0.1f, scaleRatio) * (coordinate - 0.5f);
         return Math.max(0f, Math.min(1f, transformed));
+    }
+
+    /**
+     * Ogranicza zoom centrowany przez CameraX tak, aby cały prostokąt celu
+     * pozostał w widocznym fragmencie PreviewView wraz z niewielkim marginesem.
+     */
+    public static float centeredZoomKeepingBoundsVisible(
+            float requestedRatio,
+            float targetLeft,
+            float targetTop,
+            float targetRight,
+            float targetBottom,
+            float visibleLeft,
+            float visibleTop,
+            float visibleRight,
+            float visibleBottom,
+            float marginFraction
+    ) {
+        float requested = Math.max(1f, requestedRatio);
+        float left = Math.min(targetLeft, targetRight);
+        float right = Math.max(targetLeft, targetRight);
+        float top = Math.min(targetTop, targetBottom);
+        float bottom = Math.max(targetTop, targetBottom);
+        float viewportLeft = Math.max(0f, Math.min(1f, visibleLeft));
+        float viewportRight = Math.max(viewportLeft, Math.min(1f, visibleRight));
+        float viewportTop = Math.max(0f, Math.min(1f, visibleTop));
+        float viewportBottom = Math.max(viewportTop, Math.min(1f, visibleBottom));
+        float margin = Math.max(0f, Math.min(0.20f, marginFraction));
+        float safeLeft = viewportLeft + (viewportRight - viewportLeft) * margin;
+        float safeRight = viewportRight - (viewportRight - viewportLeft) * margin;
+        float safeTop = viewportTop + (viewportBottom - viewportTop) * margin;
+        float safeBottom = viewportBottom - (viewportBottom - viewportTop) * margin;
+
+        float maximum = requested;
+        if (left < 0.5f) {
+            maximum = Math.min(maximum, (0.5f - safeLeft) / (0.5f - left));
+        }
+        if (right > 0.5f) {
+            maximum = Math.min(maximum, (safeRight - 0.5f) / (right - 0.5f));
+        }
+        if (top < 0.5f) {
+            maximum = Math.min(maximum, (0.5f - safeTop) / (0.5f - top));
+        }
+        if (bottom > 0.5f) {
+            maximum = Math.min(maximum, (safeBottom - 0.5f) / (bottom - 0.5f));
+        }
+        if (!Float.isFinite(maximum)) return 1f;
+        return Math.max(1f, Math.min(requested, maximum));
     }
 
     public void stop() {

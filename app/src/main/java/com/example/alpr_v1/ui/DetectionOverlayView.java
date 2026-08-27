@@ -30,7 +30,7 @@ public final class DetectionOverlayView extends View {
     private final Paint confidenceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final long OVERLAY_TRANSITION_MS =
-            220L;
+            120L;
 
 
     /*
@@ -53,6 +53,8 @@ public final class DetectionOverlayView extends View {
 
     private int sourceWidth;
     private int sourceHeight;
+    private boolean diagnosticMode;
+    private long focusedTrackId;
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -198,6 +200,13 @@ public final class DetectionOverlayView extends View {
             return;
         }
 
+        if (sameTrackedTargets(items, targetItems)) {
+            items = targetItems;
+            rebuildRenderItems();
+            postInvalidateOnAnimation();
+            return;
+        }
+
 
         /*
          * Zachowujemy aktualną pozycję jako początek
@@ -257,6 +266,50 @@ public final class DetectionOverlayView extends View {
         overlayAnimator.start();
     }
 
+    public void setDiagnosticMode(boolean enabled) {
+        if (diagnosticMode == enabled) return;
+        diagnosticMode = enabled;
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    public void setFocusedTrackId(long trackId) {
+        long safeTrackId = Math.max(0L, trackId);
+        if (focusedTrackId == safeTrackId) return;
+        focusedTrackId = safeTrackId;
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    private static boolean sameTrackedTargets(
+            List<OverlayItem> previous,
+            List<OverlayItem> next
+    ) {
+        if (previous == null || next == null || previous.isEmpty()) return false;
+        int previousPlateCount = 0;
+        int nextPlateCount = 0;
+        for (OverlayItem item : previous) {
+            if (item.kind == OverlayItem.Kind.PLATE && item.trackId > 0L) {
+                previousPlateCount++;
+            }
+        }
+        for (OverlayItem target : next) {
+            if (target.kind != OverlayItem.Kind.PLATE) continue;
+            if (target.trackId <= 0L) return false;
+            nextPlateCount++;
+            boolean found = false;
+            for (OverlayItem old : previous) {
+                if (old.kind == OverlayItem.Kind.PLATE
+                        && old.trackId == target.trackId) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return nextPlateCount > 0 && nextPlateCount == previousPlateCount;
+    }
+
     /**
      * Mapuje punkt ze znormalizowanych współrzędnych obrazu źródłowego do
      * lokalnych współrzędnych widoku dokładnie tą samą transformacją fillCenter,
@@ -279,6 +332,34 @@ public final class DetectionOverlayView extends View {
         return new PointF(
                 offsetX + normalizedX * imageWidth * scale,
                 offsetY + normalizedY * imageHeight * scale
+        );
+    }
+
+    /**
+     * Fragment obrazu źródłowego faktycznie widoczny po zastosowaniu fillCenter.
+     * Przy różnych proporcjach PreviewView i analizy część obrazu jest odcinana,
+     * więc bez tych granic bezpieczny zoom mógłby wypchnąć cel poza ekran.
+     */
+    public RectF normalizedVisibleBounds() {
+        float viewWidth = getWidth();
+        float viewHeight = getHeight();
+        if (viewWidth <= 0f || viewHeight <= 0f) {
+            return new RectF(0f, 0f, 1f, 1f);
+        }
+
+        float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
+        float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
+        float scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+        float scaledWidth = imageWidth * scale;
+        float scaledHeight = imageHeight * scale;
+        float offsetX = (viewWidth - scaledWidth) * 0.5f;
+        float offsetY = (viewHeight - scaledHeight) * 0.5f;
+
+        return new RectF(
+                clamp(-offsetX / scaledWidth, 0f, 1f),
+                clamp(-offsetY / scaledHeight, 0f, 1f),
+                clamp((viewWidth - offsetX) / scaledWidth, 0f, 1f),
+                clamp((viewHeight - offsetY) / scaledHeight, 0f, 1f)
         );
     }
 
@@ -918,6 +999,7 @@ public final class DetectionOverlayView extends View {
         List<RectF> plateFrameBounds = new ArrayList<>();
 
         for (OverlayItem item : items) {
+            if (!diagnosticMode && item.kind != OverlayItem.Kind.PLATE) continue;
             RectF source = item.normalizedBounds;
             RectF bounds = new RectF(
                     offsetX + source.left * imageWidth * scale,
@@ -949,6 +1031,10 @@ public final class DetectionOverlayView extends View {
         );
         for (RenderItem renderItem : prepared) {
             if (renderItem.item.label.isEmpty()) continue;
+            if (renderItem.item.kind != OverlayItem.Kind.PLATE
+                    || renderItem.item.carriedPrediction) continue;
+            if (!diagnosticMode && focusedTrackId > 0L
+                    && renderItem.item.trackId != focusedTrackId) continue;
             float confidenceWidth = confidenceTextPaint.measureText(renderItem.parts.confidence);
             float textGap = renderItem.parts.confidence.isEmpty() ? 0f : dp(5);
             float labelWidth = Math.min(

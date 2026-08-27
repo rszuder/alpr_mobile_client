@@ -213,3 +213,8 @@ track. Eksport badawczy jest strumieniowy i tworzy pełny `.alprsession` albo
 samodzielny pakiet TeX. Szczegółowy kontrakt opisuje
 `docs/mobile_research_export.md`, a manifest waliduje
 `docs/alpr-mobile-research-bundle-v1.schema.json`.
+
+Rozszerzenie `alpr.mobile_experiment_telemetry.v1` dodaje do `.alprsession`
+szeregi `thermal.csv`, `frame_flow.csv` i `events.jsonl`, pełny timing-audit w
+`traces.csv`, identyfikację kampanii oraz geometrię cropów. Kontrakt pól i
+reguły kompatybilności opisuje `docs/mobile_experiment_telemetry_v1.md`.

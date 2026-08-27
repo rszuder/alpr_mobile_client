@@ -28,6 +28,9 @@ import android.view.WindowManager;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
@@ -54,6 +57,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
 import com.example.alpr_v1.camera.CameraController;
+import com.example.alpr_v1.camera.LumaFrame;
 import com.example.alpr_v1.camera.AutoZoomController;
 import com.example.alpr_v1.camera.AutoZoomRecognitionMemory;
 //do usuniecia po migracji
@@ -72,22 +76,29 @@ import com.example.alpr_v1.metrics.CropMiniReport;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.metrics.ReportArchive;
 import com.example.alpr_v1.metrics.ResearchArchive;
+import com.example.alpr_v1.metrics.ImageDifficultyMetrics;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.AlprPipeline;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
+import com.example.alpr_v1.pipeline.TargetSnapshot;
+import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
+import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
+import com.example.alpr_v1.experiment.ExperimentIdentity;
 import com.example.alpr_v1.experiment.TimerConfig;
 import com.example.alpr_v1.experiment.ThermalConfig;
 import com.example.alpr_v1.experiment.ThermalMonitor;
 import com.example.alpr_v1.vision.SceneChangeDetector;
+import com.example.alpr_v1.vision.CameraImageConverter;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
+import com.example.alpr_v1.tracking.PreviewTrackingFrame;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.vision.SceneAnchorGuard;
 
@@ -99,9 +110,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class MainActivity extends AppCompatActivity {
@@ -119,6 +134,10 @@ public final class MainActivity extends AppCompatActivity {
     private static final long THERMAL_POLL_MS =
             1000L;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService previewTrackingExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService pipelineInferenceExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean previewFrameInFlight = new AtomicBoolean();
+    private final AtomicBoolean pipelineFrameInFlight = new AtomicBoolean();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     /*
      * Lekki monitor tego, co użytkownik faktycznie widzi
@@ -127,7 +146,7 @@ public final class MainActivity extends AppCompatActivity {
      * Jest niezależny od ciężkiego pipeline'u MP/MT/MZ.
      */
     private static final long PREVIEW_SCENE_POLL_MS =
-            160L;
+            50L;
     private static final long PRE_ZOOM_OVERLAY_HOLD_MS =
             120L;
 
@@ -164,7 +183,7 @@ public final class MainActivity extends AppCompatActivity {
      * Po otrzymaniu świeżego wyniku MT następna klatka
      * PreviewView stanie się referencją dla trackera.
      */
-    private boolean previewSceneAnchorPending;
+    private volatile boolean previewSceneAnchorPending;
 
     private List<OverlayItem> latestDiagnosticOverlayItems =
             java.util.Collections.emptyList();
@@ -184,7 +203,9 @@ public final class MainActivity extends AppCompatActivity {
     private int latestOverlaySourceHeight;
 
 
-    private boolean previewSceneMonitorRunning;
+    private volatile boolean previewSceneMonitorRunning;
+    private volatile long lastDirectLumaFrameNanos;
+    private volatile boolean directLumaTrackingUnavailable;
 
 
     private final Runnable previewSceneMonitorRunnable =
@@ -200,200 +221,35 @@ public final class MainActivity extends AppCompatActivity {
                         return;
                     }
 
+                    if (!needsPreviewSceneSampling()) {
+                        previewSceneHandler.postDelayed(this, previewScenePollDelay());
+                        return;
+                    }
 
-                    Bitmap previewBitmap =
-                            null;
-
-
-                    try {
-
-                        /*
-                         * PreviewView.getBitmap() pobiera aktualny obraz
-                         * prezentowany użytkownikowi, niezależnie od tego,
-                         * czy analyzer CameraX jest nadal zajęty inferencją.
-                         */
-                        previewBitmap =
-                                previewView.getBitmap();
-
-
-                        if (previewBitmap != null
-                                && !previewBitmap.isRecycled()) {
-
-                            if (isAutoZoomHoldingMemory()) {
-                                if (cameraTransformInProgress
-                                        && autoZoomController.state()
-                                        == AutoZoomController.State.ZOOM_SETTLING
-                                        && cameraMotionMonitor != null
-                                        && cameraMotionMonitor.isMoving()) {
-                                    invalidateAutoZoomForPhysicalCameraMotion();
-                                }
-                                /*
-                                 * Kontrolowany zoom zmienia cały obraz Preview.
-                                 * W tym czasie nie wolno interpretować tej
-                                 * transformacji jako zmiany sceny użytkownika.
-                                 */
-                                previewSceneDetector.reset();
-                                previewSceneAnchorGuard.reset();
-                                previewPlateTracker.reset();
-
-                            } else if (autoZoomReturnValidationPending) {
-                                /*
-                                 * Po powrocie do 1x porównujemy obraz z kotwicą
-                                 * sprzed zoomu. To rozstrzyga, czy nadal oglądamy
-                                 * tę samą scenę, zanim zwykły detektor zdąży
-                                 * uruchomić nową stabilizację.
-                                 */
-                                validateReturnedAutoZoomScene(previewBitmap);
-
-                            } else {
-
-                            if (autoZoomZoomedAnchorPending
-                                    && autoZoomController.state()
-                                    == AutoZoomController.State.ZOOMED_RETRY) {
-                                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
-                                autoZoomZoomedAnchorPending = false;
-                                autoZoomZoomedAnchorValid = true;
-                            }
-
-                            /*
-                             * Pierwsza klatka Preview po świeżej detekcji MT
-                             * staje się stałą referencją sceny.
-                             */
-                            if (previewSceneAnchorPending) {
-
-                                previewSceneAnchorGuard.anchor(
-                                        previewBitmap
-                                );
-
-                                previewSceneAnchorPending =
-                                        false;
-                            }
-
-
-                            SceneAnchorGuard.Result anchorResult =
-                                    previewSceneAnchorGuard.evaluate(
-                                            previewBitmap
-                                    );
-
-                            SceneChangeDetector.Result scene =
-                                    previewSceneDetector.update(
-                                            previewBitmap
-                                    );
-
-                            SceneAnchorGuard.Result zoomedAnchorResult =
-                                    autoZoomZoomedSceneAnchorGuard.evaluate(
-                                            previewBitmap
-                                    );
-
-                            List<OverlayItem> trackedItems =
-                                    previewPlateTracker.update(
-                                            previewBitmap
-                                    );
-
-                            boolean zoomedRetry = autoZoomController.state()
-                                    == AutoZoomController.State.ZOOMED_RETRY;
-                            boolean targetStillTracked = zoomedRetry
-                                    && trackedItems != null
-                                    && !trackedItems.isEmpty()
-                                    && findAutoZoomTargetOverlay(trackedItems) != null;
-
-                            boolean changed = scene.sceneChanged
-                                    || anchorResult.changed
-                                    || (zoomedRetry && zoomedAnchorResult.changed);
-
-                            boolean shortMotionGrace = zoomedRetry
-                                    && cameraMotionMonitor != null
-                                    && cameraMotionMonitor.isMoving()
-                                    && autoZoomDynamicFrameGraceCount < 2;
-
-                            if (changed && (targetStillTracked || shortMotionGrace)) {
-
-                                /*
-                                 * Ruch całego kadru nie jest zmianą tożsamości celu,
-                                 * jeżeli lekki tracker nadal jednoznacznie widzi tę
-                                 * samą tablicę. Przenosimy kotwice na nowy kadr i
-                                 * zwiększamy niepewność tylko podczas krótkiej luki.
-                                 */
-                                autoZoomDynamicFrameGraceCount = targetStillTracked
-                                        ? 0
-                                        : autoZoomDynamicFrameGraceCount + 1;
-                                previewSceneDetector.reset();
-                                previewSceneDetector.update(previewBitmap);
-                                previewSceneAnchorGuard.anchor(previewBitmap);
-                                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
-                                if (targetStillTracked) {
-                                    presentTrackedPreviewOverlay(trackedItems);
-                                }
-                                android.util.Log.d(
-                                        "ALPR_SCENE_UI",
-                                        "ZOOM_MOTION_COMPENSATED targetTracked="
-                                                + targetStillTracked
-                                                + " grace="
-                                                + autoZoomDynamicFrameGraceCount
-                                );
-
-                            } else if (changed) {
-
-                                android.util.Log.d(
-                                        "ALPR_SCENE_UI",
-                                        String.format(
-                                                Locale.ROOT,
-                                                "ANCHOR changed=%s score=%.3f fraction=%.3f",
-                                                anchorResult.changed,
-                                                anchorResult.score,
-                                                anchorResult.changedFraction
+                    if (previewFrameInFlight.compareAndSet(false, true)) {
+                        Bitmap previewBitmap = null;
+                        try {
+                            previewBitmap = previewView.getBitmap();
+                            if (previewBitmap != null && !previewBitmap.isRecycled()) {
+                                final Bitmap ownedBitmap = previewBitmap;
+                                final long sceneGeneration = uiSceneGeneration.get();
+                                final long transformGeneration =
+                                        uiCameraTransformGeneration.get();
+                                previewBitmap = null;
+                                previewTrackingExecutor.execute(() ->
+                                        processPreviewTrackingFrame(
+                                                ownedBitmap,
+                                                sceneGeneration,
+                                                transformGeneration
                                         )
                                 );
-
-
-                                autoZoomDynamicFrameGraceCount = 0;
-                                invalidateUiForPreviewSceneChange(
-                                        Math.max(scene.score, Math.max(
-                                                anchorResult.score,
-                                                zoomedAnchorResult.score
-                                        )),
-                                        Math.max(scene.changedFraction, Math.max(
-                                                anchorResult.changedFraction,
-                                                zoomedAnchorResult.changedFraction
-                                        ))
-                                );
-
                             } else {
-                                autoZoomDynamicFrameGraceCount = 0;
-                                if (trackedItems != null) {
-
-                                    /*
-                                     * Pusta lista jest świadomym komunikatem
-                                     * PreviewPlateTracker:
-                                     *
-                                     * "miałem aktywne tablice, ale właśnie
-                                     * straciłem wszystkie tracki".
-                                     */
-                                    if (trackedItems.isEmpty()) {
-
-                                        invalidateUiForLostPreviewTracking();
-
-                                    } else {
-                                        presentTrackedPreviewOverlay(trackedItems);
-                                    }
-                                }
+                                previewFrameInFlight.set(false);
                             }
-                            }
-                        }
-
-                    } catch (RuntimeException ignored) {
-
-                        /*
-                         * Brak klatki PreviewView podczas startu/restartu
-                         * kamery nie jest błędem pipeline'u.
-                         */
-
-                    } finally {
-
-                        if (previewBitmap != null
-                                && !previewBitmap.isRecycled()) {
-
-                            previewBitmap.recycle();
+                        } catch (RuntimeException ignored) {
+                            previewFrameInFlight.set(false);
+                        } finally {
+                            recycleBitmap(previewBitmap);
                         }
                     }
 
@@ -403,11 +259,200 @@ public final class MainActivity extends AppCompatActivity {
 
                         previewSceneHandler.postDelayed(
                                 this,
-                                PREVIEW_SCENE_POLL_MS
+                                previewScenePollDelay()
                         );
                     }
                 }
             };
+
+    private void processPreviewTrackingFrame(
+            Bitmap previewBitmap,
+            long sceneGeneration,
+            long transformGeneration
+    ) {
+        boolean bitmapHandedToUi = false;
+        try {
+            if (!cameraStarted
+                    || sceneGeneration != uiSceneGeneration.get()
+                    || transformGeneration != uiCameraTransformGeneration.get()) {
+                return;
+            }
+
+            if (isAutoZoomHoldingMemory()) {
+                boolean physicalMotion = cameraTransformInProgress
+                        && autoZoomController.state()
+                        == AutoZoomController.State.ZOOM_SETTLING
+                        && cameraMotionMonitor != null
+                        && cameraMotionMonitor.isMoving();
+                previewSceneDetector.reset();
+                previewSceneAnchorGuard.reset();
+                previewPlateTracker.reset();
+                if (physicalMotion) runOnUiThread(
+                        this::invalidateAutoZoomForPhysicalCameraMotion
+                );
+                return;
+            }
+
+            if (autoZoomReturnValidationPending) {
+                bitmapHandedToUi = true;
+                runOnUiThread(() -> {
+                    try {
+                        if (cameraStarted
+                                && sceneGeneration == uiSceneGeneration.get()
+                                && transformGeneration
+                                == uiCameraTransformGeneration.get()) {
+                            validateReturnedAutoZoomScene(previewBitmap);
+                        }
+                    } finally {
+                        recycleBitmap(previewBitmap);
+                    }
+                });
+                return;
+            }
+
+            if (autoZoomZoomedAnchorPending
+                    && autoZoomController.state()
+                    == AutoZoomController.State.ZOOMED_RETRY) {
+                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                autoZoomZoomedAnchorPending = false;
+                autoZoomZoomedAnchorValid = true;
+            }
+
+            if (previewSceneAnchorPending) {
+                previewSceneAnchorGuard.anchor(previewBitmap);
+                previewSceneAnchorPending = false;
+            }
+
+            SceneAnchorGuard.Result anchorResult =
+                    previewSceneAnchorGuard.evaluate(previewBitmap);
+            SceneChangeDetector.Result scene =
+                    previewSceneDetector.update(previewBitmap);
+            SceneAnchorGuard.Result zoomedAnchorResult =
+                    autoZoomZoomedSceneAnchorGuard.evaluate(previewBitmap);
+            PreviewTrackingFrame trackingFrame = directLumaTrackingFresh()
+                    ? null
+                    : previewPlateTracker.updateTracking(previewBitmap);
+            List<OverlayItem> trackedItems = trackingFrame == null
+                    ? null : trackingFrame.overlayItems;
+
+            if (trackingFrame != null && pipeline != null) {
+                pipeline.setTargetSnapshot(
+                        targetStateMachine.onTrackingFrame(trackingFrame)
+                );
+            }
+
+            boolean zoomedRetry = autoZoomController.state()
+                    == AutoZoomController.State.ZOOMED_RETRY;
+            boolean targetStillTracked = zoomedRetry
+                    && trackedItems != null
+                    && !trackedItems.isEmpty()
+                    && findAutoZoomTargetOverlay(trackedItems) != null;
+            boolean changed = scene.sceneChanged
+                    || anchorResult.changed
+                    || (zoomedRetry && zoomedAnchorResult.changed);
+            boolean shortMotionGrace = zoomedRetry
+                    && cameraMotionMonitor != null
+                    && cameraMotionMonitor.isMoving()
+                    && autoZoomDynamicFrameGraceCount < 2;
+
+            bitmapHandedToUi = true;
+            runOnUiThread(() -> {
+                try {
+                    if (!cameraStarted
+                            || sceneGeneration != uiSceneGeneration.get()
+                            || transformGeneration
+                            != uiCameraTransformGeneration.get()) {
+                        return;
+                    }
+                    if (changed && (targetStillTracked || shortMotionGrace)) {
+                        autoZoomDynamicFrameGraceCount = targetStillTracked
+                                ? 0 : autoZoomDynamicFrameGraceCount + 1;
+                        previewSceneDetector.reset();
+                        previewSceneDetector.update(previewBitmap);
+                        previewSceneAnchorGuard.anchor(previewBitmap);
+                        autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                        if (targetStillTracked) {
+                            presentTrackedPreviewOverlay(trackedItems);
+                        }
+                    } else if (changed) {
+                        autoZoomDynamicFrameGraceCount = 0;
+                        invalidateUiForPreviewSceneChange(
+                                Math.max(scene.score, Math.max(
+                                        anchorResult.score,
+                                        zoomedAnchorResult.score
+                                )),
+                                Math.max(scene.changedFraction, Math.max(
+                                        anchorResult.changedFraction,
+                                        zoomedAnchorResult.changedFraction
+                                ))
+                        );
+                    } else {
+                        autoZoomDynamicFrameGraceCount = 0;
+                        if (trackedItems != null) {
+                            if (trackedItems.isEmpty()) {
+                                invalidateUiForLostPreviewTracking();
+                            } else {
+                                presentTrackedPreviewOverlay(trackedItems);
+                            }
+                        }
+                    }
+                } finally {
+                    recycleBitmap(previewBitmap);
+                }
+            });
+        } catch (RuntimeException ignored) {
+            // PreviewView może zmienić powierzchnię podczas restartu kamery.
+        } finally {
+            previewFrameInFlight.set(false);
+            if (!bitmapHandedToUi) recycleBitmap(previewBitmap);
+        }
+    }
+
+    private static void recycleBitmap(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+    }
+
+    private long previewScenePollDelay() {
+        return directLumaTrackingFresh() ? 260L : PREVIEW_SCENE_POLL_MS;
+    }
+
+    private boolean directLumaTrackingFresh() {
+        long lastFrame = lastDirectLumaFrameNanos;
+        return !directLumaTrackingUnavailable
+                && lastFrame > 0L
+                && System.nanoTime() - lastFrame < 600_000_000L;
+    }
+
+    private void processDirectLumaFrame(LumaFrame frame) {
+        if (frame == null || !cameraStarted || cameraTransformInProgress
+                || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending) return;
+        final long sceneGeneration = uiSceneGeneration.get();
+        final long transformGeneration = uiCameraTransformGeneration.get();
+        lastDirectLumaFrameNanos = System.nanoTime();
+        PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
+                frame.gray,
+                frame.width,
+                frame.height
+        );
+        if (trackingFrame == null) return;
+        if (pipeline != null) {
+            pipeline.setTargetSnapshot(
+                    targetStateMachine.onTrackingFrame(trackingFrame)
+            );
+        }
+        List<OverlayItem> trackedItems = trackingFrame.overlayItems;
+        runOnUiThread(() -> {
+            if (!cameraStarted
+                    || sceneGeneration != uiSceneGeneration.get()
+                    || transformGeneration != uiCameraTransformGeneration.get()
+                    || cameraTransformInProgress) return;
+            if (trackedItems.isEmpty()) {
+                invalidateUiForLostPreviewTracking();
+            } else {
+                presentTrackedPreviewOverlay(trackedItems);
+            }
+        });
+    }
     private final CameraMotionOverlayTracker overlayTracker = new CameraMotionOverlayTracker();
     /*
      * Tracker działający na lekkich klatkach PreviewView
@@ -415,8 +460,13 @@ public final class MainActivity extends AppCompatActivity {
      */
     private final PreviewPlateTracker previewPlateTracker =
             new PreviewPlateTracker();
+    private final TargetStateMachine targetStateMachine =
+            new TargetStateMachine();
     private final ExperimentSession experimentSession =
             new ExperimentSession();
+    private final Set<Long> telemetryActiveTrackIds = new HashSet<>();
+    private final Set<Long> telemetryConfirmedTrackIds = new HashSet<>();
+    private final Map<Long, String> telemetryConsensusByTrack = new HashMap<>();
 
     private final Handler experimentTimerHandler =
             new Handler(Looper.getMainLooper());
@@ -432,7 +482,7 @@ public final class MainActivity extends AppCompatActivity {
     private final AutoZoomController autoZoomController =
             new AutoZoomController();
 
-    private boolean cameraTransformInProgress;
+    private volatile boolean cameraTransformInProgress;
     private boolean autoZoomMemoryVisible;
     private float currentCameraZoomRatio = 1f;
     private float cameraTransformStartZoomRatio = 1f;
@@ -443,10 +493,10 @@ public final class MainActivity extends AppCompatActivity {
     private boolean abortAutoZoomAfterTransform;
     private boolean resetAutoZoomSessionAfterReturn;
     private boolean autoZoomPreZoomAnchorValid;
-    private boolean autoZoomZoomedAnchorPending;
-    private boolean autoZoomZoomedAnchorValid;
-    private boolean autoZoomReturnValidationPending;
-    private int autoZoomDynamicFrameGraceCount;
+    private volatile boolean autoZoomZoomedAnchorPending;
+    private volatile boolean autoZoomZoomedAnchorValid;
+    private volatile boolean autoZoomReturnValidationPending;
+    private volatile int autoZoomDynamicFrameGraceCount;
     private Runnable pendingAutoZoomStartRunnable;
 
     private boolean thermalUiMonitorRunning;
@@ -496,9 +546,18 @@ public final class MainActivity extends AppCompatActivity {
     private PreviewView previewView;
     private DetectionOverlayView overlayView;
     private TextView liveStatus;
+    private TextView liveStatusSecondary;
     private TextView liveHud;
     private LinearLayout liveHudRow;
+    private View liveStatusStrip;
+    private View liveStatusDot;
+    private TextView liveEvent;
     private TextView recognitionHint;
+    private View confirmedResultTray;
+    private TextView confirmedResultText;
+    private TextView confirmedResultConfidence;
+    private TextView confirmedResultMeta;
+    private LivePresentationController livePresentation;
     private MaterialButton collectionToggle;
     private MaterialButton galleryOpenButton;
     private MaterialButton analysisStartButton;
@@ -608,8 +667,8 @@ public final class MainActivity extends AppCompatActivity {
                         if (granted) {
                             requestAnalysisStart();
                         } else {
-                            liveStatus.setText(
-                                    R.string.camera_permission_required
+                            livePresentation.showTransient(
+                                    getString(R.string.camera_permission_required)
                             );
 
                             recordWarning(
@@ -619,9 +678,12 @@ public final class MainActivity extends AppCompatActivity {
                     }
             );
 
-    private final ActivityResultLauncher<String> reportDestination = registerForActivityResult(
-            new ActivityResultContracts.CreateDocument("application/zip"),
-            uri -> {
+    private final ActivityResultLauncher<Intent> reportDestination = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                Uri uri = result.getResultCode() == RESULT_OK && result.getData() != null
+                        ? result.getData().getData()
+                        : null;
                 ResearchArchive.Kind kind = pendingExportKind;
                 pendingExportKind = null;
                 if (uri != null && kind != null) writeResearchExport(uri, kind);
@@ -785,6 +847,11 @@ public final class MainActivity extends AppCompatActivity {
                         R.id.live_status
                 );
 
+        liveStatusSecondary = findViewById(R.id.live_status_secondary);
+        liveStatusStrip = findViewById(R.id.live_status_strip);
+        liveStatusDot = findViewById(R.id.live_status_dot);
+        liveEvent = findViewById(R.id.live_event);
+
         liveHud =
                 findViewById(
                         R.id.live_hud
@@ -812,6 +879,30 @@ public final class MainActivity extends AppCompatActivity {
                 findViewById(
                         R.id.recognition_hint
                 );
+
+        confirmedResultTray = findViewById(R.id.confirmed_result_tray);
+        confirmedResultText = findViewById(R.id.confirmed_result_text);
+        confirmedResultConfidence = findViewById(R.id.confirmed_result_confidence);
+        confirmedResultMeta = findViewById(R.id.confirmed_result_meta);
+
+        livePresentation = new LivePresentationController(
+                liveStatusStrip,
+                liveStatusDot,
+                liveStatus,
+                liveStatusSecondary,
+                findViewById(R.id.live_diagnostics_toggle),
+                liveEvent,
+                liveHudRow,
+                liveHud,
+                recognitionHint,
+                confirmedResultTray,
+                confirmedResultText,
+                confirmedResultConfidence,
+                confirmedResultMeta
+        );
+        livePresentation.setDiagnosticsVisibilityListener(
+                overlayView::setDiagnosticMode
+        );
 
         collectionToggle =
                 findViewById(
@@ -911,7 +1002,7 @@ public final class MainActivity extends AppCompatActivity {
         metricsCollector.setRecognitionProfile(recognitionProfile.wireName());
         overlayTracker.reset();
         lastCaptureByTrack.clear();
-        liveStatus.setText(getString(
+        livePresentation.showTransient(getString(
                 R.string.recognition_profile_changed,
                 recognitionProfileLabel()
         ));
@@ -1086,7 +1177,7 @@ public final class MainActivity extends AppCompatActivity {
         }
 
 
-        liveStatus.setText(
+        livePresentation.showTransient(
                 getString(
                         R.string.resolution_profile_changed,
                         cameraResolutionLabel()
@@ -1151,11 +1242,11 @@ public final class MainActivity extends AppCompatActivity {
                 com.example.alpr_v1.model.ModelRole.VEHICLE
         ) != null;
         if (enabled && !hasVehicleModel) {
-            liveStatus.setText(R.string.vehicle_cascade_missing_model);
+            livePresentation.showTransient(getString(R.string.vehicle_cascade_missing_model));
         } else {
-            liveStatus.setText(enabled
+            livePresentation.showTransient(getString(enabled
                     ? R.string.vehicle_cascade_enabled
-                    : R.string.vehicle_cascade_disabled);
+                    : R.string.vehicle_cascade_disabled));
         }
     }
 
@@ -1167,9 +1258,13 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
         pipeline.resetTracking();
         overlayView.setItems(java.util.Collections.emptyList());
-        recognitionHint.setText(R.string.recognition_searching);
+        livePresentation.clearResult();
+        livePresentation.showState(
+                LivePresentationController.State.SEARCHING,
+                hudRoiLabel() + " · SZUKAM"
+        );
         clearCapturedCrops();
-        liveStatus.setText(R.string.recognition_cleared);
+        livePresentation.showTransient(getString(R.string.recognition_cleared));
     }
 
     private void showHelp() {
@@ -1331,13 +1426,7 @@ public final class MainActivity extends AppCompatActivity {
         renderAnalysisControls();
 
 
-        liveStatus.setText(
-                R.string.analysis_idle
-        );
-
-        recognitionHint.setText(
-                R.string.analysis_idle_hint
-        );
+        livePresentation.stop();
 
         exportReportButton.setOnClickListener(
                 view ->
@@ -1430,9 +1519,7 @@ public final class MainActivity extends AppCompatActivity {
 
         if (recognitionHint != null) {
             recognitionHint.setVisibility(
-                    cameraStarted
-                            ? View.VISIBLE
-                            : View.GONE
+                    View.GONE
             );
         }
 
@@ -1530,6 +1617,8 @@ public final class MainActivity extends AppCompatActivity {
             pipeline.resetTracking();
         }
 
+        targetStateMachine.reset();
+
         overlayTracker.reset();
 
         previewPlateTracker.reset();
@@ -1550,9 +1639,7 @@ public final class MainActivity extends AppCompatActivity {
                 java.util.Collections.emptyList()
         );
 
-        liveStatus.setText(
-                R.string.analysis_idle
-        );
+        livePresentation.stop();
 
 
 
@@ -1607,6 +1694,11 @@ public final class MainActivity extends AppCompatActivity {
         experimentTimerDeadlineElapsedMillis = -1L;
     }
     private void beginAnalysisMeasurement() {
+        synchronized (this) {
+            telemetryActiveTrackIds.clear();
+            telemetryConfirmedTrackIds.clear();
+            telemetryConsensusByTrack.clear();
+        }
         metricsCollector.startMeasurementSession();
 
         if (experimentModeEnabled) {
@@ -1618,14 +1710,51 @@ public final class MainActivity extends AppCompatActivity {
             TimerConfig timerForSession =
                     experimentTimerConfig;
 
+            int replicateIndex = Math.max(
+                    1,
+                    uiPreferences.getInt(
+                            SettingsActivity.KEY_EXPERIMENT_REPLICATE_INDEX,
+                            1
+                    )
+            );
+            String defaultSeriesId = "ROI-" + new SimpleDateFormat(
+                    "yyyyMMdd",
+                    Locale.ROOT
+            ).format(new Date());
+            ExperimentIdentity identity = new ExperimentIdentity(
+                    uiPreferences.getString(
+                            SettingsActivity.KEY_EXPERIMENT_SERIES_ID,
+                            defaultSeriesId
+                    ),
+                    uiPreferences.getString(
+                            SettingsActivity.KEY_EXPERIMENT_SCENARIO_ID,
+                            "live_camera"
+                    ),
+                    replicateIndex,
+                    uiPreferences.getString(
+                            SettingsActivity.KEY_EXPERIMENT_NOTES,
+                            ""
+                    ),
+                    autoZoomController.enabled(),
+                    cameraController == null ? 1.0 : cameraController.maximumZoomRatio()
+            );
+
             boolean started =
                     experimentSession.start(
                             "roi_budget",
                             experimentRoiBudgetPolicy.wireName(),
-                            timerForSession
+                            timerForSession,
+                            experimentThermalConfig,
+                            identity
                     );
 
             if (started) {
+                metricsCollector.setExperimentSessionId(
+                        experimentSession.sessionId()
+                );
+                if (latestThermalSnapshot != null) {
+                    metricsCollector.recordThermalSample(latestThermalSnapshot);
+                }
 
                 recordInfo(
                         "Rozpoczęto eksperyment "
@@ -1634,7 +1763,20 @@ public final class MainActivity extends AppCompatActivity {
                                 + experimentSession.experimentType()
                                 + " variant="
                                 + experimentSession.variant()
+                                + " series="
+                                + identity.seriesId
+                                + " scenario="
+                                + identity.scenarioId
+                                + " replicate="
+                                + identity.replicateIndex
                 );
+
+                uiPreferences.edit()
+                        .putInt(
+                                SettingsActivity.KEY_EXPERIMENT_REPLICATE_INDEX,
+                                identity.replicateIndex + 1
+                        )
+                        .apply();
 
                 scheduleExperimentTimer(
                         timerForSession
@@ -1650,6 +1792,10 @@ public final class MainActivity extends AppCompatActivity {
              * o wcześniejszym eksperymencie.
              */
             experimentSession.reset();
+            metricsCollector.setExperimentSessionId("");
+            if (latestThermalSnapshot != null) {
+                metricsCollector.recordThermalSample(latestThermalSnapshot);
+            }
         }
     }
 
@@ -1784,6 +1930,17 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private boolean needsPreviewSceneSampling() {
+        return previewSceneAnchorPending
+                || !latestPipelinePlateItems.isEmpty()
+                || !latestDiagnosticOverlayItems.isEmpty()
+                || autoZoomMemoryVisible
+                || autoZoomReturnValidationPending
+                || autoZoomZoomedAnchorPending
+                || autoZoomZoomedAnchorValid
+                || isAutoZoomHoldingMemory();
+    }
+
 
     private void stopPreviewSceneMonitor() {
 
@@ -1825,7 +1982,7 @@ public final class MainActivity extends AppCompatActivity {
                 uiSceneGeneration.incrementAndGet();
 
         if (pipeline != null) {
-
+            targetStateMachine.reset();
             pipeline.requestTrackingReset();
         }
 
@@ -1901,13 +2058,12 @@ public final class MainActivity extends AppCompatActivity {
         renderLiveHud();
 
 
-        liveStatus.setText(
-                R.string.scene_change_analyzing
+        livePresentation.clearResult();
+        livePresentation.showState(
+                LivePresentationController.State.RECOVERING,
+                hudRoiLabel() + " · NOWA SCENA"
         );
-
-        recognitionHint.setText(
-                R.string.recognition_stabilizing
-        );
+        livePresentation.showTransient(getString(R.string.scene_change_analyzing));
 
 
         android.util.Log.d(
@@ -1947,9 +2103,10 @@ public final class MainActivity extends AppCompatActivity {
          * utratą trackera nie może później ponownie
          * narysować starej tablicy.
          */
+        TargetSnapshot lostTarget = targetStateMachine.onTrackingLost();
         if (pipeline != null) {
-
-            pipeline.requestTrackingReset();
+            pipeline.setTargetSnapshot(lostTarget);
+            pipeline.requestImmediateTargetRecovery();
         }
 
         clearAutoZoomRecognitionMemory();
@@ -2000,13 +2157,7 @@ public final class MainActivity extends AppCompatActivity {
         renderLiveHud();
 
 
-        liveStatus.setText(
-                R.string.scene_change_analyzing
-        );
-
-        recognitionHint.setText(
-                R.string.recognition_stabilizing
-        );
+        livePresentation.onTargetLost();
 
 
         android.util.Log.d(
@@ -2037,6 +2188,7 @@ public final class MainActivity extends AppCompatActivity {
          * bez stanu trackingowego poprzedniego przebiegu.
          */
         pipeline.resetTracking();
+        targetStateMachine.reset();
 
         overlayTracker.reset();
 
@@ -2085,12 +2237,10 @@ public final class MainActivity extends AppCompatActivity {
             cameraMotionMonitor.start();
         }
 
-        liveStatus.setText(
-                R.string.camera_starting
-        );
-
-        recognitionHint.setText(
-                R.string.recognition_searching
+        livePresentation.clearResult();
+        livePresentation.showState(
+                LivePresentationController.State.SEARCHING,
+                hudRoiLabel() + " · SZUKAM"
         );
 
         recordInfo(
@@ -2107,6 +2257,8 @@ public final class MainActivity extends AppCompatActivity {
                         .isHighResolution(
                                 requestedCameraSize
                         );
+        lastDirectLumaFrameNanos = 0L;
+        directLumaTrackingUnavailable = false;
         cameraController.start(
                 image -> {
 
@@ -2119,6 +2271,23 @@ public final class MainActivity extends AppCompatActivity {
                     final long transformGenerationAtStart =
                             uiCameraTransformGeneration.get();
 
+                    if (!pipelineFrameInFlight.compareAndSet(false, true)) {
+                        return;
+                    }
+                    final long sourceTimestampNanos =
+                            image.getImageInfo().getTimestamp();
+                    final CameraImageConverter.Result conversion;
+                    try {
+                        conversion = CameraImageConverter.convert(image);
+                    } catch (RuntimeException conversionError) {
+                        pipelineFrameInFlight.set(false);
+                        throw conversionError;
+                    }
+                    final Bitmap pipelineBitmap = conversion.bitmap;
+
+                    try {
+                        pipelineInferenceExecutor.execute(() -> {
+                            try {
 
                     long observationNanos =
                             System.nanoTime();
@@ -2127,11 +2296,16 @@ public final class MainActivity extends AppCompatActivity {
                     pipeline.setRapidCameraMotion(
                             cameraMotionMonitor.isRapidMotion()
                     );
+                    pipeline.setCurrentCameraZoomRatio(currentCameraZoomRatio);
 
 
                     PipelineResult result =
-                            pipeline.process(
-                                    image,
+                            pipeline.processBitmap(
+                                    pipelineBitmap,
+                                    sourceTimestampNanos,
+                                    conversion.toBitmapNanos,
+                                    conversion.rotationNanos,
+                                    conversion.rotationDegrees,
                                     (overlayItems, sourceWidth, sourceHeight) -> {
                                         if (autoZoomController.state()
                                                 != AutoZoomController.State.ZOOMED_RETRY) {
@@ -2154,7 +2328,38 @@ public final class MainActivity extends AppCompatActivity {
                                                     sourceHeight
                                             );
                                         });
-                                    }
+                                    },
+                                    (score, changedFraction) -> runOnUiThread(() -> {
+                                        if (!cameraStarted
+                                                || sceneGenerationAtStart
+                                                != uiSceneGeneration.get()
+                                                || transformGenerationAtStart
+                                                != uiCameraTransformGeneration.get()) {
+                                            return;
+                                        }
+                                        try {
+                                            JSONObject details = new JSONObject();
+                                            details.put("score", score);
+                                            details.put("changed_fraction", changedFraction);
+                                            details.put(
+                                                    "detection_latency_ms",
+                                                    Math.max(0L, System.nanoTime() - observationNanos)
+                                                            / 1_000_000.0
+                                            );
+                                            metricsCollector.recordEvent(
+                                                    "scene_change_fast",
+                                                    0L,
+                                                    0L,
+                                                    details
+                                            );
+                                        } catch (Exception ignored) {
+                                            // Telemetria nie może opóźniać unieważnienia sceny.
+                                        }
+                                        invalidateUiForPreviewSceneChange(
+                                                score,
+                                                changedFraction
+                                        );
+                                    })
                             );
 
 
@@ -2180,6 +2385,8 @@ public final class MainActivity extends AppCompatActivity {
 
                         return;
                     }
+
+                    recordRecognitionTelemetry(result);
 
 
                     long now =
@@ -2269,6 +2476,35 @@ public final class MainActivity extends AppCompatActivity {
 
                         result.close();
                     }
+                            } finally {
+                                if (!pipelineBitmap.isRecycled()) {
+                                    pipelineBitmap.recycle();
+                                }
+                                pipelineFrameInFlight.set(false);
+                            }
+                        });
+                    } catch (RuntimeException dispatchError) {
+                        if (!pipelineBitmap.isRecycled()) pipelineBitmap.recycle();
+                        pipelineFrameInFlight.set(false);
+                        throw dispatchError;
+                    }
+                },
+                new CameraController.LumaFrameHandler() {
+                    @Override
+                    public void onLumaFrame(LumaFrame frame) {
+                        directLumaTrackingUnavailable = false;
+                        processDirectLumaFrame(frame);
+                    }
+
+                    @Override
+                    public void onUnavailable() {
+                        directLumaTrackingUnavailable = true;
+                        lastDirectLumaFrameNanos = 0L;
+                        android.util.Log.w(
+                                "ALPR_PREVIEW_TRACK",
+                                "Oddzielny strumień YUV niedostępny; używam PreviewView fallback"
+                        );
+                    }
                 },
                 error -> runOnUiThread(() -> {
                     cameraStarted = false;
@@ -2283,7 +2519,13 @@ public final class MainActivity extends AppCompatActivity {
                     }
 
                     renderAnalysisControls();
-                    liveStatus.setText(getString(R.string.camera_error, error.getMessage()));
+                    livePresentation.showState(
+                            LivePresentationController.State.ERROR,
+                            hudRoiLabel()
+                    );
+                    livePresentation.showTransient(
+                            getString(R.string.camera_error, error.getMessage())
+                    );
                     recordError("Błąd kamery: " + error.getMessage(), error);
                 }),
                 requestedCameraSize,
@@ -2384,11 +2626,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
         if (!cameraStarted) {
-
-            liveHudRow.setVisibility(
-                    View.GONE
-            );
-
+            if (livePresentation != null) livePresentation.stop();
             return;
         }
 
@@ -2456,12 +2694,6 @@ public final class MainActivity extends AppCompatActivity {
         }
 
 
-        String firstLine =
-                hudPipelineLabel()
-                        + " · "
-                        + resolution;
-
-
         /*
          * Jeżeli obraz Preview należy już do nowej sceny,
          * ale ciężki pipeline nie zakończył jeszcze jej
@@ -2489,7 +2721,7 @@ public final class MainActivity extends AppCompatActivity {
                 liveHudAwaitingFreshResult
                         ? Double.NaN
                         : snapshot.pipelineMs;
-        String secondLine =
+        String firstDiagnosticsLine =
                 "MP "
                         + hudDuration(
                         vehicleInference
@@ -2509,7 +2741,7 @@ public final class MainActivity extends AppCompatActivity {
          * więc może pozostać widoczny również podczas
          * oczekiwania na nowy trace.
          */
-        String thirdLine =
+        String secondDiagnosticsLine =
                 "PIPE "
                         + hudDuration(
                         pipelineInference
@@ -2518,23 +2750,52 @@ public final class MainActivity extends AppCompatActivity {
                         + snapshot.droppedFrames;
 
         StringBuilder hudText = new StringBuilder()
-                .append(firstLine)
+                .append(firstDiagnosticsLine)
                 .append('\n')
-                .append(secondLine)
+                .append(secondDiagnosticsLine)
                 .append('\n')
-                .append(thirdLine);
+                .append(resolution);
         if (autoZoomController.enabled()) {
             hudText.append('\n').append(autoZoomHudLabel());
         }
-        liveHud.setText(hudText);
-
-
-        liveHud.setVisibility(
-                View.VISIBLE
-        );
-        liveHudRow.setVisibility(
-                View.VISIBLE
-        );
+        TargetSnapshot target = targetStateMachine.snapshot();
+        if (target.trackId > 0L) {
+            hudText.append('\n').append(String.format(
+                    Locale.forLanguageTag("pl-PL"),
+                    "KLT q %.2f · %d/8 inlier",
+                    target.trackingQuality,
+                    target.trackerInliers
+            ));
+        }
+        LivePresentationController.State presentationState;
+        String targetLabel;
+        switch (target.state) {
+            case LOCKED:
+                presentationState = LivePresentationController.State.TRACKING;
+                targetLabel = "LOCK";
+                break;
+            case TRACKING:
+            case ACQUIRED:
+                presentationState = LivePresentationController.State.RECOGNIZING;
+                targetLabel = "CEL";
+                break;
+            case DEGRADED:
+            case LOST:
+                presentationState = LivePresentationController.State.RECOVERING;
+                targetLabel = "RECOVERY";
+                break;
+            case SEARCHING:
+            default:
+                presentationState = LivePresentationController.State.SEARCHING;
+                targetLabel = "SZUKAM";
+                break;
+        }
+        String secondaryStatus = (experimentModeEnabled ? "EXP " : "")
+                + hudRoiLabel()
+                + " · "
+                + targetLabel;
+        livePresentation.showState(presentationState, secondaryStatus);
+        livePresentation.updateDiagnostics(hudText);
         updateAutoZoomButton();
     }
     private String hudPipelineLabel() {
@@ -2617,6 +2878,7 @@ public final class MainActivity extends AppCompatActivity {
              */
             overlayTracker.reset();
             previewPlateTracker.reset();
+            targetStateMachine.reset();
             /*
              * TrackId w pipeline może po resecie zacząć się ponownie od 1.
              * Stary stan próbkowania cropów nie może zostać przypisany
@@ -2636,8 +2898,11 @@ public final class MainActivity extends AppCompatActivity {
                 == AutoZoomController.State.ZOOMED_RETRY) {
             repositionAutoZoomTarget(result);
             if (!hasFreshAutoZoomTargetRecognition(result)) {
-                liveStatus.setText(R.string.auto_zoom_waiting_fresh_mz);
-                recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+                livePresentation.showState(
+                        LivePresentationController.State.RECOGNIZING,
+                        hudRoiLabel() + " · AZ "
+                                + String.format(Locale.ROOT, "%.1f×", currentCameraZoomRatio)
+                );
                 renderLiveHud();
                 handleAutoZoomResult(result);
                 return;
@@ -2660,8 +2925,10 @@ public final class MainActivity extends AppCompatActivity {
                 && (!hasAnyFreshRecognition(result)
                 || !hasRecognitionCompatibleWithZoomMemory(result))) {
             transformMemoryOverlay(currentCameraZoomRatio);
-            liveStatus.setText(R.string.auto_zoom_waiting_fresh_mz);
-            recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+            livePresentation.showState(
+                    LivePresentationController.State.RECOGNIZING,
+                    hudRoiLabel() + " · AZ"
+            );
             renderLiveHud();
             handleAutoZoomResult(result);
             return;
@@ -2680,17 +2947,21 @@ public final class MainActivity extends AppCompatActivity {
                 false;
 
 
-        liveStatus.setText(
-                result.message
-        );
-
         renderLiveHud();
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
+        long presentationNanos = System.nanoTime();
+        List<OverlayItem> latencyAlignedItems = alignMtGeometryToLiveTarget(
+                result.overlayItems,
+                targetStateMachine.snapshot()
+        );
+        boolean geometryAlignedToPresentation =
+                latencyAlignedItems != result.overlayItems;
         List<OverlayItem> visibleOverlayItems =
                 overlayTracker.update(
-                        result.overlayItems,
-                        observationNanos,
-                        System.nanoTime()
+                        latencyAlignedItems,
+                        geometryAlignedToPresentation
+                                ? presentationNanos : observationNanos,
+                        presentationNanos
                 );
         List<OverlayItem> diagnosticItems =
                 new ArrayList<>();
@@ -2698,11 +2969,18 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> pipelinePlateItems =
                 new ArrayList<>();
 
+        boolean hasCarriedPlatePrediction = false;
+
 
         for (OverlayItem item :
                 visibleOverlayItems) {
 
             if (item.kind == OverlayItem.Kind.PLATE) {
+
+                if (item.carriedPrediction) {
+                    hasCarriedPlatePrediction = true;
+                    continue;
+                }
 
                 /*
                  * Zapamiętujemy dokładną pozycję wynikającą
@@ -2730,16 +3008,19 @@ public final class MainActivity extends AppCompatActivity {
                 );
 
 
-        latestPipelinePlateItems =
-                java.util.Collections.unmodifiableList(
-                        pipelinePlateItems
-                );
+        if (!hasCarriedPlatePrediction || !pipelinePlateItems.isEmpty()) {
+            latestPipelinePlateItems =
+                    java.util.Collections.unmodifiableList(
+                            pipelinePlateItems
+                    );
+        }
 
         latestOverlaySourceWidth = result.sourceWidth;
         latestOverlaySourceHeight = result.sourceHeight;
 
 
 
+        overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
         overlayView.setItems(
                 visibleOverlayItems,
                 result.sourceWidth,
@@ -2765,6 +3046,25 @@ public final class MainActivity extends AppCompatActivity {
 
         if (previewTrackerAnchored) {
 
+            Map<Long, float[]> appearanceByTrack = new HashMap<>();
+            for (PlateObservation observation : result.plateObservations) {
+                if (observation.appearanceDescriptor != null) {
+                    appearanceByTrack.put(
+                            observation.trackId,
+                            observation.appearanceDescriptor
+                    );
+                }
+            }
+
+            TargetSnapshot anchoredTarget =
+                    targetStateMachine.onMtAnchor(
+                            visibleOverlayItems,
+                            appearanceByTrack
+                    );
+            if (pipeline != null) {
+                pipeline.setTargetSnapshot(anchoredTarget);
+            }
+
             /*
              * Nie mamy tutaj Bitmap PreviewView.
              * Następny tick lekkiego monitora ustawi
@@ -2775,21 +3075,43 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (collectionActive) collectCrops(result.plateObservations);
         if ("models_missing".equals(result.status) || "pipeline_error".equals(result.status)) {
-            recognitionHint.setText(R.string.recognition_unavailable);
-        } else if (!result.plateObservations.isEmpty()) {
-            int confirmed = 0;
-            for (PlateObservation observation : result.plateObservations) {
-                if (observation.confirmed) confirmed++;
-            }
-            recognitionHint.setText(getString(
-                    R.string.live_results_summary,
-                    result.plateObservations.size(),
-                    confirmed
-            ));
-        } else if ("stabilizing".equals(result.status) || !result.overlayItems.isEmpty()) {
-            recognitionHint.setText(R.string.recognition_stabilizing);
+            livePresentation.showState(
+                    LivePresentationController.State.ERROR,
+                    hudRoiLabel()
+            );
+            livePresentation.showTransient(result.message);
         } else {
-            recognitionHint.setText(R.string.recognition_searching);
+            PlateObservation bestObservation = null;
+            for (PlateObservation observation : result.plateObservations) {
+                if (observation.text.isEmpty()) continue;
+                if (bestObservation == null
+                        || observation.confirmed && !bestObservation.confirmed
+                        || observation.confirmed == bestObservation.confirmed
+                        && observation.recognitionConfidence
+                        > bestObservation.recognitionConfidence) {
+                    bestObservation = observation;
+                }
+            }
+            if (bestObservation != null) {
+                livePresentation.showResult(
+                        bestObservation.trackId,
+                        bestObservation.text,
+                        bestObservation.recognitionConfidence,
+                        bestObservation.confirmed,
+                        bestObservation.observations
+                );
+            } else if ("stabilizing".equals(result.status)
+                    || !result.overlayItems.isEmpty()) {
+                livePresentation.showState(
+                        LivePresentationController.State.RECOGNIZING,
+                        hudRoiLabel() + " · CEL"
+                );
+            } else {
+                livePresentation.showState(
+                        LivePresentationController.State.SEARCHING,
+                        hudRoiLabel() + " · SZUKAM"
+                );
+            }
         }
 
         handleAutoZoomResult(result);
@@ -2871,9 +3193,11 @@ public final class MainActivity extends AppCompatActivity {
             autoZoomController.setEnabled(true);
             autoZoomController.resetSession();
             recordInfo(getString(R.string.auto_zoom_enabled_log));
+            metricsCollector.recordEvent("auto_zoom_enabled", 0L, 0L, null);
         } else {
             autoZoomController.setEnabled(false);
             recordInfo(getString(R.string.auto_zoom_disabled_log));
+            metricsCollector.recordEvent("auto_zoom_disabled", 0L, 0L, null);
             if (currentCameraZoomRatio > 1.01f) {
                 requestAutoZoomReturn(null);
             }
@@ -2953,25 +3277,20 @@ public final class MainActivity extends AppCompatActivity {
             autoZoomGlow.setVisibility(View.GONE);
             return;
         }
+        if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
         autoZoomGlow.setVisibility(View.VISIBLE);
-        if (autoZoomGlowAnimator == null) {
-            autoZoomGlowAnimator = ObjectAnimator.ofFloat(
-                    autoZoomGlow,
-                    View.ALPHA,
-                    0.28f,
-                    0.82f
-            );
-            autoZoomGlowAnimator.setDuration(1_450L);
-            autoZoomGlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            autoZoomGlowAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        }
-        if (!autoZoomGlowAnimator.isStarted()) {
-            autoZoomGlowAnimator.start();
-        }
+        autoZoomGlow.setAlpha(0.42f);
     }
 
     private void handleAutoZoomResult(PipelineResult result) {
         if (!cameraStarted || !autoZoomController.enabled()) return;
+        if (autoZoomController.state() == AutoZoomController.State.READY) {
+            TargetSnapshot target = targetStateMachine.snapshot();
+            if (target.state != TargetSnapshot.State.TRACKING
+                    && target.state != TargetSnapshot.State.LOCKED) {
+                return;
+            }
+        }
         AutoZoomController.Decision decision = autoZoomController.evaluate(
                 autoZoomSamples(result),
                 System.nanoTime()
@@ -3005,7 +3324,8 @@ public final class MainActivity extends AppCompatActivity {
                     observation.confirmed,
                     observation.observations,
                     plate.normalizedKeypoints.size() == 4,
-                    observation.timing != null,
+                    observation.freshMzAttempted,
+                    observation.freshMzSuccessful,
                     observation.text
             ));
         }
@@ -3016,29 +3336,55 @@ public final class MainActivity extends AppCompatActivity {
         if (cameraTransformInProgress || cameraController == null) return;
         if (cameraController.maximumZoomRatio() <= 1.01f) {
             autoZoomController.onRequestFailed();
-            liveStatus.setText(R.string.auto_zoom_unavailable);
+            livePresentation.showTransient(getString(R.string.auto_zoom_unavailable));
             recordWarning(getString(R.string.auto_zoom_unavailable));
             return;
         }
 
-        autoZoomTargetSceneX = decision.centerX;
-        autoZoomTargetSceneY = decision.centerY;
+        TargetSnapshot trackedTarget = targetStateMachine.snapshot();
+        boolean useTrackedGeometry = trackedTarget.trackId == decision.trackId
+                && trackedTarget.hasTrack();
+        autoZoomTargetSceneX = useTrackedGeometry
+                ? trackedTarget.normalizedBounds.centerX()
+                : decision.centerX;
+        autoZoomTargetSceneY = useTrackedGeometry
+                ? trackedTarget.normalizedBounds.centerY()
+                : decision.centerY;
+
+        final float requestedZoomRatio = autoZoomRatioKeepingTargetVisible(decision);
         autoZoomBestText = autoZoomController.targetText();
         autoZoomBestConfidence = decision.beforeConfidence;
         capturePreZoomSceneAnchor();
         freezeCurrentOverlayAsMemory();
-        showAutoZoomTarget(decision.centerX, decision.centerY);
-        liveStatus.setText(getString(
+        showAutoZoomTarget(autoZoomTargetSceneX, autoZoomTargetSceneY);
+        livePresentation.showTransient(getString(
                 R.string.auto_zoom_request_status,
-                AutoZoomController.REQUESTED_ZOOM_RATIO
+                requestedZoomRatio
         ));
         recordInfo(String.format(
                 Locale.ROOT,
-                "Auto zoom request track=%d reason=%s before=%.3f",
+                "Auto zoom request track=%d reason=%s before=%.3f ratio=%.2f",
                 decision.trackId,
                 decision.reason,
-                decision.beforeConfidence
+                decision.beforeConfidence,
+                requestedZoomRatio
         ));
+        try {
+            JSONObject event = new JSONObject();
+            event.put("reason", decision.reason);
+            event.put("confidence", decision.beforeConfidence);
+            event.put("zoom_ratio", requestedZoomRatio);
+            event.put("target_center_x", autoZoomTargetSceneX);
+            event.put("target_center_y", autoZoomTargetSceneY);
+            metricsCollector.recordEvent(
+                    "auto_zoom_started",
+                    0L,
+                    decision.trackId,
+                    event
+            );
+        } catch (Exception ignored) {
+            // Zdarzenie diagnostyczne nie może blokować zoomu.
+        }
 
         final long scheduledSceneGeneration = uiSceneGeneration.get();
         pendingAutoZoomStartRunnable = () -> {
@@ -3050,7 +3396,7 @@ public final class MainActivity extends AppCompatActivity {
                     || cameraTransformInProgress) {
                 return;
             }
-            startAutoZoomTransform(decision);
+            startAutoZoomTransform(decision, requestedZoomRatio);
         };
 
         /*
@@ -3066,7 +3412,38 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void startAutoZoomTransform(AutoZoomController.Decision decision) {
+    private float autoZoomRatioKeepingTargetVisible(
+            AutoZoomController.Decision decision
+    ) {
+        OverlayItem target = findAutoZoomTargetOverlay(latestPipelinePlateItems);
+        TargetSnapshot trackedTarget = targetStateMachine.snapshot();
+        RectF bounds;
+        if (trackedTarget.trackId == decision.trackId && trackedTarget.hasTrack()) {
+            bounds = trackedTarget.normalizedBounds;
+        } else if (target != null) {
+            bounds = target.normalizedBounds;
+        } else {
+            return AutoZoomController.REQUESTED_ZOOM_RATIO;
+        }
+        RectF visible = overlayView.normalizedVisibleBounds();
+        return CameraController.centeredZoomKeepingBoundsVisible(
+                AutoZoomController.REQUESTED_ZOOM_RATIO,
+                bounds.left,
+                bounds.top,
+                bounds.right,
+                bounds.bottom,
+                visible.left,
+                visible.top,
+                visible.right,
+                visible.bottom,
+                0.05f
+        );
+    }
+
+    private void startAutoZoomTransform(
+            AutoZoomController.Decision decision,
+            float requestedZoomRatio
+    ) {
         if (!cameraStarted
                 || cameraController == null
                 || cameraTransformInProgress
@@ -3078,18 +3455,21 @@ public final class MainActivity extends AppCompatActivity {
         beginControlledCameraTransform();
 
         android.graphics.PointF focusPoint =
-                overlayView.normalizedToViewPoint(decision.centerX, decision.centerY);
+                overlayView.normalizedToViewPoint(
+                        autoZoomTargetSceneX,
+                        autoZoomTargetSceneY
+                );
         float focusX = overlayView.getWidth() <= 0
-                ? decision.centerX
+                ? autoZoomTargetSceneX
                 : Math.max(0f, Math.min(1f,
                 focusPoint.x / overlayView.getWidth()));
         float focusY = overlayView.getHeight() <= 0
-                ? decision.centerY
+                ? autoZoomTargetSceneY
                 : Math.max(0f, Math.min(1f,
                 focusPoint.y / overlayView.getHeight()));
 
         cameraController.zoomAndFocus(
-                AutoZoomController.REQUESTED_ZOOM_RATIO,
+                requestedZoomRatio,
                 focusX,
                 focusY,
                 new CameraController.ControlCallback() {
@@ -3115,11 +3495,11 @@ public final class MainActivity extends AppCompatActivity {
                         if (!cameraStarted) return;
                         currentCameraZoomRatio = appliedZoomRatio;
                         float zoomedCenterX = CameraController.zoomedCoordinate(
-                                decision.centerX,
+                                autoZoomTargetSceneX,
                                 appliedZoomRatio
                         );
                         float zoomedCenterY = CameraController.zoomedCoordinate(
-                                decision.centerY,
+                                autoZoomTargetSceneY,
                                 appliedZoomRatio
                         );
                         autoZoomController.onZoomApplied(zoomedCenterX, zoomedCenterY);
@@ -3146,8 +3526,26 @@ public final class MainActivity extends AppCompatActivity {
                                 return;
                             }
                             autoZoomController.onZoomSettled(System.nanoTime());
+                            try {
+                                JSONObject event = new JSONObject();
+                                event.put("zoom_ratio", currentCameraZoomRatio);
+                                metricsCollector.recordEvent(
+                                        "lock_acquired",
+                                        0L,
+                                        decision.trackId,
+                                        event
+                                );
+                                metricsCollector.recordEvent(
+                                        "mz_retry_after_zoom",
+                                        0L,
+                                        decision.trackId,
+                                        event
+                                );
+                            } catch (Exception ignored) {
+                                // Telemetria nie wpływa na sterowanie kamerą.
+                            }
                             finishControlledCameraTransform(true);
-                            liveStatus.setText(getString(
+                            livePresentation.showTransient(getString(
                                     R.string.auto_zoom_retry_status,
                                     currentCameraZoomRatio
                             ));
@@ -3159,6 +3557,12 @@ public final class MainActivity extends AppCompatActivity {
                         if (!cameraStarted) return;
                         abortAutoZoomAfterTransform = false;
                         autoZoomController.onRequestFailed();
+                        metricsCollector.recordEvent(
+                                "lock_lost",
+                                0L,
+                                decision.trackId,
+                                null
+                        );
                         currentCameraZoomRatio = 1f;
                         finishControlledCameraTransform(false);
                         recordError("Nie udało się ustawić auto zoom", error);
@@ -3180,8 +3584,21 @@ public final class MainActivity extends AppCompatActivity {
             transformMemoryOverlay(currentCameraZoomRatio);
         }
         autoZoomController.requestReturn();
+        try {
+            JSONObject event = new JSONObject();
+            event.put("zoom_ratio", currentCameraZoomRatio);
+            if (decision != null) event.put("reason", decision.reason);
+            metricsCollector.recordEvent(
+                    "auto_zoom_return_started",
+                    0L,
+                    decision == null ? autoZoomController.targetTrackId() : decision.trackId,
+                    event
+            );
+        } catch (Exception ignored) {
+            // Telemetria nie wpływa na sterowanie kamerą.
+        }
         beginControlledCameraTransform();
-        liveStatus.setText(R.string.auto_zoom_return_status);
+        livePresentation.showTransient(getString(R.string.auto_zoom_return_status));
 
         if (decision != null) {
             recordInfo(String.format(
@@ -3225,6 +3642,18 @@ public final class MainActivity extends AppCompatActivity {
                                 autoZoomController.resetSession();
                             }
                             finishControlledCameraTransform(false);
+                            try {
+                                JSONObject event = new JSONObject();
+                                event.put("zoom_ratio", currentCameraZoomRatio);
+                                metricsCollector.recordEvent(
+                                        "zoom_finished",
+                                        0L,
+                                        autoZoomController.targetTrackId(),
+                                        event
+                                );
+                            } catch (Exception ignored) {
+                                // Telemetria nie wpływa na sterowanie kamerą.
+                            }
                         }, AutoZoomController.SETTLING_MILLIS);
                     }
 
@@ -3317,14 +3746,18 @@ public final class MainActivity extends AppCompatActivity {
         clearAutoZoomRecognitionMemory();
         uiSceneGeneration.incrementAndGet();
         if (pipeline != null) pipeline.requestTrackingReset();
+        targetStateMachine.reset();
         overlayTracker.reset();
         previewPlateTracker.reset();
         latestDiagnosticOverlayItems = java.util.Collections.emptyList();
         latestPipelinePlateItems = java.util.Collections.emptyList();
         overlayView.setItems(java.util.Collections.emptyList());
         liveHudAwaitingFreshResult = true;
-        liveStatus.setText(R.string.scene_change_analyzing);
-        recognitionHint.setText(R.string.recognition_stabilizing);
+        livePresentation.showState(
+                LivePresentationController.State.RECOVERING,
+                hudRoiLabel() + " · RUCH KAMERY"
+        );
+        livePresentation.showTransient(getString(R.string.scene_change_analyzing));
         recordInfo("Auto zoom przerwany: telefon zmienił kadr podczas zbliżenia");
     }
 
@@ -3337,7 +3770,10 @@ public final class MainActivity extends AppCompatActivity {
         autoZoomBaseMemoryOverlayItems = java.util.Collections.unmodifiableList(frozen);
         autoZoomMemoryVisible = containsPlate(frozen);
         applyVisibleOverlay(frozen, latestOverlaySourceWidth, latestOverlaySourceHeight);
-        recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+        livePresentation.showState(
+                LivePresentationController.State.RECOGNIZING,
+                hudRoiLabel() + " · AZ"
+        );
     }
 
     private void transformMemoryOverlay(float zoomRatio) {
@@ -3399,12 +3835,20 @@ public final class MainActivity extends AppCompatActivity {
         autoZoomMemoryVisible = true;
 
         if (previewPlateTracker.anchor(visibleItems, sourceWidth, sourceHeight)) {
+            if (pipeline != null) {
+                pipeline.setTargetSnapshot(
+                        targetStateMachine.onMtAnchor(visibleItems)
+                );
+            }
             previewSceneAnchorPending = true;
         }
         if (!autoZoomZoomedAnchorValid) {
             autoZoomZoomedAnchorPending = true;
         }
-        recognitionHint.setText(R.string.auto_zoom_waiting_fresh_mz);
+        livePresentation.showState(
+                LivePresentationController.State.RECOGNIZING,
+                hudRoiLabel() + " · AZ"
+        );
     }
 
     private List<OverlayItem> overlayItemsWithAutoZoomRecognitionMemory(
@@ -3645,13 +4089,19 @@ public final class MainActivity extends AppCompatActivity {
                     latestOverlaySourceWidth,
                     latestOverlaySourceHeight
             )) {
+                if (pipeline != null) {
+                    pipeline.setTargetSnapshot(
+                            targetStateMachine.onMtAnchor(
+                                    activeTrackingOverlayItems(returnedOverlay)
+                            )
+                    );
+                }
                 previewPlateTracker.update(previewBitmap);
             }
         }
 
         liveHudAwaitingFreshResult = false;
-        liveStatus.setText(R.string.auto_zoom_same_scene_status);
-        recognitionHint.setText(R.string.auto_zoom_same_scene_hint);
+        livePresentation.showTransient(getString(R.string.auto_zoom_same_scene_status));
         renderLiveHud();
         recordInfo("Auto zoom: powrót do tej samej sceny, zachowano ramki i wynik");
     }
@@ -3717,6 +4167,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void presentTrackedPreviewOverlay(List<OverlayItem> trackedItems) {
         List<OverlayItem> trackedOverlay = mergePreviewOverlay(trackedItems);
+        overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
         overlayView.setItems(
                 trackedOverlay,
                 previewPlateTracker.sourceWidth(),
@@ -3773,21 +4224,9 @@ public final class MainActivity extends AppCompatActivity {
         float y = minimumY + point.y - autoZoomTarget.getHeight() / 2f;
         autoZoomTarget.setX(Math.max(minimumX, Math.min(maximumX, x)));
         autoZoomTarget.setY(Math.max(minimumY, Math.min(maximumY, y)));
+        if (autoZoomTargetAnimator != null) autoZoomTargetAnimator.cancel();
+        autoZoomTarget.setAlpha(1f);
         autoZoomTarget.setVisibility(View.VISIBLE);
-        if (autoZoomTargetAnimator == null) {
-            autoZoomTargetAnimator = ObjectAnimator.ofFloat(
-                    autoZoomTarget,
-                    View.ALPHA,
-                    0.35f,
-                    1f
-            );
-            autoZoomTargetAnimator.setDuration(360L);
-            autoZoomTargetAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            autoZoomTargetAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        }
-        if (!autoZoomTargetAnimator.isStarted()) {
-            autoZoomTargetAnimator.start();
-        }
     }
 
     private void hideAutoZoomTarget() {
@@ -4170,6 +4609,122 @@ public final class MainActivity extends AppCompatActivity {
         renderCapturedCrops();
     }
 
+    private synchronized void recordRecognitionTelemetry(PipelineResult result) {
+        try {
+            if (result.sceneReset) {
+                metricsCollector.recordEvent("scene_reset", 0L, 0L, null);
+                telemetryActiveTrackIds.clear();
+                telemetryConfirmedTrackIds.clear();
+                telemetryConsensusByTrack.clear();
+            }
+
+            Set<Long> currentTrackIds = new HashSet<>();
+            for (PlateObservation observation : result.plateObservations) {
+                currentTrackIds.add(observation.trackId);
+            }
+            for (Long previousTrackId : new HashSet<>(telemetryActiveTrackIds)) {
+                if (currentTrackIds.contains(previousTrackId)) continue;
+                metricsCollector.recordEvent("track_lost", 0L, previousTrackId, null);
+                telemetryConfirmedTrackIds.remove(previousTrackId);
+                telemetryConsensusByTrack.remove(previousTrackId);
+            }
+
+            for (PlateObservation observation : result.plateObservations) {
+                if (!telemetryActiveTrackIds.contains(observation.trackId)) {
+                    JSONObject created = new JSONObject();
+                    created.put("plate_geometry", observation.geometry.toJson());
+                    metricsCollector.recordEvent(
+                            "track_created",
+                            observation.frameId,
+                            observation.trackId,
+                            created
+                    );
+                }
+
+                JSONArray rows = new JSONArray();
+                for (Integer count : observation.rowCounts) rows.put(count);
+
+                if (observation.freshMzAttempted) {
+                    JSONObject attempt = new JSONObject();
+                    attempt.put("mz_attempt_index", observation.mzAttemptIndex);
+                    attempt.put("zoom_ratio", currentCameraZoomRatio);
+                    attempt.put("capture_source", autoZoomController.captureSource());
+                    metricsCollector.recordEvent(
+                            "mz_attempt",
+                            observation.frameId,
+                            observation.trackId,
+                            attempt
+                    );
+
+                    JSONObject mzResult = new JSONObject();
+                    mzResult.put("mz_attempt_index", observation.mzAttemptIndex);
+                    mzResult.put("prediction", observation.freshPrediction);
+                    mzResult.put("confidence", observation.recognitionConfidence);
+                    mzResult.put("fresh_mz_successful", observation.freshMzSuccessful);
+                    mzResult.put("crop_supports_consensus", observation.cropSupportsConsensus);
+                    mzResult.put("track_confirmed", observation.confirmed);
+                    mzResult.put("consensus_observations", observation.observations);
+                    mzResult.put("layout", observation.layout);
+                    mzResult.put("row_counts", rows);
+                    mzResult.put("zoom_ratio", currentCameraZoomRatio);
+                    metricsCollector.recordEvent(
+                            "mz_result",
+                            observation.frameId,
+                            observation.trackId,
+                            mzResult
+                    );
+                }
+
+                String previousConsensus = telemetryConsensusByTrack.getOrDefault(
+                        observation.trackId,
+                        observation.predictionBefore
+                );
+                if (!observation.predictionAfter.isEmpty()
+                        && !observation.predictionAfter.equals(previousConsensus)) {
+                    JSONObject update = new JSONObject();
+                    update.put("prediction_before", previousConsensus);
+                    update.put("prediction_after", observation.predictionAfter);
+                    update.put("confidence", observation.recognitionConfidence);
+                    update.put("consensus_observations", observation.observations);
+                    update.put("layout", observation.layout);
+                    update.put("row_counts", rows);
+                    update.put("track_confirmed", observation.confirmed);
+                    metricsCollector.recordEvent(
+                            "consensus_updated",
+                            observation.frameId,
+                            observation.trackId,
+                            update
+                    );
+                }
+                if (observation.confirmed
+                        && !telemetryConfirmedTrackIds.contains(observation.trackId)) {
+                    JSONObject confirmed = new JSONObject();
+                    confirmed.put("prediction", observation.predictionAfter);
+                    confirmed.put("confidence", observation.recognitionConfidence);
+                    confirmed.put("consensus_observations", observation.observations);
+                    confirmed.put("mz_attempt_index", observation.mzAttemptIndex);
+                    metricsCollector.recordEvent(
+                            "consensus_confirmed",
+                            observation.frameId,
+                            observation.trackId,
+                            confirmed
+                    );
+                    telemetryConfirmedTrackIds.add(observation.trackId);
+                }
+                if (!observation.predictionAfter.isEmpty()) {
+                    telemetryConsensusByTrack.put(
+                            observation.trackId,
+                            observation.predictionAfter
+                    );
+                }
+            }
+            telemetryActiveTrackIds.clear();
+            telemetryActiveTrackIds.addAll(currentTrackIds);
+        } catch (Exception error) {
+            AppLog.warning(this, LOG_TAG, "Nie udało się zapisać zdarzenia telemetrii");
+        }
+    }
+
     private void collectCrops(List<PlateObservation> observations) {
         if (!collectionActive) return;
         boolean changed = false;
@@ -4206,7 +4761,17 @@ public final class MainActivity extends AppCompatActivity {
                     observation.sharpness,
                     observation.timing,
                     currentCameraZoomRatio,
-                    autoZoomController.captureSource()
+                    autoZoomController.captureSource(),
+                    observation.geometry,
+                    ImageDifficultyMetrics.measure(bitmap),
+                    observation.confirmed,
+                    observation.freshMzSuccessful,
+                    observation.cropSupportsConsensus,
+                    observation.observations,
+                    observation.mzAttemptIndex,
+                    observation.layout,
+                    observation.rowCounts,
+                    observation.freshPrediction
             );
             try {
                 captured.miniReportJson = CropMiniReport.create(
@@ -4697,7 +5262,9 @@ public final class MainActivity extends AppCompatActivity {
         metricsCollector.setCropCapacity(resolvedCropLimit);
         enforceCropLimit();
         renderCapturedCrops();
-        liveStatus.setText(getString(R.string.crop_limit_changed, resolvedCropLimit));
+        livePresentation.showTransient(
+                getString(R.string.crop_limit_changed, resolvedCropLimit)
+        );
     }
 
     private void clearCapturedCrops() {
@@ -4895,7 +5462,7 @@ public final class MainActivity extends AppCompatActivity {
             if (!lastMessage.isEmpty()) {
                 final String message = lastMessage;
                 runOnUiThread(() -> {
-                    liveStatus.setText(message);
+                    livePresentation.showTransient(message);
                     refreshPersistentLog();
                 });
             }
@@ -4934,7 +5501,13 @@ public final class MainActivity extends AppCompatActivity {
                 : kind == ResearchArchive.Kind.THESIS_BUNDLE
                 ? "alpr_thesis_" + timestamp + ".zip"
                 : "alpr_benchmark_report_" + timestamp + ".zip";
-        reportDestination.launch(name);
+        Intent destination = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(kind == ResearchArchive.Kind.RESEARCH_SESSION
+                        ? "application/octet-stream"
+                        : "application/zip")
+                .putExtra(Intent.EXTRA_TITLE, name);
+        reportDestination.launch(destination);
     }
 
     private void writeResearchExport(Uri destination, ResearchArchive.Kind kind) {
@@ -4967,6 +5540,9 @@ public final class MainActivity extends AppCompatActivity {
                         experimentSnapshot
                 );
                 String csv = metricsCollector.createCsvReport();
+                String thermalCsv = metricsCollector.createThermalCsv();
+                String frameFlowCsv = metricsCollector.createFrameFlowCsv();
+                String eventsJsonl = metricsCollector.createEventsJsonl();
                 String log = AppLog.contents(this);
                 try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
                     if (output == null) {
@@ -4974,7 +5550,15 @@ public final class MainActivity extends AppCompatActivity {
                     }
                     if (kind == ResearchArchive.Kind.RESEARCH_SESSION) {
                         ResearchArchive.writeResearchSession(
-                                output, json, csv, log, cropSnapshot, modelRegistry
+                                output,
+                                json,
+                                csv,
+                                thermalCsv,
+                                frameFlowCsv,
+                                eventsJsonl,
+                                log,
+                                cropSnapshot,
+                                modelRegistry
                         );
                     } else if (kind == ResearchArchive.Kind.THESIS_BUNDLE) {
                         ResearchArchive.writeThesisBundle(output, json, csv, cropSnapshot);
@@ -5018,7 +5602,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void setBusy(boolean busy, String message) {
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
-        liveStatus.setText(message);
+        livePresentation.showTransient(message);
     }
 
     private void recordInfo(String message) {
@@ -5287,6 +5871,8 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         backgroundExecutor.shutdownNow();
+        previewTrackingExecutor.shutdownNow();
+        pipelineInferenceExecutor.shutdownNow();
         cancelExperimentTimer();
 
         if (galleryBottomSheet != null) {
@@ -5356,13 +5942,13 @@ public final class MainActivity extends AppCompatActivity {
                     com.example.alpr_v1.model.ModelRole.VEHICLE
             ) == null) {
 
-                liveStatus.setText(
-                        R.string.vehicle_cascade_missing_model
+                livePresentation.showTransient(
+                        getString(R.string.vehicle_cascade_missing_model)
                 );
                 return;
             }
 
-            liveStatus.setText(
+            livePresentation.showTransient(
                     getString(
                             R.string.experiment_mode_enabled_status,
                             roiBudgetPolicyLabel(
@@ -5372,8 +5958,8 @@ public final class MainActivity extends AppCompatActivity {
             );
 
         } else {
-            liveStatus.setText(
-                    R.string.experiment_mode_disabled_status
+            livePresentation.showTransient(
+                    getString(R.string.experiment_mode_disabled_status)
             );
         }
         if (!experimentModeEnabled
@@ -5614,6 +6200,129 @@ public final class MainActivity extends AppCompatActivity {
                 remainingSeconds
         );
     }
+    /**
+     * A heavy MT/MZ result describes the camera frame captured before inference.
+     * If the lightweight preview tracker has already moved the same target, keep
+     * its current position and only apply the fresh label/shape from MT.
+     */
+    private static List<OverlayItem> alignMtGeometryToLiveTarget(
+            List<OverlayItem> items,
+            TargetSnapshot liveTarget
+    ) {
+        if (items == null
+                || items.isEmpty()
+                || liveTarget == null
+                || !liveTarget.hasTrack()
+                || liveTarget.trackingQuality
+                < TargetStateMachine.QUALITY_TRACKING
+                || liveTarget.normalizedBounds.width() <= 0f
+                || liveTarget.normalizedBounds.height() <= 0f) {
+            return items;
+        }
+
+        OverlayItem sourcePlate = null;
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && !item.carriedPrediction
+                    && item.trackId == liveTarget.trackId) {
+                sourcePlate = item;
+                break;
+            }
+        }
+        if (sourcePlate == null
+                || sourcePlate.normalizedBounds.width() <= 0f
+                || sourcePlate.normalizedBounds.height() <= 0f) {
+            return items;
+        }
+
+        RectF liveBounds = new RectF(liveTarget.normalizedBounds);
+        float dx = liveBounds.centerX() - sourcePlate.normalizedBounds.centerX();
+        float dy = liveBounds.centerY() - sourcePlate.normalizedBounds.centerY();
+        List<OverlayItem> aligned = new ArrayList<>(items.size());
+
+        for (OverlayItem item : items) {
+            if (item == sourcePlate) {
+                aligned.add(new OverlayItem(
+                        OverlayItem.Kind.PLATE,
+                        liveBounds,
+                        remapPointsToBounds(
+                                sourcePlate.normalizedKeypoints,
+                                sourcePlate.normalizedBounds,
+                                liveBounds,
+                                liveTarget.overlayItem == null
+                                        ? java.util.Collections.emptyList()
+                                        : liveTarget.overlayItem.normalizedKeypoints
+                        ),
+                        sourcePlate.label,
+                        liveTarget.trackId,
+                        false
+                ));
+            } else if (item.kind != OverlayItem.Kind.PLATE
+                    && item.normalizedBounds.contains(
+                    sourcePlate.normalizedBounds.centerX(),
+                    sourcePlate.normalizedBounds.centerY()
+            )) {
+                RectF movedBounds = translatedBounds(item.normalizedBounds, dx, dy);
+                aligned.add(new OverlayItem(
+                        item.kind,
+                        movedBounds,
+                        translatedPoints(item.normalizedKeypoints, dx, dy),
+                        item.label,
+                        item.trackId,
+                        item.carriedPrediction
+                ));
+            } else {
+                aligned.add(item);
+            }
+        }
+
+        return aligned;
+    }
+
+    private static List<android.graphics.PointF> remapPointsToBounds(
+            List<android.graphics.PointF> sourcePoints,
+            RectF sourceBounds,
+            RectF targetBounds,
+            List<android.graphics.PointF> fallbackPoints
+    ) {
+        if (sourcePoints == null
+                || sourcePoints.isEmpty()
+                || sourceBounds.width() <= 0f
+                || sourceBounds.height() <= 0f) {
+            return fallbackPoints == null
+                    ? java.util.Collections.emptyList()
+                    : fallbackPoints;
+        }
+        List<android.graphics.PointF> result = new ArrayList<>(sourcePoints.size());
+        for (android.graphics.PointF point : sourcePoints) {
+            float relativeX = (point.x - sourceBounds.left) / sourceBounds.width();
+            float relativeY = (point.y - sourceBounds.top) / sourceBounds.height();
+            result.add(new android.graphics.PointF(
+                    targetBounds.left + relativeX * targetBounds.width(),
+                    targetBounds.top + relativeY * targetBounds.height()
+            ));
+        }
+        return result;
+    }
+
+    private static List<android.graphics.PointF> translatedPoints(
+            List<android.graphics.PointF> points,
+            float dx,
+            float dy
+    ) {
+        if (points == null || points.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        List<android.graphics.PointF> translated = new ArrayList<>(points.size());
+        for (android.graphics.PointF point : points) {
+            translated.add(new android.graphics.PointF(
+                    Math.max(0f, Math.min(1f, point.x + dx)),
+                    Math.max(0f, Math.min(1f, point.y + dy))
+            ));
+        }
+        return translated;
+    }
+
     private List<OverlayItem> mergePreviewOverlay(
             List<OverlayItem> trackedPlates
     ) {
@@ -5889,6 +6598,12 @@ public final class MainActivity extends AppCompatActivity {
                     latestThermalSnapshot =
                             thermalMonitor.read();
 
+                    if (cameraStarted && metricsCollector != null) {
+                        metricsCollector.recordThermalSample(
+                                latestThermalSnapshot
+                        );
+                    }
+
 
                     updateExperimentThermalButton();
 
@@ -6051,8 +6766,8 @@ public final class MainActivity extends AppCompatActivity {
             thermalReadySinceElapsedMillis =
                     -1L;
 
-            liveStatus.setText(
-                    R.string.experiment_thermal_waiting_reading
+            livePresentation.showTransient(
+                    getString(R.string.experiment_thermal_waiting_reading)
             );
 
             return;
@@ -6070,7 +6785,7 @@ public final class MainActivity extends AppCompatActivity {
             thermalReadySinceElapsedMillis =
                     -1L;
 
-            liveStatus.setText(
+            livePresentation.showTransient(
                     String.format(
                             Locale.ROOT,
                             "Chłodzenie: %.1f°C · TH%d · cel ≤ %.1f°C · TH≤%d",
@@ -6126,7 +6841,7 @@ public final class MainActivity extends AppCompatActivity {
                     );
 
 
-            liveStatus.setText(
+            livePresentation.showTransient(
                     String.format(
                             Locale.ROOT,
                             "Temperatura OK: %.1f°C · TH%d · stabilizacja %d s",
@@ -6363,8 +7078,8 @@ public final class MainActivity extends AppCompatActivity {
                 -1L;
 
 
-        liveStatus.setText(
-                R.string.experiment_thermal_waiting_cooling
+        livePresentation.showTransient(
+                getString(R.string.experiment_thermal_waiting_cooling)
         );
 
 
@@ -6396,9 +7111,7 @@ public final class MainActivity extends AppCompatActivity {
                 -1L;
 
 
-        liveStatus.setText(
-                R.string.analysis_idle
-        );
+        livePresentation.stop();
 
 
         renderAnalysisControls();

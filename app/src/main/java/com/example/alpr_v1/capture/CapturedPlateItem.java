@@ -5,6 +5,8 @@ import android.net.Uri;
 
 import com.example.alpr_v1.pipeline.CropInferenceTiming;
 import com.example.alpr_v1.pipeline.PlateCharacter;
+import com.example.alpr_v1.pipeline.PlateGeometry;
+import com.example.alpr_v1.metrics.ImageDifficultyMetrics;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -40,6 +42,16 @@ public final class CapturedPlateItem {
     public final CropInferenceTiming timing;
     public final float cameraZoomRatio;
     public final String captureSource;
+    public final PlateGeometry plateGeometry;
+    public final ImageDifficultyMetrics imageDifficulty;
+    public final boolean trackConfirmed;
+    public final boolean freshMzSuccessful;
+    public final boolean cropSupportsConsensus;
+    public final int consensusObservations;
+    public final int mzAttemptIndex;
+    public final String layout;
+    public final List<Integer> rowCounts;
+    public final String freshPrediction;
     public volatile SaveState saveState = SaveState.NOT_SAVED;
     public volatile boolean selectedForSave;
     public volatile Uri savedImageUri;
@@ -102,6 +114,42 @@ public final class CapturedPlateItem {
             float cameraZoomRatio,
             String captureSource
     ) {
+        this(
+                captureId, sessionId, trackId, bitmap, text, plateConfidence,
+                recognitionConfidence, confirmed, characters, capturedAtMillis,
+                capturedElapsedNanos, sharpness, timing, cameraZoomRatio, captureSource,
+                PlateGeometry.unavailable(), ImageDifficultyMetrics.measure(bitmap), confirmed,
+                false, false, 0, 0, "unknown", Collections.emptyList(), ""
+        );
+    }
+
+    public CapturedPlateItem(
+            String captureId,
+            String sessionId,
+            long trackId,
+            Bitmap bitmap,
+            String text,
+            double plateConfidence,
+            double recognitionConfidence,
+            boolean confirmed,
+            List<PlateCharacter> characters,
+            long capturedAtMillis,
+            long capturedElapsedNanos,
+            float sharpness,
+            CropInferenceTiming timing,
+            float cameraZoomRatio,
+            String captureSource,
+            PlateGeometry plateGeometry,
+            ImageDifficultyMetrics imageDifficulty,
+            boolean trackConfirmed,
+            boolean freshMzSuccessful,
+            boolean cropSupportsConsensus,
+            int consensusObservations,
+            int mzAttemptIndex,
+            String layout,
+            List<Integer> rowCounts,
+            String freshPrediction
+    ) {
         this.captureId = captureId;
         this.sessionId = sessionId;
         this.trackId = trackId;
@@ -117,6 +165,20 @@ public final class CapturedPlateItem {
         this.timing = timing;
         this.cameraZoomRatio = Math.max(1f, cameraZoomRatio);
         this.captureSource = captureSource == null ? "normal" : captureSource;
+        this.plateGeometry = plateGeometry == null
+                ? PlateGeometry.unavailable() : plateGeometry;
+        this.imageDifficulty = imageDifficulty == null
+                ? ImageDifficultyMetrics.unavailable() : imageDifficulty;
+        this.trackConfirmed = trackConfirmed;
+        this.freshMzSuccessful = freshMzSuccessful;
+        this.cropSupportsConsensus = cropSupportsConsensus;
+        this.consensusObservations = Math.max(0, consensusObservations);
+        this.mzAttemptIndex = Math.max(0, mzAttemptIndex);
+        this.layout = layout == null ? "unknown" : layout;
+        this.rowCounts = Collections.unmodifiableList(new ArrayList<>(
+                rowCounts == null ? Collections.emptyList() : rowCounts
+        ));
+        this.freshPrediction = freshPrediction == null ? "" : freshPrediction;
     }
 
     public boolean isProtectedFromEviction() {

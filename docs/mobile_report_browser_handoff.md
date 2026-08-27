@@ -13,7 +13,7 @@ Eksport inicjuje `MainActivity.showExportOptions()`, a zapis wykonuje
 
 | Plik | Kontrakt | Najważniejsza zawartość |
 | --- | --- | --- |
-| `*.alprsession` | `alpr.mobile_research_bundle.v1` | `manifest.json`, pełny `report.json`, `traces.csv`, `application.log`, środowisko, cropy i adnotacje, manifesty/artefakty modeli |
+| `*.alprsession` | `alpr.mobile_research_bundle.v1` + `alpr.mobile_experiment_telemetry.v1` | `manifest.json`, pełny `report.json`, `traces.csv`, `thermal.csv`, `frame_flow.csv`, `events.jsonl`, log, środowisko, cropy i adnotacje, manifesty/artefakty modeli |
 | `alpr_benchmark_report_*.zip` | zgodność wsteczna; `report.json.schema = alpr.mobile_benchmark_report.v1` | `report.json`, `traces.csv`, opcjonalny `application.log`, `README.txt` |
 | `alpr_thesis_*.zip` | `alpr.mobile_thesis_bundle.v1` | `manifest.json`, `metadata.json`, `tables/trace_data.csv`, gotowe tabele i dokument TeX, wybrane cropy |
 
@@ -55,6 +55,12 @@ można otwierać w trybie skróconym na podstawie `metadata.json` oraz
 - **Diagnostyka:** `errors`, `summary.counters`, status/text/confidence per
   klatka, użycie PSS/native heap i `application.log`. Warto filtrować m.in.
   `pipeline_error`, `no_plate`, klatki pominięte oraz skoki czasu/pamięci.
+- **Kampania:** `experiment.series_id|scenario_id|variant|replicate_index`,
+  `app_build.git_commit`, status zakończenia i ostrzeżenie z `data_completeness`.
+- **Termika i przepływ:** szeregi z `thermal.csv` oraz `frame_flow.csv` łączyć po
+  `experiment_session_id + elapsed_ms`; luki upstream są wyłącznie estymacją.
+- **Zdarzenia:** oś czasu `events.jsonl` dla tracków, MZ, konsensusu i autozoomu;
+  nie utożsamiać `track_confirmed` z ręcznym ground truth.
 - **Jakość:** `quality.available`, liczebności, exact match, CER i próbki.
   Gdy `available == false`, wyświetlić `quality.reason`; confidence ani
   `observed_recognition_yield` nie mogą być etykietowane jako accuracy.
@@ -77,9 +83,11 @@ transkrypcji.
 2. `MobileBenchmarkReportParser` — tolerancyjne DTO dla wersji
    `alpr.mobile_benchmark_report.v1`.
 3. `TraceReader` — strumieniowy parser CSV; JSON `traces[]` jako fallback.
-4. Warstwa widoków: podsumowanie, konfiguracja, latency, jakość, diagnostyka,
+4. `TelemetryReader` — strumieniowe `thermal.csv`, `frame_flow.csv` i JSONL;
+   brak pola zachowuje jako null, nigdy jako zero.
+5. Warstwa widoków: podsumowanie, konfiguracja, latency, jakość, diagnostyka,
    cropy i surowe pliki.
-5. Testy fixture dla każdego z trzech formatów oraz przypadków: błędny hash,
+6. Testy fixture dla każdego z trzech formatów oraz przypadków: błędny hash,
    uszkodzony ZIP, brak opcjonalnego logu/pól, nieznane pola i złośliwa ścieżka.
 
 ## Kryteria odbioru MVP
@@ -103,7 +111,7 @@ transkrypcji.
 - [`ResearchArchive.java`](../app/src/main/java/com/example/alpr_v1/metrics/ResearchArchive.java)
   oraz [`ReportArchive.java`](../app/src/main/java/com/example/alpr_v1/metrics/ReportArchive.java)
   — układ archiwów.
-- [`mobile_research_export.md`](mobile_research_export.md) i
+- [`mobile_research_export.md`](mobile_research_export.md),
+  [`mobile_experiment_telemetry_v1.md`](mobile_experiment_telemetry_v1.md) i
   [`alpr-mobile-research-bundle-v1.schema.json`](alpr-mobile-research-bundle-v1.schema.json)
   — opis semantyki i schemat manifestu.
-

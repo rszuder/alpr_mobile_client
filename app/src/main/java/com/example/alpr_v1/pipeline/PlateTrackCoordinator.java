@@ -63,6 +63,7 @@ final class PlateTrackCoordinator {
         final String expectedLayout;
 
         final TemporalCharacterAggregator.Result currentResult;
+        final int mzAttemptIndex;
 
 
         private Decision(
@@ -72,7 +73,8 @@ final class PlateTrackCoordinator {
                 int expectedCharacterCount,
                 List<Integer> expectedRowCounts,
                 String expectedLayout,
-                TemporalCharacterAggregator.Result currentResult
+                TemporalCharacterAggregator.Result currentResult,
+                int mzAttemptIndex
         ) {
             this.trackId =
                     trackId;
@@ -102,6 +104,7 @@ final class PlateTrackCoordinator {
 
             this.currentResult =
                     currentResult;
+            this.mzAttemptIndex = Math.max(0, mzAttemptIndex);
         }
     }
 
@@ -163,7 +166,8 @@ final class PlateTrackCoordinator {
                             state.aggregator.expectedCount(),
                             state.aggregator.expectedRowCounts(),
                             state.aggregator.expectedLayout(),
-                            current
+                            current,
+                            recognize ? state.attempts + 1 : state.attempts
                     )
             );
         }

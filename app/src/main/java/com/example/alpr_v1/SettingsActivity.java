@@ -46,6 +46,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.textfield.TextInputEditText;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -64,6 +65,10 @@ public final class SettingsActivity extends AppCompatActivity {
 
     public static final String KEY_EXPERIMENT_ROI_POLICY =
             "experiment_roi_budget_policy";
+    public static final String KEY_EXPERIMENT_SERIES_ID = "experiment_series_id";
+    public static final String KEY_EXPERIMENT_SCENARIO_ID = "experiment_scenario_id";
+    public static final String KEY_EXPERIMENT_REPLICATE_INDEX = "experiment_replicate_index";
+    public static final String KEY_EXPERIMENT_NOTES = "experiment_notes";
 
     private static final String LOG_TAG = "SettingsActivity";
 
@@ -86,6 +91,10 @@ public final class SettingsActivity extends AppCompatActivity {
     private Chip vehicleBadge;
     private Chip plateBadge;
     private Chip characterBadge;
+    private TextInputEditText experimentSeriesId;
+    private TextInputEditText experimentScenarioId;
+    private TextInputEditText experimentReplicateIndex;
+    private TextInputEditText experimentNotes;
     private ModelRole pendingImportRole;
 
     private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(
@@ -144,11 +153,16 @@ public final class SettingsActivity extends AppCompatActivity {
         vehicleBadge = findViewById(R.id.settings_node_vehicle_badge);
         plateBadge = findViewById(R.id.settings_node_plate_badge);
         characterBadge = findViewById(R.id.settings_node_character_badge);
+        experimentSeriesId = findViewById(R.id.settings_experiment_series_id);
+        experimentScenarioId = findViewById(R.id.settings_experiment_scenario_id);
+        experimentReplicateIndex = findViewById(R.id.settings_experiment_replicate_index);
+        experimentNotes = findViewById(R.id.settings_experiment_notes);
 
         configureProfileControls();
         configureResolutionControls();
         configureCropControls();
         configureRoiBudgetControls();
+        configureExperimentIdentity();
         configurePipelineControls();
         refreshModelStatus();
         refreshStoragePath();
@@ -918,9 +932,75 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        persistExperimentIdentity();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
         backgroundExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    private void configureExperimentIdentity() {
+        experimentSeriesId.setText(preferences.getString(
+                KEY_EXPERIMENT_SERIES_ID,
+                defaultExperimentSeriesId()
+        ));
+        experimentScenarioId.setText(preferences.getString(
+                KEY_EXPERIMENT_SCENARIO_ID,
+                "live_camera"
+        ));
+        experimentReplicateIndex.setText(String.valueOf(preferences.getInt(
+                KEY_EXPERIMENT_REPLICATE_INDEX,
+                1
+        )));
+        experimentNotes.setText(preferences.getString(KEY_EXPERIMENT_NOTES, ""));
+    }
+
+    private void persistExperimentIdentity() {
+        if (experimentSeriesId == null) return;
+        String series = normalizedText(experimentSeriesId, defaultExperimentSeriesId());
+        String scenario = normalizedText(experimentScenarioId, "live_camera");
+        String notes = normalizedText(experimentNotes, "");
+        int replicate = 1;
+        try {
+            replicate = Math.max(1, Integer.parseInt(
+                    normalizedText(experimentReplicateIndex, "1")
+            ));
+        } catch (NumberFormatException ignored) {
+            // Niepoprawna wartość wraca do pierwszego powtórzenia.
+        }
+
+        boolean changed = !series.equals(preferences.getString(KEY_EXPERIMENT_SERIES_ID, ""))
+                || !scenario.equals(preferences.getString(KEY_EXPERIMENT_SCENARIO_ID, ""))
+                || replicate != preferences.getInt(KEY_EXPERIMENT_REPLICATE_INDEX, 1)
+                || !notes.equals(preferences.getString(KEY_EXPERIMENT_NOTES, ""));
+        experimentSeriesId.setText(series);
+        experimentScenarioId.setText(scenario);
+        experimentReplicateIndex.setText(String.valueOf(replicate));
+        preferences.edit()
+                .putString(KEY_EXPERIMENT_SERIES_ID, series)
+                .putString(KEY_EXPERIMENT_SCENARIO_ID, scenario)
+                .putInt(KEY_EXPERIMENT_REPLICATE_INDEX, replicate)
+                .putString(KEY_EXPERIMENT_NOTES, notes)
+                .apply();
+        if (changed) markChanged();
+    }
+
+    private static String normalizedText(TextInputEditText input, String fallback) {
+        String value = input == null || input.getText() == null
+                ? ""
+                : input.getText().toString().trim();
+        return value.isEmpty() ? fallback : value;
+    }
+
+    private static String defaultExperimentSeriesId() {
+        return "ROI-" + new java.text.SimpleDateFormat(
+                "yyyyMMdd",
+                java.util.Locale.ROOT
+        ).format(new java.util.Date());
     }
 
     private void configureRoiBudgetControls() {

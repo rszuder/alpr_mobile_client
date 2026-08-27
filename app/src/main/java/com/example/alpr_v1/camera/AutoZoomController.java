@@ -44,6 +44,7 @@ public final class AutoZoomController {
         public final int observations;
         public final boolean validQuad;
         public final boolean recognitionExecuted;
+        public final boolean recognitionSuccessful;
         public final String text;
 
         public Sample(
@@ -56,6 +57,7 @@ public final class AutoZoomController {
                 int observations,
                 boolean validQuad,
                 boolean recognitionExecuted,
+                boolean recognitionSuccessful,
                 String text
         ) {
             this.trackId = trackId;
@@ -67,6 +69,7 @@ public final class AutoZoomController {
             this.observations = Math.max(0, observations);
             this.validQuad = validQuad;
             this.recognitionExecuted = recognitionExecuted;
+            this.recognitionSuccessful = recognitionExecuted && recognitionSuccessful;
             this.text = normalizeText(text);
         }
     }
@@ -170,6 +173,12 @@ public final class AutoZoomController {
             beforeConfidence = candidate.recognitionConfidence;
             bestAfterConfidence = beforeConfidence;
             state = State.ZOOM_SETTLING;
+            String reason = candidate.recognitionExecuted
+                    && !candidate.recognitionSuccessful
+                    ? "mz_no_detection"
+                    : candidate.normalizedWidth < SMALL_PLATE_WIDTH
+                    ? "small_plate"
+                    : "low_confidence";
             return new Decision(
                     Action.REQUEST_ZOOM,
                     targetTrackId,
@@ -177,9 +186,7 @@ public final class AutoZoomController {
                     targetCenterY,
                     beforeConfidence,
                     beforeConfidence,
-                    candidate.normalizedWidth < SMALL_PLATE_WIDTH
-                            ? "small_plate"
-                            : "low_confidence"
+                    reason
             );
         }
 
@@ -304,14 +311,18 @@ public final class AutoZoomController {
         Sample best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (Sample sample : samples) {
+            boolean failedFreshRecognition = sample.recognitionExecuted
+                    && !sample.recognitionSuccessful;
             if (sample.trackId <= 0L
                     || attemptedTrackIds.contains(sample.trackId)
                     || (!sample.text.isEmpty() && attemptedPlateTexts.contains(sample.text))
                     || attemptedPlateRegions.contains(regionKey(sample))
-                    || sample.observations < MINIMUM_TRACK_OBSERVATIONS
+                    || (!failedFreshRecognition
+                    && sample.observations < MINIMUM_TRACK_OBSERVATIONS)
                     || !sample.validQuad) continue;
 
-            boolean needsImprovement = sample.normalizedWidth < SMALL_PLATE_WIDTH
+            boolean needsImprovement = failedFreshRecognition
+                    || sample.normalizedWidth < SMALL_PLATE_WIDTH
                     || (!sample.confirmed
                     && sample.recognitionConfidence < LOW_RECOGNITION_CONFIDENCE);
             if (!needsImprovement) continue;

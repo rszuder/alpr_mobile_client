@@ -123,7 +123,11 @@ public final class CameraMotionOverlayTracker {
                     );
 
             boolean carried =
-                    result.sourceIndex < 0;
+                    result.sourceIndex < 0 || source.carriedPrediction;
+
+            long stableTrackId = source.trackId > 0L
+                    ? source.trackId
+                    : result.trackId;
 
             android.util.Log.d(
                     "ALPR_OVERLAY",
@@ -143,7 +147,7 @@ public final class CameraMotionOverlayTracker {
                                     target
                             ),
                             result.label,
-                            result.trackId,
+                            stableTrackId,
                             carried
                     )
             );
@@ -164,9 +168,11 @@ public final class CameraMotionOverlayTracker {
          * Do następnego przebiegu zachowujemy tylko rzeczywiste
          * elementy tablic z bieżącej klatki.
          */
-        previousPlateItems = Collections.unmodifiableList(
-                new ArrayList<>(plateItems)
-        );
+        List<OverlayItem> freshPlateItems = new ArrayList<>();
+        for (OverlayItem item : plateItems) {
+            if (!item.carriedPrediction) freshPlateItems.add(item);
+        }
+        previousPlateItems = Collections.unmodifiableList(freshPlateItems);
 
         return Collections.unmodifiableList(visible);
     }

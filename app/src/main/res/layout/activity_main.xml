@@ -47,25 +47,98 @@
         app:title="@string/app_name"
         app:titleTextColor="@color/white" />
 
-    <!--
-        Lekki HUD telemetryczny.
+    <LinearLayout
+        android:id="@+id/live_status_strip"
+        android:layout_width="0dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/live_status_strip_background"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/top_app_bar">
 
-        Pokazuje wyłącznie dane potrzebne podczas pracy
-        z kamerą i eksperymentów. Pełna diagnostyka
-        pozostaje w DiagnosticsActivity.
-    -->
+        <View
+            android:id="@+id/live_status_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_live_status_dot" />
+
+        <TextView
+            android:id="@+id/live_status"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:text="@string/status_starting"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/live_status_secondary"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:layout_marginStart="8dp"
+            android:gravity="center_vertical"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="10sp"
+            tools:text="R2 · LOCK · 10 FPS" />
+
+        <ImageButton
+            android:id="@+id/live_diagnostics_toggle"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="4dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/diagnostics_title"
+            android:padding="5dp"
+            android:src="@drawable/ic_info_24"
+            app:tint="@color/alpr_text_secondary" />
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/live_event"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/status_pill_background"
+        android:elevation="7dp"
+        android:maxWidth="300dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="7dp"
+        android:textColor="@color/white"
+        android:textSize="12sp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/live_status_strip"
+        tools:text="Cel ustabilizowany" />
+
     <LinearLayout
         android:id="@+id/live_hud_row"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
-        android:layout_marginTop="10dp"
-        android:baselineAligned="false"
-        android:gravity="top"
-        android:orientation="horizontal"
+        android:layout_marginTop="8dp"
+        android:elevation="7dp"
+        android:orientation="vertical"
         android:visibility="gone"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/top_app_bar">
+        app:layout_constraintTop_toBottomOf="@id/live_event">
 
         <TextView
             android:id="@+id/live_hud"
@@ -75,14 +148,10 @@
             android:fontFamily="monospace"
             android:includeFontPadding="false"
             android:maxWidth="230dp"
-            android:paddingStart="10dp"
-            android:paddingTop="7dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="7dp"
+            android:padding="9dp"
             android:textColor="@color/white"
-            android:textSize="11sp"
-            tools:text="R1 · EXP · 4000×3000 · 12,0 Mpix&#10;MP 0,38 s · MT 2,97 s · MZ 0,47 s&#10;PIPE 4,63 s · DROP 16" />
-
+            android:textSize="10sp"
+            tools:text="MP 0,38 s · MT 1,20 s&#10;MZ 0,31 s · PIPE 1,96 s&#10;YUV 10 FPS · 8/8 inlier" />
     </LinearLayout>
 
     <ImageView
@@ -98,29 +167,6 @@
         app:layout_constraintStart_toStartOf="@id/camera_preview"
         app:layout_constraintTop_toTopOf="@id/camera_preview"
         app:tint="@color/alpr_success" />
-    <!--
-        Krótki status pracy pipeline'u.
-        Nie rozciągamy go już na całą szerokość.
-    -->
-    <TextView
-        android:id="@+id/live_status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
-        android:layout_marginTop="8dp"
-        android:layout_marginEnd="16dp"
-        android:background="@drawable/status_pill_background"
-        android:maxWidth="340dp"
-        android:paddingHorizontal="14dp"
-        android:paddingVertical="9dp"
-        android:text="@string/status_starting"
-        android:textColor="@color/white"
-        android:textSize="13sp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_hud_row" />
-
-
     <!-- Timer jest elementem eksperymentalnym i pojawia się tylko przy EXP. -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/experiment_timer_button"
@@ -146,7 +192,7 @@
         android:layout_width="wrap_content"
         android:layout_height="48dp"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="76dp"
+        android:layout_marginBottom="12dp"
         android:minWidth="0dp"
         android:paddingHorizontal="10dp"
         android:text="@string/experiment_thermal_button"
@@ -163,7 +209,7 @@
         android:layout_width="56dp"
         android:layout_height="56dp"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="12dp"
+        android:layout_marginBottom="76dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="@id/camera_preview"
         app:layout_constraintEnd_toEndOf="@id/camera_preview">
@@ -190,6 +236,62 @@
             android:textSize="12sp"
             android:textStyle="bold" />
     </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/confirmed_result_tray"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="10dp"
+        android:background="@drawable/live_result_tray_background"
+        android:orientation="vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="9dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/control_panel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/confirmed_result_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/white"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                tools:text="53X3237" />
+
+            <TextView
+                android:id="@+id/confirmed_result_confidence"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:textColor="@color/alpr_success"
+                android:textSize="11sp"
+                tools:text="stabilne · 92%" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/confirmed_result_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="11sp"
+            tools:text="1 trafienie · cel nadal śledzony" />
+    </LinearLayout>
 
 
     <!--

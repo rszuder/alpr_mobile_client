@@ -13,6 +13,20 @@
     <string name="export_in_progress">Poczekaj na zakończenie bieżącego eksportu</string>
     <string name="result_placeholder">—</string>
     <string name="status_starting">Uruchamianie…</string>
+    <string name="live_state_searching">Skanowanie</string>
+    <string name="live_state_tracking">Śledzenie celu</string>
+    <string name="live_state_recognizing">Rozpoznawanie</string>
+    <string name="live_state_confirmed">Trafienie</string>
+    <string name="live_state_recovering">Odzyskuję cel</string>
+    <string name="live_state_error">Błąd analizy</string>
+    <string name="live_hint_confirmed">Wynik stabilny · cel nadal śledzony</string>
+    <string name="live_hint_recovering">Cel chwilowo niewidoczny · próbuję go odzyskać</string>
+    <plurals name="live_hit_count">
+        <item quantity="one">%d trafienie · cel nadal śledzony</item>
+        <item quantity="few">%d trafienia · cel nadal śledzony</item>
+        <item quantity="many">%d trafień · cel nadal śledzony</item>
+        <item quantity="other">%d trafienia · cel nadal śledzony</item>
+    </plurals>
     <string name="models_missing">Zaimportuj model tablic i model znaków</string>
     <string name="camera_content_description">Podgląd obrazu z kamery</string>
     <string name="result_count_zero">0</string>
@@ -280,6 +294,12 @@
     </string>
     <string name="settings_roi_budget_title">Strategia ROI · eksperyment</string>
     <string name="settings_roi_budget_description">R0: MT na pełnej klatce · R1: MP i maks. 1 ROI · R2: MP i maks. 2 ROI</string>
+    <string name="settings_experiment_identity_title">Identyfikacja kampanii</string>
+    <string name="settings_experiment_identity_description">Wartości zostaną zamrożone przy starcie przebiegu. Numer powtórzenia zwiększa się automatycznie po uruchomieniu.</string>
+    <string name="settings_experiment_series_id">Seria, np. ROI-202608-A</string>
+    <string name="settings_experiment_scenario_id">Scenariusz, np. single_static</string>
+    <string name="settings_experiment_replicate_index">Numer powtórzenia</string>
+    <string name="settings_experiment_notes">Notatka operatora (opcjonalna)</string>
 
     <string name="roi_budget_r0_short">R0 · pełna</string>
     <string name="roi_budget_r1_short">R1 · 1 ROI</string>

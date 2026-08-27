@@ -3,6 +3,7 @@ package com.example.alpr_v1.experiment;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.app.ActivityManager;
 import android.os.BatteryManager;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -26,6 +27,9 @@ public final class ThermalMonitor {
         public final long capturedElapsedMillis;
 
         public final float thermalHeadroom;
+        public final int batteryPercent;
+        public final boolean charging;
+        public final long availableMemoryBytes;
 
 
 
@@ -35,7 +39,10 @@ public final class ThermalMonitor {
                 double batteryTemperatureC,
                 int thermalStatus,
                 float thermalHeadroom,
-                long capturedElapsedMillis
+                long capturedElapsedMillis,
+                int batteryPercent,
+                boolean charging,
+                long availableMemoryBytes
         ) {
             this.batteryTemperatureC =
                     batteryTemperatureC;
@@ -48,6 +55,9 @@ public final class ThermalMonitor {
 
             this.capturedElapsedMillis =
                     capturedElapsedMillis;
+            this.batteryPercent = batteryPercent;
+            this.charging = charging;
+            this.availableMemoryBytes = availableMemoryBytes;
         }
         public boolean headroomAvailable() {
             return !Float.isNaN(
@@ -104,6 +114,31 @@ public final class ThermalMonitor {
 
                         : temperatureTenths
                           / 10.0;
+
+        int batteryLevel = batteryState == null
+                ? -1
+                : batteryState.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int batteryScale = batteryState == null
+                ? -1
+                : batteryState.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int batteryPercent = batteryLevel >= 0 && batteryScale > 0
+                ? Math.round(batteryLevel * 100f / batteryScale)
+                : -1;
+        int batteryStatus = batteryState == null
+                ? -1
+                : batteryState.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        boolean charging = batteryStatus == BatteryManager.BATTERY_STATUS_CHARGING
+                || batteryStatus == BatteryManager.BATTERY_STATUS_FULL;
+
+        ActivityManager activityManager = (ActivityManager) context.getSystemService(
+                Context.ACTIVITY_SERVICE
+        );
+        long availableMemoryBytes = -1L;
+        if (activityManager != null) {
+            ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
+            activityManager.getMemoryInfo(memoryInfo);
+            availableMemoryBytes = memoryInfo.availMem;
+        }
 
 
         PowerManager power =
@@ -168,7 +203,10 @@ public final class ThermalMonitor {
                 batteryTemperatureC,
                 thermalStatus,
                 lastThermalHeadroom,
-                now
+                now,
+                batteryPercent,
+                charging,
+                availableMemoryBytes
         );
     }
 

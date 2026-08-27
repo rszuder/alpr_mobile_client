@@ -29,6 +29,40 @@ import java.util.Collections;
 @RunWith(AndroidJUnit4.class)
 public final class ResearchArchiveInstrumentedTest {
     @Test
+    public void researchSessionContainsNewTelemetryStreamsAndHashes() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String report = "{"
+                + "\"schema\":\"alpr.mobile_benchmark_report.v1\","
+                + "\"report_id\":\"telemetry-report\","
+                + "\"package_id\":\"test\",\"variant_id\":\"test\",\"device\":{}"
+                + "}";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        ResearchArchive.writeResearchSession(
+                output,
+                report,
+                "frame_id,elapsed_ms\n1,10\n",
+                "experiment_session_id,elapsed_ms\nexp-1,0\n",
+                "experiment_session_id,elapsed_ms,frames_received\nexp-1,0,1\n",
+                "{\"event_type\":\"track_created\"}\n",
+                "log\n",
+                Collections.emptyList(),
+                new ModelRegistry(context)
+        );
+
+        Map<String, byte[]> entries = unzip(output.toByteArray());
+        assertTrue(entries.containsKey("thermal.csv"));
+        assertTrue(entries.containsKey("frame_flow.csv"));
+        assertTrue(entries.containsKey("events.jsonl"));
+        JSONObject manifest = new JSONObject(new String(
+                entries.get("manifest.json"), StandardCharsets.UTF_8
+        ));
+        assertTrue(manifest.getJSONObject("entry_sha256").has("thermal.csv"));
+        assertTrue(manifest.getJSONObject("entry_sha256").has("frame_flow.csv"));
+        assertTrue(manifest.getJSONObject("entry_sha256").has("events.jsonl"));
+    }
+
+    @Test
     public void thesisBundleContainsManifestTexTablesAndBibtex() throws Exception {
         String report = "{"
                 + "\"schema\":\"alpr.mobile_benchmark_report.v1\","

@@ -13,6 +13,7 @@ public final class AdaptiveFrameGate {
     private final int baseStride;
     private long lastRefreshMs;
     private int currentStride;
+    private boolean immediateFrameRequested;
 
     public AdaptiveFrameGate(Context context) {
         activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
@@ -25,7 +26,15 @@ public final class AdaptiveFrameGate {
 
     public synchronized boolean shouldProcess(long frameId) {
         refreshIfNeeded();
+        if (immediateFrameRequested) {
+            immediateFrameRequested = false;
+            return true;
+        }
         return frameId % currentStride == 0;
+    }
+
+    public synchronized void requestImmediateFrame() {
+        immediateFrameRequested = true;
     }
 
     public synchronized int currentStride() {
