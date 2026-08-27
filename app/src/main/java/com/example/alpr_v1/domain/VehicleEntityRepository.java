@@ -8,8 +8,12 @@ import java.util.Map;
 
 /** In-memory source of truth for vehicle entities in the current scene. */
 public final class VehicleEntityRepository {
+    public static final int MAX_ACTIVE_ENTITIES = 64;
+    public static final int MAX_COMPLETED_ENTITIES = 256;
     private final Map<Long, VehicleEntity> byEntityId = new LinkedHashMap<>();
     private final Map<Long, Long> entityIdByVehicleTrack = new LinkedHashMap<>();
+    private final Map<Long, VehicleEntitySummary> completedByEntityId =
+            new LinkedHashMap<>();
     private long nextEntityId = 1L;
 
     public synchronized VehicleEntity create(
@@ -18,6 +22,7 @@ public final class VehicleEntityRepository {
             AppearanceDescriptor appearance,
             long nowNanos
     ) {
+        ensureActiveCapacity();
         if (vehicleTrackId > 0L && entityIdByVehicleTrack.containsKey(vehicleTrackId)) {
             throw new IllegalStateException(
                     "vehicleTrackId=" + vehicleTrackId + " already belongs to an entity"
@@ -63,6 +68,12 @@ public final class VehicleEntityRepository {
             }
         }
         return Collections.unmodifiableList(active);
+    }
+
+    public synchronized List<VehicleEntitySummary> completedEntities() {
+        return Collections.unmodifiableList(
+                new ArrayList<>(completedByEntityId.values())
+        );
     }
 
     public synchronized VehicleEntity updateFromMp(
@@ -164,28 +175,53 @@ public final class VehicleEntityRepository {
     }
 
     public synchronized void markAcquired(long entityId) {
-        required(entityId).markAcquired();
+        VehicleEntity entity = required(entityId);
+        entity.markAcquired();
+        completedByEntityId.put(
+                entityId,
+                new VehicleEntitySummary(entity, entity.lastSeenNanos())
+        );
+        byEntityId.remove(entityId);
+        entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+        trimCompleted();
     }
 
     public synchronized int expireOldEntities(long nowNanos, long ttlNanos) {
         int expired = 0;
         long safeTtl = Math.max(0L, ttlNanos);
-        for (VehicleEntity entity : byEntityId.values()) {
+        java.util.Iterator<Map.Entry<Long, VehicleEntity>> iterator =
+                byEntityId.entrySet().iterator();
+        while (iterator.hasNext()) {
+            VehicleEntity entity = iterator.next().getValue();
             if (entity.activeTarget() || entity.acquisitionCompleted()) continue;
             if (nowNanos - entity.lastSeenNanos() > safeTtl
                     && entity.acquisitionState() != EntityAcquisitionState.EXPIRED) {
                 entity.expire();
                 entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+                iterator.remove();
                 expired++;
             }
         }
         return expired;
     }
 
+    public synchronized int purgeExpired(long nowNanos) {
+        int purged = 0;
+        java.util.Iterator<Map.Entry<Long, VehicleEntity>> iterator =
+                byEntityId.entrySet().iterator();
+        while (iterator.hasNext()) {
+            VehicleEntity entity = iterator.next().getValue();
+            if (entity.acquisitionState() != EntityAcquisitionState.EXPIRED) continue;
+            entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+            iterator.remove();
+            purged++;
+        }
+        return purged;
+    }
+
     public synchronized void resetScene() {
         byEntityId.clear();
         entityIdByVehicleTrack.clear();
-        nextEntityId = 1L;
     }
 
     public synchronized int size() {
@@ -198,5 +234,33 @@ public final class VehicleEntityRepository {
             throw new IllegalArgumentException("Unknown entityId=" + entityId);
         }
         return entity;
+    }
+
+    private void ensureActiveCapacity() {
+        while (byEntityId.size() >= MAX_ACTIVE_ENTITIES) {
+            Long removableId = null;
+            for (Map.Entry<Long, VehicleEntity> entry : byEntityId.entrySet()) {
+                VehicleEntity entity = entry.getValue();
+                if (!entity.activeTarget() && !entity.acquisitionCompleted()) {
+                    removableId = entry.getKey();
+                    break;
+                }
+            }
+            if (removableId == null) {
+                throw new IllegalStateException("Active vehicle entity capacity exhausted");
+            }
+            VehicleEntity removed = byEntityId.remove(removableId);
+            if (removed != null) {
+                removed.expire();
+                entityIdByVehicleTrack.remove(removed.vehicleTrackId());
+            }
+        }
+    }
+
+    private void trimCompleted() {
+        while (completedByEntityId.size() > MAX_COMPLETED_ENTITIES) {
+            Long oldest = completedByEntityId.keySet().iterator().next();
+            completedByEntityId.remove(oldest);
+        }
     }
 }

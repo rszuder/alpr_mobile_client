@@ -27,6 +27,7 @@ import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.VehicleTrackingStats;
 import com.example.alpr_v1.tracking.VehicleTrackManager;
 import com.example.alpr_v1.vision.BitmapTensorPreprocessor;
 import com.example.alpr_v1.vision.CharacterSequencePostProcessor;
@@ -551,6 +552,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             MtReason.EXPERIMENT_POLICY,
                             vehicleRoiByPlate, workKindByPlate, workReasonByPlate
                     );
+                    recordVehicleRoiScheduled(roi, trace.frameId(), "experiment_legacy");
                     roiRuns++;
                     cancelIfRequested(cancellationRequested);
                 }
@@ -632,6 +634,11 @@ final class MobileAlprEngine implements AutoCloseable {
                         scheduledVehicleRoi = vehicleRois.get(regionIndex);
                         scheduledRegion = VehicleRoiSelector.region(scheduledVehicleRoi);
                         scheduledWorkKind = MtWorkKind.VEHICLE_ROI;
+                        recordVehicleRoiScheduled(
+                                scheduledVehicleRoi,
+                                trace.frameId(),
+                                mtDecision.reason
+                        );
                     }
                     trace.putCount("mt_staggered_roi_runs", vehicleRois.size() > 1 ? 1 : 0);
                     break;
@@ -909,10 +916,29 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.putCount("plate_attached_to_entity", 1);
                 trace.putCount("vehicle_roi_entity_id", association.entityId);
                 trace.putCount("vehicle_roi_track_id", association.vehicleTrackId);
+                vehicleTrackingCoordinator.recordEvent(
+                        "plate_attached_to_entity",
+                        association.entityId,
+                        association.vehicleTrackId,
+                        decision.trackId,
+                        trace.frameId(),
+                        SystemClock.elapsedRealtimeNanos(),
+                        association.reason
+                );
             } else if (association.status == VehicleAssociationStatus.AMBIGUOUS) {
                 trace.putCount("plate_entity_association_ambiguous", 1);
+                vehicleTrackingCoordinator.recordEvent(
+                        "plate_entity_association_ambiguous",
+                        0L, 0L, decision.trackId, trace.frameId(),
+                        SystemClock.elapsedRealtimeNanos(), association.reason
+                );
             } else {
                 trace.putCount("plate_entity_association_failed", 1);
+                vehicleTrackingCoordinator.recordEvent(
+                        "plate_entity_association_failed",
+                        0L, 0L, decision.trackId, trace.frameId(),
+                        SystemClock.elapsedRealtimeNanos(), association.reason
+                );
             }
             trace.putAttribute("plate_association_status", association.status.name());
             trace.putAttribute("plate_association_reason", association.reason);
@@ -1725,6 +1751,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 vehicleTrackingCoordinator.lastMpObservationGapNanos() / 1_000_000.0
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
+        recordVehicleTrackingStats(trace);
         diagnosticVehicles = trackedVehicleDetections(trackingFrame.candidates, frame);
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
         trace.putCount(
@@ -1800,6 +1827,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.frameId(), sourceTimestampNanos, snapshotNanos
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
+        recordVehicleTrackingStats(trace);
         cachedVehicleDetections.clear();
         cachedVehicleDetections.addAll(trackedVehicleDetections(
                 trackingFrame.candidates, frame
@@ -1836,6 +1864,44 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.putConfidence(
                 "vehicle_effective_confidence",
                 candidates.isEmpty() ? 0.0 : minimumEffectiveConfidence
+        );
+    }
+
+    private void recordVehicleRoiScheduled(
+            VehicleRoi roi,
+            long frameId,
+            String reason
+    ) {
+        vehicleTrackingCoordinator.recordEvent(
+                "vehicle_roi_scheduled",
+                roi.entityId,
+                roi.vehicleTrackId,
+                0L,
+                frameId,
+                SystemClock.elapsedRealtimeNanos(),
+                reason
+        );
+    }
+
+    private void recordVehicleTrackingStats(InferenceTrace trace) {
+        VehicleTrackingStats stats = vehicleTrackingCoordinator.stats();
+        trace.putCount("vehicle_tracks_created", stats.tracksCreated);
+        trace.putCount("vehicle_tracks_expired", stats.tracksExpired);
+        trace.putCount("vehicle_entities_created", stats.entitiesCreated);
+        trace.putCount("vehicle_entities_expired", stats.entitiesExpired);
+        trace.putCount("vehicle_entity_reassociations", stats.entityReassociations);
+        trace.putCount(
+                "vehicle_entity_duplicate_preventions",
+                stats.entityDuplicatePreventions
+        );
+        trace.putCount("vehicle_observations_unmatched", stats.observationsUnmatched);
+        trace.putCount(
+                "vehicle_candidates_dropped_capacity",
+                stats.candidatesDroppedCapacity
+        );
+        trace.putConfidence(
+                "vehicle_tracking_ms",
+                stats.lastTrackingNanos / 1_000_000.0
         );
     }
 

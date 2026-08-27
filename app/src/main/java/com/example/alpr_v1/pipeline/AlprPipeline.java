@@ -15,6 +15,7 @@ import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
+import com.example.alpr_v1.tracking.VehicleTrackingEvent;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.nio.ByteBuffer;
@@ -22,6 +23,8 @@ import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import org.json.JSONObject;
+import org.json.JSONException;
 
 public final class AlprPipeline {
     private static final String LOG_TAG = "AlprPipeline";
@@ -432,6 +435,7 @@ public final class AlprPipeline {
                 );
             }
             trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
+            recordVehicleTrackingEvents();
             trace.start(
                     "pipeline_finalize"
             );
@@ -636,6 +640,7 @@ public final class AlprPipeline {
                 trace.stop("engine_total");
             }
             trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
+            recordVehicleTrackingEvents();
             trace.start("pipeline_finalize");
             try {
                 metrics.recordRecognitionState(
@@ -1200,6 +1205,32 @@ public final class AlprPipeline {
         engine = null;
         reloadRequested = false;
         sourceSceneDetector.reset();
+    }
+
+    private void recordVehicleTrackingEvents() {
+        for (VehicleTrackingEvent event : vehicleTrackingCoordinator.drainEvents()) {
+            try {
+                JSONObject details = new JSONObject();
+                if (event.entityId > 0L) details.put("entity_id", event.entityId);
+                if (event.vehicleTrackId > 0L) {
+                    details.put("vehicle_track_id", event.vehicleTrackId);
+                }
+                if (event.plateTrackId > 0L) {
+                    details.put("plate_track_id", event.plateTrackId);
+                }
+                details.put("scene_generation", event.sceneGeneration);
+                details.put("event_elapsed_ms", event.elapsedNanos / 1_000_000.0);
+                details.put("reason", event.reason);
+                metrics.recordEvent(
+                        event.eventType,
+                        event.frameId,
+                        event.vehicleTrackId,
+                        details
+                );
+            } catch (JSONException ignored) {
+                // Pola zdarzenia pochodzą wyłącznie z typów prostych.
+            }
+        }
     }
 
     private static float[] sampleLuminance(ImageProxy image) {

@@ -224,6 +224,11 @@ public class VehicleTrackManagerTest {
 
         assertEquals(3, manager.update(observations, 1_000_000_000L).size());
         assertEquals(3, repository.size());
+        VehicleTrackingStats stats = manager.stats();
+        assertEquals(3L, stats.tracksCreated);
+        assertEquals(3L, stats.entitiesCreated);
+        assertEquals(2L, stats.candidatesDroppedCapacity);
+        assertTrue(stats.lastTrackingNanos >= 0L);
     }
 
     private static VehicleTrackManager manager(VehicleEntityRepository repository) {

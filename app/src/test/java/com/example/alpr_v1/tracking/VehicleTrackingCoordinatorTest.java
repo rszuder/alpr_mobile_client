@@ -11,6 +11,7 @@ import com.example.alpr_v1.domain.VehicleEntityRepository;
 import org.junit.Test;
 
 import java.util.Collections;
+import java.util.List;
 
 public class VehicleTrackingCoordinatorTest {
     @Test
@@ -72,6 +73,37 @@ public class VehicleTrackingCoordinatorTest {
         assertTrue(missed.candidates.get(0).effectiveConfidence
                 < fresh.candidates.get(0).effectiveConfidence);
         assertEquals(500_000_000L, coordinator.lastMpObservationGapNanos());
+    }
+
+    @Test
+    public void emitsBoundedLifecycleEventsWithSceneIdentity() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        coordinator.updateFromMp(
+                1L, 1_000_000_000L, 1_000_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+        List<VehicleTrackingEvent> created = coordinator.drainEvents();
+
+        assertTrue(hasEvent(created, "vehicle_track_created"));
+        assertTrue(hasEvent(created, "vehicle_entity_created"));
+        assertEquals(0, coordinator.drainEvents().size());
+
+        for (int index = 0; index < 200; index++) {
+            coordinator.recordEvent(
+                    "synthetic", 1L, 1L, 0L, index, index, "bounded_test"
+            );
+        }
+        assertEquals(128, coordinator.drainEvents().size());
+    }
+
+    private static boolean hasEvent(
+            List<VehicleTrackingEvent> events,
+            String eventType
+    ) {
+        for (VehicleTrackingEvent event : events) {
+            if (eventType.equals(event.eventType)) return true;
+        }
+        return false;
     }
 
     private static VehicleTrackManager.Observation observation(float left) {

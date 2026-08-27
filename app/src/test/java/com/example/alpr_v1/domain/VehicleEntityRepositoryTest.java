@@ -110,7 +110,43 @@ public class VehicleEntityRepositoryTest {
         assertFalse(active.acquisitionCompleted());
         assertTrue(active.activeTarget());
         assertTrue(acquired.acquisitionCompleted());
-        assertEquals(2, repository.activeEntities().size());
+        assertEquals(1, repository.activeEntities().size());
+        assertEquals(1, repository.completedEntities().size());
+        assertEquals(acquired.entityId(), repository.completedEntities().get(0).entityId);
+        assertEquals(1, repository.size());
+    }
+
+    @Test
+    public void entityIdsStayMonotonicAcrossSceneReset() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        long firstId = repository.create(1L, VEHICLE, null, 10L).entityId();
+
+        repository.resetScene();
+        long secondId = repository.create(1L, VEHICLE, null, 20L).entityId();
+
+        assertTrue(secondId > firstId);
+    }
+
+    @Test
+    public void activeAndCompletedRepositoriesAreBounded() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        for (int index = 0; index < VehicleEntityRepository.MAX_ACTIVE_ENTITIES + 10; index++) {
+            repository.create(index + 1L, VEHICLE, null, index + 1L);
+        }
+        assertEquals(VehicleEntityRepository.MAX_ACTIVE_ENTITIES, repository.size());
+
+        repository.resetScene();
+        for (int index = 0;
+                index < VehicleEntityRepository.MAX_COMPLETED_ENTITIES + 10; index++) {
+            VehicleEntity entity = repository.create(
+                    index + 1L, VEHICLE, null, index + 1L
+            );
+            repository.markAcquired(entity.entityId());
+        }
+        assertEquals(
+                VehicleEntityRepository.MAX_COMPLETED_ENTITIES,
+                repository.completedEntities().size()
+        );
     }
 
     private static AppearanceDescriptor descriptor(float value) {
