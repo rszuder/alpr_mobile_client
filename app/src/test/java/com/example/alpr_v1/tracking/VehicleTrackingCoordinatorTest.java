@@ -96,6 +96,34 @@ public class VehicleTrackingCoordinatorTest {
         assertEquals(128, coordinator.drainEvents().size());
     }
 
+    @Test
+    public void trackTtlAdaptsToMeasuredMpCadenceWithinEntityTtl() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame first = coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_100_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+        long entityId = first.candidates.get(0).entityId;
+        assertEquals(
+                VehicleTrackingCoordinator.MIN_ADAPTIVE_TRACK_TTL_NANOS,
+                coordinator.currentTrackTtlNanos()
+        );
+
+        VehicleTrackingFrame second = coordinator.updateFromMp(
+                2L,
+                3_600_000_000L,
+                3_700_000_000L,
+                Collections.singletonList(observation(0.22f))
+        );
+
+        assertEquals(entityId, second.candidates.get(0).entityId);
+        assertEquals(4_550_000_000L, coordinator.currentTrackTtlNanos());
+        assertTrue(coordinator.currentTrackTtlNanos()
+                < VehicleTrackManager.DEFAULT_ENTITY_TTL_NANOS);
+    }
+
     private static boolean hasEvent(
             List<VehicleTrackingEvent> events,
             String eventType

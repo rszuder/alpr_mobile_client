@@ -1750,6 +1750,10 @@ final class MobileAlprEngine implements AutoCloseable {
                 "mp_observation_gap_ms",
                 vehicleTrackingCoordinator.lastMpObservationGapNanos() / 1_000_000.0
         );
+        trace.putConfidence(
+                "vehicle_track_ttl_ms",
+                vehicleTrackingCoordinator.currentTrackTtlNanos() / 1_000_000.0
+        );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
         diagnosticVehicles = trackedVehicleDetections(trackingFrame.candidates, frame);

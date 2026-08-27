@@ -16,6 +16,9 @@ import java.util.Set;
  */
 public final class VehicleTrackingCoordinator {
     public static final long CONFIDENCE_DECAY_HORIZON_NANOS = 2_500_000_000L;
+    public static final long MIN_ADAPTIVE_TRACK_TTL_NANOS = 3_000_000_000L;
+    public static final long MAX_ADAPTIVE_TRACK_TTL_NANOS = 4_900_000_000L;
+    public static final double TRACK_TTL_GAP_MULTIPLIER = 1.75;
     private static final float[] MISSED_UPDATE_PENALTIES = {1f, 0.75f, 0.50f, 0.25f};
     private final VehicleEntityRepository repository;
     private final VehicleTrackManager tracker;
@@ -34,6 +37,7 @@ public final class VehicleTrackingCoordinator {
         if (repository == null) throw new IllegalArgumentException("repository is required");
         this.repository = repository;
         this.tracker = new VehicleTrackManager(repository);
+        this.tracker.setTrackTtlNanos(MIN_ADAPTIVE_TRACK_TTL_NANOS);
     }
 
     public synchronized VehicleTrackingFrame updateFromMp(
@@ -46,6 +50,14 @@ public final class VehicleTrackingCoordinator {
                 latestFrame.candidates
         );
         Set<Long> activeBefore = activeEntityIds();
+        if (lastMpSourceTimestampNanos > 0L
+                && sourceTimestampNanos >= lastMpSourceTimestampNanos) {
+            lastMpObservationGapNanos = sourceTimestampNanos - lastMpSourceTimestampNanos;
+            tracker.setTrackTtlNanos(adaptiveTrackTtl(lastMpObservationGapNanos));
+        }
+        lastMpSourceTimestampNanos = Math.max(
+                lastMpSourceTimestampNanos, sourceTimestampNanos
+        );
         List<VehicleTrackManager.Snapshot> measured = tracker.update(
                 observations,
                 sourceTimestampNanos
@@ -53,13 +65,6 @@ public final class VehicleTrackingCoordinator {
         List<VehicleTrackManager.Snapshot> snapshots = snapshotTimestampNanos
                 > sourceTimestampNanos
                 ? tracker.predict(snapshotTimestampNanos) : measured;
-        if (lastMpSourceTimestampNanos > 0L
-                && sourceTimestampNanos >= lastMpSourceTimestampNanos) {
-            lastMpObservationGapNanos = sourceTimestampNanos - lastMpSourceTimestampNanos;
-        }
-        lastMpSourceTimestampNanos = Math.max(
-                lastMpSourceTimestampNanos, sourceTimestampNanos
-        );
         latestFrame = frame(
                 sourceFrameId,
                 sourceTimestampNanos,
@@ -96,6 +101,7 @@ public final class VehicleTrackingCoordinator {
     public synchronized long lastMpObservationGapNanos() {
         return lastMpObservationGapNanos;
     }
+    public synchronized long currentTrackTtlNanos() { return tracker.trackTtlNanos(); }
     public VehicleEntityRepository repository() { return repository; }
     public synchronized VehicleTrackingStats stats() { return tracker.stats(); }
 
@@ -311,5 +317,15 @@ public final class VehicleTrackingCoordinator {
     private static float clamp01(float value) {
         if (!Float.isFinite(value)) return 0f;
         return Math.max(0f, Math.min(1f, value));
+    }
+
+    private static long adaptiveTrackTtl(long observationGapNanos) {
+        long proposed = (long) Math.ceil(
+                Math.max(0L, observationGapNanos) * TRACK_TTL_GAP_MULTIPLIER
+        );
+        return Math.max(
+                MIN_ADAPTIVE_TRACK_TTL_NANOS,
+                Math.min(MAX_ADAPTIVE_TRACK_TTL_NANOS, proposed)
+        );
     }
 }

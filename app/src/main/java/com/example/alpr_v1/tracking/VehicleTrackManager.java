@@ -141,7 +141,7 @@ public final class VehicleTrackManager {
 
     private final VehicleEntityRepository repository;
     private final int maxTrackedVehicles;
-    private final long trackTtlNanos;
+    private long trackTtlNanos;
     private final long entityTtlNanos;
     private final List<Track> tracks = new ArrayList<>();
     private long nextTrackId = 1L;
@@ -324,6 +324,15 @@ public final class VehicleTrackManager {
 
     public synchronized int trackedCount() { return tracks.size(); }
     public VehicleEntityRepository repository() { return repository; }
+
+    public synchronized void setTrackTtlNanos(long ttlNanos) {
+        trackTtlNanos = Math.max(
+                1L,
+                Math.min(ttlNanos, Math.max(1L, entityTtlNanos - 1L))
+        );
+    }
+
+    public synchronized long trackTtlNanos() { return trackTtlNanos; }
 
     public synchronized VehicleTrackingStats stats() {
         return new VehicleTrackingStats(
