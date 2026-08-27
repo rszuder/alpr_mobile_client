@@ -145,6 +145,13 @@ public final class VehicleEntityRepository {
         required(entityId).setAcquisitionState(EntityAcquisitionState.QUEUED);
     }
 
+    public synchronized void markAcquisitionState(
+            long entityId,
+            EntityAcquisitionState state
+    ) {
+        required(entityId).setAcquisitionState(state);
+    }
+
     public synchronized void markActiveTarget(long entityId, boolean active) {
         required(entityId).setActiveTarget(active);
         if (active) required(entityId).setAcquisitionState(EntityAcquisitionState.ACQUIRING);

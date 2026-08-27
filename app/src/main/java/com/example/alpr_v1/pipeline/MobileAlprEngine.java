@@ -6,7 +6,14 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.acquisition.AcquisitionController;
+import com.example.alpr_v1.acquisition.BestCropSelector;
+import com.example.alpr_v1.domain.AppearanceDescriptor;
+import com.example.alpr_v1.domain.CropReference;
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.NormalizedQuad;
+import com.example.alpr_v1.domain.PlateTextConsensus;
+import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.domain.VehicleEntityRepository;
 import com.example.alpr_v1.inference.InferenceBackend;
 import com.example.alpr_v1.inference.InferenceRunResult;
@@ -79,6 +86,8 @@ final class MobileAlprEngine implements AutoCloseable {
             new VehicleEntityRepository();
     private final VehicleTrackManager vehicleTrackManager =
             new VehicleTrackManager(vehicleEntityRepository);
+    private final AcquisitionController acquisitionController =
+            new AcquisitionController(vehicleEntityRepository);
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
@@ -210,6 +219,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private void resetSceneDependentState() {
         trackCoordinator.reset();
+        acquisitionController.resetScene();
         vehicleTrackManager.resetScene();
         cachedVehicleRegions.clear();
         cachedVehicleDetections.clear();
@@ -389,6 +399,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 mtInferenceScheduler.requiresVehicleRecovery();
 
         MtInferenceScheduler.Decision mtDecision = null;
+        boolean scanAttemptScheduled = false;
         if (anyTargetGeometry && !vehicleRecoveryRequested) {
             mtDecision = mtInferenceScheduler.plan(new MtInferenceScheduler.Input(
                     trace.frameId(),
@@ -564,6 +575,13 @@ final class MobileAlprEngine implements AutoCloseable {
                     scheduledRegion = vehicleRegions.isEmpty()
                             ? fullFrameRegion(frame)
                             : vehicleRegions.get(regionIndex);
+                    VehicleEntity scanEntity = acquisitionController.activeEntity();
+                    if (scanEntity != null && scanEntity.vehicleBounds() != null) {
+                        scheduledRegion = scanEntityRegion(frame, scanEntity.vehicleBounds());
+                        scanAttemptScheduled = true;
+                        trace.putCount("scan_candidate_mt_runs", 1);
+                        trace.putCount("scan_active_entity_id", scanEntity.entityId());
+                    }
                     trace.putCount("mt_staggered_roi_runs", vehicleRegions.size() > 1 ? 1 : 0);
                     break;
                 case FULL_FRAME:
@@ -721,6 +739,19 @@ final class MobileAlprEngine implements AutoCloseable {
                                         : "MT_RUN_WITH_DETECTIONS"
         );
         if (plates.isEmpty()) {
+            if (scanAttemptScheduled) {
+                recordScanOutcome(
+                        acquisitionController.completeAttempt(
+                                0L, null, null, null, null,
+                                new BestCropSelector.Quality(
+                                        0f, 0f, 0f, 0.5f, rapidCameraMotion ? 0f : 0.7f,
+                                        0f, 0f, false
+                                ),
+                                SystemClock.elapsedRealtimeNanos()
+                        ),
+                        trace
+                );
+            }
             trackCoordinator.update(
                     Collections.emptyList(), trace.frameId(), SystemClock.elapsedRealtimeNanos()
             );
@@ -1099,6 +1130,15 @@ final class MobileAlprEngine implements AutoCloseable {
                 "invalid_plate_geometry",
                 invalidGeometryCount
         );
+        if (scanAttemptScheduled) {
+            completeScanAttempt(
+                    plateObservations,
+                    decisions,
+                    candidates,
+                    frame,
+                    trace
+            );
+        }
         if (recognitions.isEmpty()) {
             trace.finish("stabilizing", "");
             return new PipelineResult(
@@ -1547,6 +1587,10 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         List<VehicleTrackManager.Snapshot> trackedVehicles =
                 vehicleTrackManager.update(vehicleObservations, trackingNanos);
+        if (mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED) {
+            acquisitionController.refresh(trackedVehicles, trackingNanos);
+            acquisitionController.startNext(trackingNanos);
+        }
         diagnosticVehicles = trackedVehicleDetections(trackedVehicles, frame);
         trace.putCount("vehicle_tracks_active", trackedVehicles.size());
         trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
@@ -1619,6 +1663,125 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.putCount("vehicle_tracks_active", snapshots.size());
         trace.putCount("vehicle_tracks_predicted", snapshots.size());
         trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
+    }
+
+    private static VehicleRoiSelector.Region scanEntityRegion(
+            Bitmap frame,
+            NormalizedBounds bounds
+    ) {
+        float marginX = bounds.width() * VEHICLE_REGION_MARGIN;
+        float marginY = bounds.height() * VEHICLE_REGION_MARGIN;
+        return VehicleRoiSelector.normalizedRegion(
+                frame.getWidth(),
+                frame.getHeight(),
+                bounds.left - marginX,
+                bounds.top - marginY,
+                bounds.right + marginX,
+                bounds.bottom + marginY
+        );
+    }
+
+    private void completeScanAttempt(
+            List<PlateObservation> observations,
+            List<PlateTrackCoordinator.Decision> decisions,
+            List<PlateCandidate> candidates,
+            Bitmap frame,
+            InferenceTrace trace
+    ) {
+        PlateObservation best = null;
+        for (PlateObservation observation : observations) {
+            if (best == null
+                    || observation.confirmed && !best.confirmed
+                    || observation.confirmed == best.confirmed
+                    && observation.recognitionConfidence > best.recognitionConfidence
+                    || observation.confirmed == best.confirmed
+                    && observation.recognitionConfidence == best.recognitionConfidence
+                    && observation.plateConfidence > best.plateConfidence) {
+                best = observation;
+            }
+        }
+        if (best == null) {
+            recordScanOutcome(acquisitionController.completeAttempt(
+                    0L, null, null, null, null,
+                    new BestCropSelector.Quality(
+                            0f, 0f, 0f, 0.5f, rapidCameraMotion ? 0f : 0.7f,
+                            0f, 0f, false
+                    ),
+                    SystemClock.elapsedRealtimeNanos()
+            ), trace);
+            return;
+        }
+
+        PlateCandidate source = null;
+        for (PlateTrackCoordinator.Decision decision : decisions) {
+            if (decision.trackId == best.trackId
+                    && decision.sourceIndex >= 0
+                    && decision.sourceIndex < candidates.size()) {
+                source = candidates.get(decision.sourceIndex);
+                break;
+            }
+        }
+        NormalizedQuad quad = normalizedQuad(best.geometry);
+        float areaQuality = (float) Math.min(1.0, best.geometry.bboxAreaRatio / 0.02);
+        float perspective = source == null ? 0f : source.quality.total;
+        BestCropSelector.Quality quality = new BestCropSelector.Quality(
+                best.sharpness,
+                areaQuality,
+                perspective,
+                0.65f,
+                rapidCameraMotion ? 0.25f : 0.85f,
+                (float) best.plateConfidence,
+                (float) best.recognitionConfidence,
+                false
+        );
+        CropReference crop = new BestCropSelector().candidate(
+                "frame:" + best.frameId + ":track:" + best.trackId,
+                CropReference.Kind.WIDE_PLATE,
+                quality,
+                best.capturedElapsedNanos
+        );
+        PlateTextConsensus consensus = new PlateTextConsensus(
+                best.text,
+                (float) best.recognitionConfidence,
+                best.observations,
+                best.confirmed
+        );
+        AppearanceDescriptor appearance = new AppearanceDescriptor(
+                best.appearanceDescriptor
+        );
+        recordScanOutcome(acquisitionController.completeAttempt(
+                best.trackId,
+                quad,
+                appearance,
+                consensus,
+                crop,
+                quality,
+                SystemClock.elapsedRealtimeNanos()
+        ), trace);
+    }
+
+    private static NormalizedQuad normalizedQuad(PlateGeometry geometry) {
+        if (geometry == null || geometry.cornersNorm.size() != 4) return null;
+        float[] points = new float[8];
+        for (int index = 0; index < 4; index++) {
+            points[index * 2] = geometry.cornersNorm.get(index).x;
+            points[index * 2 + 1] = geometry.cornersNorm.get(index).y;
+        }
+        return new NormalizedQuad(points);
+    }
+
+    private static void recordScanOutcome(
+            AcquisitionController.Outcome outcome,
+            InferenceTrace trace
+    ) {
+        trace.putAttribute("scan_acquisition_outcome", outcome.name());
+        if (outcome == AcquisitionController.Outcome.ACQUIRED) {
+            trace.putCount("scan_vehicles_processed", 1);
+        } else if (outcome == AcquisitionController.Outcome.REQUEUED) {
+            trace.putCount("scan_candidates_requeued", 1);
+        } else if (outcome == AcquisitionController.Outcome.FAILED) {
+            trace.putCount("scan_candidates_failed", 1);
+        }
     }
 
     private static NormalizedBounds normalizedVehicleBounds(Detection vehicle, Bitmap frame) {

@@ -3080,7 +3080,10 @@ public final class MainActivity extends AppCompatActivity {
 
 
 
-        overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
+        boolean scanAcquireMode = !experimentModeEnabled;
+        overlayView.setFocusedTrackId(
+                scanAcquireMode ? 0L : targetStateMachine.snapshot().trackId
+        );
         overlayView.setItems(
                 visibleOverlayItems,
                 result.sourceWidth,
@@ -3097,11 +3100,17 @@ public final class MainActivity extends AppCompatActivity {
          * przez krótki czas.
          */
         boolean previewTrackerAnchored =
-                previewPlateTracker.anchor(
+                !scanAcquireMode && previewPlateTracker.anchor(
                         visibleOverlayItems,
                         result.sourceWidth,
                         result.sourceHeight
                 );
+
+        if (scanAcquireMode) {
+            previewPlateTracker.reset();
+            TargetSnapshot released = targetStateMachine.reset();
+            if (pipeline != null) pipeline.setTargetSnapshot(released);
+        }
 
 
         if (previewTrackerAnchored) {
@@ -3343,6 +3352,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void handleAutoZoomResult(PipelineResult result) {
+        // Faza 3: zwykły Scan jest przepływem release -> next i nie posiada autozoomu.
+        if (!experimentModeEnabled) return;
         if (!cameraStarted || !autoZoomController.enabled()) return;
         if (autoZoomController.state() == AutoZoomController.State.READY) {
             TargetSnapshot target = targetStateMachine.snapshot();
