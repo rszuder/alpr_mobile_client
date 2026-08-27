@@ -936,8 +936,12 @@ final class MobileAlprEngine implements AutoCloseable {
                         SystemClock.elapsedRealtimeNanos()
                 );
                 trace.putCount("plate_attached_to_entity", 1);
-                trace.putCount("vehicle_roi_entity_id", association.entityId);
-                trace.putCount("vehicle_roi_track_id", association.vehicleTrackId);
+                trace.putAttribute(
+                        "vehicle_roi_entity_id", String.valueOf(association.entityId)
+                );
+                trace.putAttribute(
+                        "vehicle_roi_track_id", String.valueOf(association.vehicleTrackId)
+                );
                 vehicleTrackingCoordinator.recordEvent(
                         "plate_attached_to_entity",
                         association.entityId,
@@ -1406,7 +1410,9 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putCount("tracker_inliers", target.trackerInliers);
             trace.putCount("target_lock_age_frames", target.ageFrames);
             trace.putCount("tracker_failures", target.consecutiveFailures);
-            trace.putCount("locked_track_id", target.lockedTrackId);
+            trace.putAttribute(
+                    "locked_track_id", String.valueOf(target.lockedTrackId)
+            );
 
             int switchDelta = Math.max(
                     0,
@@ -1906,7 +1912,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private void recordVehicleTrackingStats(InferenceTrace trace) {
-        VehicleTrackingStats stats = vehicleTrackingCoordinator.stats();
+        VehicleTrackingStats stats = vehicleTrackingCoordinator.statsDelta();
         trace.putCount("vehicle_tracks_created", stats.tracksCreated);
         trace.putCount("vehicle_tracks_expired", stats.tracksExpired);
         trace.putCount("vehicle_entities_created", stats.entitiesCreated);
@@ -1921,10 +1927,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 "vehicle_candidates_dropped_capacity",
                 stats.candidatesDroppedCapacity
         );
-        trace.putConfidence(
-                "vehicle_tracking_ms",
-                stats.lastTrackingNanos / 1_000_000.0
-        );
+        trace.putDurationNanos("vehicle_tracking", stats.lastTrackingNanos);
     }
 
     private PlateVehicleAssociation associatePlate(

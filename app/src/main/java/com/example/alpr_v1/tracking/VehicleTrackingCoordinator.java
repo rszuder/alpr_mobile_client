@@ -26,6 +26,7 @@ public final class VehicleTrackingCoordinator {
     private long lastMpSourceTimestampNanos;
     private long lastMpObservationGapNanos;
     private VehicleTrackingFrame latestFrame = VehicleTrackingFrame.empty(0L);
+    private VehicleTrackingStats lastReportedStats = VehicleTrackingStats.zero();
     private final ArrayDeque<VehicleTrackingEvent> events = new ArrayDeque<>();
     private static final int MAX_PENDING_EVENTS = 128;
 
@@ -104,6 +105,14 @@ public final class VehicleTrackingCoordinator {
     public synchronized long currentTrackTtlNanos() { return tracker.trackTtlNanos(); }
     public VehicleEntityRepository repository() { return repository; }
     public synchronized VehicleTrackingStats stats() { return tracker.stats(); }
+
+    /** Event counters for one trace; gauges and durations remain current values. */
+    public synchronized VehicleTrackingStats statsDelta() {
+        VehicleTrackingStats current = tracker.stats();
+        VehicleTrackingStats delta = current.deltaSince(lastReportedStats);
+        lastReportedStats = current;
+        return delta;
+    }
 
     public synchronized void recordEvent(
             String eventType,

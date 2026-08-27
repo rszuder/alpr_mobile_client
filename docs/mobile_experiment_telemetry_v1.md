@@ -105,3 +105,25 @@ layout/row counts, zoom/source oraz:
 również `thermal.csv`, `frame_flow.csv` i `events.jsonl`. Importer musi odrzucać
 niezgodne hashe, duplikaty wpisów, ścieżki absolutne i `..`, ale tolerować
 nieznane pola przyszłych wersji.
+
+## Phase 2.1.1 — semantyka telemetrii pojazdów
+
+| Pole | Typ | Jednostka | Agregacja w summary |
+| --- | --- | --- | --- |
+| `vehicle_tracks_created` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_tracks_expired` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_entities_created` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_entities_expired` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_entity_reassociations` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_entity_duplicate_preventions` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_observations_unmatched` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_candidates_dropped_capacity` | event counter delta | zdarzenia | `SUM OF DELTAS` |
+| `vehicle_tracks_active` | gauge | encje | `LAST / MAX / DISTRIBUTION` |
+| `vehicle_entities_active` | gauge | encje | `LAST / MAX / DISTRIBUTION` |
+| `vehicle_tracks_predicted` | gauge | encje | `LAST / MAX / DISTRIBUTION` |
+| `vehicle_tracking` | duration | ns w trace | `p50 / p90 / p95` |
+
+Pola identyfikacyjne i zegary monotoniczne (`source_timestamp_nanos`,
+`processing_started_nanos`, `result_available_nanos`, `vehicle_roi_entity_id`,
+`vehicle_roi_track_id`, `locked_track_id`) są atrybutami trace. Nie trafiają do
+`summary.counters` i nie są sumowane.

@@ -1123,6 +1123,8 @@ public final class MetricsCollector {
         );
 
         Map<String, List<Double>> stageValues = new LinkedHashMap<>();
+        Map<String, List<Double>> gaugeValues = new LinkedHashMap<>();
+        Map<String, Long> gaugeLastValues = new LinkedHashMap<>();
         Map<String, Integer> statuses = new LinkedHashMap<>();
         Map<String, Long> counterTotals = new LinkedHashMap<>();
         JSONArray traceArray = new JSONArray();
@@ -1140,11 +1142,14 @@ public final class MetricsCollector {
                         .add(entry.getValue() / 1_000_000.0);
             }
             for (Map.Entry<String, Long> entry : trace.counters().entrySet()) {
-                counterTotals.put(
-                        entry.getKey(),
-                        counterTotals.getOrDefault(entry.getKey(), 0L) + entry.getValue()
-                );
+                if (isGauge(entry.getKey())) {
+                    gaugeValues.computeIfAbsent(
+                            entry.getKey(), ignored -> new ArrayList<>()
+                    ).add(entry.getValue().doubleValue());
+                    gaugeLastValues.put(entry.getKey(), entry.getValue());
+                }
             }
+            aggregateCounterTotals(counterTotals, trace.counters());
         }
 
         JSONObject summary = new JSONObject();
@@ -1152,6 +1157,7 @@ public final class MetricsCollector {
         summary.put("statuses", new JSONObject(statuses));
         summary.put("stages", stageSummaryJson(stageValues));
         summary.put("counters", new JSONObject(counterTotals));
+        summary.put("gauges", gaugeSummaryJson(gaugeValues, gaugeLastValues));
         report.put("summary", summary);
         report.put("latency", latencyJson(stageValues));
 
@@ -1363,6 +1369,44 @@ public final class MetricsCollector {
             stages.put(entry.getKey(), statisticsJson(Statistics.summarize(entry.getValue())));
         }
         return stages;
+    }
+
+    private static JSONObject gaugeSummaryJson(
+            Map<String, List<Double>> gaugeValues,
+            Map<String, Long> gaugeLastValues
+    ) throws JSONException {
+        JSONObject gauges = stageSummaryJson(gaugeValues);
+        for (Map.Entry<String, Long> entry : gaugeLastValues.entrySet()) {
+            JSONObject gauge = gauges.optJSONObject(entry.getKey());
+            if (gauge != null) gauge.put("last", entry.getValue());
+        }
+        return gauges;
+    }
+
+    static void aggregateCounterTotals(
+            Map<String, Long> totals,
+            Map<String, Long> traceCounters
+    ) {
+        if (totals == null || traceCounters == null) return;
+        for (Map.Entry<String, Long> entry : traceCounters.entrySet()) {
+            if (!isSummableCounter(entry.getKey())) continue;
+            long value = entry.getValue() == null ? 0L : Math.max(0L, entry.getValue());
+            totals.put(entry.getKey(), totals.getOrDefault(entry.getKey(), 0L) + value);
+        }
+    }
+
+    static boolean isSummableCounter(String key) {
+        if (key == null || key.isEmpty() || isGauge(key)) return false;
+        return !key.endsWith("_id")
+                && !key.endsWith("_timestamp_nanos")
+                && !"processing_started_nanos".equals(key)
+                && !"result_available_nanos".equals(key);
+    }
+
+    private static boolean isGauge(String key) {
+        return "vehicle_tracks_active".equals(key)
+                || "vehicle_entities_active".equals(key)
+                || "vehicle_tracks_predicted".equals(key);
     }
 
     private static JSONObject latencyJson(Map<String, List<Double>> stageValues) throws JSONException {
@@ -1828,7 +1872,7 @@ public final class MetricsCollector {
             appendCount(csv, trace, "target_recoveries_level_2");
             appendCount(csv, trace, "target_recoveries_level_3");
             appendCount(csv, trace, "target_recoveries_level_4");
-            appendCount(csv, trace, "locked_track_id");
+            appendAttribute(csv, trace, "locked_track_id");
             appendCount(csv, trace, "lock_switches");
             appendCount(csv, trace, "lock_losses");
             appendCount(csv, trace, "lock_reassociations");

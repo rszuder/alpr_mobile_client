@@ -253,8 +253,11 @@ public final class AlprPipeline {
             return null;
         }
         InferenceTrace trace = new InferenceTrace(frameId);
-        trace.putCount("source_timestamp_nanos", sourceTimestampNanos);
-        trace.putCount("processing_started_nanos", SystemClock.elapsedRealtimeNanos());
+        trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
+        trace.putAttribute(
+                "processing_started_nanos",
+                String.valueOf(SystemClock.elapsedRealtimeNanos())
+        );
         trace.putCount("source_width", image.getWidth());
         trace.putCount("source_height", image.getHeight());
         trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
@@ -434,7 +437,10 @@ public final class AlprPipeline {
                         "engine_total"
                 );
             }
-            trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
+            trace.putAttribute(
+                    "result_available_nanos",
+                    String.valueOf(SystemClock.elapsedRealtimeNanos())
+            );
             recordVehicleTrackingEvents();
             trace.start(
                     "pipeline_finalize"
@@ -542,8 +548,11 @@ public final class AlprPipeline {
         }
 
         InferenceTrace trace = new InferenceTrace(frameId);
-        trace.putCount("source_timestamp_nanos", sourceTimestampNanos);
-        trace.putCount("processing_started_nanos", SystemClock.elapsedRealtimeNanos());
+        trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
+        trace.putAttribute(
+                "processing_started_nanos",
+                String.valueOf(SystemClock.elapsedRealtimeNanos())
+        );
         trace.putCount("source_width", frame.getWidth());
         trace.putCount("source_height", frame.getHeight());
         trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
@@ -639,7 +648,10 @@ public final class AlprPipeline {
             } finally {
                 trace.stop("engine_total");
             }
-            trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
+            trace.putAttribute(
+                    "result_available_nanos",
+                    String.valueOf(SystemClock.elapsedRealtimeNanos())
+            );
             recordVehicleTrackingEvents();
             trace.start("pipeline_finalize");
             try {
