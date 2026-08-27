@@ -57,6 +57,87 @@ public class VehicleTrackManagerTest {
     }
 
     @Test
+    public void crossingWithReversedDetectionOrderDoesNotSwapEntities() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        List<VehicleTrackManager.Snapshot> first = manager.update(
+                Arrays.asList(
+                        observation(0.05f, 0.2f, 0.25f, 0.5f, red(), 0),
+                        observation(0.75f, 0.2f, 0.95f, 0.5f, blue(), 1)
+                ),
+                1_000_000_000L
+        );
+        long redEntity = bySource(first, 0).entityId;
+        long blueEntity = bySource(first, 1).entityId;
+        manager.update(
+                Arrays.asList(
+                        observation(0.54f, 0.2f, 0.74f, 0.5f, blue(), 1),
+                        observation(0.26f, 0.2f, 0.46f, 0.5f, red(), 0)
+                ),
+                1_250_000_000L
+        );
+
+        List<VehicleTrackManager.Snapshot> crossed = manager.update(
+                Arrays.asList(
+                        observation(0.25f, 0.2f, 0.45f, 0.5f, blue(), 1),
+                        observation(0.55f, 0.2f, 0.75f, 0.5f, red(), 0)
+                ),
+                1_500_000_000L
+        );
+
+        assertEquals(redEntity, bySource(crossed, 0).entityId);
+        assertEquals(blueEntity, bySource(crossed, 1).entityId);
+        assertEquals(2, repository.size());
+    }
+
+    @Test
+    public void twoObservationOcclusionKeepsEntityIdentity() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long entityId = manager.update(
+                Collections.singletonList(
+                        observation(0.15f, 0.2f, 0.35f, 0.5f, red(), 0)
+                ),
+                1_000_000_000L
+        ).get(0).entityId;
+
+        manager.update(Collections.emptyList(), 1_200_000_000L);
+        manager.update(Collections.emptyList(), 1_400_000_000L);
+        VehicleTrackManager.Snapshot returned = manager.update(
+                Collections.singletonList(
+                        observation(0.18f, 0.2f, 0.38f, 0.5f, red(), 0)
+                ),
+                1_600_000_000L
+        ).get(0);
+
+        assertEquals(entityId, returned.entityId);
+        assertEquals(1, repository.size());
+    }
+
+    @Test
+    public void recoveryBeforeCreationPreventsDuplicateAfterTemporaryJump() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        VehicleTrackManager.Snapshot first = manager.update(
+                Collections.singletonList(
+                        observation(0.05f, 0.2f, 0.25f, 0.5f, red(), 0)
+                ),
+                1_000_000_000L
+        ).get(0);
+
+        VehicleTrackManager.Snapshot recovered = manager.update(
+                Collections.singletonList(
+                        observation(0.32f, 0.2f, 0.52f, 0.5f, red(), 0)
+                ),
+                1_150_000_000L
+        ).get(0);
+
+        assertEquals(first.entityId, recovered.entityId);
+        assertEquals(first.vehicleTrackId, recovered.vehicleTrackId);
+        assertEquals(1, repository.size());
+    }
+
+    @Test
     public void predictsMotionDuringShortMpGapAndDropsTechnicalTrackAfterTtl() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         VehicleTrackManager manager = manager(repository);

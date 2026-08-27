@@ -22,6 +22,10 @@ public final class VehicleTrackManager {
     public static final int DEFAULT_MAX_TRACKED_VEHICLES = 16;
     public static final long DEFAULT_TRACK_TTL_NANOS = 1_800_000_000L;
     public static final long DEFAULT_ENTITY_TTL_NANOS = 5_000_000_000L;
+    public static final float MIN_ACTIVE_ASSOCIATION_SCORE = 0.36f;
+    public static final float MIN_REASSOCIATION_SCORE = 0.50f;
+    public static final float MIN_ASSOCIATION_MARGIN = 0.035f;
+    private static final float MIN_ACTIVE_RECOVERY_SCORE = 0.46f;
 
     public static final class Observation {
         public final NormalizedBounds bounds;
@@ -178,6 +182,10 @@ public final class VehicleTrackManager {
         boolean[] usedObservations = new boolean[observations.size()];
 
         List<Assignment> assignments = new ArrayList<>();
+        float[] bestByObservation = new float[observations.size()];
+        float[] secondByObservation = new float[observations.size()];
+        java.util.Arrays.fill(bestByObservation, Float.NEGATIVE_INFINITY);
+        java.util.Arrays.fill(secondByObservation, Float.NEGATIVE_INFINITY);
         for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
             Track track = tracks.get(trackIndex);
             NormalizedBounds predicted = track.predicted(safeNow);
@@ -188,11 +196,23 @@ public final class VehicleTrackManager {
                         track.appearance,
                         observations.get(observationIndex)
                 );
-                if (score >= 0f) {
+                if (score >= MIN_ACTIVE_ASSOCIATION_SCORE) {
                     assignments.add(new Assignment(trackIndex, observationIndex, score));
+                    if (score > bestByObservation[observationIndex]) {
+                        secondByObservation[observationIndex] =
+                                bestByObservation[observationIndex];
+                        bestByObservation[observationIndex] = score;
+                    } else if (score > secondByObservation[observationIndex]) {
+                        secondByObservation[observationIndex] = score;
+                    }
                 }
             }
         }
+        assignments.removeIf(assignment -> !hasAssociationMargin(
+                assignment.score,
+                bestByObservation[assignment.observationIndex],
+                secondByObservation[assignment.observationIndex]
+        ));
         assignments.sort(Comparator.comparingDouble(
                 (Assignment assignment) -> assignment.score
         ).reversed());
@@ -213,6 +233,10 @@ public final class VehicleTrackManager {
             usedTracks[assignment.trackIndex] = true;
             usedObservations[assignment.observationIndex] = true;
         }
+
+        recoverUnmatchedActiveTracks(
+                observations, usedTracks, usedObservations, safeNow
+        );
 
         for (int index = 0; index < tracks.size(); index++) {
             if (!usedTracks[index]) {
@@ -286,7 +310,7 @@ public final class VehicleTrackManager {
             long nowNanos
     ) {
         VehicleEntity best = null;
-        float bestScore = 0.58f;
+        float bestScore = MIN_REASSOCIATION_SCORE;
         for (VehicleEntity entity : repository.activeEntities()) {
             if (assignedEntityIds.contains(entity.entityId())
                     || entity.acquisitionState() == EntityAcquisitionState.EXPIRED
@@ -383,15 +407,117 @@ public final class VehicleTrackManager {
         boolean hasAppearance = stableAppearance != null
                 && stableAppearance.available()
                 && observation.appearance.available();
+        float rawAppearanceSimilarity = hasAppearance
+                ? similarity(stableAppearance, observation.appearance) : 0f;
         float appearance = hasAppearance
-                ? 0.5f + 0.5f * similarity(stableAppearance, observation.appearance)
+                ? 0.5f + 0.5f * rawAppearanceSimilarity
                 : 0.5f;
-        if (hasAppearance && appearance < 0.35f && overlap < 0.20f) return -1f;
+        if (hasAppearance && rawAppearanceSimilarity < 0.20f) return -1f;
+        if (hasAppearance && rawAppearanceSimilarity < 0.35f && overlap < 0.55f) {
+            return -1f;
+        }
         return 0.52f * overlap
                 + 0.23f * proximity
                 + 0.15f * sizeSimilarity
                 + 0.08f * appearance
                 + 0.02f * observation.confidence;
+    }
+
+    private void recoverUnmatchedActiveTracks(
+            List<Observation> observations,
+            boolean[] usedTracks,
+            boolean[] usedObservations,
+            long nowNanos
+    ) {
+        List<Assignment> recovery = new ArrayList<>();
+        float[] bestByObservation = new float[observations.size()];
+        float[] secondByObservation = new float[observations.size()];
+        java.util.Arrays.fill(bestByObservation, Float.NEGATIVE_INFINITY);
+        java.util.Arrays.fill(secondByObservation, Float.NEGATIVE_INFINITY);
+        for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
+            if (usedTracks[trackIndex]) continue;
+            Track track = tracks.get(trackIndex);
+            NormalizedBounds predicted = track.predicted(nowNanos);
+            for (int observationIndex = 0;
+                    observationIndex < observations.size(); observationIndex++) {
+                if (usedObservations[observationIndex]) continue;
+                float score = recoveryAssociationScore(
+                        predicted, track.appearance, observations.get(observationIndex)
+                );
+                if (score < MIN_ACTIVE_RECOVERY_SCORE) continue;
+                recovery.add(new Assignment(trackIndex, observationIndex, score));
+                if (score > bestByObservation[observationIndex]) {
+                    secondByObservation[observationIndex] =
+                            bestByObservation[observationIndex];
+                    bestByObservation[observationIndex] = score;
+                } else if (score > secondByObservation[observationIndex]) {
+                    secondByObservation[observationIndex] = score;
+                }
+            }
+        }
+        recovery.sort(Comparator.comparingDouble(
+                (Assignment assignment) -> assignment.score
+        ).reversed());
+        for (Assignment assignment : recovery) {
+            if (usedTracks[assignment.trackIndex]
+                    || usedObservations[assignment.observationIndex]
+                    || !hasAssociationMargin(
+                            assignment.score,
+                            bestByObservation[assignment.observationIndex],
+                            secondByObservation[assignment.observationIndex]
+                    )) continue;
+            Track track = tracks.get(assignment.trackIndex);
+            Observation observation = observations.get(assignment.observationIndex);
+            track.update(observation, nowNanos);
+            repository.updateFromMp(
+                    track.trackId,
+                    track.predicted(nowNanos),
+                    track.motion(),
+                    track.appearance,
+                    nowNanos
+            );
+            usedTracks[assignment.trackIndex] = true;
+            usedObservations[assignment.observationIndex] = true;
+        }
+    }
+
+    private static float recoveryAssociationScore(
+            NormalizedBounds predicted,
+            AppearanceDescriptor stableAppearance,
+            Observation observation
+    ) {
+        float appearance = stableAppearance == null
+                ? 0f : stableAppearance.cosineSimilarity(observation.appearance);
+        if (stableAppearance == null || !stableAppearance.available()
+                || !observation.appearance.available()
+                || appearance < 0.72f) return -1f;
+        float distance = (float) Math.hypot(
+                predicted.centerX() - observation.bounds.centerX(),
+                predicted.centerY() - observation.bounds.centerY()
+        );
+        float scale = Math.max(0.05f, 0.5f * (
+                diagonal(predicted) + diagonal(observation.bounds)
+        ));
+        if (distance > scale * 1.65f) return -1f;
+        float sizeSimilarity = Math.min(
+                ratio(predicted.width(), observation.bounds.width()),
+                ratio(predicted.height(), observation.bounds.height())
+        );
+        if (sizeSimilarity < 0.32f) return -1f;
+        float proximity = clamp01(1f - distance / (scale * 1.65f));
+        return 0.62f * (0.5f + 0.5f * appearance)
+                + 0.23f * proximity
+                + 0.15f * sizeSimilarity;
+    }
+
+    private static boolean hasAssociationMargin(
+            float score,
+            float bestScore,
+            float secondScore
+    ) {
+        if (score < bestScore) return false;
+        return secondScore == Float.NEGATIVE_INFINITY
+                || bestScore - secondScore >= MIN_ASSOCIATION_MARGIN;
     }
 
     static float exitUrgency(NormalizedBounds bounds, MotionState motion) {
