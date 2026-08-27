@@ -2,6 +2,7 @@ package com.example.alpr_v1.tracking;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
@@ -48,6 +49,29 @@ public class VehicleTrackingCoordinatorTest {
         assertEquals(1_200L, predicted.sourceTimestampNanos);
         assertEquals(1_500L, predicted.snapshotTimestampNanos);
         assertEquals(500L, predicted.candidates.get(0).predictionAgeNanos);
+    }
+
+    @Test
+    public void effectiveConfidenceDecaysWithAgeAndMisses() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame fresh = coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_000_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+        VehicleTrackingFrame missed = coordinator.updateFromMp(
+                2L,
+                1_500_000_000L,
+                1_800_000_000L,
+                Collections.emptyList()
+        );
+
+        assertTrue(missed.candidates.get(0).predicted);
+        assertEquals(1, missed.candidates.get(0).missedUpdates);
+        assertTrue(missed.candidates.get(0).effectiveConfidence
+                < fresh.candidates.get(0).effectiveConfidence);
+        assertEquals(500_000_000L, coordinator.lastMpObservationGapNanos());
     }
 
     private static VehicleTrackManager.Observation observation(float left) {

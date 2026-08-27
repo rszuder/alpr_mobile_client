@@ -5,6 +5,7 @@ import androidx.camera.core.ImageProxy;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.content.Context;
+import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AdaptiveFrameGate;
@@ -217,10 +218,11 @@ public final class AlprPipeline {
             PlateDetectionCallback plateDetectionCallback,
             SceneChangeCallback sceneChangeCallback
     ) {
+        long sourceTimestampNanos = image.getImageInfo().getTimestamp();
         metrics.observeSourceFrame(
                 image.getWidth(),
                 image.getHeight(),
-                image.getImageInfo().getTimestamp()
+                sourceTimestampNanos
         );
         if (cameraTransformInProgress) {
             metrics.frameSkippedByCameraTransform();
@@ -248,6 +250,8 @@ public final class AlprPipeline {
             return null;
         }
         InferenceTrace trace = new InferenceTrace(frameId);
+        trace.putCount("source_timestamp_nanos", sourceTimestampNanos);
+        trace.putCount("processing_started_nanos", SystemClock.elapsedRealtimeNanos());
         trace.putCount("source_width", image.getWidth());
         trace.putCount("source_height", image.getHeight());
         trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
@@ -416,6 +420,7 @@ public final class AlprPipeline {
                         engine.run(
                                 frame,
                                 trace,
+                                sourceTimestampNanos,
                                 plateDetectionCallback,
                                 () -> trackingResetRevision.get() != processingRevision
                         );
@@ -426,6 +431,7 @@ public final class AlprPipeline {
                         "engine_total"
                 );
             }
+            trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
             trace.start(
                     "pipeline_finalize"
             );
@@ -532,6 +538,8 @@ public final class AlprPipeline {
         }
 
         InferenceTrace trace = new InferenceTrace(frameId);
+        trace.putCount("source_timestamp_nanos", sourceTimestampNanos);
+        trace.putCount("processing_started_nanos", SystemClock.elapsedRealtimeNanos());
         trace.putCount("source_width", frame.getWidth());
         trace.putCount("source_height", frame.getHeight());
         trace.putConfidence("camera_zoom_ratio", currentCameraZoomRatio);
@@ -620,12 +628,14 @@ public final class AlprPipeline {
                 result = engine.run(
                         frame,
                         trace,
+                        sourceTimestampNanos,
                         plateDetectionCallback,
                         () -> trackingResetRevision.get() != processingRevision
                 );
             } finally {
                 trace.stop("engine_total");
             }
+            trace.putCount("result_available_nanos", SystemClock.elapsedRealtimeNanos());
             trace.start("pipeline_finalize");
             try {
                 metrics.recordRecognitionState(

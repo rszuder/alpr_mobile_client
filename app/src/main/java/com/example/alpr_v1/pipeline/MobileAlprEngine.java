@@ -301,6 +301,9 @@ final class MobileAlprEngine implements AutoCloseable {
         if (relativeRatio > 1.001f) {
             trackCoordinator.requestFreshRecognitionAfterZoom();
         }
+        cachedVehicleRois.clear();
+        cachedVehicleDetections.clear();
+        lastVehicleDetectionFrame = Long.MIN_VALUE;
     }
 
     PipelineResult run(
@@ -308,12 +311,14 @@ final class MobileAlprEngine implements AutoCloseable {
             InferenceTrace trace,
             AlprPipeline.PlateDetectionCallback plateDetectionCallback
     ) {
-        return run(frame, trace, plateDetectionCallback, () -> false);
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
+        return run(frame, trace, nowNanos, plateDetectionCallback, () -> false);
     }
 
     PipelineResult run(
             Bitmap frame,
             InferenceTrace trace,
+            long sourceTimestampNanos,
             AlprPipeline.PlateDetectionCallback plateDetectionCallback,
             BooleanSupplier cancellationRequested
     ) {
@@ -465,7 +470,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
             if (refreshVehicles) {
                 VehicleDetectionResult vehicleResult =
-                        detectVehicleRegions(frame, trace);
+                        detectVehicleRegions(frame, trace, sourceTimestampNanos);
                 cachedVehicleRois.clear();
                 cachedVehicleRois.addAll(vehicleResult.selectedRois);
                 cachedVehicleDetections.clear();
@@ -475,7 +480,7 @@ final class MobileAlprEngine implements AutoCloseable {
             } else {
                 trace.putCount("vehicle_skipped", 1);
                 if (vehicleTrackingPolicy == VehicleTrackingPolicy.TRACKED_MP) {
-                    refreshPredictedVehicleCache(frame, trace);
+                    refreshPredictedVehicleCache(frame, trace, sourceTimestampNanos);
                 }
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
@@ -492,6 +497,15 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putCount("vehicle_unavailable", 1);
         } else if (anyTargetGeometry) {
             trace.putCount("vehicle_skipped", 1);
+            if (!cameraTransformInProgress
+                    && vehicleTrackingPolicy == VehicleTrackingPolicy.TRACKED_MP) {
+                refreshPredictedVehicleCache(frame, trace, sourceTimestampNanos);
+                trace.putAttribute("vehicle_background_state", "PREDICTED");
+            } else if (cameraTransformInProgress) {
+                trace.putAttribute(
+                        "vehicle_background_state", "FROZEN_BY_CAMERA_TRANSFORM"
+                );
+            }
             addVehicleDiagnostics(
                     overlays,
                     cachedVehicleDetections,
@@ -1542,7 +1556,8 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private VehicleDetectionResult detectVehicleRegions(
             Bitmap frame,
-            InferenceTrace trace
+            InferenceTrace trace,
+            long sourceTimestampNanos
     ) {
         trace.start("vehicle_preprocess");
         PreparedInput input = BitmapTensorPreprocessor.prepare(
@@ -1686,7 +1701,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 diagnosticVehicles.size()
         );
 
-        long trackingNanos = SystemClock.elapsedRealtimeNanos();
+        long resultAvailableNanos = SystemClock.elapsedRealtimeNanos();
         List<VehicleTrackManager.Observation> vehicleObservations = new ArrayList<>(
                 diagnosticVehicles.size()
         );
@@ -1700,8 +1715,16 @@ final class MobileAlprEngine implements AutoCloseable {
             ));
         }
         VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.updateFromMp(
-                trace.frameId(), trackingNanos, trackingNanos, vehicleObservations
+                trace.frameId(),
+                sourceTimestampNanos,
+                resultAvailableNanos,
+                vehicleObservations
         );
+        trace.putConfidence(
+                "mp_observation_gap_ms",
+                vehicleTrackingCoordinator.lastMpObservationGapNanos() / 1_000_000.0
+        );
+        recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         diagnosticVehicles = trackedVehicleDetections(trackingFrame.candidates, frame);
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
         trace.putCount(
@@ -1767,11 +1790,16 @@ final class MobileAlprEngine implements AutoCloseable {
         );
     }
 
-    private void refreshPredictedVehicleCache(Bitmap frame, InferenceTrace trace) {
+    private void refreshPredictedVehicleCache(
+            Bitmap frame,
+            InferenceTrace trace,
+            long sourceTimestampNanos
+    ) {
         long snapshotNanos = SystemClock.elapsedRealtimeNanos();
         VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.predict(
-                trace.frameId(), snapshotNanos, snapshotNanos
+                trace.frameId(), sourceTimestampNanos, snapshotNanos
         );
+        recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         cachedVehicleDetections.clear();
         cachedVehicleDetections.addAll(trackedVehicleDetections(
                 trackingFrame.candidates, frame
@@ -1789,6 +1817,25 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.putCount(
                 "vehicle_entities_active",
                 vehicleTrackingCoordinator.repository().activeEntities().size()
+        );
+    }
+
+    private static void recordVehicleCandidateQuality(
+            InferenceTrace trace,
+            List<VehicleCandidate> candidates
+    ) {
+        double maximumAgeMs = 0.0;
+        double minimumEffectiveConfidence = 1.0;
+        for (VehicleCandidate candidate : candidates) {
+            maximumAgeMs = Math.max(maximumAgeMs, candidate.predictionAgeMillis());
+            minimumEffectiveConfidence = Math.min(
+                    minimumEffectiveConfidence, candidate.effectiveConfidence
+            );
+        }
+        trace.putConfidence("vehicle_prediction_age_ms", maximumAgeMs);
+        trace.putConfidence(
+                "vehicle_effective_confidence",
+                candidates.isEmpty() ? 0.0 : minimumEffectiveConfidence
         );
     }
 
