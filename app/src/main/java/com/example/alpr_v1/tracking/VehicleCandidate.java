@@ -15,6 +15,7 @@ public final class VehicleCandidate {
     public final long lastMeasurementTimestampNanos;
     public final long snapshotTimestampNanos;
     public final long predictionAgeNanos;
+    public final int sourceIndex;
 
     public VehicleCandidate(
             long entityId,
@@ -27,6 +28,26 @@ public final class VehicleCandidate {
             int missedUpdates,
             long lastMeasurementTimestampNanos,
             long snapshotTimestampNanos
+    ) {
+        this(
+                entityId, vehicleTrackId, bounds, detectionConfidence,
+                effectiveConfidence, exitUrgency, predicted, missedUpdates,
+                lastMeasurementTimestampNanos, snapshotTimestampNanos, -1
+        );
+    }
+
+    public VehicleCandidate(
+            long entityId,
+            long vehicleTrackId,
+            NormalizedBounds bounds,
+            float detectionConfidence,
+            float effectiveConfidence,
+            float exitUrgency,
+            boolean predicted,
+            int missedUpdates,
+            long lastMeasurementTimestampNanos,
+            long snapshotTimestampNanos,
+            int sourceIndex
     ) {
         if (entityId <= 0L) throw new IllegalArgumentException("entityId must be positive");
         if (vehicleTrackId <= 0L) {
@@ -52,6 +73,7 @@ public final class VehicleCandidate {
                 0L,
                 this.snapshotTimestampNanos - this.lastMeasurementTimestampNanos
         );
+        this.sourceIndex = sourceIndex;
     }
 
     public double predictionAgeMillis() {

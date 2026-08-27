@@ -9,6 +9,8 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Collections;
+import com.example.alpr_v1.vision.Detection;
 
 public class TrackedVehicleRoiSelectorTest {
     @Test
@@ -23,6 +25,47 @@ public class TrackedVehicleRoiSelectorTest {
         assertEquals(2, rois.size());
         assertEquals(1L, rois.get(0).entityId);
         assertEquals(2L, rois.get(1).entityId);
+    }
+
+    @Test
+    public void rawPolicyUsesUnchangedMpBoxWhileTrackedPolicyUsesCandidateBox() {
+        Detection raw = new Detection(
+                0, 0.9f, 100f, 50f, 300f, 250f, Collections.emptyList()
+        );
+        VehicleCandidate tracked = new VehicleCandidate(
+                1L,
+                11L,
+                new NormalizedBounds(0.20f, 0.20f, 0.60f, 0.70f),
+                0.9f, 0.9f, 0f, false, 0, 100L, 100L, 0
+        );
+
+        VehicleRoi rawRoi = VehicleRoiSelector.selectRawMpCandidates(
+                Collections.singletonList(raw),
+                Collections.singletonList(tracked),
+                1000, 500, 1, 0f, 0.5f
+        ).get(0);
+        VehicleRoi trackedRoi = VehicleRoiSelector.selectTrackedCandidates(
+                Collections.singletonList(tracked),
+                1000, 500, 1, 0f
+        ).get(0);
+
+        assertEquals(100, rawRoi.left);
+        assertEquals(50, rawRoi.top);
+        assertEquals(300, rawRoi.right);
+        assertEquals(250, rawRoi.bottom);
+        assertEquals(200, trackedRoi.left);
+        assertEquals(100, trackedRoi.top);
+        assertEquals(600, trackedRoi.right);
+        assertEquals(350, trackedRoi.bottom);
+        assertEquals(rawRoi.entityId, trackedRoi.entityId);
+    }
+
+    @Test
+    public void experimentPolicyIsAlwaysRawAndUserLiveIsTracked() {
+        assertEquals(VehicleTrackingPolicy.RAW_MP,
+                VehicleTrackingPolicy.forExperiment(true));
+        assertEquals(VehicleTrackingPolicy.TRACKED_MP,
+                VehicleTrackingPolicy.forExperiment(false));
     }
 
     private static VehicleCandidate candidate(

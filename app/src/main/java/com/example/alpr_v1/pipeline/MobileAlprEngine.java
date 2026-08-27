@@ -72,6 +72,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private final RoiBudgetPolicy roiBudgetPolicy;
     private final MtExecutionPolicy mtExecutionPolicy;
     private final MtFallbackPolicy mtFallbackPolicy;
+    private final VehicleTrackingPolicy vehicleTrackingPolicy;
     private final InferenceBackend vehicleBackend;
     private final InferenceBackend plateBackend;
     private final InferenceBackend characterBackend;
@@ -146,6 +147,7 @@ final class MobileAlprEngine implements AutoCloseable {
             RoiBudgetPolicy roiBudgetPolicy,
             MtExecutionPolicy mtExecutionPolicy,
             MtFallbackPolicy mtFallbackPolicy,
+            VehicleTrackingPolicy vehicleTrackingPolicy,
             VehicleTrackingCoordinator vehicleTrackingCoordinator
     ) {
         if (vehicleTrackingCoordinator == null) {
@@ -162,6 +164,8 @@ final class MobileAlprEngine implements AutoCloseable {
                 ? MtExecutionPolicy.LIVE_STAGGERED : mtExecutionPolicy;
         this.mtFallbackPolicy = mtFallbackPolicy == null
                 ? MtFallbackPolicy.DEFERRED : mtFallbackPolicy;
+        this.vehicleTrackingPolicy = vehicleTrackingPolicy == null
+                ? VehicleTrackingPolicy.TRACKED_MP : vehicleTrackingPolicy;
 
         vehicleModel = this.roiBudgetPolicy.usesVehicleCascade()
                 ? registry.getActive(ModelRole.VEHICLE)
@@ -386,6 +390,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED;
         trace.putAttribute("mt_execution_policy", mtExecutionPolicy.wireName());
         trace.putAttribute("mt_fallback_policy", mtFallbackPolicy.wireName());
+        trace.putAttribute("vehicle_tracking_policy", vehicleTrackingPolicy.wireName());
         boolean targetRoiActive = autoZoomTargetLock.active();
         TargetSnapshot liveTarget = targetSnapshot == null
                 ? TargetSnapshot.searching() : targetSnapshot;
@@ -469,7 +474,9 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.putCount("vehicle_runs", 1);
             } else {
                 trace.putCount("vehicle_skipped", 1);
-                refreshPredictedVehicleCache(frame, trace);
+                if (vehicleTrackingPolicy == VehicleTrackingPolicy.TRACKED_MP) {
+                    refreshPredictedVehicleCache(frame, trace);
+                }
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
             vehicleRois.addAll(cachedVehicleRois);
@@ -1707,8 +1714,17 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         trace.putCount("vehicle_tracks_predicted", predictedTracks);
 
-        List<VehicleRoi> rois =
-                VehicleRoiSelector.selectTrackedCandidates(
+        List<VehicleRoi> rois = vehicleTrackingPolicy == VehicleTrackingPolicy.RAW_MP
+                ? VehicleRoiSelector.selectRawMpCandidates(
+                        diagnosticVehicles,
+                        trackingFrame.candidates,
+                        frame.getWidth(),
+                        frame.getHeight(),
+                        roiBudgetPolicy.maximumRegions(),
+                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
+                        vehicleOutputSpec.iouThreshold()
+                )
+                : VehicleRoiSelector.selectTrackedCandidates(
                         trackingFrame.candidates,
                         frame.getWidth(),
                         frame.getHeight(),

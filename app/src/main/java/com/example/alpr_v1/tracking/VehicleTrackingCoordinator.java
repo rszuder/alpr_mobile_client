@@ -92,7 +92,8 @@ public final class VehicleTrackingCoordinator {
                     snapshot.predicted,
                     snapshot.missedUpdates,
                     snapshot.lastMeasurementTimestampNanos,
-                    snapshotTimestampNanos
+                    snapshotTimestampNanos,
+                    snapshot.sourceIndex
             ));
         }
         return new VehicleTrackingFrame(

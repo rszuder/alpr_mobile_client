@@ -3,10 +3,13 @@ package com.example.alpr_v1.pipeline;
 import com.example.alpr_v1.vision.Detection;
 import com.example.alpr_v1.vision.DetectionDeduplicator;
 import com.example.alpr_v1.tracking.VehicleCandidate;
+import com.example.alpr_v1.domain.NormalizedBounds;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.IdentityHashMap;
+import java.util.Map;
 
 /** Wybiera ograniczoną liczbę dominujących i poszerzonych ROI pojazdów. */
 final class VehicleRoiSelector {
@@ -118,6 +121,70 @@ final class VehicleRoiSelector {
             }
         }
         return rois;
+    }
+
+    /** Uses historical raw MP geometry while retaining diagnostic entity identity. */
+    static List<VehicleRoi> selectRawMpCandidates(
+            List<Detection> rawVehicles,
+            List<VehicleCandidate> trackedCandidates,
+            int imageWidth,
+            int imageHeight,
+            int maximumRegions,
+            float marginFraction,
+            float iouThreshold
+    ) {
+        List<Region> rawRegions = select(
+                rawVehicles,
+                imageWidth,
+                imageHeight,
+                maximumRegions,
+                marginFraction,
+                iouThreshold
+        );
+        Map<Integer, VehicleCandidate> candidateBySource = new java.util.HashMap<>();
+        for (VehicleCandidate candidate : trackedCandidates) {
+            if (candidate.sourceIndex >= 0) {
+                candidateBySource.put(candidate.sourceIndex, candidate);
+            }
+        }
+        Map<Detection, Integer> sourceByDetection = new IdentityHashMap<>();
+        for (int index = 0; index < rawVehicles.size(); index++) {
+            sourceByDetection.put(rawVehicles.get(index), index);
+        }
+        List<VehicleRoi> result = new ArrayList<>();
+        for (Region region : rawRegions) {
+            Integer sourceIndex = sourceByDetection.get(region.vehicle);
+            VehicleCandidate tracked = sourceIndex == null
+                    ? null : candidateBySource.get(sourceIndex);
+            if (tracked == null) continue;
+            NormalizedBounds rawBounds = new NormalizedBounds(
+                    region.vehicle.left / Math.max(1f, imageWidth),
+                    region.vehicle.top / Math.max(1f, imageHeight),
+                    region.vehicle.right / Math.max(1f, imageWidth),
+                    region.vehicle.bottom / Math.max(1f, imageHeight)
+            );
+            VehicleCandidate rawCandidate = new VehicleCandidate(
+                    tracked.entityId,
+                    tracked.vehicleTrackId,
+                    rawBounds,
+                    region.vehicle.confidence,
+                    region.vehicle.confidence,
+                    tracked.exitUrgency,
+                    false,
+                    0,
+                    tracked.lastMeasurementTimestampNanos,
+                    tracked.lastMeasurementTimestampNanos,
+                    sourceIndex
+            );
+            result.add(new VehicleRoi(
+                    rawCandidate,
+                    region.left,
+                    region.top,
+                    region.right,
+                    region.bottom
+            ));
+        }
+        return result;
     }
 
     static Region region(VehicleRoi roi) {

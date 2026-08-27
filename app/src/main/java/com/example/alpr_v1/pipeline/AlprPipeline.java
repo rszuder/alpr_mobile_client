@@ -300,6 +300,7 @@ public final class AlprPipeline {
                                     effectiveRoiBudgetPolicy(),
                                     effectiveMtExecutionPolicy(),
                                     effectiveMtFallbackPolicy(),
+                                    effectiveVehicleTrackingPolicy(),
                                     vehicleTrackingCoordinator
                             );
 
@@ -571,6 +572,7 @@ public final class AlprPipeline {
                             effectiveRoiBudgetPolicy(),
                             effectiveMtExecutionPolicy(),
                             effectiveMtFallbackPolicy(),
+                            effectiveVehicleTrackingPolicy(),
                             vehicleTrackingCoordinator
                     );
                     engine.setRecognitionProfile(recognitionProfile);
@@ -1016,6 +1018,10 @@ public final class AlprPipeline {
 
     private MtFallbackPolicy effectiveMtFallbackPolicy() {
         return MtFallbackPolicy.forExperiment(experimentModeEnabled);
+    }
+
+    private VehicleTrackingPolicy effectiveVehicleTrackingPolicy() {
+        return VehicleTrackingPolicy.forExperiment(experimentModeEnabled);
     }
     public synchronized void setVehicleCascadeEnabled(boolean enabled) {
         RoiBudgetPolicy previousEffective =
