@@ -294,7 +294,9 @@ public final class AlprPipeline {
                             new MobileAlprEngine(
                                     registry,
                                     autoTuneManager,
-                                    effectiveRoiBudgetPolicy()
+                                    effectiveRoiBudgetPolicy(),
+                                    effectiveMtExecutionPolicy(),
+                                    effectiveMtFallbackPolicy()
                             );
 
                     engine.setRecognitionProfile(
@@ -562,7 +564,9 @@ public final class AlprPipeline {
                     engine = new MobileAlprEngine(
                             registry,
                             autoTuneManager,
-                            effectiveRoiBudgetPolicy()
+                            effectiveRoiBudgetPolicy(),
+                            effectiveMtExecutionPolicy(),
+                            effectiveMtFallbackPolicy()
                     );
                     engine.setRecognitionProfile(recognitionProfile);
                     engine.setRapidCameraMotion(rapidCameraMotion);
@@ -895,6 +899,33 @@ public final class AlprPipeline {
                         )
                 )
         );
+        android.util.Log.d(
+                "ALPR_BASELINE",
+                String.format(
+                        java.util.Locale.ROOT,
+                        "frame=%d policy=%s fallback=%s pipe_ms=%.3f "
+                                + "mt_runs=%d mt_skip=%d tracker_updates=%d "
+                                + "overlay_fps=%.3f tracker_quality=%.3f "
+                                + "tracker_inliers=%d frames_to_lock=%d "
+                                + "time_to_lock_ms=%d lock_losses=%d "
+                                + "target=%s mz_event=%s",
+                        trace.frameId(),
+                        trace.attributes().getOrDefault("mt_execution_policy", ""),
+                        trace.attributes().getOrDefault("mt_fallback_policy", ""),
+                        ms(trace, "total"),
+                        trace.counters().getOrDefault("mt_runs_this_frame", 0L),
+                        trace.counters().getOrDefault("mt_skipped_by_tracker", 0L),
+                        trace.counters().getOrDefault("tracker_updates", 0L),
+                        trace.confidences().getOrDefault("overlay_update_fps", 0.0),
+                        trace.confidences().getOrDefault("tracker_quality", 0.0),
+                        trace.counters().getOrDefault("tracker_inliers", 0L),
+                        trace.counters().getOrDefault("frames_to_lock", 0L),
+                        trace.counters().getOrDefault("time_to_lock_ms", 0L),
+                        trace.counters().getOrDefault("lock_losses", 0L),
+                        trace.attributes().getOrDefault("target_state", ""),
+                        trace.attributes().getOrDefault("mz_state_event", "")
+                )
+        );
     }
 
 
@@ -973,6 +1004,14 @@ public final class AlprPipeline {
                 ? RoiBudgetPolicy.TWO_ROI
                 : RoiBudgetPolicy.FULL_FRAME;
     }
+
+    private MtExecutionPolicy effectiveMtExecutionPolicy() {
+        return MtExecutionPolicy.forExperiment(experimentModeEnabled);
+    }
+
+    private MtFallbackPolicy effectiveMtFallbackPolicy() {
+        return MtFallbackPolicy.forExperiment(experimentModeEnabled);
+    }
     public synchronized void setVehicleCascadeEnabled(boolean enabled) {
         RoiBudgetPolicy previousEffective =
                 effectiveRoiBudgetPolicy();
@@ -1009,6 +1048,8 @@ public final class AlprPipeline {
     ) {
         RoiBudgetPolicy previousEffective =
                 effectiveRoiBudgetPolicy();
+        MtExecutionPolicy previousExecution = effectiveMtExecutionPolicy();
+        MtFallbackPolicy previousFallback = effectiveMtFallbackPolicy();
 
         experimentModeEnabled = enabled;
         experimentRoiBudgetPolicy =
@@ -1018,6 +1059,8 @@ public final class AlprPipeline {
 
         RoiBudgetPolicy currentEffective =
                 effectiveRoiBudgetPolicy();
+        MtExecutionPolicy currentExecution = effectiveMtExecutionPolicy();
+        MtFallbackPolicy currentFallback = effectiveMtFallbackPolicy();
 
         metrics.setExperimentConfiguration(
                 experimentModeEnabled,
@@ -1028,7 +1071,9 @@ public final class AlprPipeline {
                 currentEffective.wireName()
         );
 
-        if (previousEffective == currentEffective) {
+        if (previousEffective == currentEffective
+                && previousExecution == currentExecution
+                && previousFallback == currentFallback) {
             return;
         }
 

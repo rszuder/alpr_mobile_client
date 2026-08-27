@@ -429,12 +429,38 @@ public final class MainActivity extends AppCompatActivity {
         final long sceneGeneration = uiSceneGeneration.get();
         final long transformGeneration = uiCameraTransformGeneration.get();
         lastDirectLumaFrameNanos = System.nanoTime();
+        long trackingStartedNanos =
+                android.os.SystemClock.elapsedRealtimeNanos();
         PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
                 frame.gray,
                 frame.width,
                 frame.height
         );
+        long trackingElapsedNanos = Math.max(
+                0L,
+                android.os.SystemClock.elapsedRealtimeNanos()
+                        - trackingStartedNanos
+        );
         if (trackingFrame == null) return;
+        float maximumQuality = 0f;
+        int maximumInliers = 0;
+        for (com.example.alpr_v1.tracking.TrackedPlate plate
+                : trackingFrame.trackedPlates) {
+            maximumQuality = Math.max(maximumQuality, plate.trackingQuality);
+            maximumInliers = Math.max(maximumInliers, plate.trackerInliers);
+        }
+        android.util.Log.d(
+                "ALPR_TRACK_TIMING",
+                String.format(
+                        Locale.ROOT,
+                        "timestamp_ns=%d update_ms=%.3f tracks=%d quality=%.3f inliers=%d",
+                        frame.timestampNanos,
+                        trackingElapsedNanos / 1_000_000.0,
+                        trackingFrame.trackedPlates.size(),
+                        maximumQuality,
+                        maximumInliers
+                )
+        );
         if (pipeline != null) {
             pipeline.setTargetSnapshot(
                     targetStateMachine.onTrackingFrame(trackingFrame)
@@ -806,6 +832,8 @@ public final class MainActivity extends AppCompatActivity {
                         )
                 );
 
+        applyDebugBaselineProfile();
+
 
         pipeline.setVehicleCascadeEnabled(
                 vehicleCascadeEnabled
@@ -823,6 +851,38 @@ public final class MainActivity extends AppCompatActivity {
         modelRegistry.reload();
 
         scheduleMissingAutotuning();
+    }
+
+    private void applyDebugBaselineProfile() {
+        if (!BuildConfig.DEBUG || getIntent() == null) return;
+        String profile = getIntent().getStringExtra("debug_baseline_profile");
+        if (profile == null || profile.trim().isEmpty()) return;
+        switch (profile.trim().toLowerCase(Locale.ROOT)) {
+            case "r0":
+                experimentModeEnabled = true;
+                experimentRoiBudgetPolicy = RoiBudgetPolicy.FULL_FRAME;
+                break;
+            case "r1":
+                experimentModeEnabled = true;
+                experimentRoiBudgetPolicy = RoiBudgetPolicy.ONE_ROI;
+                break;
+            case "r2":
+                experimentModeEnabled = true;
+                experimentRoiBudgetPolicy = RoiBudgetPolicy.TWO_ROI;
+                break;
+            case "live":
+                experimentModeEnabled = false;
+                vehicleCascadeEnabled = true;
+                break;
+            default:
+                return;
+        }
+        android.util.Log.i(
+                "ALPR_BASELINE",
+                "debug_profile=" + profile
+                        + " experiment=" + experimentModeEnabled
+                        + " roi=" + experimentRoiBudgetPolicy.wireName()
+        );
     }
 
     private void bindViews() {

@@ -5,14 +5,21 @@ import com.example.alpr_v1.vision.Detection;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /** Łączy tracki tablic, budżet wywołań MZ i temporalny konsensus znaków. */
 final class PlateTrackCoordinator {
+    static final long MZ_STATE_TTL_NANOS = 2_500_000_000L;
+
+    enum MtStateEvent {
+        NO_MT_RUN,
+        MT_RUN_WITH_DETECTIONS,
+        MT_RUN_WITHOUT_DETECTIONS,
+        TARGET_LOST,
+        SCENE_RESET
+    }
     static final class Observation {
         final int sourceIndex;
         final MotionBoxTracker.Box box;
@@ -114,6 +121,8 @@ final class PlateTrackCoordinator {
         float bestAttemptQuality;
         long lastAttemptFrame = Long.MIN_VALUE;
         boolean zoomRetryPending;
+        long lastSeenNanos;
+        long missingSinceNanos;
     }
 
     private final MotionBoxTracker tracker = new MotionBoxTracker();
@@ -132,6 +141,12 @@ final class PlateTrackCoordinator {
             long frameId,
             long nowNanos
     ) {
+        onMtEvent(
+                observations == null || observations.isEmpty()
+                        ? MtStateEvent.MT_RUN_WITHOUT_DETECTIONS
+                        : MtStateEvent.MT_RUN_WITH_DETECTIONS,
+                nowNanos
+        );
         List<MotionBoxTracker.Observation> boxes = new ArrayList<>();
         Map<Integer, Observation> byIndex = new HashMap<>();
         for (Observation observation : observations) {
@@ -141,10 +156,8 @@ final class PlateTrackCoordinator {
             byIndex.put(observation.sourceIndex, observation);
         }
         List<MotionBoxTracker.Result> tracked = tracker.update(boxes, nowNanos, nowNanos);
-        Set<Long> activeIds = new HashSet<>();
         List<Decision> decisions = new ArrayList<>();
         for (MotionBoxTracker.Result track : tracked) {
-            activeIds.add(track.trackId);
             if (track.sourceIndex < 0) continue;
             Observation observation = byIndex.get(track.sourceIndex);
             if (observation == null) continue;
@@ -154,6 +167,8 @@ final class PlateTrackCoordinator {
                 state.zoomRetryPending = zoomRetryPendingForNewTracks;
                 states.put(track.trackId, state);
             }
+            state.lastSeenNanos = nowNanos;
+            state.missingSinceNanos = 0L;
             TemporalCharacterAggregator.Result current =
                     state.aggregator.current();
 
@@ -171,14 +186,34 @@ final class PlateTrackCoordinator {
                     )
             );
         }
-        Iterator<Map.Entry<Long, State>> iterator = states.entrySet().iterator();
-        while (iterator.hasNext()) {
-            if (!activeIds.contains(iterator.next().getKey())) iterator.remove();
-        }
+        expireMissingStates(nowNanos);
         if (!decisions.isEmpty()) {
             zoomRetryPendingForNewTracks = false;
         }
         return decisions;
+    }
+
+    synchronized void onMtEvent(MtStateEvent event, long nowNanos) {
+        MtStateEvent safeEvent = event == null ? MtStateEvent.NO_MT_RUN : event;
+        if (safeEvent == MtStateEvent.SCENE_RESET) {
+            reset();
+            return;
+        }
+        if (safeEvent == MtStateEvent.NO_MT_RUN
+                || safeEvent == MtStateEvent.MT_RUN_WITH_DETECTIONS) {
+            expireMissingStates(nowNanos);
+            return;
+        }
+        for (State state : states.values()) {
+            if (state.missingSinceNanos <= 0L) {
+                state.missingSinceNanos = nowNanos;
+            }
+        }
+        expireMissingStates(nowNanos);
+    }
+
+    synchronized int retainedStateCount() {
+        return states.size();
     }
 
     synchronized TemporalCharacterAggregator.Result recordRecognition(
@@ -208,6 +243,17 @@ final class PlateTrackCoordinator {
         tracker.reset();
         states.clear();
         zoomRetryPendingForNewTracks = false;
+    }
+
+    private void expireMissingStates(long nowNanos) {
+        Iterator<Map.Entry<Long, State>> iterator = states.entrySet().iterator();
+        while (iterator.hasNext()) {
+            State state = iterator.next().getValue();
+            if (state.missingSinceNanos > 0L
+                    && nowNanos - state.missingSinceNanos > MZ_STATE_TTL_NANOS) {
+                iterator.remove();
+            }
+        }
     }
 
     synchronized void applyCameraZoomTransform(float relativeRatio) {

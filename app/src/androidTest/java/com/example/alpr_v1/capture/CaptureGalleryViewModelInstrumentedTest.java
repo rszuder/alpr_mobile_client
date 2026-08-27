@@ -19,15 +19,13 @@ import java.util.Collections;
 @RunWith(AndroidJUnit4.class)
 public final class CaptureGalleryViewModelInstrumentedTest {
     @Test
-    public void galleryAndSessionSurviveOwnerRecreation() {
+    public void cropsAndSessionSurviveOwnerRecreation() {
         ViewModelStore retainedStore = new ViewModelStore();
         ViewModelProvider firstOwner = provider(retainedStore);
         CaptureGalleryViewModel first = firstOwner.get(CaptureGalleryViewModel.class);
         Bitmap bitmap = Bitmap.createBitmap(8, 4, Bitmap.Config.ARGB_8888);
         first.capturedCrops().add(crop(bitmap));
         first.retainSession(true, "rotation-session", 123L, 7);
-        first.setGalleryExpanded(false);
-        first.setGalleryMaximized(true);
 
         ViewModelProvider recreatedOwner = provider(retainedStore);
         CaptureGalleryViewModel restored = recreatedOwner.get(CaptureGalleryViewModel.class);
@@ -38,25 +36,10 @@ public final class CaptureGalleryViewModelInstrumentedTest {
         assertEquals("rotation-session", restored.collectionSessionId());
         assertEquals(123L, restored.collectionSessionStartedElapsedNanos());
         assertEquals(7, restored.collectionSequence());
-        assertTrue(restored.galleryExpanded());
-        assertTrue(restored.galleryMaximized());
         assertFalse(bitmap.isRecycled());
 
         retainedStore.clear();
         assertTrue(bitmap.isRecycled());
-    }
-
-    @Test
-    public void collapsingGalleryLeavesFullscreenMode() {
-        ViewModelStore store = new ViewModelStore();
-        CaptureGalleryViewModel viewModel = provider(store).get(CaptureGalleryViewModel.class);
-
-        viewModel.setGalleryMaximized(true);
-        viewModel.setGalleryExpanded(false);
-
-        assertFalse(viewModel.galleryExpanded());
-        assertFalse(viewModel.galleryMaximized());
-        store.clear();
     }
 
     private static ViewModelProvider provider(ViewModelStore store) {

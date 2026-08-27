@@ -59,6 +59,8 @@ final class MobileAlprEngine implements AutoCloseable {
     private final InstalledModel characterModel;
 
     private final RoiBudgetPolicy roiBudgetPolicy;
+    private final MtExecutionPolicy mtExecutionPolicy;
+    private final MtFallbackPolicy mtFallbackPolicy;
     private final InferenceBackend vehicleBackend;
     private final InferenceBackend plateBackend;
     private final InferenceBackend characterBackend;
@@ -126,11 +128,17 @@ final class MobileAlprEngine implements AutoCloseable {
     MobileAlprEngine(
             ModelRegistry registry,
             AutoTuneManager autoTuneManager,
-            RoiBudgetPolicy roiBudgetPolicy
+            RoiBudgetPolicy roiBudgetPolicy,
+            MtExecutionPolicy mtExecutionPolicy,
+            MtFallbackPolicy mtFallbackPolicy
     ) {
         this.roiBudgetPolicy = roiBudgetPolicy == null
                 ? RoiBudgetPolicy.FULL_FRAME
                 : roiBudgetPolicy;
+        this.mtExecutionPolicy = mtExecutionPolicy == null
+                ? MtExecutionPolicy.LIVE_STAGGERED : mtExecutionPolicy;
+        this.mtFallbackPolicy = mtFallbackPolicy == null
+                ? MtFallbackPolicy.DEFERRED : mtFallbackPolicy;
 
         vehicleModel = this.roiBudgetPolicy.usesVehicleCascade()
                 ? registry.getActive(ModelRole.VEHICLE)
@@ -337,6 +345,7 @@ final class MobileAlprEngine implements AutoCloseable {
             resetSceneDependentState();
 
             trace.putCount("scene_reset", 1);
+            trace.putAttribute("mz_state_event", "SCENE_RESET");
 
             android.util.Log.d(
                     "ALPR_SCENE",
@@ -349,13 +358,25 @@ final class MobileAlprEngine implements AutoCloseable {
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoiSelector.Region> vehicleRegions = new ArrayList<>();
+        boolean liveExecution =
+                mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED;
+        trace.putAttribute("mt_execution_policy", mtExecutionPolicy.wireName());
+        trace.putAttribute("mt_fallback_policy", mtFallbackPolicy.wireName());
         boolean targetRoiActive = autoZoomTargetLock.active();
         TargetSnapshot liveTarget = targetSnapshot == null
                 ? TargetSnapshot.searching() : targetSnapshot;
+        boolean targetLostSignal = liveTarget.state == TargetSnapshot.State.LOST;
+        if (targetLostSignal) {
+            trackCoordinator.onMtEvent(
+                    PlateTrackCoordinator.MtStateEvent.TARGET_LOST,
+                    SystemClock.elapsedRealtimeNanos()
+            );
+        }
         boolean trackedGeometryAvailable = !effectiveSceneChanged
                 && liveTarget.trackId > 0L
                 && liveTarget.overlayItem != null;
-        boolean anyTargetGeometry = trackedGeometryAvailable || targetRoiActive;
+        boolean anyTargetGeometry = liveExecution
+                && (trackedGeometryAvailable || targetRoiActive);
         boolean vehicleRecoveryRequested =
                 mtInferenceScheduler.requiresVehicleRecovery();
 
@@ -375,6 +396,11 @@ final class MobileAlprEngine implements AutoCloseable {
             ));
             recordSchedulerDecision(trace, mtDecision, liveTarget);
             if (!mtDecision.runsMt()) {
+                trackCoordinator.onMtEvent(
+                        PlateTrackCoordinator.MtStateEvent.NO_MT_RUN,
+                        SystemClock.elapsedRealtimeNanos()
+                );
+                trace.putAttribute("mz_state_event", "NO_MT_RUN");
                 trace.putCount("mt_skipped_by_tracker", 1);
                 trace.putCount("mt_runs_this_frame", 0);
                 addVehicleDiagnostics(
@@ -444,84 +470,122 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         cancelIfRequested(cancellationRequested);
 
-        if (mtDecision == null) {
-            mtDecision = mtInferenceScheduler.plan(new MtInferenceScheduler.Input(
-                    trace.frameId(),
-                    anyTargetGeometry,
-                    trackedGeometryAvailable
-                            ? liveTarget.state : TargetSnapshot.State.SEARCHING,
-                    trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
-                    trackedGeometryAvailable ? liveTarget.consecutiveFailures : 0,
-                    effectiveSceneChanged,
-                    rapidCameraMotion,
-                    cameraTransformInProgress,
-                    vehicleRegions.size()
-            ));
-            recordSchedulerDecision(trace, mtDecision, liveTarget);
-        }
+        long[] plateDurations = new long[3];
+        List<Detection> plates = new ArrayList<>();
+        if (!liveExecution) {
+            int roiRuns = 0;
+            int fullFrameRuns = 0;
+            trace.putAttribute("mt_scheduler_reason", "experiment_legacy");
+            trace.putAttribute("target_state", "EXPERIMENT_LEGACY");
 
-        VehicleRoiSelector.Region scheduledRegion;
-        switch (mtDecision.kind) {
-            case TARGET_ROI:
-                scheduledRegion = targetRegion(
+            if (roiBudgetPolicy == RoiBudgetPolicy.FULL_FRAME) {
+                plates.addAll(detectPlates(
                         frame,
-                        liveTarget,
-                        targetRoiActive,
-                        mtDecision.targetMargin
-                );
-                overlays.add(roiOverlay(
-                        scheduledRegion,
-                        frame,
-                        targetRoiActive ? "ROI AUTO ZOOM" : "ROI TARGET"
+                        fullFrameRegion(frame),
+                        plateDurations
                 ));
-                trace.putCount("target_roi_mt_runs", 1);
-                trace.putConfidence(
-                        "target_roi_area_ratio",
-                        scheduledRegion.area()
-                                / (double) ((long) frame.getWidth() * frame.getHeight())
-                );
-                if (targetRoiActive) trace.putCount("auto_zoom_target_roi", 1);
-                break;
-            case VEHICLE_ROI:
-                int regionIndex = Math.min(
-                        Math.max(0, mtDecision.vehicleRegionIndex),
-                        Math.max(0, vehicleRegions.size() - 1)
-                );
-                scheduledRegion = vehicleRegions.isEmpty()
-                        ? fullFrameRegion(frame)
-                        : vehicleRegions.get(regionIndex);
-                trace.putCount("mt_staggered_roi_runs", vehicleRegions.size() > 1 ? 1 : 0);
-                break;
-            case FULL_FRAME:
-            default:
-                scheduledRegion = fullFrameRegion(frame);
-                if (mtDecision.reason.contains("deferred")) {
-                    trace.putCount("mt_deferred_fallbacks", 1);
+                fullFrameRuns++;
+            } else {
+                for (VehicleRoiSelector.Region region : vehicleRegions) {
+                    plates.addAll(detectPlates(frame, region, plateDurations));
+                    roiRuns++;
+                    cancelIfRequested(cancellationRequested);
+                }
+                if (plates.isEmpty()
+                        && mtFallbackPolicy == MtFallbackPolicy.SAME_CYCLE) {
+                    plates.addAll(detectPlates(
+                            frame,
+                            fullFrameRegion(frame),
+                            plateDurations
+                    ));
+                    fullFrameRuns++;
                     trace.putCount("full_frame_fallbacks", 1);
                 }
-                break;
-        }
+            }
+            trace.putCount("mt_runs_this_frame", roiRuns + fullFrameRuns);
+            trace.putCount("plate_roi_runs", roiRuns);
+            trace.putCount("plate_full_frame_runs", fullFrameRuns);
+            trace.putCount("mt_legacy_burst_runs", roiRuns);
+            trace.putCount("mt_legacy_same_cycle_fallbacks", fullFrameRuns > 0
+                    && roiBudgetPolicy != RoiBudgetPolicy.FULL_FRAME ? 1 : 0);
+        } else {
+            if (mtDecision == null) {
+                mtDecision = mtInferenceScheduler.plan(new MtInferenceScheduler.Input(
+                        trace.frameId(),
+                        anyTargetGeometry,
+                        trackedGeometryAvailable
+                                ? liveTarget.state : TargetSnapshot.State.SEARCHING,
+                        trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
+                        trackedGeometryAvailable ? liveTarget.consecutiveFailures : 0,
+                        effectiveSceneChanged,
+                        rapidCameraMotion,
+                        cameraTransformInProgress,
+                        vehicleRegions.size()
+                ));
+                recordSchedulerDecision(trace, mtDecision, liveTarget);
+            }
 
-        long[] plateDurations = new long[3];
-        List<Detection> plates = new ArrayList<>(
-                detectPlates(frame, scheduledRegion, plateDurations)
-        );
-        cancelIfRequested(cancellationRequested);
-        boolean roiPass = mtDecision.kind != MtInferenceScheduler.Kind.FULL_FRAME;
-        trace.putCount("mt_runs_this_frame", 1);
-        trace.putCount("plate_roi_runs", roiPass ? 1 : 0);
-        trace.putCount("plate_full_frame_runs", roiPass ? 0 : 1);
-        mtInferenceScheduler.onMtResult(
-                mtDecision,
-                trace.frameId(),
-                !plates.isEmpty()
-        );
-        if (plates.isEmpty()
-                && mtDecision.kind == MtInferenceScheduler.Kind.FULL_FRAME) {
-            cachedVehicleRegions.clear();
-            cachedVehicleDetections.clear();
-            lastVehicleDetectionFrame = Long.MIN_VALUE;
+            VehicleRoiSelector.Region scheduledRegion;
+            switch (mtDecision.kind) {
+                case TARGET_ROI:
+                    scheduledRegion = targetRegion(
+                            frame,
+                            liveTarget,
+                            targetRoiActive,
+                            mtDecision.targetMargin
+                    );
+                    overlays.add(roiOverlay(
+                            scheduledRegion,
+                            frame,
+                            targetRoiActive ? "ROI AUTO ZOOM" : "ROI TARGET"
+                    ));
+                    trace.putCount("target_roi_mt_runs", 1);
+                    trace.putConfidence(
+                            "target_roi_area_ratio",
+                            scheduledRegion.area()
+                                    / (double) ((long) frame.getWidth() * frame.getHeight())
+                    );
+                    if (targetRoiActive) trace.putCount("auto_zoom_target_roi", 1);
+                    break;
+                case VEHICLE_ROI:
+                    int regionIndex = Math.min(
+                            Math.max(0, mtDecision.vehicleRegionIndex),
+                            Math.max(0, vehicleRegions.size() - 1)
+                    );
+                    scheduledRegion = vehicleRegions.isEmpty()
+                            ? fullFrameRegion(frame)
+                            : vehicleRegions.get(regionIndex);
+                    trace.putCount("mt_staggered_roi_runs", vehicleRegions.size() > 1 ? 1 : 0);
+                    break;
+                case FULL_FRAME:
+                default:
+                    scheduledRegion = fullFrameRegion(frame);
+                    if (mtDecision.reason.contains("deferred")) {
+                        trace.putCount("mt_deferred_fallbacks", 1);
+                        trace.putCount("full_frame_fallbacks", 1);
+                    }
+                    break;
+            }
+
+            plates.addAll(detectPlates(frame, scheduledRegion, plateDurations));
+            cancelIfRequested(cancellationRequested);
+            boolean roiPass = mtDecision.kind != MtInferenceScheduler.Kind.FULL_FRAME;
+            trace.putCount("mt_runs_this_frame", 1);
+            trace.putCount("plate_roi_runs", roiPass ? 1 : 0);
+            trace.putCount("plate_full_frame_runs", roiPass ? 0 : 1);
+            mtInferenceScheduler.onMtResult(
+                    mtDecision,
+                    trace.frameId(),
+                    !plates.isEmpty()
+            );
+            if (plates.isEmpty()
+                    && mtDecision.kind == MtInferenceScheduler.Kind.FULL_FRAME) {
+                cachedVehicleRegions.clear();
+                cachedVehicleDetections.clear();
+                lastVehicleDetectionFrame = Long.MIN_VALUE;
+            }
         }
+        cancelIfRequested(cancellationRequested);
         trace.putDurationNanos("plate_preprocess", plateDurations[0]);
         trace.putDurationNanos("plate_inference", plateDurations[1]);
         trace.putDurationNanos("plate_postprocess", plateDurations[2]);
@@ -637,6 +701,16 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.frameId()
         );
         cancelIfRequested(cancellationRequested);
+        trace.putAttribute(
+                "mz_state_event",
+                effectiveSceneChanged
+                        ? "SCENE_RESET"
+                        : targetLostSignal
+                                ? "TARGET_LOST"
+                                : plates.isEmpty()
+                                        ? "MT_RUN_WITHOUT_DETECTIONS"
+                                        : "MT_RUN_WITH_DETECTIONS"
+        );
         if (plates.isEmpty()) {
             trackCoordinator.update(
                     Collections.emptyList(), trace.frameId(), SystemClock.elapsedRealtimeNanos()

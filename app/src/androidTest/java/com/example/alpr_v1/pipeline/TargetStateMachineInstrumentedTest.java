@@ -69,7 +69,10 @@ public final class TargetStateMachineInstrumentedTest {
         assertEquals(TargetSnapshot.State.DEGRADED, protectedTarget.state);
         assertEquals(101L, protectedTarget.trackId);
         assertEquals(101L, protectedTarget.lockedTrackId);
-        assertEquals("mt_anchor_locked_target_missing", protectedTarget.transitionReason);
+        assertEquals(
+                "mt_anchor_locked_target_missing_association_too_weak",
+                protectedTarget.transitionReason
+        );
 
         TargetSnapshot lost = machine.onTrackingLost();
         assertEquals(TargetSnapshot.State.LOST, lost.state);

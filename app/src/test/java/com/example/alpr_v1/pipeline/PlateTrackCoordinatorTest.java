@@ -167,6 +167,67 @@ public class PlateTrackCoordinatorTest {
         assertTrue(zoomed.currentResult.stable);
     }
 
+    @Test
+    public void noMtRunDoesNotClearConsensus() {
+        PlateTrackCoordinator coordinator = stableCoordinator();
+
+        coordinator.onMtEvent(
+                PlateTrackCoordinator.MtStateEvent.NO_MT_RUN,
+                250_000_000L
+        );
+        PlateTrackCoordinator.Decision resumed = update(coordinator, 3, 0.8f);
+
+        assertTrue(resumed.currentResult.stable);
+        assertEquals("A1", resumed.currentResult.text);
+    }
+
+    @Test
+    public void singleMtMissDoesNotClearConsensus() {
+        PlateTrackCoordinator coordinator = stableCoordinator();
+
+        assertTrue(coordinator.update(
+                Collections.emptyList(),
+                3,
+                300_000_000L
+        ).isEmpty());
+        assertEquals(1, coordinator.retainedStateCount());
+
+        PlateTrackCoordinator.Decision resumed = update(coordinator, 4, 0.8f);
+        assertTrue(resumed.currentResult.stable);
+        assertEquals("A1", resumed.currentResult.text);
+    }
+
+    @Test
+    public void targetLossExpiresConsensusOnlyAfterTtl() {
+        PlateTrackCoordinator coordinator = stableCoordinator();
+        long lostAt = 300_000_000L;
+
+        coordinator.onMtEvent(
+                PlateTrackCoordinator.MtStateEvent.TARGET_LOST,
+                lostAt
+        );
+        assertEquals(1, coordinator.retainedStateCount());
+
+        coordinator.onMtEvent(
+                PlateTrackCoordinator.MtStateEvent.TARGET_LOST,
+                lostAt + PlateTrackCoordinator.MZ_STATE_TTL_NANOS + 1L
+        );
+        assertEquals(0, coordinator.retainedStateCount());
+    }
+
+    private static PlateTrackCoordinator stableCoordinator() {
+        PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
+        PlateTrackCoordinator.Decision first = update(coordinator, 1, 0.8f);
+        coordinator.recordRecognition(
+                first.trackId, 0.8f, 1, characters(), Arrays.asList("A", "1")
+        );
+        PlateTrackCoordinator.Decision second = update(coordinator, 2, 0.8f);
+        coordinator.recordRecognition(
+                second.trackId, 0.8f, 2, characters(), Arrays.asList("A", "1")
+        );
+        return coordinator;
+    }
+
     private static PlateTrackCoordinator.Decision update(
             PlateTrackCoordinator coordinator, long frame, float quality
     ) {

@@ -1735,11 +1735,12 @@ public final class MetricsCollector {
                 .append(",vehicle_detections_raw,vehicle_detections_used,vehicle_detections_diagnostic,vehicle_detections_rejected_class,vehicle_regions_selected")
                 .append(",source_width,source_height,camera_rotation_degrees")
                 .append(",rapid_motion_frames")
-                .append(",mt_scheduler_reason,target_state,target_transition_reason")
+                .append(",mt_execution_policy,mt_fallback_policy,mt_scheduler_reason,mz_state_event,target_state,target_transition_reason")
                 .append(",tracker_quality,tracker_support_ratio,overlay_update_fps,target_roi_area_ratio")
                 .append(",tracker_updates,tracker_failures,tracker_inliers")
                 .append(",mt_skipped_by_tracker,mt_forced_by_quality,mt_periodic_refresh")
                 .append(",mt_scheduler_queue_size,mt_runs_this_frame,mt_deferred_fallbacks,mt_staggered_roi_runs")
+                .append(",mt_legacy_burst_runs,mt_legacy_same_cycle_fallbacks")
                 .append(",target_lock_age_frames,target_roi_mt_runs")
                 .append(",target_recoveries_level_1,target_recoveries_level_2,target_recoveries_level_3,target_recoveries_level_4")
                 .append(",locked_track_id,lock_switches,lock_losses,lock_reassociations,frames_to_lock,time_to_lock_ms")
@@ -1799,7 +1800,10 @@ public final class MetricsCollector {
             appendCount(csv, trace, "source_height");
             appendCount(csv, trace, "camera_rotation_degrees");
             appendCount(csv, trace, "rapid_motion_frames");
+            appendAttribute(csv, trace, "mt_execution_policy");
+            appendAttribute(csv, trace, "mt_fallback_policy");
             appendAttribute(csv, trace, "mt_scheduler_reason");
+            appendAttribute(csv, trace, "mz_state_event");
             appendAttribute(csv, trace, "target_state");
             appendAttribute(csv, trace, "target_transition_reason");
             appendConfidence(csv, trace, "tracker_quality");
@@ -1816,6 +1820,8 @@ public final class MetricsCollector {
             appendCount(csv, trace, "mt_runs_this_frame");
             appendCount(csv, trace, "mt_deferred_fallbacks");
             appendCount(csv, trace, "mt_staggered_roi_runs");
+            appendCount(csv, trace, "mt_legacy_burst_runs");
+            appendCount(csv, trace, "mt_legacy_same_cycle_fallbacks");
             appendCount(csv, trace, "target_lock_age_frames");
             appendCount(csv, trace, "target_roi_mt_runs");
             appendCount(csv, trace, "target_recoveries_level_1");
