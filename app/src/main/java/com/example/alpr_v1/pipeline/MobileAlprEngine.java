@@ -6,6 +6,8 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.VehicleEntityRepository;
 import com.example.alpr_v1.inference.InferenceBackend;
 import com.example.alpr_v1.inference.InferenceRunResult;
 import com.example.alpr_v1.inference.RuntimeBackendFactory;
@@ -19,6 +21,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.tracking.VehicleTrackManager;
 import com.example.alpr_v1.vision.BitmapTensorPreprocessor;
 import com.example.alpr_v1.vision.CharacterSequencePostProcessor;
 import com.example.alpr_v1.vision.Detection;
@@ -72,6 +75,10 @@ final class MobileAlprEngine implements AutoCloseable {
     private final ModelOutputSpec characterOutputSpec;
     private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
+    private final VehicleEntityRepository vehicleEntityRepository =
+            new VehicleEntityRepository();
+    private final VehicleTrackManager vehicleTrackManager =
+            new VehicleTrackManager(vehicleEntityRepository);
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
@@ -203,6 +210,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private void resetSceneDependentState() {
         trackCoordinator.reset();
+        vehicleTrackManager.resetScene();
         cachedVehicleRegions.clear();
         cachedVehicleDetections.clear();
         plateAppearanceByTrack.clear();
@@ -445,6 +453,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.putCount("vehicle_runs", 1);
             } else {
                 trace.putCount("vehicle_skipped", 1);
+                refreshPredictedVehicleCache(frame, trace);
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
             vehicleRegions.addAll(cachedVehicleRegions);
@@ -1523,6 +1532,30 @@ final class MobileAlprEngine implements AutoCloseable {
                 diagnosticVehicles.size()
         );
 
+        long trackingNanos = SystemClock.elapsedRealtimeNanos();
+        List<VehicleTrackManager.Observation> vehicleObservations = new ArrayList<>(
+                diagnosticVehicles.size()
+        );
+        for (int index = 0; index < diagnosticVehicles.size(); index++) {
+            Detection vehicle = diagnosticVehicles.get(index);
+            vehicleObservations.add(new VehicleTrackManager.Observation(
+                    normalizedVehicleBounds(vehicle, frame),
+                    vehicle.confidence,
+                    VehicleAppearanceDescriptor.from(frame, vehicle),
+                    index
+            ));
+        }
+        List<VehicleTrackManager.Snapshot> trackedVehicles =
+                vehicleTrackManager.update(vehicleObservations, trackingNanos);
+        diagnosticVehicles = trackedVehicleDetections(trackedVehicles, frame);
+        trace.putCount("vehicle_tracks_active", trackedVehicles.size());
+        trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
+        int predictedTracks = 0;
+        for (VehicleTrackManager.Snapshot snapshot : trackedVehicles) {
+            if (snapshot.predicted) predictedTracks++;
+        }
+        trace.putCount("vehicle_tracks_predicted", predictedTracks);
+
         List<VehicleRoiSelector.Region> regions =
                 VehicleRoiSelector.select(
                         diagnosticVehicles,
@@ -1566,6 +1599,54 @@ final class MobileAlprEngine implements AutoCloseable {
                 diagnosticVehicles,
                 regions
         );
+    }
+
+    private void refreshPredictedVehicleCache(Bitmap frame, InferenceTrace trace) {
+        List<VehicleTrackManager.Snapshot> snapshots = vehicleTrackManager.predict(
+                SystemClock.elapsedRealtimeNanos()
+        );
+        cachedVehicleDetections.clear();
+        cachedVehicleDetections.addAll(trackedVehicleDetections(snapshots, frame));
+        cachedVehicleRegions.clear();
+        cachedVehicleRegions.addAll(VehicleRoiSelector.select(
+                cachedVehicleDetections,
+                frame.getWidth(),
+                frame.getHeight(),
+                roiBudgetPolicy.maximumRegions(),
+                rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
+                vehicleOutputSpec.iouThreshold()
+        ));
+        trace.putCount("vehicle_tracks_active", snapshots.size());
+        trace.putCount("vehicle_tracks_predicted", snapshots.size());
+        trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
+    }
+
+    private static NormalizedBounds normalizedVehicleBounds(Detection vehicle, Bitmap frame) {
+        return new NormalizedBounds(
+                vehicle.left / Math.max(1f, frame.getWidth()),
+                vehicle.top / Math.max(1f, frame.getHeight()),
+                vehicle.right / Math.max(1f, frame.getWidth()),
+                vehicle.bottom / Math.max(1f, frame.getHeight())
+        );
+    }
+
+    private static List<Detection> trackedVehicleDetections(
+            List<VehicleTrackManager.Snapshot> snapshots,
+            Bitmap frame
+    ) {
+        List<Detection> detections = new ArrayList<>(snapshots.size());
+        for (VehicleTrackManager.Snapshot snapshot : snapshots) {
+            detections.add(new Detection(
+                    0,
+                    snapshot.confidence,
+                    snapshot.bounds.left * frame.getWidth(),
+                    snapshot.bounds.top * frame.getHeight(),
+                    snapshot.bounds.right * frame.getWidth(),
+                    snapshot.bounds.bottom * frame.getHeight(),
+                    Collections.emptyList()
+            ));
+        }
+        return detections;
     }
 
     private static Set<Integer> resolveVehicleClassIds(List<String> labels) {
