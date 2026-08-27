@@ -187,6 +187,41 @@ final class VehicleRoiSelector {
         return result;
     }
 
+    /**
+     * Single policy boundary used by the production engine. Keeping the branch here
+     * makes it impossible for RAW_MP to accidentally receive a reconstructed track
+     * list without a regression test noticing the changed geometry.
+     */
+    static List<VehicleRoi> selectForPolicy(
+            VehicleTrackingPolicy policy,
+            List<Detection> rawMpVehicles,
+            List<VehicleCandidate> trackedCandidates,
+            int imageWidth,
+            int imageHeight,
+            int maximumRegions,
+            float marginFraction,
+            float iouThreshold
+    ) {
+        if (policy == VehicleTrackingPolicy.RAW_MP) {
+            return selectRawMpCandidates(
+                    rawMpVehicles,
+                    trackedCandidates,
+                    imageWidth,
+                    imageHeight,
+                    maximumRegions,
+                    marginFraction,
+                    iouThreshold
+            );
+        }
+        return selectTrackedCandidates(
+                trackedCandidates,
+                imageWidth,
+                imageHeight,
+                maximumRegions,
+                marginFraction
+        );
+    }
+
     static Region region(VehicleRoi roi) {
         return new Region(roi.left, roi.top, roi.right, roi.bottom, null);
     }

@@ -1716,23 +1716,23 @@ final class MobileAlprEngine implements AutoCloseable {
                         rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
                         vehicleOutputSpec.iouThreshold()
                 );
-        List<Detection> diagnosticVehicles = new ArrayList<>(
+        List<Detection> rawMpVehicleDetections = new ArrayList<>(
                 allDiagnosticRegions.size()
         );
         for (VehicleRoiSelector.Region region : allDiagnosticRegions) {
-            if (region.vehicle != null) diagnosticVehicles.add(region.vehicle);
+            if (region.vehicle != null) rawMpVehicleDetections.add(region.vehicle);
         }
         trace.putCount(
                 "vehicle_detections_diagnostic",
-                diagnosticVehicles.size()
+                rawMpVehicleDetections.size()
         );
 
         long resultAvailableNanos = SystemClock.elapsedRealtimeNanos();
         List<VehicleTrackManager.Observation> vehicleObservations = new ArrayList<>(
-                diagnosticVehicles.size()
+                rawMpVehicleDetections.size()
         );
-        for (int index = 0; index < diagnosticVehicles.size(); index++) {
-            Detection vehicle = diagnosticVehicles.get(index);
+        for (int index = 0; index < rawMpVehicleDetections.size(); index++) {
+            Detection vehicle = rawMpVehicleDetections.get(index);
             vehicleObservations.add(new VehicleTrackManager.Observation(
                     normalizedVehicleBounds(vehicle, frame),
                     vehicle.confidence,
@@ -1756,7 +1756,9 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
-        diagnosticVehicles = trackedVehicleDetections(trackingFrame.candidates, frame);
+        List<Detection> trackedDiagnosticVehicles = trackedVehicleDetections(
+                trackingFrame.candidates, frame
+        );
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
         trace.putCount(
                 "vehicle_entities_active",
@@ -1768,23 +1770,16 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         trace.putCount("vehicle_tracks_predicted", predictedTracks);
 
-        List<VehicleRoi> rois = vehicleTrackingPolicy == VehicleTrackingPolicy.RAW_MP
-                ? VehicleRoiSelector.selectRawMpCandidates(
-                        diagnosticVehicles,
-                        trackingFrame.candidates,
-                        frame.getWidth(),
-                        frame.getHeight(),
-                        roiBudgetPolicy.maximumRegions(),
-                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
-                        vehicleOutputSpec.iouThreshold()
-                )
-                : VehicleRoiSelector.selectTrackedCandidates(
-                        trackingFrame.candidates,
-                        frame.getWidth(),
-                        frame.getHeight(),
-                        roiBudgetPolicy.maximumRegions(),
-                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN
-                );
+        List<VehicleRoi> rois = VehicleRoiSelector.selectForPolicy(
+                vehicleTrackingPolicy,
+                rawMpVehicleDetections,
+                trackingFrame.candidates,
+                frame.getWidth(),
+                frame.getHeight(),
+                roiBudgetPolicy.maximumRegions(),
+                rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
+                vehicleOutputSpec.iouThreshold()
+        );
         trace.putCount(
                 "vehicle_regions_selected",
                 rois.size()
@@ -1816,7 +1811,8 @@ final class MobileAlprEngine implements AutoCloseable {
             );
         }
         return new VehicleDetectionResult(
-                diagnosticVehicles,
+                vehicleTrackingPolicy == VehicleTrackingPolicy.RAW_MP
+                        ? rawMpVehicleDetections : trackedDiagnosticVehicles,
                 rois
         );
     }

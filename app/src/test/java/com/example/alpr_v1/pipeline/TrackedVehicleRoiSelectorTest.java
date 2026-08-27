@@ -39,14 +39,17 @@ public class TrackedVehicleRoiSelectorTest {
                 0.9f, 0.9f, 0f, false, 0, 100L, 100L, 0
         );
 
-        VehicleRoi rawRoi = VehicleRoiSelector.selectRawMpCandidates(
+        VehicleRoi rawRoi = VehicleRoiSelector.selectForPolicy(
+                VehicleTrackingPolicy.RAW_MP,
                 Collections.singletonList(raw),
                 Collections.singletonList(tracked),
                 1000, 500, 1, 0f, 0.5f
         ).get(0);
-        VehicleRoi trackedRoi = VehicleRoiSelector.selectTrackedCandidates(
+        VehicleRoi trackedRoi = VehicleRoiSelector.selectForPolicy(
+                VehicleTrackingPolicy.TRACKED_MP,
+                Collections.singletonList(raw),
                 Collections.singletonList(tracked),
-                1000, 500, 1, 0f
+                1000, 500, 1, 0f, 0.5f
         ).get(0);
 
         assertEquals(100, rawRoi.left);
