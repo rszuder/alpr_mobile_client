@@ -13,6 +13,7 @@ import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.nio.ByteBuffer;
@@ -99,6 +100,8 @@ public final class AlprPipeline {
     private final AutoTuneManager autoTuneManager;
     private final AdaptiveFrameGate frameGate;
     private final SceneChangeDetector sourceSceneDetector = new SceneChangeDetector();
+    private final VehicleTrackingCoordinator vehicleTrackingCoordinator =
+            new VehicleTrackingCoordinator();
     private final AtomicLong frameIds = new AtomicLong();
     private final AtomicLong trackingResetRevision = new AtomicLong();
     private final AtomicLong previewTrackingUpdates = new AtomicLong();
@@ -296,7 +299,8 @@ public final class AlprPipeline {
                                     autoTuneManager,
                                     effectiveRoiBudgetPolicy(),
                                     effectiveMtExecutionPolicy(),
-                                    effectiveMtFallbackPolicy()
+                                    effectiveMtFallbackPolicy(),
+                                    vehicleTrackingCoordinator
                             );
 
                     engine.setRecognitionProfile(
@@ -566,7 +570,8 @@ public final class AlprPipeline {
                             autoTuneManager,
                             effectiveRoiBudgetPolicy(),
                             effectiveMtExecutionPolicy(),
-                            effectiveMtFallbackPolicy()
+                            effectiveMtFallbackPolicy(),
+                            vehicleTrackingCoordinator
                     );
                     engine.setRecognitionProfile(recognitionProfile);
                     engine.setRapidCameraMotion(rapidCameraMotion);

@@ -51,6 +51,7 @@ public final class VehicleTrackManager {
         public final float confidence;
         public final float exitUrgency;
         public final long ageNanos;
+        public final long lastMeasurementTimestampNanos;
         public final int missedUpdates;
         public final int sourceIndex;
         public final boolean predicted;
@@ -63,6 +64,7 @@ public final class VehicleTrackManager {
                 float confidence,
                 float exitUrgency,
                 long ageNanos,
+                long lastMeasurementTimestampNanos,
                 int missedUpdates,
                 int sourceIndex,
                 boolean predicted
@@ -74,6 +76,7 @@ public final class VehicleTrackManager {
             this.confidence = confidence;
             this.exitUrgency = exitUrgency;
             this.ageNanos = ageNanos;
+            this.lastMeasurementTimestampNanos = lastMeasurementTimestampNanos;
             this.missedUpdates = missedUpdates;
             this.sourceIndex = sourceIndex;
             this.predicted = predicted;
@@ -337,6 +340,7 @@ public final class VehicleTrackManager {
                     track.confidence,
                     exitUrgency(bounds, motion),
                     Math.max(0L, nowNanos - track.firstSeenNanos),
+                    track.lastSeenNanos,
                     track.missedUpdates,
                     track.sourceIndex,
                     track.sourceIndex < 0 || nowNanos > track.lastSeenNanos

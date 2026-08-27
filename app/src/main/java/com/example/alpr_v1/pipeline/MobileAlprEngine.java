@@ -7,7 +7,6 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.domain.NormalizedBounds;
-import com.example.alpr_v1.domain.VehicleEntityRepository;
 import com.example.alpr_v1.inference.InferenceBackend;
 import com.example.alpr_v1.inference.InferenceRunResult;
 import com.example.alpr_v1.inference.RuntimeBackendFactory;
@@ -21,6 +20,9 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.tracking.VehicleCandidate;
+import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.tracking.VehicleTrackManager;
 import com.example.alpr_v1.vision.BitmapTensorPreprocessor;
 import com.example.alpr_v1.vision.CharacterSequencePostProcessor;
@@ -75,10 +77,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private final ModelOutputSpec characterOutputSpec;
     private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
-    private final VehicleEntityRepository vehicleEntityRepository =
-            new VehicleEntityRepository();
-    private final VehicleTrackManager vehicleTrackManager =
-            new VehicleTrackManager(vehicleEntityRepository);
+    private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
@@ -137,8 +136,13 @@ final class MobileAlprEngine implements AutoCloseable {
             AutoTuneManager autoTuneManager,
             RoiBudgetPolicy roiBudgetPolicy,
             MtExecutionPolicy mtExecutionPolicy,
-            MtFallbackPolicy mtFallbackPolicy
+            MtFallbackPolicy mtFallbackPolicy,
+            VehicleTrackingCoordinator vehicleTrackingCoordinator
     ) {
+        if (vehicleTrackingCoordinator == null) {
+            throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
+        }
+        this.vehicleTrackingCoordinator = vehicleTrackingCoordinator;
         this.roiBudgetPolicy = roiBudgetPolicy == null
                 ? RoiBudgetPolicy.FULL_FRAME
                 : roiBudgetPolicy;
@@ -210,7 +214,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private void resetSceneDependentState() {
         trackCoordinator.reset();
-        vehicleTrackManager.resetScene();
+        vehicleTrackingCoordinator.resetScene();
         cachedVehicleRegions.clear();
         cachedVehicleDetections.clear();
         plateAppearanceByTrack.clear();
@@ -1545,14 +1549,18 @@ final class MobileAlprEngine implements AutoCloseable {
                     index
             ));
         }
-        List<VehicleTrackManager.Snapshot> trackedVehicles =
-                vehicleTrackManager.update(vehicleObservations, trackingNanos);
-        diagnosticVehicles = trackedVehicleDetections(trackedVehicles, frame);
-        trace.putCount("vehicle_tracks_active", trackedVehicles.size());
-        trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
+        VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.updateFromMp(
+                trace.frameId(), trackingNanos, trackingNanos, vehicleObservations
+        );
+        diagnosticVehicles = trackedVehicleDetections(trackingFrame.candidates, frame);
+        trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
+        trace.putCount(
+                "vehicle_entities_active",
+                vehicleTrackingCoordinator.repository().activeEntities().size()
+        );
         int predictedTracks = 0;
-        for (VehicleTrackManager.Snapshot snapshot : trackedVehicles) {
-            if (snapshot.predicted) predictedTracks++;
+        for (VehicleCandidate candidate : trackingFrame.candidates) {
+            if (candidate.predicted) predictedTracks++;
         }
         trace.putCount("vehicle_tracks_predicted", predictedTracks);
 
@@ -1602,11 +1610,14 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private void refreshPredictedVehicleCache(Bitmap frame, InferenceTrace trace) {
-        List<VehicleTrackManager.Snapshot> snapshots = vehicleTrackManager.predict(
-                SystemClock.elapsedRealtimeNanos()
+        long snapshotNanos = SystemClock.elapsedRealtimeNanos();
+        VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.predict(
+                trace.frameId(), snapshotNanos, snapshotNanos
         );
         cachedVehicleDetections.clear();
-        cachedVehicleDetections.addAll(trackedVehicleDetections(snapshots, frame));
+        cachedVehicleDetections.addAll(trackedVehicleDetections(
+                trackingFrame.candidates, frame
+        ));
         cachedVehicleRegions.clear();
         cachedVehicleRegions.addAll(VehicleRoiSelector.select(
                 cachedVehicleDetections,
@@ -1616,9 +1627,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
                 vehicleOutputSpec.iouThreshold()
         ));
-        trace.putCount("vehicle_tracks_active", snapshots.size());
-        trace.putCount("vehicle_tracks_predicted", snapshots.size());
-        trace.putCount("vehicle_entities_active", vehicleEntityRepository.activeEntities().size());
+        trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
+        trace.putCount("vehicle_tracks_predicted", trackingFrame.candidates.size());
+        trace.putCount(
+                "vehicle_entities_active",
+                vehicleTrackingCoordinator.repository().activeEntities().size()
+        );
     }
 
     private static NormalizedBounds normalizedVehicleBounds(Detection vehicle, Bitmap frame) {
@@ -1631,18 +1645,18 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private static List<Detection> trackedVehicleDetections(
-            List<VehicleTrackManager.Snapshot> snapshots,
+            List<VehicleCandidate> candidates,
             Bitmap frame
     ) {
-        List<Detection> detections = new ArrayList<>(snapshots.size());
-        for (VehicleTrackManager.Snapshot snapshot : snapshots) {
+        List<Detection> detections = new ArrayList<>(candidates.size());
+        for (VehicleCandidate candidate : candidates) {
             detections.add(new Detection(
                     0,
-                    snapshot.confidence,
-                    snapshot.bounds.left * frame.getWidth(),
-                    snapshot.bounds.top * frame.getHeight(),
-                    snapshot.bounds.right * frame.getWidth(),
-                    snapshot.bounds.bottom * frame.getHeight(),
+                    candidate.effectiveConfidence,
+                    candidate.bounds.left * frame.getWidth(),
+                    candidate.bounds.top * frame.getHeight(),
+                    candidate.bounds.right * frame.getWidth(),
+                    candidate.bounds.bottom * frame.getHeight(),
                     Collections.emptyList()
             ));
         }
