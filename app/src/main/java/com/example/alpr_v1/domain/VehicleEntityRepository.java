@@ -46,6 +46,15 @@ public final class VehicleEntityRepository {
         return entityId == null ? null : byEntityId.get(entityId);
     }
 
+    public synchronized VehicleEntity findByPlateTrackId(long plateTrackId) {
+        if (plateTrackId <= 0L) return null;
+        for (VehicleEntity entity : byEntityId.values()) {
+            Long candidate = entity.plateTrackId();
+            if (candidate != null && candidate == plateTrackId) return entity;
+        }
+        return null;
+    }
+
     public synchronized List<VehicleEntity> activeEntities() {
         List<VehicleEntity> active = new ArrayList<>();
         for (VehicleEntity entity : byEntityId.values()) {

@@ -8,6 +8,14 @@ import java.util.List;
 
 /** Migawka tracku przekazywana do trwałej galerii wyników w UI. */
 public final class PlateObservation {
+    public final long entityId;
+    public final long vehicleTrackId;
+    public final long plateTrackId;
+    public final VehicleAssociationStatus associationStatus;
+    public final float associationConfidence;
+    public final String associationReason;
+    public final MtWorkKind sourceRoiKind;
+    public final MtReason sourceMtReason;
     public final long trackId;
     public final long frameId;
     public final Bitmap previewBitmap;
@@ -35,6 +43,9 @@ public final class PlateObservation {
 
     public PlateObservation(
             long trackId,
+            PlateVehicleAssociation association,
+            MtWorkKind sourceRoiKind,
+            MtReason sourceMtReason,
             long frameId,
             Bitmap previewBitmap,
             String text,
@@ -59,6 +70,16 @@ public final class PlateObservation {
             String predictionBefore,
             String predictionAfter
     ) {
+        PlateVehicleAssociation safeAssociation = association == null
+                ? PlateVehicleAssociation.unassigned("missing_association") : association;
+        this.entityId = safeAssociation.entityId;
+        this.vehicleTrackId = safeAssociation.vehicleTrackId;
+        this.plateTrackId = trackId;
+        this.associationStatus = safeAssociation.status;
+        this.associationConfidence = safeAssociation.confidence;
+        this.associationReason = safeAssociation.reason;
+        this.sourceRoiKind = sourceRoiKind == null ? MtWorkKind.FULL_FRAME : sourceRoiKind;
+        this.sourceMtReason = sourceMtReason == null ? MtReason.UNKNOWN : sourceMtReason;
         this.trackId = trackId;
         this.frameId = frameId;
         this.previewBitmap = previewBitmap;

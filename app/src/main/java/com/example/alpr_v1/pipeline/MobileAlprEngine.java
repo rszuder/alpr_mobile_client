@@ -6,7 +6,11 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.NormalizedQuad;
+import com.example.alpr_v1.domain.PlateTextConsensus;
+import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.inference.InferenceBackend;
 import com.example.alpr_v1.inference.InferenceRunResult;
 import com.example.alpr_v1.inference.RuntimeBackendFactory;
@@ -47,6 +51,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.IdentityHashMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
@@ -78,13 +84,16 @@ final class MobileAlprEngine implements AutoCloseable {
     private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
+    private final PlateEntityBinder plateEntityBinder;
 
     private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
-    private final List<VehicleRoiSelector.Region> cachedVehicleRegions = new ArrayList<>();
+    private final List<VehicleRoi> cachedVehicleRois = new ArrayList<>();
     private final List<Detection> cachedVehicleDetections = new ArrayList<>();
     private final Map<Long, float[]> plateAppearanceByTrack = new java.util.HashMap<>();
     private final AutoZoomTargetLock autoZoomTargetLock = new AutoZoomTargetLock();
     private final MtInferenceScheduler mtInferenceScheduler = new MtInferenceScheduler();
+    private final PlateVehicleAssociator plateVehicleAssociator =
+            new PlateVehicleAssociator();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
     private long appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
     private int reportedTargetLockSwitches;
@@ -97,14 +106,14 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
-        final List<VehicleRoiSelector.Region> selectedRegions;
+        final List<VehicleRoi> selectedRois;
 
         VehicleDetectionResult(
                 List<Detection> vehicles,
-                List<VehicleRoiSelector.Region> selectedRegions
+                List<VehicleRoi> selectedRois
         ) {
             this.vehicles = vehicles;
-            this.selectedRegions = selectedRegions;
+            this.selectedRois = selectedRois;
         }
     }
 
@@ -143,6 +152,9 @@ final class MobileAlprEngine implements AutoCloseable {
             throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
         }
         this.vehicleTrackingCoordinator = vehicleTrackingCoordinator;
+        this.plateEntityBinder = new PlateEntityBinder(
+                vehicleTrackingCoordinator.repository()
+        );
         this.roiBudgetPolicy = roiBudgetPolicy == null
                 ? RoiBudgetPolicy.FULL_FRAME
                 : roiBudgetPolicy;
@@ -215,7 +227,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private void resetSceneDependentState() {
         trackCoordinator.reset();
         vehicleTrackingCoordinator.resetScene();
-        cachedVehicleRegions.clear();
+        cachedVehicleRois.clear();
         cachedVehicleDetections.clear();
         plateAppearanceByTrack.clear();
         autoZoomTargetLock.clear();
@@ -369,7 +381,7 @@ final class MobileAlprEngine implements AutoCloseable {
         }
 
         List<OverlayItem> overlays = new ArrayList<>();
-        List<VehicleRoiSelector.Region> vehicleRegions = new ArrayList<>();
+        List<VehicleRoi> vehicleRois = new ArrayList<>();
         boolean liveExecution =
                 mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED;
         trace.putAttribute("mt_execution_policy", mtExecutionPolicy.wireName());
@@ -418,7 +430,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 addVehicleDiagnostics(
                         overlays,
                         cachedVehicleDetections,
-                        cachedVehicleRegions,
+                        cachedVehicleRois,
                         frame,
                         roiBudgetPolicy
                 );
@@ -443,14 +455,14 @@ final class MobileAlprEngine implements AutoCloseable {
                 && roiBudgetPolicy.usesVehicleCascade()
                 && vehicleBackend != null;
         if (useVehicleRegions) {
-            boolean refreshVehicles = cachedVehicleRegions.isEmpty()
+            boolean refreshVehicles = cachedVehicleRois.isEmpty()
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
             if (refreshVehicles) {
                 VehicleDetectionResult vehicleResult =
                         detectVehicleRegions(frame, trace);
-                cachedVehicleRegions.clear();
-                cachedVehicleRegions.addAll(vehicleResult.selectedRegions);
+                cachedVehicleRois.clear();
+                cachedVehicleRois.addAll(vehicleResult.selectedRois);
                 cachedVehicleDetections.clear();
                 cachedVehicleDetections.addAll(vehicleResult.vehicles);
                 lastVehicleDetectionFrame = trace.frameId();
@@ -460,11 +472,11 @@ final class MobileAlprEngine implements AutoCloseable {
                 refreshPredictedVehicleCache(frame, trace);
             }
             if (rapidCameraMotion) trace.putCount("rapid_motion_frames", 1);
-            vehicleRegions.addAll(cachedVehicleRegions);
+            vehicleRois.addAll(cachedVehicleRois);
             addVehicleDiagnostics(
                     overlays,
                     cachedVehicleDetections,
-                    cachedVehicleRegions,
+                    cachedVehicleRois,
                     frame,
                     roiBudgetPolicy
             );
@@ -476,7 +488,7 @@ final class MobileAlprEngine implements AutoCloseable {
             addVehicleDiagnostics(
                     overlays,
                     cachedVehicleDetections,
-                    cachedVehicleRegions,
+                    cachedVehicleRois,
                     frame,
                     roiBudgetPolicy
             );
@@ -485,6 +497,9 @@ final class MobileAlprEngine implements AutoCloseable {
 
         long[] plateDurations = new long[3];
         List<Detection> plates = new ArrayList<>();
+        Map<Detection, VehicleRoi> vehicleRoiByPlate = new IdentityHashMap<>();
+        Map<Detection, MtWorkKind> workKindByPlate = new IdentityHashMap<>();
+        Map<Detection, MtReason> workReasonByPlate = new IdentityHashMap<>();
         if (!liveExecution) {
             int roiRuns = 0;
             int fullFrameRuns = 0;
@@ -492,25 +507,45 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putAttribute("target_state", "EXPERIMENT_LEGACY");
 
             if (roiBudgetPolicy == RoiBudgetPolicy.FULL_FRAME) {
-                plates.addAll(detectPlates(
+                List<Detection> detected = detectPlates(
                         frame,
                         fullFrameRegion(frame),
                         plateDurations
-                ));
+                );
+                plates.addAll(detected);
+                markPlateWork(
+                        detected, null, MtWorkKind.FULL_FRAME,
+                        MtReason.EXPERIMENT_POLICY,
+                        vehicleRoiByPlate, workKindByPlate, workReasonByPlate
+                );
                 fullFrameRuns++;
             } else {
-                for (VehicleRoiSelector.Region region : vehicleRegions) {
-                    plates.addAll(detectPlates(frame, region, plateDurations));
+                for (VehicleRoi roi : vehicleRois) {
+                    List<Detection> detected = detectPlates(
+                            frame, VehicleRoiSelector.region(roi), plateDurations
+                    );
+                    plates.addAll(detected);
+                    markPlateWork(
+                            detected, roi, MtWorkKind.VEHICLE_ROI,
+                            MtReason.EXPERIMENT_POLICY,
+                            vehicleRoiByPlate, workKindByPlate, workReasonByPlate
+                    );
                     roiRuns++;
                     cancelIfRequested(cancellationRequested);
                 }
                 if (plates.isEmpty()
                         && mtFallbackPolicy == MtFallbackPolicy.SAME_CYCLE) {
-                    plates.addAll(detectPlates(
+                    List<Detection> detected = detectPlates(
                             frame,
                             fullFrameRegion(frame),
                             plateDurations
-                    ));
+                    );
+                    plates.addAll(detected);
+                    markPlateWork(
+                            detected, null, MtWorkKind.FULL_FRAME,
+                            MtReason.EXPERIMENT_POLICY,
+                            vehicleRoiByPlate, workKindByPlate, workReasonByPlate
+                    );
                     fullFrameRuns++;
                     trace.putCount("full_frame_fallbacks", 1);
                 }
@@ -533,12 +568,14 @@ final class MobileAlprEngine implements AutoCloseable {
                         effectiveSceneChanged,
                         rapidCameraMotion,
                         cameraTransformInProgress,
-                        vehicleRegions.size()
+                        vehicleRois.size()
                 ));
                 recordSchedulerDecision(trace, mtDecision, liveTarget);
             }
 
             VehicleRoiSelector.Region scheduledRegion;
+            VehicleRoi scheduledVehicleRoi = null;
+            MtWorkKind scheduledWorkKind;
             switch (mtDecision.kind) {
                 case TARGET_ROI:
                     scheduledRegion = targetRegion(
@@ -559,20 +596,28 @@ final class MobileAlprEngine implements AutoCloseable {
                                     / (double) ((long) frame.getWidth() * frame.getHeight())
                     );
                     if (targetRoiActive) trace.putCount("auto_zoom_target_roi", 1);
+                    scheduledWorkKind = mtDecision.recoveryLevel > 1
+                            ? MtWorkKind.TARGET_ROI_EXPANDED : MtWorkKind.TARGET_ROI;
                     break;
                 case VEHICLE_ROI:
                     int regionIndex = Math.min(
                             Math.max(0, mtDecision.vehicleRegionIndex),
-                            Math.max(0, vehicleRegions.size() - 1)
+                            Math.max(0, vehicleRois.size() - 1)
                     );
-                    scheduledRegion = vehicleRegions.isEmpty()
-                            ? fullFrameRegion(frame)
-                            : vehicleRegions.get(regionIndex);
-                    trace.putCount("mt_staggered_roi_runs", vehicleRegions.size() > 1 ? 1 : 0);
+                    if (vehicleRois.isEmpty()) {
+                        scheduledRegion = fullFrameRegion(frame);
+                        scheduledWorkKind = MtWorkKind.FULL_FRAME;
+                    } else {
+                        scheduledVehicleRoi = vehicleRois.get(regionIndex);
+                        scheduledRegion = VehicleRoiSelector.region(scheduledVehicleRoi);
+                        scheduledWorkKind = MtWorkKind.VEHICLE_ROI;
+                    }
+                    trace.putCount("mt_staggered_roi_runs", vehicleRois.size() > 1 ? 1 : 0);
                     break;
                 case FULL_FRAME:
                 default:
                     scheduledRegion = fullFrameRegion(frame);
+                    scheduledWorkKind = MtWorkKind.FULL_FRAME;
                     if (mtDecision.reason.contains("deferred")) {
                         trace.putCount("mt_deferred_fallbacks", 1);
                         trace.putCount("full_frame_fallbacks", 1);
@@ -580,7 +625,19 @@ final class MobileAlprEngine implements AutoCloseable {
                     break;
             }
 
-            plates.addAll(detectPlates(frame, scheduledRegion, plateDurations));
+            List<Detection> detected = detectPlates(
+                    frame, scheduledRegion, plateDurations
+            );
+            plates.addAll(detected);
+            markPlateWork(
+                    detected,
+                    scheduledVehicleRoi,
+                    scheduledWorkKind,
+                    mtReason(mtDecision.reason),
+                    vehicleRoiByPlate,
+                    workKindByPlate,
+                    workReasonByPlate
+            );
             cancelIfRequested(cancellationRequested);
             boolean roiPass = mtDecision.kind != MtInferenceScheduler.Kind.FULL_FRAME;
             trace.putCount("mt_runs_this_frame", 1);
@@ -593,7 +650,7 @@ final class MobileAlprEngine implements AutoCloseable {
             );
             if (plates.isEmpty()
                     && mtDecision.kind == MtInferenceScheduler.Kind.FULL_FRAME) {
-                cachedVehicleRegions.clear();
+                cachedVehicleRois.clear();
                 cachedVehicleDetections.clear();
                 lastVehicleDetectionFrame = Long.MIN_VALUE;
             }
@@ -780,13 +837,35 @@ final class MobileAlprEngine implements AutoCloseable {
                 SystemClock.elapsedRealtimeNanos()
         );
 
+        Map<Long, PlateVehicleAssociation> associationByPlateTrack = new HashMap<>();
+        Map<Long, MtWorkKind> workKindByPlateTrack = new HashMap<>();
+        Map<Long, MtReason> workReasonByPlateTrack = new HashMap<>();
         for (PlateTrackCoordinator.Decision decision : decisions) {
             cancelIfRequested(cancellationRequested);
             if (decision.sourceIndex < 0
                     || decision.sourceIndex >= candidates.size()) continue;
+            PlateCandidate plateCandidate = candidates.get(decision.sourceIndex);
+            Detection plateDetection = plateCandidate.detection;
+            MtWorkKind workKind = workKindByPlate.getOrDefault(
+                    plateDetection, MtWorkKind.FULL_FRAME
+            );
+            MtReason workReason = workReasonByPlate.getOrDefault(
+                    plateDetection, MtReason.UNKNOWN
+            );
+            PlateVehicleAssociation association = associatePlate(
+                    plateDetection,
+                    vehicleRoiByPlate.get(plateDetection),
+                    workKind,
+                    liveTarget,
+                    frame
+            );
+            associationByPlateTrack.put(decision.trackId, association);
+            workKindByPlateTrack.put(decision.trackId, workKind);
+            workReasonByPlateTrack.put(decision.trackId, workReason);
+
             float[] appearance = PlateAppearanceDescriptor.from(
                     frame,
-                    candidates.get(decision.sourceIndex).detection
+                    plateDetection
             );
             if (appearance != null) {
                 plateAppearanceByTrack.put(
@@ -798,6 +877,25 @@ final class MobileAlprEngine implements AutoCloseable {
                         )
                 );
             }
+            if (association.assigned()) {
+                plateEntityBinder.attachPlate(
+                        association,
+                        decision.trackId,
+                        normalizedQuad(plateCandidate.corners, frame),
+                        new AppearanceDescriptor(appearance),
+                        SystemClock.elapsedRealtimeNanos()
+                );
+                trace.putCount("plate_attached_to_entity", 1);
+                trace.putCount("vehicle_roi_entity_id", association.entityId);
+                trace.putCount("vehicle_roi_track_id", association.vehicleTrackId);
+            } else if (association.status == VehicleAssociationStatus.AMBIGUOUS) {
+                trace.putCount("plate_entity_association_ambiguous", 1);
+            } else {
+                trace.putCount("plate_entity_association_failed", 1);
+            }
+            trace.putAttribute("plate_association_status", association.status.name());
+            trace.putAttribute("plate_association_reason", association.reason);
+            trace.putConfidence("plate_association_confidence", association.confidence);
         }
 
         /*
@@ -949,8 +1047,33 @@ final class MobileAlprEngine implements AutoCloseable {
                         trackResult.observations
                 ));
             }
+            PlateVehicleAssociation vehicleAssociation = associationByPlateTrack.getOrDefault(
+                    decision.trackId,
+                    PlateVehicleAssociation.unassigned("missing_plate_track_association")
+            );
+            if (vehicleAssociation.assigned()
+                    && decision.recognize
+                    && trackResult != null) {
+                plateEntityBinder.updateRegistration(
+                        vehicleAssociation,
+                        new PlateTextConsensus(
+                                trackResult.text,
+                                (float) trackResult.confidence,
+                                trackResult.observations,
+                                trackResult.stable
+                        ),
+                        SystemClock.elapsedRealtimeNanos()
+                );
+            }
             plateObservations.add(new PlateObservation(
                     decision.trackId,
+                    vehicleAssociation,
+                    workKindByPlateTrack.getOrDefault(
+                            decision.trackId, MtWorkKind.FULL_FRAME
+                    ),
+                    workReasonByPlateTrack.getOrDefault(
+                            decision.trackId, MtReason.UNKNOWN
+                    ),
                     trace.frameId(),
                     observationBitmap,
                     visibleText,
@@ -1290,7 +1413,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private static void addVehicleDiagnostics(
             List<OverlayItem> overlays,
             List<Detection> vehicles,
-            List<VehicleRoiSelector.Region> selectedRegions,
+            List<VehicleRoi> selectedRois,
             Bitmap frame,
             RoiBudgetPolicy policy
     ) {
@@ -1314,12 +1437,12 @@ final class MobileAlprEngine implements AutoCloseable {
             ));
         }
 
-        int selectedCount = selectedRegions.size();
+        int selectedCount = selectedRois.size();
         String profile = policy == RoiBudgetPolicy.TWO_ROI
                 ? "R2" : policy == RoiBudgetPolicy.ONE_ROI ? "R1" : "R0";
         for (int index = 0; index < selectedCount; index++) {
             overlays.add(roiOverlay(
-                    selectedRegions.get(index),
+                    selectedRois.get(index),
                     frame,
                     String.format(
                             Locale.ROOT,
@@ -1330,6 +1453,26 @@ final class MobileAlprEngine implements AutoCloseable {
                     )
             ));
         }
+    }
+
+    private static OverlayItem roiOverlay(
+            VehicleRoi roi,
+            Bitmap frame,
+            String label
+    ) {
+        return new OverlayItem(
+                OverlayItem.Kind.VEHICLE_ROI,
+                new RectF(
+                        roi.left / (float) frame.getWidth(),
+                        roi.top / (float) frame.getHeight(),
+                        roi.right / (float) frame.getWidth(),
+                        roi.bottom / (float) frame.getHeight()
+                ),
+                Collections.emptyList(),
+                label,
+                0L,
+                false
+        );
     }
 
     private static OverlayItem roiOverlay(
@@ -1564,23 +1707,22 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         trace.putCount("vehicle_tracks_predicted", predictedTracks);
 
-        List<VehicleRoiSelector.Region> regions =
-                VehicleRoiSelector.select(
-                        diagnosticVehicles,
+        List<VehicleRoi> rois =
+                VehicleRoiSelector.selectTrackedCandidates(
+                        trackingFrame.candidates,
                         frame.getWidth(),
                         frame.getHeight(),
                         roiBudgetPolicy.maximumRegions(),
-                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
-                        vehicleOutputSpec.iouThreshold()
+                        rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN
                 );
         trace.putCount(
                 "vehicle_regions_selected",
-                regions.size()
+                rois.size()
         );
         android.util.Log.d(
                 "ALPR_MP",
                 "MP detections=" + vehicles.size()
-                        + ", regions=" + regions.size()
+                        + ", regions=" + rois.size()
                         + ", policy=" + roiBudgetPolicy.wireName()
                         + ", maxRegions=" + roiBudgetPolicy.maximumRegions()
                         + ", confThreshold=" + vehicleOutputSpec.confidenceThreshold()
@@ -1594,10 +1736,10 @@ final class MobileAlprEngine implements AutoCloseable {
         for (Detection vehicle : vehicles) {
             maximumConfidence = Math.max(maximumConfidence, vehicle.confidence);
         }
-        for (VehicleRoiSelector.Region region : regions) totalArea += region.area();
+        for (VehicleRoi roi : rois) totalArea += roi.area();
         trace.stop("vehicle_postprocess");
         if (maximumConfidence > 0.0) trace.putConfidence("vehicle", maximumConfidence);
-        if (!regions.isEmpty()) {
+        if (!rois.isEmpty()) {
             trace.putConfidence(
                     "vehicle_roi_area_ratio",
                     Math.min(1.0, totalArea / (double) ((long) frame.getWidth() * frame.getHeight()))
@@ -1605,7 +1747,7 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         return new VehicleDetectionResult(
                 diagnosticVehicles,
-                regions
+                rois
         );
     }
 
@@ -1618,14 +1760,13 @@ final class MobileAlprEngine implements AutoCloseable {
         cachedVehicleDetections.addAll(trackedVehicleDetections(
                 trackingFrame.candidates, frame
         ));
-        cachedVehicleRegions.clear();
-        cachedVehicleRegions.addAll(VehicleRoiSelector.select(
-                cachedVehicleDetections,
+        cachedVehicleRois.clear();
+        cachedVehicleRois.addAll(VehicleRoiSelector.selectTrackedCandidates(
+                trackingFrame.candidates,
                 frame.getWidth(),
                 frame.getHeight(),
                 roiBudgetPolicy.maximumRegions(),
-                rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
-                vehicleOutputSpec.iouThreshold()
+                rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN
         ));
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
         trace.putCount("vehicle_tracks_predicted", trackingFrame.candidates.size());
@@ -1633,6 +1774,87 @@ final class MobileAlprEngine implements AutoCloseable {
                 "vehicle_entities_active",
                 vehicleTrackingCoordinator.repository().activeEntities().size()
         );
+    }
+
+    private PlateVehicleAssociation associatePlate(
+            Detection plate,
+            VehicleRoi directRoi,
+            MtWorkKind workKind,
+            TargetSnapshot target,
+            Bitmap frame
+    ) {
+        if (directRoi != null) return PlateVehicleAssociation.direct(directRoi);
+        if (workKind == MtWorkKind.TARGET_ROI
+                || workKind == MtWorkKind.TARGET_ROI_EXPANDED) {
+            VehicleEntity entity = target == null ? null
+                    : vehicleTrackingCoordinator.repository().findByPlateTrackId(
+                            target.trackId
+                    );
+            if (entity != null) {
+                return PlateVehicleAssociation.direct(
+                        entity.entityId(),
+                        entity.vehicleTrackId(),
+                        "target_session_entity"
+                );
+            }
+            return PlateVehicleAssociation.unassigned("target_without_entity");
+        }
+        if (workKind == MtWorkKind.FULL_FRAME) {
+            return plateVehicleAssociator.associate(
+                    plate,
+                    frame.getWidth(),
+                    frame.getHeight(),
+                    vehicleTrackingCoordinator.latestFrame().candidates
+            );
+        }
+        return PlateVehicleAssociation.unassigned("unsupported_mt_work_kind");
+    }
+
+    private static void markPlateWork(
+            List<Detection> detections,
+            VehicleRoi vehicleRoi,
+            MtWorkKind workKind,
+            MtReason reason,
+            Map<Detection, VehicleRoi> vehicleRoiByPlate,
+            Map<Detection, MtWorkKind> workKindByPlate,
+            Map<Detection, MtReason> workReasonByPlate
+    ) {
+        for (Detection detection : detections) {
+            if (vehicleRoi != null) vehicleRoiByPlate.put(detection, vehicleRoi);
+            workKindByPlate.put(detection, workKind);
+            workReasonByPlate.put(detection, reason);
+        }
+    }
+
+    private static MtReason mtReason(String schedulerReason) {
+        if (schedulerReason == null) return MtReason.UNKNOWN;
+        String reason = schedulerReason.toLowerCase(Locale.ROOT);
+        if (reason.contains("periodic")) return MtReason.PERIODIC_TARGET_REFRESH;
+        if (reason.contains("degraded")) return MtReason.TRACKER_DEGRADED;
+        if (reason.contains("lost") || reason.contains("invalid")) {
+            return MtReason.TRACKER_LOST;
+        }
+        if (reason.contains("deferred")) return MtReason.DEFERRED_FULL_FRAME_FALLBACK;
+        if (reason.contains("scene") || reason.contains("recovery")) {
+            return MtReason.SCENE_RECOVERY;
+        }
+        if (reason.contains("vehicle_roi") || reason.contains("searching")) {
+            return MtReason.SEARCHING;
+        }
+        return MtReason.UNKNOWN;
+    }
+
+    private static NormalizedQuad normalizedQuad(
+            List<Point2> corners,
+            Bitmap frame
+    ) {
+        if (corners == null || corners.size() != 4) return null;
+        float[] points = new float[8];
+        for (int index = 0; index < 4; index++) {
+            points[index * 2] = corners.get(index).x / Math.max(1f, frame.getWidth());
+            points[index * 2 + 1] = corners.get(index).y / Math.max(1f, frame.getHeight());
+        }
+        return new NormalizedQuad(points);
     }
 
     private static NormalizedBounds normalizedVehicleBounds(Detection vehicle, Bitmap frame) {
