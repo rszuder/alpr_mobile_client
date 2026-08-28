@@ -20,6 +20,7 @@ import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
+import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.VehicleEntity;
@@ -173,6 +174,8 @@ public final class AlprPipeline {
     private volatile boolean cameraMoving;
     private volatile boolean motionSensorAvailable;
     private volatile float angularMotionMagnitude;
+    private volatile VehicleContinuityEvidence lastReacquireVehicleEvidence =
+            VehicleContinuityEvidence.empty();
     private volatile boolean cameraTransformInProgress;
     private volatile float currentCameraZoomRatio = 1f;
     private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
@@ -482,6 +485,7 @@ public final class AlprPipeline {
                         "engine_total"
                 );
             }
+            handleSoftReacquireReport(engine.consumeSoftReacquireReport());
             trace.putAttribute(
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -713,6 +717,7 @@ public final class AlprPipeline {
             } finally {
                 trace.stop("engine_total");
             }
+            handleSoftReacquireReport(engine.consumeSoftReacquireReport());
             trace.putAttribute(
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -1196,6 +1201,11 @@ public final class AlprPipeline {
     }
 
     private VehicleContinuityEvidence currentVehicleEvidence() {
+        if (sceneTransitionCoordinator.snapshot().state
+                == com.example.alpr_v1.continuity.SceneContinuityState.REACQUIRING
+                && lastReacquireVehicleEvidence.entitiesBefore > 0) {
+            return lastReacquireVehicleEvidence;
+        }
         VehicleTrackingFrame frame = vehicleTrackingCoordinator.latestFrame();
         int entities = frame.candidates.size();
         if (entities == 0) return VehicleContinuityEvidence.empty();
@@ -1226,6 +1236,22 @@ public final class AlprPipeline {
         );
     }
 
+    private void handleSoftReacquireReport(SoftReacquireReport report) {
+        if (report == null || !report.attempted) return;
+        lastReacquireVehicleEvidence = report.vehicles;
+        if (report.targetRecovered) {
+            sceneTransitionCoordinator.onSoftReacquireResult(
+                    SoftReacquireResult.TARGET_RECOVERED,
+                    System.nanoTime()
+            );
+        } else if (report.activeTargetLost) {
+            sceneTransitionCoordinator.onSoftReacquireResult(
+                    SoftReacquireResult.ACTIVE_TARGET_LOST,
+                    System.nanoTime()
+            );
+        }
+    }
+
     private boolean shouldSkipHeavyInference(SceneTransitionDecision decision) {
         if (decision == null) return false;
         return decision.action == SceneTransitionAction.HARD_RESET
@@ -1246,6 +1272,7 @@ public final class AlprPipeline {
         }
 
         if (decision.action == SceneTransitionAction.HARD_RESET) {
+            lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             trackingResetRequested = true;
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
                     sceneTransitionCoordinator.stamp(System.nanoTime())
@@ -1261,6 +1288,7 @@ public final class AlprPipeline {
             }
             frameGate.requestImmediateFrame();
         } else if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
+            lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             if (engine != null) engine.releaseFocusedTarget(decision.reason);
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
                     sceneTransitionCoordinator.stamp(System.nanoTime())

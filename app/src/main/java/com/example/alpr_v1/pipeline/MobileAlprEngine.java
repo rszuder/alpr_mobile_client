@@ -7,6 +7,7 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.domain.NormalizedQuad;
@@ -113,6 +114,14 @@ final class MobileAlprEngine implements AutoCloseable {
     private volatile String continuityReason = "";
     private volatile SceneHandlingMode sceneHandlingMode =
             SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+    private boolean continuityFreshMpRequired;
+    private long continuityReacquireStartedNanos;
+    private long continuityActiveEntityId;
+    private boolean continuityReacquireActive;
+    private final Set<Long> continuityEntitiesBefore = new HashSet<>();
+    private SoftReacquireReport pendingSoftReacquireReport = SoftReacquireReport.none();
+    private VehicleContinuityEvidence latestSoftReacquireVehicles =
+            VehicleContinuityEvidence.empty();
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -260,6 +269,7 @@ final class MobileAlprEngine implements AutoCloseable {
         resetSceneDependentState();
         sceneChangeDetector.reset();
         continuitySoftHold = false;
+        continuityReacquireActive = false;
         continuityReason = reason == null ? "" : reason;
     }
 
@@ -281,13 +291,63 @@ final class MobileAlprEngine implements AutoCloseable {
         continuityReason = reason == null ? "" : reason;
         cachedVehicleRois.clear();
         cachedVehicleDetections.clear();
+        lastVehicleDetectionFrame = Long.MIN_VALUE;
+        continuityFreshMpRequired = true;
+        continuityReacquireActive = true;
+        continuityReacquireStartedNanos = SystemClock.elapsedRealtimeNanos();
+        continuityEntitiesBefore.clear();
+        for (VehicleCandidate candidate : vehicleTrackingCoordinator.latestFrame().candidates) {
+            continuityEntitiesBefore.add(candidate.entityId);
+        }
+        VehicleEntity focused = targetSnapshot == null
+                ? null
+                : vehicleTrackingCoordinator.repository()
+                .findByPlateTrackId(targetSnapshot.trackId);
+        continuityActiveEntityId = focused == null ? 0L : focused.entityId();
+        pendingSoftReacquireReport = SoftReacquireReport.none();
+        latestSoftReacquireVehicles = VehicleContinuityEvidence.empty();
+        trackCoordinator.reset();
+        mtInferenceScheduler.reset();
         mtInferenceScheduler.forceRefresh("continuity_soft_reacquire");
     }
 
     void releaseFocusedTarget(String reason) {
+        if (continuityActiveEntityId > 0L
+                && vehicleTrackingCoordinator.repository().get(continuityActiveEntityId)
+                != null) {
+            vehicleTrackingCoordinator.repository().markActiveTarget(
+                    continuityActiveEntityId,
+                    false
+            );
+        }
         targetSnapshot = TargetSnapshot.searching();
         autoZoomTargetLock.clear();
+        continuityActiveEntityId = 0L;
+        continuityReacquireActive = false;
         continuityReason = reason == null ? "" : reason;
+    }
+
+    SoftReacquireReport consumeSoftReacquireReport() {
+        SoftReacquireReport report = pendingSoftReacquireReport;
+        if (continuityReacquireActive
+                && !report.activeTargetLost
+                && continuityActiveEntityId > 0L) {
+            VehicleEntity entity = vehicleTrackingCoordinator.repository().get(
+                    continuityActiveEntityId
+            );
+            boolean freshMt = entity != null
+                    && entity.lastMtNanos() >= continuityReacquireStartedNanos
+                    && entity.plateTrackId() != null;
+            if (freshMt) {
+                report = new SoftReacquireReport(
+                        true, true, false, latestSoftReacquireVehicles
+                );
+                continuityFreshMpRequired = false;
+                continuityReacquireActive = false;
+            }
+        }
+        pendingSoftReacquireReport = SoftReacquireReport.none();
+        return report;
     }
 
     void setRapidCameraMotion(boolean rapid) {
@@ -468,6 +528,7 @@ final class MobileAlprEngine implements AutoCloseable {
             );
         }
         boolean trackedGeometryAvailable = !hardSceneBoundary
+                && !continuityReacquireActive
                 && liveTarget.trackId > 0L
                 && liveTarget.overlayItem != null;
         boolean anyTargetGeometry = liveExecution
@@ -547,8 +608,21 @@ final class MobileAlprEngine implements AutoCloseable {
             if (refreshVehicles) {
                 VehicleDetectionResult vehicleResult =
                         detectVehicleRegions(frame, trace, sourceTimestampNanos);
+                if (continuityFreshMpRequired) {
+                    recordFreshMpReassociation(
+                            vehicleTrackingCoordinator.latestFrame(),
+                            SystemClock.elapsedRealtimeNanos()
+                    );
+                    continuityFreshMpRequired = false;
+                }
                 cachedVehicleRois.clear();
                 cachedVehicleRois.addAll(vehicleResult.selectedRois);
+                if (continuityReacquireActive && continuityActiveEntityId > 0L) {
+                    cachedVehicleRois.sort((left, right) -> Boolean.compare(
+                            right.entityId == continuityActiveEntityId,
+                            left.entityId == continuityActiveEntityId
+                    ));
+                }
                 cachedVehicleDetections.clear();
                 cachedVehicleDetections.addAll(vehicleResult.vehicles);
                 lastVehicleDetectionFrame = trace.frameId();
@@ -1509,6 +1583,20 @@ final class MobileAlprEngine implements AutoCloseable {
         return confirmedRawChange
                 && !cameraTransformInProgress
                 && mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+    }
+
+    private void recordFreshMpReassociation(
+            VehicleTrackingFrame frame,
+            long nowNanos
+    ) {
+        pendingSoftReacquireReport = SoftReacquireReport.fromFreshMp(
+                continuityEntitiesBefore,
+                continuityActiveEntityId,
+                frame,
+                continuityReacquireStartedNanos,
+                nowNanos
+        );
+        latestSoftReacquireVehicles = pendingSoftReacquireReport.vehicles;
     }
 
     private void recordSchedulerDecision(

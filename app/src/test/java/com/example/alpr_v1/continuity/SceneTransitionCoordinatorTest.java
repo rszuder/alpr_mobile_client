@@ -126,6 +126,24 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void successfulFreshReacquireReturnsToStableWithoutSceneReset() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(unexplainedScene(1L), 1_000L);
+
+        coordinator.onSoftReacquireResult(
+                SoftReacquireResult.TARGET_RECOVERED,
+                2_000L
+        );
+
+        SceneContinuitySnapshot snapshot = coordinator.snapshot();
+        assertEquals(SceneContinuityState.STABLE, snapshot.state);
+        assertEquals(0L, snapshot.sceneGeneration);
+        assertFalse(snapshot.finalizationSuspended);
+    }
+
+    @Test
     public void structuralEventBypassesDynamicRecovery() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
