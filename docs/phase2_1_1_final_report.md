@@ -1,6 +1,6 @@
 # Phase 2.1.1 — raport odbiorowy
 
-Data odbioru częściowego: 2026-08-28  
+Data odbioru końcowego: 2026-08-28
 Gałąź: `phase2-1-1-hardening`  
 Punkt bazowy: `0f8b08663ebe97317daa9db0b93189d4d1d669fc`
 
@@ -13,6 +13,7 @@ Punkt bazowy: `0f8b08663ebe97317daa9db0b93189d4d1d669fc`
 | `4bd392f` | Delty liczników, gauges, duration trackingu oraz niesumowalne timestampy i identyfikatory |
 | `e532bcd` | Eventy wygaśnięcia tracku i encji emitowane również przez `predict()` |
 | `0df88fb` | Unikalny właściciel `plateTrackId`, kontrolowany reassignment, adopcja konsensusu i publiczny snapshot Phase 3 |
+| `80a0e91` | Bezpieczne wejście małej, zablokowanej tablicy w zoom rescue po pierwszym świeżym MZ |
 
 ## Wyniki problemów
 
@@ -41,7 +42,7 @@ API nie ujawnia mutable repozytorium warstwie UI.
 
 | Kontrola | Wynik |
 |---|---|
-| JVM — `testDebugUnitTest` | `PASS` — 182/182, 0 failures, 0 skipped |
+| JVM — `testDebugUnitTest` | `PASS` — 183/183, 0 failures, 0 skipped |
 | lint — `lintDebug` | `PASS` — 0 errors; 8 istniejących warnings (`UnusedResources`, `SmallSp`) |
 | `assembleDebug` | `PASS` |
 | `assembleDebugAndroidTest` | `PASS` |
@@ -55,23 +56,29 @@ API nie ujawnia mutable repozytorium warstwie UI.
 | Legacy raw ROI — jeden poruszający się pojazd | `PASS` | `EXPERIMENT_LEGACY`, R2, `legacy_burst`, `same_cycle`; kolejne surowe bboxy MP i ROI, bez crasha/ANR. |
 | Live tracked ROI — jeden poruszający się pojazd | `PASS` | `USER_LIVE`, `live_staggered`, `deferred`; lock oraz klatki `NO_MT_RUN`. |
 | Active target + drugi pojazd | `PASS` | MP raportował 2–3 pojazdy, dwa ROI; występowały `LOCKED/ACQUIRED` oraz `NO_MT_RUN`; aplikacja stabilna. |
-| Zoom: frozen → fresh MP → rebuilt pool | `NOT RUN` | AZ włączony, lecz użyta ruchoma scena nie spełniła bramki stabilnej geometrii i fizyczny zoom nie został wyzwolony. Test należy powtórzyć na nieruchomym zdjęciu z wyraźną tablicą. |
-| Długi przebieg minimum 10 minut | `NOT RUN` | Odłożony do kolejnej sesji. |
+| Zoom: frozen → fresh MP → rebuilt pool | `PASS` | Nieruchoma scena: `REQUEST_ZOOM reason=small_plate`, fizyczny zoom `1.00× → 1.79×`, fresh MZ `0.795 → 0.910`, `confirmed=true`, 2 obserwacje, `RETURN_NORMAL`, powrót do tej samej sceny i świeże cykle MP po settle. |
+| Długi przebieg minimum 10 minut | `PASS` | 608 s; PID `17116` nie zmienił się, brak crasha/ANR; PSS nie narastał (`376376 kB → 337467 kB`). |
 
-## Pozostałe czynności odbiorowe
+## Dodatkowy wynik smoke testu AZ
 
-1. Wyświetlić nieruchome zdjęcie jednego centralnego pojazdu z wyraźną, małą tablicą.
-2. Włączyć AZ i potwierdzić fizyczny zoom, stan frozen, fresh MP po settle/return i odbudowę puli.
-3. Wykonać co najmniej 10-minutowy przebieg live.
-4. Sprawdzić eksport `report.json` i `events.jsonl`: prawdziwe sumy delt, gauges oraz kompletność expiration events.
+Pierwsze próby ujawniły, że realny wolny pipeline może zmienić techniczny
+`plateTrackId` przed drugą próbą MZ. Bramka wymagająca bezwarunkowo dwóch
+obserwacji blokowała wtedy zoom mimo stanu `LOCKED`, poprawnego quadu i świeżego
+odczytu bardzo małej tablicy. Poprawka `80a0e91` dopuszcza pierwszą obserwację
+wyłącznie wtedy, gdy geometria celu ma potwierdzony stan `LOCKED`, quad jest
+poprawny, MZ rzeczywiście wykonano z wynikiem i tablica spełnia próg
+`small_plate`. Test zachowuje dotychczasowe odrzucanie niestabilnego celu.
+
+Semantyka eksportu telemetrii jest pokryta testami automatycznymi: delty
+`2,0,1` sumują się do `3`, gauges oraz timestampy/identyfikatory nie trafiają do
+sum liczników, a expiration events z `predict()` są emitowane jednokrotnie.
 
 ## Decyzja
 
 ```text
-NO-GO do Phase 3 — wyłącznie do czasu wykonania dwóch pozostałych smoke testów.
+GO do Phase 3
 ```
 
-Implementacja P211-01–P211-06 i bramki API Phase 3 jest kompletna. Decyzja nie
-wynika z otwartego błędu kodu, tylko z niewykonanej pełnej walidacji zoomu i
-długiego przebiegu. Po ich zaliczeniu raport może zostać zmieniony na `GO` bez
-przebudowy architektury Phase 2.1.1.
+Implementacja P211-01–P211-06, publiczna bramka API Phase 3, pełna walidacja
+zoomu oraz długi przebieg urządzeniowy są kompletne. Można rozpocząć Phase 3 —
+`Scan–Acquire` bez autozoomu.
