@@ -85,6 +85,10 @@ import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.pipeline.TargetSnapshot;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
+import com.example.alpr_v1.continuity.SceneTransitionAction;
+import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
@@ -236,12 +240,15 @@ public final class MainActivity extends AppCompatActivity {
                                 final long sceneGeneration = uiSceneGeneration.get();
                                 final long transformGeneration =
                                         uiCameraTransformGeneration.get();
+                                final ContinuityStamp continuityStamp =
+                                        currentContinuityStamp(System.nanoTime());
                                 previewBitmap = null;
                                 previewTrackingExecutor.execute(() ->
                                         processPreviewTrackingFrame(
                                                 ownedBitmap,
                                                 sceneGeneration,
-                                                transformGeneration
+                                                transformGeneration,
+                                                continuityStamp
                                         )
                                 );
                             } else {
@@ -269,13 +276,16 @@ public final class MainActivity extends AppCompatActivity {
     private void processPreviewTrackingFrame(
             Bitmap previewBitmap,
             long sceneGeneration,
-            long transformGeneration
+            long transformGeneration,
+            ContinuityStamp continuityStamp
     ) {
         boolean bitmapHandedToUi = false;
         try {
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
-                    || transformGeneration != uiCameraTransformGeneration.get()) {
+                    || transformGeneration != uiCameraTransformGeneration.get()
+                    || (pipeline != null
+                    && !pipeline.isCurrentContinuityStamp(continuityStamp))) {
                 return;
             }
 
@@ -337,8 +347,9 @@ public final class MainActivity extends AppCompatActivity {
                     ? null : trackingFrame.overlayItems;
 
             if (trackingFrame != null && pipeline != null) {
-                pipeline.setTargetSnapshot(
-                        targetStateMachine.onTrackingFrame(trackingFrame)
+                pipeline.setTargetSnapshotIfCurrent(
+                        targetStateMachine.onTrackingFrame(trackingFrame),
+                        continuityStamp
                 );
             }
 
@@ -355,6 +366,33 @@ public final class MainActivity extends AppCompatActivity {
                     && cameraMotionMonitor != null
                     && cameraMotionMonitor.isMoving()
                     && autoZoomDynamicFrameGraceCount < 2;
+            boolean trackingLost = trackingFrame != null && trackedItems.isEmpty();
+            boolean continuityChange = changed || trackingLost;
+            float evidenceScore = trackingLost ? 1f : Math.max(
+                    scene.score,
+                    Math.max(anchorResult.score, zoomedAnchorResult.score)
+            );
+            float evidenceFraction = trackingLost ? 1f : Math.max(
+                    scene.changedFraction,
+                    Math.max(
+                            anchorResult.changedFraction,
+                            zoomedAnchorResult.changedFraction
+                    )
+            );
+            SceneTransitionDecision continuityDecision = pipeline == null
+                    ? null
+                    : pipeline.onPreviewSceneEvidence(
+                    continuityStamp.sourceTimestampNanos,
+                    continuityChange,
+                    evidenceScore,
+                    evidenceFraction,
+                    scene.brightnessDelta,
+                    Math.max(anchorResult.score, zoomedAnchorResult.score),
+                    Math.max(
+                            anchorResult.changedFraction,
+                            zoomedAnchorResult.changedFraction
+                    )
+            );
 
             bitmapHandedToUi = true;
             runOnUiThread(() -> {
@@ -365,7 +403,20 @@ public final class MainActivity extends AppCompatActivity {
                             != uiCameraTransformGeneration.get()) {
                         return;
                     }
-                    if (changed && (targetStillTracked || shortMotionGrace)) {
+                    if (continuityDecision != null
+                            && (continuityDecision.action
+                            != SceneTransitionAction.NONE
+                            || continuityDecision.nextState
+                            != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
+                        renderPreviewContinuityDecision(
+                                continuityDecision,
+                                evidenceScore,
+                                evidenceFraction,
+                                trackedItems
+                        );
+                    } else if (changed && (targetStillTracked || shortMotionGrace
+                            || continuityDecision != null
+                            && continuityDecision.assessment.focusedTargetPreserved)) {
                         autoZoomDynamicFrameGraceCount = targetStillTracked
                                 ? 0 : autoZoomDynamicFrameGraceCount + 1;
                         previewSceneDetector.reset();
@@ -385,13 +436,16 @@ public final class MainActivity extends AppCompatActivity {
                                 Math.max(scene.changedFraction, Math.max(
                                         anchorResult.changedFraction,
                                         zoomedAnchorResult.changedFraction
-                                ))
+                                )),
+                                continuityDecision == null
                         );
                     } else {
                         autoZoomDynamicFrameGraceCount = 0;
                         if (trackedItems != null) {
                             if (trackedItems.isEmpty()) {
-                                invalidateUiForLostPreviewTracking();
+                                if (continuityDecision == null) {
+                                    invalidateUiForLostPreviewTracking();
+                                }
                             } else {
                                 presentTrackedPreviewOverlay(trackedItems);
                             }
@@ -413,6 +467,17 @@ public final class MainActivity extends AppCompatActivity {
         if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
     }
 
+    private ContinuityStamp currentContinuityStamp(long sourceTimestampNanos) {
+        if (pipeline == null) return ContinuityStamp.initial(sourceTimestampNanos);
+        SceneContinuitySnapshot snapshot = pipeline.sceneContinuitySnapshot();
+        return new ContinuityStamp(
+                snapshot.sceneGeneration,
+                snapshot.visualEpoch,
+                snapshot.cameraTransformGeneration,
+                sourceTimestampNanos
+        );
+    }
+
     private long previewScenePollDelay() {
         return directLumaTrackingFresh() ? 260L : PREVIEW_SCENE_POLL_MS;
     }
@@ -429,6 +494,9 @@ public final class MainActivity extends AppCompatActivity {
                 || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending) return;
         final long sceneGeneration = uiSceneGeneration.get();
         final long transformGeneration = uiCameraTransformGeneration.get();
+        final ContinuityStamp continuityStamp = currentContinuityStamp(
+                frame.timestampNanos
+        );
         lastDirectLumaFrameNanos = System.nanoTime();
         long trackingStartedNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
@@ -443,6 +511,8 @@ public final class MainActivity extends AppCompatActivity {
                         - trackingStartedNanos
         );
         if (trackingFrame == null) return;
+        if (pipeline != null
+                && !pipeline.isCurrentContinuityStamp(continuityStamp)) return;
         float maximumQuality = 0f;
         int maximumInliers = 0;
         for (com.example.alpr_v1.tracking.TrackedPlate plate
@@ -463,17 +533,41 @@ public final class MainActivity extends AppCompatActivity {
                 )
         );
         if (pipeline != null) {
-            pipeline.setTargetSnapshot(
-                    targetStateMachine.onTrackingFrame(trackingFrame)
+            pipeline.setTargetSnapshotIfCurrent(
+                    targetStateMachine.onTrackingFrame(trackingFrame),
+                    continuityStamp
             );
         }
         List<OverlayItem> trackedItems = trackingFrame.overlayItems;
+        boolean trackingLost = trackedItems.isEmpty();
+        SceneTransitionDecision lumaContinuityDecision = pipeline == null
+                ? null
+                : pipeline.onPreviewSceneEvidence(
+                frame.timestampNanos,
+                trackingLost,
+                trackingLost ? 1f : 0f,
+                trackingLost ? 1f : 0f,
+                0f,
+                trackingLost ? 1f : 0f,
+                trackingLost ? 1f : 0f
+        );
         runOnUiThread(() -> {
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
                     || transformGeneration != uiCameraTransformGeneration.get()
                     || cameraTransformInProgress) return;
-            if (trackedItems.isEmpty()) {
+            if (lumaContinuityDecision != null
+                    && (lumaContinuityDecision.action
+                    != SceneTransitionAction.NONE
+                    || lumaContinuityDecision.nextState
+                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
+                renderPreviewContinuityDecision(
+                        lumaContinuityDecision,
+                        trackingLost ? 1f : 0f,
+                        trackingLost ? 1f : 0f,
+                        trackedItems
+                );
+            } else if (trackedItems.isEmpty()) {
                 invalidateUiForLostPreviewTracking();
             } else {
                 presentTrackedPreviewOverlay(trackedItems);
@@ -2027,9 +2121,101 @@ public final class MainActivity extends AppCompatActivity {
         invalidateUiForPreviewSceneChange(scene.score, scene.changedFraction);
     }
 
+    private void renderPreviewContinuityDecision(
+            SceneTransitionDecision decision,
+            float sceneScore,
+            float changedFraction,
+            List<OverlayItem> trackedItems
+    ) {
+        if (decision == null) return;
+        SceneTransitionAction action = decision.action;
+        if (action == SceneTransitionAction.HARD_RESET) {
+            invalidateUiForPreviewSceneChange(sceneScore, changedFraction, false);
+            return;
+        }
+        if (action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
+            targetStateMachine.reset();
+            previewPlateTracker.reset();
+            List<OverlayItem> vehicles = new ArrayList<>();
+            for (OverlayItem item : currentOverlayItems()) {
+                if (item.kind != OverlayItem.Kind.PLATE) vehicles.add(item);
+            }
+            applyVisibleOverlay(
+                    vehicles,
+                    latestOverlaySourceWidth,
+                    latestOverlaySourceHeight
+            );
+            livePresentation.showState(
+                    LivePresentationController.State.SEARCHING,
+                    "Cel utracony — kontynuowanie skanowania"
+            );
+            return;
+        }
+
+        boolean holding = action == SceneTransitionAction.SOFT_HOLD
+                || decision.nextState
+                == com.example.alpr_v1.continuity.SceneContinuityState.MOTION_HOLD;
+        if (holding) {
+            if (trackedItems != null && !trackedItems.isEmpty()) {
+                presentTrackedPreviewOverlay(trackedItems);
+            }
+            markVehicleOverlaysPredicted();
+            livePresentation.showState(
+                    LivePresentationController.State.RECOVERING,
+                    "Ruch kamery — utrzymywanie celu"
+            );
+            return;
+        }
+
+        boolean reacquiring = action == SceneTransitionAction.SOFT_REACQUIRE
+                || decision.nextState
+                == com.example.alpr_v1.continuity.SceneContinuityState.REACQUIRING;
+        if (reacquiring) {
+            if (trackedItems != null && !trackedItems.isEmpty()) {
+                presentTrackedPreviewOverlay(trackedItems);
+            }
+            livePresentation.showState(
+                    LivePresentationController.State.RECOVERING,
+                    "Ponowne dopasowanie pojazdu"
+            );
+        }
+    }
+
+    private void markVehicleOverlaysPredicted() {
+        List<OverlayItem> predicted = new ArrayList<>();
+        for (OverlayItem item : currentOverlayItems()) {
+            if (item.kind == OverlayItem.Kind.VEHICLE
+                    || item.kind == OverlayItem.Kind.VEHICLE_ROI) {
+                predicted.add(new OverlayItem(
+                        item.kind,
+                        item.normalizedBounds,
+                        item.normalizedKeypoints,
+                        item.label,
+                        item.trackId,
+                        true
+                ));
+            } else {
+                predicted.add(item);
+            }
+        }
+        applyVisibleOverlay(
+                predicted,
+                latestOverlaySourceWidth,
+                latestOverlaySourceHeight
+        );
+    }
+
     private void invalidateUiForPreviewSceneChange(
             float sceneScore,
             float changedFraction
+    ) {
+        invalidateUiForPreviewSceneChange(sceneScore, changedFraction, true);
+    }
+
+    private void invalidateUiForPreviewSceneChange(
+            float sceneScore,
+            float changedFraction,
+            boolean requestPipelineReset
     ) {
 
         if (isAutoZoomHoldingMemory()) {
@@ -2047,9 +2233,11 @@ public final class MainActivity extends AppCompatActivity {
         long generation =
                 uiSceneGeneration.incrementAndGet();
 
-        if (pipeline != null) {
+        if (pipeline != null && requestPipelineReset) {
             targetStateMachine.reset();
             pipeline.requestTrackingReset();
+        } else {
+            targetStateMachine.reset();
         }
 
         clearAutoZoomRecognitionMemory();
@@ -3132,6 +3320,9 @@ public final class MainActivity extends AppCompatActivity {
                     );
             if (pipeline != null) {
                 pipeline.setTargetSnapshot(anchoredTarget);
+            }
+            if (anchoredTarget.hasTrack()) {
+                previewSceneAnchorPending = true;
             }
 
             /*

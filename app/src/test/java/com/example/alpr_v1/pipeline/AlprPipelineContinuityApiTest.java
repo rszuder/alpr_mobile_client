@@ -6,6 +6,8 @@ import static org.junit.Assert.assertNotNull;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
+import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SceneTransitionDecision;
 
 import org.junit.Test;
 
@@ -46,6 +48,24 @@ public final class AlprPipelineContinuityApiTest {
                 boolean.class,
                 boolean.class,
                 float.class
+        ));
+        assertEquals(
+                SceneTransitionDecision.class,
+                AlprPipeline.class.getMethod(
+                        "onPreviewSceneEvidence",
+                        long.class,
+                        boolean.class,
+                        float.class,
+                        float.class,
+                        float.class,
+                        float.class,
+                        float.class
+                ).getReturnType()
+        );
+        assertNotNull(AlprPipeline.class.getMethod(
+                "setTargetSnapshotIfCurrent",
+                TargetSnapshot.class,
+                ContinuityStamp.class
         ));
     }
 

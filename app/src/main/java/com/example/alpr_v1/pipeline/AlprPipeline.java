@@ -127,6 +127,7 @@ public final class AlprPipeline {
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator =
             new VehicleTrackingCoordinator();
     private final AtomicLong frameIds = new AtomicLong();
+    private final AtomicLong previewEvidenceIds = new AtomicLong();
     private final AtomicLong sceneGeneration = new AtomicLong();
     private final AtomicLong visualEpoch = new AtomicLong();
     private final AtomicLong hardResetRevision = new AtomicLong();
@@ -1335,7 +1336,7 @@ public final class AlprPipeline {
         reloadRequested = true;
     }
 
-    public void requestTrackingReset() {
+    public synchronized void requestTrackingReset() {
         applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
                 "external_tracking_reset",
                 System.nanoTime()
@@ -1475,16 +1476,14 @@ public final class AlprPipeline {
         if (engine != null) engine.setRapidCameraMotion(rapid);
     }
 
-    public void setSceneHandlingMode(SceneHandlingMode mode) {
+    public synchronized void setSceneHandlingMode(SceneHandlingMode mode) {
         SceneHandlingMode safeMode = mode == null
                 ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
         sceneTransitionCoordinator.setMode(
                 safeMode,
                 System.nanoTime()
         );
-        synchronized (this) {
-            if (engine != null) engine.setSceneHandlingMode(safeMode);
-        }
+        if (engine != null) engine.setSceneHandlingMode(safeMode);
     }
 
     public void setCameraTransformInProgress(boolean inProgress) {
@@ -1495,7 +1494,7 @@ public final class AlprPipeline {
         currentCameraZoomRatio = Math.max(1f, zoomRatio);
     }
 
-    public void setTargetSnapshot(TargetSnapshot snapshot) {
+    public synchronized void setTargetSnapshot(TargetSnapshot snapshot) {
         TargetSnapshot safeSnapshot = snapshot == null
                 ? TargetSnapshot.searching() : snapshot;
         targetSnapshot = safeSnapshot.withContinuityStamp(
@@ -1512,7 +1511,16 @@ public final class AlprPipeline {
         previewTrackingUpdates.incrementAndGet();
     }
 
-    public void requestImmediateTargetRecovery() {
+    public synchronized boolean setTargetSnapshotIfCurrent(
+            TargetSnapshot snapshot,
+            ContinuityStamp sourceStamp
+    ) {
+        if (!isCurrentContinuityStamp(sourceStamp)) return false;
+        setTargetSnapshot(snapshot);
+        return true;
+    }
+
+    public synchronized void requestImmediateTargetRecovery() {
         applySceneTransition(sceneTransitionCoordinator.requestSoftReacquire(
                 "immediate_target_recovery",
                 System.nanoTime()
@@ -1604,6 +1612,58 @@ public final class AlprPipeline {
 
     public SceneContinuitySnapshot sceneContinuitySnapshot() {
         return sceneTransitionCoordinator.snapshot();
+    }
+
+    public synchronized SceneTransitionDecision onPreviewSceneEvidence(
+            long sourceTimestampNanos,
+            boolean rawVisualChange,
+            float rawVisualChangeScore,
+            float changedFraction,
+            float brightnessDelta,
+            float anchorDriftScore,
+            float anchorChangedFraction
+    ) {
+        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
+                new SceneEvidence(
+                        previewEvidenceIds.incrementAndGet(),
+                        Math.max(0L, sourceTimestampNanos),
+                        rawVisualChange,
+                        clamp01(rawVisualChangeScore),
+                        clamp01(changedFraction),
+                        clamp01(brightnessDelta),
+                        clamp01(anchorDriftScore),
+                        clamp01(anchorChangedFraction),
+                        currentTargetEvidence(Math.max(0L, sourceTimestampNanos)),
+                        currentVehicleEvidence(),
+                        new MotionExplanationEvidence(
+                                motionSensorAvailable,
+                                cameraMoving,
+                                rapidCameraMotion,
+                                angularMotionMagnitude,
+                                cameraTransformInProgress,
+                                false,
+                                0f,
+                                0f,
+                                0f,
+                                0f
+                        ),
+                        false,
+                        false,
+                        false,
+                        false
+                ),
+                System.nanoTime()
+        );
+        applySceneTransition(decision);
+        return decision;
+    }
+
+    public boolean isCurrentContinuityStamp(ContinuityStamp stamp) {
+        return stamp != null
+                && continuityGenerationGate.evaluate(
+                sceneTransitionCoordinator.stamp(stamp.sourceTimestampNanos),
+                stamp
+        ) == ContinuityResultDisposition.ACCEPT_ALL;
     }
 
     private void recordVehicleTrackingEvents() {
