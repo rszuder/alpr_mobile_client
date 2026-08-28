@@ -27,7 +27,8 @@ public final class VehicleEntity {
     private long lastSeenNanos;
     private long lastMpNanos;
     private long lastMtNanos;
-    private long lastMzNanos;
+    private long lastFreshMzNanos;
+    private long lastConsensusUpdateNanos;
     private int mtAttempts;
     private int mzAttempts;
     private boolean acquisitionCompleted;
@@ -74,7 +75,12 @@ public final class VehicleEntity {
     public synchronized long lastSeenNanos() { return lastSeenNanos; }
     public synchronized long lastMpNanos() { return lastMpNanos; }
     public synchronized long lastMtNanos() { return lastMtNanos; }
-    public synchronized long lastMzNanos() { return lastMzNanos; }
+    /** Historical accessor retained for callers that mean the last real MZ attempt. */
+    public synchronized long lastMzNanos() { return lastFreshMzNanos; }
+    public synchronized long lastFreshMzNanos() { return lastFreshMzNanos; }
+    public synchronized long lastConsensusUpdateNanos() {
+        return lastConsensusUpdateNanos;
+    }
     public synchronized int mtAttempts() { return mtAttempts; }
     public synchronized int mzAttempts() { return mzAttempts; }
     public synchronized boolean acquisitionCompleted() { return acquisitionCompleted; }
@@ -108,7 +114,10 @@ public final class VehicleEntity {
         mtAttempts++;
         lastMtNanos = Math.max(lastMtNanos, nowNanos);
         lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
-        acquisitionState = EntityAcquisitionState.PLATE_LOCALIZED;
+        acquisitionState = EntityAcquisitionState.advance(
+                acquisitionState,
+                EntityAcquisitionState.PLATE_LOCALIZED
+        );
     }
 
     synchronized void detachPlateTrack(long expectedTrackId) {
@@ -130,16 +139,22 @@ public final class VehicleEntity {
     ) {
         PlateTextConsensus incoming = consensus == null
                 ? PlateTextConsensus.EMPTY : consensus;
-        if (freshMzAttempted) mzAttempts++;
-        lastMzNanos = Math.max(lastMzNanos, nowNanos);
+        if (freshMzAttempted) {
+            mzAttempts++;
+            lastFreshMzNanos = Math.max(lastFreshMzNanos, nowNanos);
+        }
         if (!shouldAdoptConsensus(registration, incoming)) return false;
         registration = incoming;
         registrationSource = source == null
                 ? RegistrationConsensusSource.NONE : source;
+        lastConsensusUpdateNanos = Math.max(lastConsensusUpdateNanos, nowNanos);
         lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
-        acquisitionState = registration.stable
-                ? EntityAcquisitionState.ACQUIRED
-                : EntityAcquisitionState.READING_REGISTRATION;
+        acquisitionState = EntityAcquisitionState.advance(
+                acquisitionState,
+                registration.stable
+                        ? EntityAcquisitionState.READY_TO_FINALIZE
+                        : EntityAcquisitionState.READING_REGISTRATION
+        );
         lockIdentityState = registration.stable
                 ? PersistentLockIdentityState.IDENTIFIED
                 : registration.available()
@@ -181,7 +196,7 @@ public final class VehicleEntity {
     }
 
     synchronized void setAcquisitionState(EntityAcquisitionState state) {
-        acquisitionState = state == null ? EntityAcquisitionState.NEW : state;
+        acquisitionState = EntityAcquisitionState.advance(acquisitionState, state);
         queued = acquisitionState == EntityAcquisitionState.QUEUED;
     }
 

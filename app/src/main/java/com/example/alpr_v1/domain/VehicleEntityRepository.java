@@ -239,17 +239,25 @@ public final class VehicleEntityRepository {
         required(entityId).setSearchMatchState(state);
     }
 
-    public synchronized void markAcquired(long entityId) {
+    public synchronized VehicleEntitySummary finalizeAcquisition(
+            long entityId,
+            long completedAtNanos
+    ) {
         VehicleEntity entity = required(entityId);
         entity.markAcquired();
-        completedByEntityId.put(
-                entityId,
-                new VehicleEntitySummary(entity, entity.lastSeenNanos())
+        VehicleEntitySummary summary = new VehicleEntitySummary(
+                entity,
+                Math.max(entity.lastSeenNanos(), completedAtNanos)
         );
-        byEntityId.remove(entityId);
-        entityIdByVehicleTrack.remove(entity.vehicleTrackId());
-        removePlateOwnership(entity);
+        completedByEntityId.put(entityId, summary);
         trimCompleted();
+        return summary;
+    }
+
+    /** Compatibility wrapper; Scan code should pass its explicit completion time. */
+    public synchronized void markAcquired(long entityId) {
+        VehicleEntity entity = required(entityId);
+        finalizeAcquisition(entityId, entity.lastSeenNanos());
     }
 
     public synchronized int expireOldEntities(long nowNanos, long ttlNanos) {
@@ -259,7 +267,7 @@ public final class VehicleEntityRepository {
                 byEntityId.entrySet().iterator();
         while (iterator.hasNext()) {
             VehicleEntity entity = iterator.next().getValue();
-            if (entity.activeTarget() || entity.acquisitionCompleted()) continue;
+            if (entity.activeTarget()) continue;
             if (nowNanos - entity.lastSeenNanos() > safeTtl
                     && entity.acquisitionState() != EntityAcquisitionState.EXPIRED) {
                 entity.expire();
@@ -313,6 +321,14 @@ public final class VehicleEntityRepository {
                 if (!entity.activeTarget() && !entity.acquisitionCompleted()) {
                     removableId = entry.getKey();
                     break;
+                }
+            }
+            if (removableId == null) {
+                for (Map.Entry<Long, VehicleEntity> entry : byEntityId.entrySet()) {
+                    if (!entry.getValue().activeTarget()) {
+                        removableId = entry.getKey();
+                        break;
+                    }
                 }
             }
             if (removableId == null) {

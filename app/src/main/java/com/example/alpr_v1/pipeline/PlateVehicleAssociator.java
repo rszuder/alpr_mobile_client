@@ -56,6 +56,75 @@ public final class PlateVehicleAssociator {
         );
     }
 
+    /**
+     * Validates a plate found in an expanded vehicle crop against the owner's
+     * original (unexpanded) bounds and every other active entity.
+     */
+    public PlateVehicleAssociation validateDirectRoi(
+            Detection plate,
+            VehicleRoi directRoi,
+            int sourceWidth,
+            int sourceHeight,
+            List<VehicleCandidate> vehicles
+    ) {
+        if (plate == null || directRoi == null
+                || sourceWidth <= 0 || sourceHeight <= 0) {
+            return PlateVehicleAssociation.unassigned("invalid_direct_roi_geometry");
+        }
+        VehicleCandidate owner = directRoi.candidate;
+        float plateX = plate.centerX() / sourceWidth;
+        float plateY = plate.centerY() / sourceHeight;
+        float left = owner.bounds.left;
+        float top = owner.bounds.top;
+        float right = owner.bounds.right;
+        float bottom = owner.bounds.bottom;
+        boolean insideOriginal = plateX >= left && plateX <= right
+                && plateY >= top && plateY <= bottom;
+        if (!insideOriginal) {
+            return PlateVehicleAssociation.unassigned(
+                    "direct_roi_plate_outside_original_vehicle"
+            );
+        }
+        boolean sensibleVerticalRegion = plateY
+                >= top + owner.bounds.height() * 0.30f;
+        if (!sensibleVerticalRegion) {
+            return PlateVehicleAssociation.unassigned(
+                    "direct_roi_plate_outside_sensible_region"
+            );
+        }
+
+        float ownerScore = score(plateX, plateY, owner);
+        float bestOtherScore = Float.NEGATIVE_INFINITY;
+        if (vehicles != null) {
+            for (VehicleCandidate vehicle : vehicles) {
+                if (vehicle == null || vehicle.entityId == owner.entityId) continue;
+                bestOtherScore = Math.max(
+                        bestOtherScore,
+                        score(plateX, plateY, vehicle)
+                );
+            }
+        }
+        if (ownerScore < MIN_ASSOCIATION_SCORE) {
+            return PlateVehicleAssociation.unassigned(
+                    "direct_roi_owner_score_below_threshold"
+            );
+        }
+        if (bestOtherScore >= MIN_ASSOCIATION_SCORE
+                && ownerScore - bestOtherScore < MIN_ASSOCIATION_MARGIN) {
+            return PlateVehicleAssociation.ambiguous(
+                    Math.max(ownerScore, bestOtherScore),
+                    "direct_roi_competing_entity_margin="
+                            + (ownerScore - bestOtherScore)
+            );
+        }
+        return PlateVehicleAssociation.directValidated(
+                owner.entityId,
+                owner.vehicleTrackId,
+                ownerScore,
+                "direct_roi_geometry_validated"
+        );
+    }
+
     private static float score(float plateX, float plateY, VehicleCandidate vehicle) {
         float left = vehicle.bounds.left;
         float top = vehicle.bounds.top;

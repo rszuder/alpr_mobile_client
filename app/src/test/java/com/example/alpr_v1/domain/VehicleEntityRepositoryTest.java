@@ -104,7 +104,7 @@ public class VehicleEntityRepositoryTest {
         repository.markActiveTarget(active.entityId(), true);
         repository.markAcquired(acquired.entityId());
 
-        assertEquals(1, repository.expireOldEntities(1_000L, 100L));
+        assertEquals(2, repository.expireOldEntities(1_000L, 100L));
         assertEquals("best", expiring.bestWidePlateCrop().referenceId);
         assertEquals(EntityAcquisitionState.EXPIRED, expiring.acquisitionState());
         assertFalse(active.acquisitionCompleted());
@@ -164,7 +164,7 @@ public class VehicleEntityRepositoryTest {
         assertSame(second, repository.findByPlateTrackId(77L));
 
         repository.markAcquired(second.entityId());
-        assertNull(repository.findByPlateTrackId(77L));
+        assertSame(second, repository.findByPlateTrackId(77L));
     }
 
     @Test
@@ -204,6 +204,77 @@ public class VehicleEntityRepositoryTest {
                 VehicleEntityRepository.MAX_COMPLETED_ENTITIES,
                 repository.completedEntities().size()
         );
+    }
+
+    @Test
+    public void completedVisibleVehicleKeepsIdentityAndDoesNotCreateSecondRecord() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity original = repository.updateFromMp(
+                41L, VEHICLE, MotionState.STATIONARY, descriptor(1f), 100L
+        );
+
+        VehicleEntitySummary summary = repository.finalizeAcquisition(
+                original.entityId(), 150L
+        );
+        VehicleEntity stillVisible = repository.updateFromMp(
+                41L,
+                new NormalizedBounds(0.12f, 0.2f, 0.72f, 0.8f),
+                MotionState.STATIONARY,
+                descriptor(0.9f),
+                200L
+        );
+
+        assertSame(original, stillVisible);
+        assertEquals(summary.entityId, stillVisible.entityId());
+        assertTrue(stillVisible.acquisitionCompleted());
+        assertEquals(EntityAcquisitionState.ACQUIRED, stillVisible.acquisitionState());
+        assertEquals(1, repository.size());
+        assertEquals(1, repository.completedEntities().size());
+
+        assertEquals(1, repository.expireOldEntities(1_000L, 100L));
+        assertEquals(0, repository.size());
+        assertEquals(1, repository.completedEntities().size());
+    }
+
+    @Test
+    public void acquisitionStateAndMzTimestampsRemainMonotonic() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity entity = repository.create(1L, VEHICLE, null, 10L);
+        repository.markQueued(entity.entityId());
+        repository.markActiveTarget(entity.entityId(), true);
+        repository.attachPlate(entity.entityId(), 71L, plateQuad(), null, 20L);
+        repository.updateRegistration(
+                entity.entityId(),
+                new PlateTextConsensus("A600HV", 0.80f, 2, true),
+                30L,
+                true,
+                RegistrationConsensusSource.FRESH_MZ
+        );
+
+        assertEquals(
+                EntityAcquisitionState.READY_TO_FINALIZE,
+                entity.acquisitionState()
+        );
+        assertEquals(30L, entity.lastFreshMzNanos());
+        assertEquals(30L, entity.lastConsensusUpdateNanos());
+        assertEquals(1, entity.mzAttempts());
+
+        repository.attachPlate(entity.entityId(), 71L, plateQuad(), null, 40L);
+        repository.updateRegistration(
+                entity.entityId(),
+                new PlateTextConsensus("A600HV", 0.90f, 3, true),
+                50L,
+                false,
+                RegistrationConsensusSource.TRACK_MEMORY
+        );
+
+        assertEquals(
+                EntityAcquisitionState.READY_TO_FINALIZE,
+                entity.acquisitionState()
+        );
+        assertEquals(30L, entity.lastFreshMzNanos());
+        assertEquals(50L, entity.lastConsensusUpdateNanos());
+        assertEquals(1, entity.mzAttempts());
     }
 
     private static AppearanceDescriptor descriptor(float value) {

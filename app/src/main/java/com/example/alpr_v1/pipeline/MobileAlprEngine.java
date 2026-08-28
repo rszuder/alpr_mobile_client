@@ -996,6 +996,10 @@ final class MobileAlprEngine implements AutoCloseable {
             associationByPlateTrack.put(decision.trackId, association);
             trace.putAttribute("plate_association_status", association.status.name());
             trace.putAttribute("plate_association_reason", association.reason);
+            trace.putAttribute(
+                    "plate_association_geometry_validated",
+                    String.valueOf(association.geometryValidated)
+            );
             trace.putConfidence("plate_association_confidence", association.confidence);
         }
 
@@ -1990,7 +1994,15 @@ final class MobileAlprEngine implements AutoCloseable {
             TargetSnapshot target,
             Bitmap frame
     ) {
-        if (directRoi != null) return PlateVehicleAssociation.direct(directRoi);
+        if (directRoi != null) {
+            return plateVehicleAssociator.validateDirectRoi(
+                    plate,
+                    directRoi,
+                    frame.getWidth(),
+                    frame.getHeight(),
+                    vehicleTrackingCoordinator.latestFrame().candidates
+            );
+        }
         if (workKind == MtWorkKind.TARGET_ROI
                 || workKind == MtWorkKind.TARGET_ROI_EXPANDED) {
             VehicleEntity entity = target == null ? null
