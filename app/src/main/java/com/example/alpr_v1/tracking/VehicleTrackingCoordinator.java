@@ -86,6 +86,10 @@ public final class VehicleTrackingCoordinator {
             long sourceTimestampNanos,
             long snapshotTimestampNanos
     ) {
+        Map<Long, VehicleCandidate> previousByEntity = candidatesByEntity(
+                latestFrame.candidates
+        );
+        Set<Long> activeBefore = activeEntityIds();
         List<VehicleTrackManager.Snapshot> snapshots = tracker.predict(
                 snapshotTimestampNanos
         );
@@ -94,6 +98,12 @@ public final class VehicleTrackingCoordinator {
                 sourceTimestampNanos,
                 snapshotTimestampNanos,
                 snapshots
+        );
+        emitLifecycleEvents(
+                previousByEntity,
+                activeBefore,
+                latestFrame,
+                snapshotTimestampNanos
         );
         return latestFrame;
     }

@@ -128,6 +128,27 @@ public class VehicleTrackingCoordinatorTest {
     }
 
     @Test
+    public void predictionEmitsTrackAndEntityExpirationExactlyOnce() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_000_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+        coordinator.drainEvents();
+
+        coordinator.predict(2L, 14_000_000_000L, 14_000_000_000L);
+        List<VehicleTrackingEvent> expired = coordinator.drainEvents();
+
+        assertEquals(1, eventCount(expired, "vehicle_track_expired"));
+        assertEquals(1, eventCount(expired, "vehicle_entity_expired"));
+
+        coordinator.predict(3L, 15_000_000_000L, 15_000_000_000L);
+        assertEquals(0, coordinator.drainEvents().size());
+    }
+
+    @Test
     public void trackTtlAdaptsToMeasuredMpCadenceWithinEntityTtl() {
         VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
         VehicleTrackingFrame first = coordinator.updateFromMp(
@@ -163,6 +184,17 @@ public class VehicleTrackingCoordinatorTest {
             if (eventType.equals(event.eventType)) return true;
         }
         return false;
+    }
+
+    private static int eventCount(
+            List<VehicleTrackingEvent> events,
+            String eventType
+    ) {
+        int count = 0;
+        for (VehicleTrackingEvent event : events) {
+            if (eventType.equals(event.eventType)) count++;
+        }
+        return count;
     }
 
     private static VehicleTrackManager.Observation observation(float left) {
