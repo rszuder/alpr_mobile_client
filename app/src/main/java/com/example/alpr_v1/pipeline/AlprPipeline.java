@@ -22,12 +22,14 @@ import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
+import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
+import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingEvent;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.vision.SceneChangeDetector;
@@ -168,6 +170,9 @@ public final class AlprPipeline {
             RoiBudgetPolicy.TWO_ROI;
 
     private volatile boolean rapidCameraMotion;
+    private volatile boolean cameraMoving;
+    private volatile boolean motionSensorAvailable;
+    private volatile float angularMotionMagnitude;
     private volatile boolean cameraTransformInProgress;
     private volatile float currentCameraZoomRatio = 1f;
     private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
@@ -261,14 +266,16 @@ public final class AlprPipeline {
                 image.getWidth(),
                 image.getHeight()
         );
-        if (sourceScene.sceneChanged) {
-            applySceneTransition(observeSourceScene(
-                    frameId,
-                    sourceTimestampNanos,
-                    sourceScene
-            ));
+        SceneTransitionDecision sceneDecision = observeSourceScene(
+                frameId,
+                sourceTimestampNanos,
+                sourceScene
+        );
+        applySceneTransition(sceneDecision);
+        if (shouldSkipHeavyInference(sceneDecision)) {
             metrics.frameSkippedBySceneChange();
-            if (sceneChangeCallback != null) {
+            if (sceneChangeCallback != null
+                    && sceneDecision.action == SceneTransitionAction.HARD_RESET) {
                 sceneChangeCallback.onSceneChanged(
                         sourceScene.score,
                         sourceScene.changedFraction
@@ -356,6 +363,9 @@ public final class AlprPipeline {
                     engine.setCameraTransformInProgress(
                             cameraTransformInProgress
                     );
+                    engine.setSceneHandlingMode(
+                            sceneTransitionCoordinator.snapshot().mode
+                    );
                 }
 
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
@@ -372,7 +382,7 @@ public final class AlprPipeline {
 
                 if (trackingResetRequested) {
 
-                    engine.resetTracking();
+                    engine.hardResetScene("coordinated_hard_reset");
 
                     trackingResetRequested =
                             false;
@@ -574,14 +584,16 @@ public final class AlprPipeline {
         }
         long frameId = frameIds.incrementAndGet();
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
-        if (sourceScene.sceneChanged) {
-            applySceneTransition(observeSourceScene(
-                    frameId,
-                    sourceTimestampNanos,
-                    sourceScene
-            ));
+        SceneTransitionDecision sceneDecision = observeSourceScene(
+                frameId,
+                sourceTimestampNanos,
+                sourceScene
+        );
+        applySceneTransition(sceneDecision);
+        if (shouldSkipHeavyInference(sceneDecision)) {
             metrics.frameSkippedBySceneChange();
-            if (sceneChangeCallback != null) {
+            if (sceneChangeCallback != null
+                    && sceneDecision.action == SceneTransitionAction.HARD_RESET) {
                 sceneChangeCallback.onSceneChanged(sourceScene.score, sourceScene.changedFraction);
             }
             return null;
@@ -646,6 +658,9 @@ public final class AlprPipeline {
                     engine.setRecognitionProfile(recognitionProfile);
                     engine.setRapidCameraMotion(rapidCameraMotion);
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
+                    engine.setSceneHandlingMode(
+                            sceneTransitionCoordinator.snapshot().mode
+                    );
                 }
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
                 engine.setAutoZoomTargetLock(
@@ -658,7 +673,7 @@ public final class AlprPipeline {
                         targetConfig.bottom
                 );
                 if (trackingResetRequested) {
-                    engine.resetTracking();
+                    engine.hardResetScene("coordinated_hard_reset");
                     trackingResetRequested = false;
                 }
                 engine.setTargetSnapshot(targetSnapshot);
@@ -1062,6 +1077,10 @@ public final class AlprPipeline {
             long sourceTimestampNanos,
             SceneChangeDetector.Result sourceScene
     ) {
+        TargetContinuityEvidence targetEvidence = currentTargetEvidence(
+                sourceTimestampNanos
+        );
+        VehicleContinuityEvidence vehicleEvidence = currentVehicleEvidence();
         return sceneTransitionCoordinator.observe(
                 new SceneEvidence(
                         frameId,
@@ -1072,13 +1091,13 @@ public final class AlprPipeline {
                         clamp01(sourceScene.brightnessDelta),
                         0f,
                         0f,
-                        TargetContinuityEvidence.noTarget(),
-                        VehicleContinuityEvidence.empty(),
+                        targetEvidence,
+                        vehicleEvidence,
                         new MotionExplanationEvidence(
-                                false,
+                                motionSensorAvailable,
+                                cameraMoving,
                                 rapidCameraMotion,
-                                rapidCameraMotion,
-                                0f,
+                                angularMotionMagnitude,
                                 cameraTransformInProgress,
                                 false,
                                 0f,
@@ -1093,6 +1112,125 @@ public final class AlprPipeline {
                 ),
                 System.nanoTime()
         );
+    }
+
+    private TargetContinuityEvidence currentTargetEvidence(long nowNanos) {
+        TargetSnapshot target = targetSnapshot;
+        if (target == null || !target.hasTrack()) {
+            if (target != null && target.state == TargetSnapshot.State.LOST) {
+                return new TargetContinuityEvidence(
+                        0L, 0L, 0L, com.example.alpr_v1.continuity.TargetContinuityLevel.LOST,
+                        0f, 0, 0f, target.consecutiveFailures,
+                        0f, 0f, 0f, 0f, 0f, 0f,
+                        false, false, false,
+                        Math.max(0L, nowNanos - target.updatedAtNanos)
+                );
+            }
+            return TargetContinuityEvidence.noTarget();
+        }
+
+        VehicleEntity entity = vehicleTrackingCoordinator.repository()
+                .findByPlateTrackId(target.trackId);
+        if (entity == null && target.lockedTrackId > 0L) {
+            entity = vehicleTrackingCoordinator.repository()
+                    .findByPlateTrackId(target.lockedTrackId);
+        }
+        long entityId = entity == null ? 0L : entity.entityId();
+        long vehicleTrackId = entity == null ? 0L : entity.vehicleTrackId();
+        long plateTrackId = entity != null && entity.plateTrackId() != null
+                ? entity.plateTrackId() : target.trackId;
+        com.example.alpr_v1.continuity.TargetContinuityLevel level;
+        if (target.state == TargetSnapshot.State.DEGRADED) {
+            level = com.example.alpr_v1.continuity.TargetContinuityLevel.PREDICTED_ONLY;
+        } else if (entity != null && entity.plateTrackId() != null) {
+            level = com.example.alpr_v1.continuity.TargetContinuityLevel.VEHICLE_AND_PLATE;
+        } else if (entity != null) {
+            level = com.example.alpr_v1.continuity.TargetContinuityLevel.VEHICLE_ONLY;
+        } else {
+            level = com.example.alpr_v1.continuity.TargetContinuityLevel.PLATE_ONLY;
+        }
+
+        long latestMeasurementNanos = target.updatedAtNanos;
+        boolean freshVehicle = false;
+        boolean vehicleAppearanceAvailable = false;
+        boolean plateAppearanceAvailable = false;
+        float registrationConsistency = 0f;
+        if (entity != null) {
+            latestMeasurementNanos = Math.max(
+                    latestMeasurementNanos,
+                    Math.max(entity.lastMpNanos(), entity.lastMtNanos())
+            );
+            freshVehicle = nowNanos >= entity.lastMpNanos()
+                    && nowNanos - entity.lastMpNanos()
+                    <= SceneContinuityProfile.INITIAL.reacquireTimeoutNanos;
+            vehicleAppearanceAvailable = entity.vehicleAppearance().available();
+            plateAppearanceAvailable = entity.plateAppearance().available();
+            registrationConsistency = entity.registration().confidence;
+        }
+        boolean freshPlate = target.framesSinceMtAnchor <= 1;
+        boolean geometryValidated = target.overlayItem != null
+                && target.driftScore <= 0.50f
+                && target.state != TargetSnapshot.State.DEGRADED;
+        float geometryConsistency = 1f - clamp01(target.driftScore);
+
+        return new TargetContinuityEvidence(
+                entityId,
+                vehicleTrackId,
+                Math.max(0L, plateTrackId),
+                level,
+                target.trackingQuality,
+                target.trackerInliers,
+                target.supportRatio,
+                target.consecutiveFailures,
+                geometryConsistency,
+                geometryConsistency,
+                geometryConsistency,
+                vehicleAppearanceAvailable ? 1f : 0f,
+                plateAppearanceAvailable ? 1f : 0f,
+                registrationConsistency,
+                freshVehicle,
+                freshPlate,
+                geometryValidated,
+                Math.max(0L, nowNanos - latestMeasurementNanos)
+        );
+    }
+
+    private VehicleContinuityEvidence currentVehicleEvidence() {
+        VehicleTrackingFrame frame = vehicleTrackingCoordinator.latestFrame();
+        int entities = frame.candidates.size();
+        if (entities == 0) return VehicleContinuityEvidence.empty();
+
+        int measured = 0;
+        int predicted = 0;
+        float appearanceAgreement = 0f;
+        float trajectoryAgreement = 0f;
+        long newestAgeNanos = Long.MAX_VALUE;
+        for (VehicleCandidate candidate : frame.candidates) {
+            if (candidate.predicted) predicted++;
+            else measured++;
+            appearanceAgreement += candidate.effectiveConfidence;
+            trajectoryAgreement += 1f - candidate.exitUrgency;
+            newestAgeNanos = Math.min(newestAgeNanos, candidate.predictionAgeNanos);
+        }
+        float reassociationRatio = measured / (float) entities;
+        return new VehicleContinuityEvidence(
+                entities,
+                entities,
+                measured,
+                predicted,
+                0,
+                reassociationRatio,
+                appearanceAgreement / entities,
+                trajectoryAgreement / entities,
+                newestAgeNanos == Long.MAX_VALUE ? 0L : newestAgeNanos
+        );
+    }
+
+    private boolean shouldSkipHeavyInference(SceneTransitionDecision decision) {
+        if (decision == null) return false;
+        return decision.action == SceneTransitionAction.HARD_RESET
+                || decision.action == SceneTransitionAction.SOFT_REACQUIRE
+                || sceneTransitionCoordinator.snapshot().heavyInferenceSuspended;
     }
 
     private synchronized void applySceneTransition(SceneTransitionDecision decision) {
@@ -1113,12 +1251,25 @@ public final class AlprPipeline {
                     sceneTransitionCoordinator.stamp(System.nanoTime())
             );
             frameGate.requestImmediateFrame();
+        } else if (decision.action == SceneTransitionAction.SOFT_HOLD) {
+            if (engine != null) {
+                engine.beginSoftHold(snapshot.visualEpoch, decision.reason);
+            }
         } else if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
+            if (engine != null) {
+                engine.beginSoftReacquire(snapshot.visualEpoch, decision.reason);
+            }
             frameGate.requestImmediateFrame();
         } else if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
+            if (engine != null) engine.releaseFocusedTarget(decision.reason);
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
                     sceneTransitionCoordinator.stamp(System.nanoTime())
             );
+        } else if (decision.action == SceneTransitionAction.NONE
+                && snapshot.state
+                == com.example.alpr_v1.continuity.SceneContinuityState.STABLE
+                && engine != null) {
+            engine.endSoftHold(snapshot.visualEpoch, decision.reason);
         }
     }
 
@@ -1136,6 +1287,10 @@ public final class AlprPipeline {
             stamped.close();
             frameGate.requestImmediateFrame();
             return null;
+        }
+        if (disposition != ContinuityResultDisposition.ACCEPT_ALL
+                || sceneTransitionCoordinator.snapshot().finalizationSuspended) {
+            return stamped.withoutGeometryAndFinalization();
         }
         return stamped;
     }
@@ -1166,8 +1321,14 @@ public final class AlprPipeline {
     }
 
     public synchronized void resetTracking() {
-        if (engine != null) engine.resetTracking();
-        targetSnapshot = TargetSnapshot.searching();
+        applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
+                "explicit_pipeline_reset",
+                System.nanoTime()
+        ));
+        if (engine != null && trackingResetRequested) {
+            engine.hardResetScene("explicit_pipeline_reset");
+            trackingResetRequested = false;
+        }
         sourceSceneDetector.reset();
     }
 
@@ -1268,7 +1429,34 @@ public final class AlprPipeline {
 
     public synchronized void setRapidCameraMotion(boolean rapid) {
         rapidCameraMotion = rapid;
+        if (rapid) cameraMoving = true;
         if (engine != null) engine.setRapidCameraMotion(rapid);
+    }
+
+    public synchronized void setCameraMotionEvidence(
+            boolean sensorAvailable,
+            boolean moving,
+            boolean rapid,
+            float angularMagnitude
+    ) {
+        motionSensorAvailable = sensorAvailable;
+        cameraMoving = moving;
+        rapidCameraMotion = rapid;
+        angularMotionMagnitude = Float.isFinite(angularMagnitude)
+                ? Math.max(0f, angularMagnitude) : 0f;
+        if (engine != null) engine.setRapidCameraMotion(rapid);
+    }
+
+    public void setSceneHandlingMode(SceneHandlingMode mode) {
+        SceneHandlingMode safeMode = mode == null
+                ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
+        sceneTransitionCoordinator.setMode(
+                safeMode,
+                System.nanoTime()
+        );
+        synchronized (this) {
+            if (engine != null) engine.setSceneHandlingMode(safeMode);
+        }
     }
 
     public void setCameraTransformInProgress(boolean inProgress) {

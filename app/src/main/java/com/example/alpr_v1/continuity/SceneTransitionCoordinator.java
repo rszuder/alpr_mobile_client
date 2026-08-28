@@ -230,6 +230,8 @@ public final class SceneTransitionCoordinator {
                 && (evidence.target.freshVehicleMeasurement
                 || evidence.target.freshPlateMeasurement)
                 && evidence.target.level != TargetContinuityLevel.PREDICTED_ONLY;
+        boolean continuityAllowsFinalization = !evidence.rawVisualChange
+                || freshValidatedTarget;
         return new ContinuityAssessment(
                 classification,
                 targetScore,
@@ -238,7 +240,7 @@ public final class SceneTransitionCoordinator {
                 cutScore,
                 targetPreserved,
                 poolPreserved,
-                freshValidatedTarget,
+                continuityAllowsFinalization,
                 reason
         );
     }

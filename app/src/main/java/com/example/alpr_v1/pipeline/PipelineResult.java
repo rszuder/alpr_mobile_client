@@ -272,6 +272,32 @@ public final class PipelineResult implements AutoCloseable {
         );
     }
 
+    public PipelineResult withoutGeometryAndFinalization() {
+        List<PlateRecognition> safeRecognitions = new ArrayList<>(recognitions.size());
+        for (PlateRecognition recognition : recognitions) {
+            safeRecognitions.add(new PlateRecognition(
+                    recognition.text,
+                    recognition.confidence,
+                    false,
+                    recognition.observations
+            ));
+        }
+        for (PlateObservation observation : plateObservations) {
+            observation.recyclePreview();
+        }
+        return new PipelineResult(
+                status,
+                message,
+                safeRecognitions,
+                Collections.emptyList(),
+                sourceWidth,
+                sourceHeight,
+                Collections.emptyList(),
+                sceneReset,
+                continuityStamp()
+        );
+    }
+
     public boolean hasConfirmedRecognition() {
         for (PlateRecognition recognition : recognitions) {
             if (recognition.confirmed) return true;

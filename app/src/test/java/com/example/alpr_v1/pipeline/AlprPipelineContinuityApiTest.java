@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 
 import org.junit.Test;
@@ -36,6 +37,16 @@ public final class AlprPipelineContinuityApiTest {
                 SceneContinuitySnapshot.class,
                 AlprPipeline.class.getMethod("sceneContinuitySnapshot").getReturnType()
         );
+        assertNotNull(AlprPipeline.class.getMethod(
+                "setSceneHandlingMode", SceneHandlingMode.class
+        ));
+        assertNotNull(AlprPipeline.class.getMethod(
+                "setCameraMotionEvidence",
+                boolean.class,
+                boolean.class,
+                boolean.class,
+                float.class
+        ));
     }
 
     private static Field field(String name) throws Exception {

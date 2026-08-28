@@ -34,4 +34,23 @@ public class PipelineResultTest {
         assertFalse(preliminary.hasConfirmedRecognition());
         assertTrue(mixed.hasConfirmedRecognition());
     }
+
+    @Test
+    public void continuityGateCanPreserveDomainTextWithoutFinalization() {
+        PipelineResult confirmed = new PipelineResult(
+                "recognized",
+                "test",
+                Collections.singletonList(new PlateRecognition("WE12345", 0.9, true, 3)),
+                Collections.emptyList(),
+                1280,
+                720
+        );
+
+        PipelineResult gated = confirmed.withoutGeometryAndFinalization();
+
+        assertFalse(gated.hasConfirmedRecognition());
+        assertTrue(gated.recognizedText.contains("WE12345"));
+        assertTrue(gated.overlayItems.isEmpty());
+        assertTrue(gated.plateObservations.isEmpty());
+    }
 }

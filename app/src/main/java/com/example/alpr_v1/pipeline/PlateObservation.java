@@ -193,6 +193,18 @@ public final class PlateObservation {
     }
 
     public PlateObservation withContinuityStamp(ContinuityStamp stamp) {
+        return copyWithStampAndFinalization(stamp, confirmed, cropSupportsConsensus);
+    }
+
+    public PlateObservation withoutFinalization() {
+        return copyWithStampAndFinalization(continuityStamp(), false, false);
+    }
+
+    private PlateObservation copyWithStampAndFinalization(
+            ContinuityStamp stamp,
+            boolean finalizationConfirmed,
+            boolean supportsConsensus
+    ) {
         return new PlateObservation(
                 trackId,
                 copiedAssociation(),
@@ -203,7 +215,7 @@ public final class PlateObservation {
                 text,
                 plateConfidence,
                 recognitionConfidence,
-                confirmed,
+                finalizationConfirmed,
                 observations,
                 characters,
                 capturedAtMillis,
@@ -215,7 +227,7 @@ public final class PlateObservation {
                 freshMzAttempted,
                 freshMzSuccessful,
                 freshPrediction,
-                cropSupportsConsensus,
+                supportsConsensus,
                 mzAttemptIndex,
                 layout,
                 rowCounts,

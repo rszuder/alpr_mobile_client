@@ -6,6 +6,7 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.domain.NormalizedQuad;
@@ -107,6 +108,11 @@ final class MobileAlprEngine implements AutoCloseable {
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraTransformInProgress;
     private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
+    private volatile boolean continuitySoftHold;
+    private volatile long continuityVisualEpoch;
+    private volatile String continuityReason = "";
+    private volatile SceneHandlingMode sceneHandlingMode =
+            SceneHandlingMode.STRICT_SCENE_BOUNDARY;
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -247,12 +253,50 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void resetTracking() {
+        hardResetScene("legacy_tracking_reset");
+    }
+
+    void hardResetScene(String reason) {
         resetSceneDependentState();
         sceneChangeDetector.reset();
+        continuitySoftHold = false;
+        continuityReason = reason == null ? "" : reason;
+    }
+
+    void beginSoftHold(long visualEpoch, String reason) {
+        continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
+        continuitySoftHold = true;
+        continuityReason = reason == null ? "" : reason;
+    }
+
+    void endSoftHold(long visualEpoch, String reason) {
+        continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
+        continuitySoftHold = false;
+        continuityReason = reason == null ? "" : reason;
+    }
+
+    void beginSoftReacquire(long visualEpoch, String reason) {
+        continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
+        continuitySoftHold = false;
+        continuityReason = reason == null ? "" : reason;
+        cachedVehicleRois.clear();
+        cachedVehicleDetections.clear();
+        mtInferenceScheduler.forceRefresh("continuity_soft_reacquire");
+    }
+
+    void releaseFocusedTarget(String reason) {
+        targetSnapshot = TargetSnapshot.searching();
+        autoZoomTargetLock.clear();
+        continuityReason = reason == null ? "" : reason;
     }
 
     void setRapidCameraMotion(boolean rapid) {
         rapidCameraMotion = rapid;
+    }
+
+    void setSceneHandlingMode(SceneHandlingMode mode) {
+        sceneHandlingMode = mode == null
+                ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
     }
 
     void setCameraTransformInProgress(boolean inProgress) {
@@ -330,12 +374,21 @@ final class MobileAlprEngine implements AutoCloseable {
             AlprPipeline.PlateDetectionCallback plateDetectionCallback,
             BooleanSupplier cancellationRequested
     ) {
+        if (continuitySoftHold) {
+            trace.putAttribute("continuity_state", "MOTION_HOLD");
+            trace.putAttribute("continuity_reason", continuityReason);
+            throw new ProcessingCancelledException();
+        }
         SceneChangeDetector.Result scene =
                 sceneChangeDetector.update(frame);
 
-        boolean effectiveSceneChanged =
-                scene.sceneChanged
-                        && !cameraTransformInProgress;
+        boolean effectiveSceneChanged = scene.sceneChanged
+                && !cameraTransformInProgress;
+        boolean hardSceneBoundary = shouldHardResetInternalScene(
+                sceneHandlingMode,
+                scene.sceneChanged,
+                cameraTransformInProgress
+        );
 
         trace.putConfidence(
                 "scene_change_score",
@@ -381,7 +434,7 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         cancelIfRequested(cancellationRequested);
 
-        if (effectiveSceneChanged) {
+        if (hardSceneBoundary) {
 
             resetSceneDependentState();
 
@@ -414,7 +467,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     SystemClock.elapsedRealtimeNanos()
             );
         }
-        boolean trackedGeometryAvailable = !effectiveSceneChanged
+        boolean trackedGeometryAvailable = !hardSceneBoundary
                 && liveTarget.trackId > 0L
                 && liveTarget.overlayItem != null;
         boolean anyTargetGeometry = liveExecution
@@ -431,7 +484,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             ? liveTarget.state : TargetSnapshot.State.DEGRADED,
                     trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
                     trackedGeometryAvailable ? liveTarget.consecutiveFailures : 1,
-                    effectiveSceneChanged,
+                    hardSceneBoundary,
                     rapidCameraMotion,
                     cameraTransformInProgress,
                     0
@@ -479,7 +532,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         overlays,
                         frame.getWidth(),
                         frame.getHeight(),
-                        effectiveSceneChanged
+                        hardSceneBoundary
                 );
             }
         }
@@ -610,7 +663,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                 ? liveTarget.state : TargetSnapshot.State.SEARCHING,
                         trackedGeometryAvailable ? liveTarget.trackingQuality : 0f,
                         trackedGeometryAvailable ? liveTarget.consecutiveFailures : 0,
-                        effectiveSceneChanged,
+                        hardSceneBoundary,
                         rapidCameraMotion,
                         cameraTransformInProgress,
                         vehicleRois.size()
@@ -823,7 +876,7 @@ final class MobileAlprEngine implements AutoCloseable {
         cancelIfRequested(cancellationRequested);
         trace.putAttribute(
                 "mz_state_event",
-                effectiveSceneChanged
+                hardSceneBoundary
                         ? "SCENE_RESET"
                         : targetLostSignal
                                 ? "TARGET_LOST"
@@ -838,7 +891,7 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.finish("no_plate", "");
             return new PipelineResult(
                     "no_plate", "Nie wykryto tablicy", "", 0,
-                    overlays, frame.getWidth(), frame.getHeight(), effectiveSceneChanged
+                    overlays, frame.getWidth(), frame.getHeight(), hardSceneBoundary
             );
         }
         trace.putConfidence("plate", plates.get(0).confidence);
@@ -1368,7 +1421,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                     plates.size(), characterRuns
                             ),
                     recognitions, overlays, frame.getWidth(), frame.getHeight(),
-                    plateObservations, effectiveSceneChanged
+                    plateObservations, hardSceneBoundary
             );
         }
 
@@ -1444,8 +1497,18 @@ final class MobileAlprEngine implements AutoCloseable {
                 frame.getWidth(),
                 frame.getHeight(),
                 plateObservations,
-                effectiveSceneChanged
+                hardSceneBoundary
         );
+    }
+
+    static boolean shouldHardResetInternalScene(
+            SceneHandlingMode mode,
+            boolean confirmedRawChange,
+            boolean cameraTransformInProgress
+    ) {
+        return confirmedRawChange
+                && !cameraTransformInProgress
+                && mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
     }
 
     private void recordSchedulerDecision(

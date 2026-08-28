@@ -84,6 +84,7 @@ import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.pipeline.TargetSnapshot;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
@@ -842,6 +843,11 @@ public final class MainActivity extends AppCompatActivity {
         pipeline.setExperimentConfiguration(
                 experimentModeEnabled,
                 experimentRoiBudgetPolicy
+        );
+        pipeline.setSceneHandlingMode(
+                experimentModeEnabled
+                        ? SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                        : SceneHandlingMode.DYNAMIC_CONTINUITY
         );
 
 
@@ -2353,8 +2359,11 @@ public final class MainActivity extends AppCompatActivity {
                             System.nanoTime();
 
 
-                    pipeline.setRapidCameraMotion(
-                            cameraMotionMonitor.isRapidMotion()
+                    pipeline.setCameraMotionEvidence(
+                            cameraMotionMonitor.isAvailable(),
+                            cameraMotionMonitor.isMoving(),
+                            cameraMotionMonitor.isRapidMotion(),
+                            cameraMotionMonitor.magnitude()
                     );
                     pipeline.setCurrentCameraZoomRatio(currentCameraZoomRatio);
 
@@ -5993,6 +6002,11 @@ public final class MainActivity extends AppCompatActivity {
         pipeline.setExperimentConfiguration(
                 experimentModeEnabled,
                 experimentRoiBudgetPolicy
+        );
+        pipeline.setSceneHandlingMode(
+                experimentModeEnabled
+                        ? SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                        : SceneHandlingMode.DYNAMIC_CONTINUITY
         );
 
         overlayTracker.reset();

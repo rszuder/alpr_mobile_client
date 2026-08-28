@@ -160,6 +160,27 @@ public final class SceneTransitionCoordinatorTest {
         assertFalse(snapshot.finalizationSuspended);
     }
 
+    @Test
+    public void stableFrameWithoutExistingTargetAllowsFirstAcquisition() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        SceneEvidence stable = new SceneEvidence(
+                1L, 10L, false,
+                0f, 0f, 0f, 0f, 0f,
+                TargetContinuityEvidence.noTarget(),
+                VehicleContinuityEvidence.empty(),
+                MotionExplanationEvidence.none(),
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(stable, 1_000L);
+
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertTrue(decision.assessment.finalizationAllowed);
+        assertFalse(coordinator.snapshot().finalizationSuspended);
+    }
+
     private static SceneTransitionCoordinator coordinator(SceneHandlingMode mode) {
         return new SceneTransitionCoordinator(mode, PROFILE);
     }
