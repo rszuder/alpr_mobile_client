@@ -55,6 +55,20 @@ dostępnych składników. Wartości score są walidowane w zakresie `[0,1]`, cza
 liczniki nie mogą być ujemne, a generacja sceny może wzrosnąć wyłącznie razem z
 visual epoch podczas `HARD_RESET`.
 
+## Runtime mode and telemetry
+
+Normalny pipeline live domyślnie używa `dynamic_continuity`. Ustawienia pozwalają
+wybrać `strict_scene_boundary`, natomiast aktywny eksperyment R0/R1/R2 zawsze
+zamraża efektywny tryb jako strict bez nadpisywania zwykłej preferencji użytkownika.
+Sesja pomiarowa zamraża i eksportuje pola `scene_handling_mode` oraz
+`scene_continuity_profile=initial_v2`.
+
+Każdy ślad inferencji zapisuje klasyfikację i score, target/vehicle/motion evidence,
+akcję z powodem, stan continuity, `sceneGeneration`, `visualEpoch` i
+`finalization_suspended`. Eventy obejmują raw, explained, unexplained i potwierdzony
+break, a także hold, reacquire, zwolnienie aktywnego celu, hard reset i odrzucenie
+starego wyniku. Zakończenia hold/reacquire zawierają zmierzony czas w milisekundach.
+
 ## Granica pierwszego commita
 
 Ten commit nie zmienia:

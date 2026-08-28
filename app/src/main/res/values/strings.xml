@@ -349,4 +349,9 @@
     <string name="hud_auto_zoom_focusing">AZ 1,8× · ZOOM + AF/AE…</string>
     <string name="hud_auto_zoom_retry">AZ %1$.1f× · RETRY MT/MZ</string>
     <string name="hud_auto_zoom_returning">AZ · POWRÓT DO 1,0×…</string>
+    <string name="settings_scene_mode_title">Obsługa ciągłości sceny</string>
+    <string name="settings_scene_mode_description">Dynamiczny zachowuje cel podczas ruchu kamery; strict szybko rozdziela statyczne próbki.</string>
+    <string name="settings_scene_mode_experiment_locked">Eksperyment R0/R1/R2 wymusza tryb strict, aby próbki pozostały rozdzielone.</string>
+    <string name="settings_scene_mode_dynamic">Dynamiczny</string>
+    <string name="settings_scene_mode_strict">Strict</string>
 </resources>

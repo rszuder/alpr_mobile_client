@@ -144,6 +144,8 @@ public final class MetricsCollector {
     private int actualSourceWidth;
     private int actualSourceHeight;
     private boolean motionSensorAvailable;
+    private String sceneHandlingMode = "dynamic_continuity";
+    private String sceneContinuityProfile = "initial_v2";
     private String frozenRecognitionProfile = "balanced";
     private boolean frozenVehicleCascadeEnabled;
     private String frozenRoiBudgetPolicy = "r0_full_frame";
@@ -154,6 +156,8 @@ public final class MetricsCollector {
     private int frozenRequestedSourceHeight;
     private boolean frozenCaptureHighResolutionRequested;
     private boolean frozenMotionSensorAvailable;
+    private String frozenSceneHandlingMode = "dynamic_continuity";
+    private String frozenSceneContinuityProfile = "initial_v2";
     private long firstPreliminaryResultNanos = -1L;
     private long firstConfirmedResultNanos = -1L;
     private String cropSessionId = "";
@@ -190,6 +194,8 @@ public final class MetricsCollector {
         frozenRequestedSourceHeight = requestedSourceHeight;
         frozenCaptureHighResolutionRequested = captureHighResolutionRequested;
         frozenMotionSensorAvailable = motionSensorAvailable;
+        frozenSceneHandlingMode = sceneHandlingMode;
+        frozenSceneContinuityProfile = sceneContinuityProfile;
 
         firstPreliminaryResultNanos = -1L;
         firstConfirmedResultNanos = -1L;
@@ -390,6 +396,16 @@ public final class MetricsCollector {
                 roiPolicy == null || roiPolicy.trim().isEmpty()
                         ? "r2_two_roi"
                         : roiPolicy.trim();
+    }
+
+    public synchronized void setSceneContinuityConfiguration(
+            String mode,
+            String profile
+    ) {
+        sceneHandlingMode = mode == null || mode.trim().isEmpty()
+                ? "dynamic_continuity" : mode.trim();
+        sceneContinuityProfile = profile == null || profile.trim().isEmpty()
+                ? "initial_v2" : profile.trim();
     }
 
     public synchronized void setCaptureConfiguration(
@@ -717,6 +733,8 @@ public final class MetricsCollector {
          * dla zgodności z wcześniejszymi raportami.
          */
         report.put("roi_budget_policy", frozenRoiBudgetPolicy);
+        report.put("scene_handling_mode", frozenSceneHandlingMode);
+        report.put("scene_continuity_profile", frozenSceneContinuityProfile);
 
         JSONObject normalConfiguration = new JSONObject();
         normalConfiguration.put(

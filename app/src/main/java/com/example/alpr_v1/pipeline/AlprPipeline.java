@@ -15,6 +15,7 @@ import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.MotionExplanationEvidence;
 import com.example.alpr_v1.continuity.SceneContinuityProfile;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
+import com.example.alpr_v1.continuity.SceneContinuityState;
 import com.example.alpr_v1.continuity.SceneEvidence;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
@@ -23,6 +24,7 @@ import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
+import com.example.alpr_v1.continuity.VisualChangeClassification;
 import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.InferenceTrace;
@@ -177,6 +179,19 @@ public final class AlprPipeline {
     private volatile float angularMotionMagnitude;
     private volatile VehicleContinuityEvidence lastReacquireVehicleEvidence =
             VehicleContinuityEvidence.empty();
+    private volatile SceneEvidence lastSceneEvidence;
+    private volatile SceneTransitionDecision lastSceneDecision;
+    private long lastContinuityTelemetryRevision;
+    private SceneContinuityState lastAppliedContinuityState =
+            SceneContinuityState.STABLE;
+    private long softHoldStartedNanos = -1L;
+    private long softReacquireStartedNanos = -1L;
+    private final AtomicLong pendingReacquireSucceededEvents = new AtomicLong();
+    private final AtomicLong pendingReacquireFailedEvents = new AtomicLong();
+    private final AtomicLong pendingStaleResultEvents = new AtomicLong();
+    private final AtomicLong pendingSoftHoldDurationNanos = new AtomicLong();
+    private final AtomicLong pendingReacquireDurationNanos = new AtomicLong();
+    private final AtomicLong withoutValidatedTargetSinceNanos = new AtomicLong(-1L);
     private volatile boolean cameraTransformInProgress;
     private volatile float currentCameraZoomRatio = 1f;
     private volatile TargetSnapshot targetSnapshot = TargetSnapshot.searching();
@@ -235,6 +250,10 @@ public final class AlprPipeline {
         this.sceneTransitionCoordinator = new SceneTransitionCoordinator(
                 SceneHandlingMode.STRICT_SCENE_BOUNDARY,
                 SceneContinuityProfile.INITIAL
+        );
+        this.metrics.setSceneContinuityConfiguration(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName(),
+                "initial_v2"
         );
     }
 
@@ -295,6 +314,7 @@ public final class AlprPipeline {
                 sourceTimestampNanos
         );
         InferenceTrace trace = new InferenceTrace(frameId, processingStamp);
+        appendContinuityTelemetry(trace, sceneDecision, lastSceneEvidence);
         trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
         trace.putAttribute(
                 "processing_started_nanos",
@@ -612,6 +632,7 @@ public final class AlprPipeline {
                 sourceTimestampNanos
         );
         InferenceTrace trace = new InferenceTrace(frameId, processingStamp);
+        appendContinuityTelemetry(trace, sceneDecision, lastSceneEvidence);
         trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
         trace.putAttribute(
                 "processing_started_nanos",
@@ -1087,8 +1108,7 @@ public final class AlprPipeline {
                 sourceTimestampNanos
         );
         VehicleContinuityEvidence vehicleEvidence = currentVehicleEvidence();
-        return sceneTransitionCoordinator.observe(
-                new SceneEvidence(
+        SceneEvidence evidence = new SceneEvidence(
                         frameId,
                         sourceTimestampNanos,
                         sourceScene.sceneChanged,
@@ -1115,9 +1135,14 @@ public final class AlprPipeline {
                         false,
                         false,
                         false
-                ),
+                );
+        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
+                evidence,
                 System.nanoTime()
         );
+        lastSceneEvidence = evidence;
+        lastSceneDecision = decision;
+        return decision;
     }
 
     private TargetContinuityEvidence currentTargetEvidence(long nowNanos) {
@@ -1241,10 +1266,27 @@ public final class AlprPipeline {
         if (report == null || !report.attempted) return;
         lastReacquireVehicleEvidence = report.vehicles;
         if (report.targetRecovered) {
+            long nowNanos = System.nanoTime();
             sceneTransitionCoordinator.onSoftReacquireResult(
                     SoftReacquireResult.TARGET_RECOVERED,
-                    System.nanoTime()
+                    nowNanos
             );
+            JSONObject details = lastSceneDecision == null
+                    ? new JSONObject()
+                    : continuityEventDetails(
+                    lastSceneDecision,
+                    sceneTransitionCoordinator.snapshot(),
+                    lastSceneEvidence
+            );
+            putDuration(details, "scene_reacquire", softReacquireStartedNanos, nowNanos);
+            metrics.recordEvent("scene_soft_reacquire_succeeded", 0L, 0L, details);
+            pendingReacquireSucceededEvents.incrementAndGet();
+            pendingReacquireDurationNanos.set(Math.max(
+                    0L,
+                    softReacquireStartedNanos < 0L
+                            ? 0L : nowNanos - softReacquireStartedNanos
+            ));
+            softReacquireStartedNanos = -1L;
         } else if (report.activeTargetLost) {
             sceneTransitionCoordinator.onSoftReacquireResult(
                     SoftReacquireResult.ACTIVE_TARGET_LOST,
@@ -1300,6 +1342,237 @@ public final class AlprPipeline {
                 && engine != null) {
             engine.endSoftHold(snapshot.visualEpoch, decision.reason);
         }
+        recordContinuityEvents(decision, snapshot, lastSceneEvidence);
+    }
+
+    private void appendContinuityTelemetry(
+            InferenceTrace trace,
+            SceneTransitionDecision decision,
+            SceneEvidence evidence
+    ) {
+        if (trace == null || decision == null) return;
+        SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
+        trace.putAttribute("scene_handling_mode", decision.mode.wireName());
+        trace.putAttribute("scene_continuity_profile", "initial_v2");
+        trace.putAttribute(
+                "visual_change_classification",
+                decision.assessment.classification.name()
+        );
+        trace.putAttribute("scene_transition_action", decision.action.name());
+        trace.putAttribute("scene_transition_reason", decision.reason);
+        trace.putAttribute("scene_continuity_state", decision.nextState.name());
+        trace.putConfidence(
+                "target_continuity_score",
+                decision.assessment.targetContinuityScore
+        );
+        trace.putConfidence(
+                "vehicle_continuity_score",
+                decision.assessment.vehicleContinuityScore
+        );
+        trace.putConfidence(
+                "motion_explanation_score",
+                decision.assessment.motionExplanationScore
+        );
+        trace.putConfidence("cut_evidence_score", decision.assessment.cutEvidenceScore);
+        trace.putCount("focused_target_preserved",
+                decision.assessment.focusedTargetPreserved ? 1 : 0);
+        trace.putCount("scene_generation", snapshot.sceneGeneration);
+        trace.putCount("visual_epoch", snapshot.visualEpoch);
+        trace.putCount("finalization_suspended",
+                snapshot.finalizationSuspended ? 1 : 0);
+
+        VisualChangeClassification classification = decision.assessment.classification;
+        trace.putCount("raw_visual_change_events",
+                evidence != null && evidence.rawVisualChange ? 1 : 0);
+        trace.putCount("motion_explained_change_events",
+                classification == VisualChangeClassification.MOTION_EXPLAINED_CHANGE ? 1 : 0);
+        trace.putCount("unexplained_change_events",
+                classification == VisualChangeClassification.UNEXPLAINED_CHANGE ? 1 : 0);
+        trace.putCount("continuity_break_events",
+                classification == VisualChangeClassification.CONTINUITY_BREAK ? 1 : 0);
+        trace.putCount("scene_soft_holds",
+                decision.action == SceneTransitionAction.SOFT_HOLD ? 1 : 0);
+        trace.putCount("scene_soft_reacquire_started",
+                decision.action == SceneTransitionAction.SOFT_REACQUIRE ? 1 : 0);
+        trace.putCount("scene_active_target_releases",
+                decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET ? 1 : 0);
+        trace.putCount("scene_hard_resets",
+                decision.action == SceneTransitionAction.HARD_RESET ? 1 : 0);
+        trace.putCount("scene_soft_reacquire_succeeded",
+                pendingReacquireSucceededEvents.getAndSet(0L));
+        trace.putCount("scene_soft_reacquire_failed",
+                pendingReacquireFailedEvents.getAndSet(0L));
+        trace.putCount("scene_stale_results_dropped",
+                pendingStaleResultEvents.getAndSet(0L));
+        long holdDuration = pendingSoftHoldDurationNanos.getAndSet(0L);
+        long reacquireDuration = pendingReacquireDurationNanos.getAndSet(0L);
+        if (holdDuration > 0L) trace.putDurationNanos("scene_soft_hold", holdDuration);
+        if (reacquireDuration > 0L) {
+            trace.putDurationNanos("scene_reacquire", reacquireDuration);
+        }
+
+        if (evidence == null) return;
+        trace.putConfidence("raw_visual_change_score", evidence.rawVisualChangeScore);
+        trace.putAttribute("target_continuity_level", evidence.target.level.name());
+        trace.putCount("target_geometry_validated",
+                evidence.target.geometryValidated ? 1 : 0);
+        trace.putConfidence("target_vehicle_appearance_similarity",
+                evidence.target.vehicleAppearanceSimilarity);
+        trace.putConfidence("target_plate_appearance_similarity",
+                evidence.target.plateAppearanceSimilarity);
+        trace.putConfidence("target_registration_consistency",
+                evidence.target.registrationConsistency);
+        trace.putConfidence("target_kalman_innovation_score",
+                evidence.target.kalmanInnovationScore);
+        trace.putCount("vehicle_entities_before", evidence.vehicles.entitiesBefore);
+        trace.putCount("vehicle_entities_after", evidence.vehicles.entitiesAfter);
+        trace.putCount("vehicle_entities_reassociated",
+                evidence.vehicles.entitiesReassociated);
+        trace.putConfidence("vehicle_reassociation_ratio",
+                evidence.vehicles.reassociationRatio);
+        trace.putConfidence("vehicle_trajectory_agreement",
+                evidence.vehicles.trajectoryAgreement);
+        trace.putCount("camera_motion_available", evidence.motion.gyroAvailable ? 1 : 0);
+        trace.putCount("camera_moving", evidence.motion.cameraMoving ? 1 : 0);
+        trace.putCount("rapid_camera_motion", evidence.motion.rapidCameraMotion ? 1 : 0);
+        trace.putConfidence("camera_motion_magnitude",
+                evidence.motion.angularMotionMagnitude);
+        trace.putCount("global_motion_estimated",
+                evidence.motion.dominantMotionEstimated ? 1 : 0);
+        trace.putConfidence("global_motion_coherence",
+                evidence.motion.globalMotionCoherence);
+        trace.putConfidence("compensated_frame_residual",
+                evidence.motion.compensatedFrameResidual);
+        long nowNanos = System.nanoTime();
+        if (!evidence.target.geometryValidated) {
+            withoutValidatedTargetSinceNanos.compareAndSet(-1L, nowNanos);
+        } else {
+            long missingSince = withoutValidatedTargetSinceNanos.getAndSet(-1L);
+            if (missingSince >= 0L) {
+                trace.putDurationNanos(
+                        "time_without_validated_target_overlay",
+                        Math.max(0L, nowNanos - missingSince)
+                );
+            }
+        }
+    }
+
+    private void recordContinuityEvents(
+            SceneTransitionDecision decision,
+            SceneContinuitySnapshot snapshot,
+            SceneEvidence evidence
+    ) {
+        if (decision.revision <= lastContinuityTelemetryRevision) return;
+        lastContinuityTelemetryRevision = decision.revision;
+        long nowNanos = System.nanoTime();
+        JSONObject details = continuityEventDetails(decision, snapshot, evidence);
+        VisualChangeClassification classification = decision.assessment.classification;
+        if (evidence != null && evidence.rawVisualChange) {
+            metrics.recordEvent("raw_visual_change_detected", 0L, 0L, details);
+        }
+        if (classification == VisualChangeClassification.MOTION_EXPLAINED_CHANGE) {
+            metrics.recordEvent("motion_explained_change", 0L, 0L, details);
+        } else if (classification == VisualChangeClassification.UNEXPLAINED_CHANGE) {
+            metrics.recordEvent("unexplained_change_detected", 0L, 0L, details);
+        } else if (classification == VisualChangeClassification.CONTINUITY_BREAK) {
+            metrics.recordEvent("continuity_break_confirmed", 0L, 0L, details);
+        }
+
+        if (decision.action == SceneTransitionAction.SOFT_HOLD) {
+            softHoldStartedNanos = nowNanos;
+            metrics.recordEvent("scene_soft_hold_started", 0L, 0L, details);
+        }
+        if (lastAppliedContinuityState == SceneContinuityState.MOTION_HOLD
+                && snapshot.state != SceneContinuityState.MOTION_HOLD
+                && softHoldStartedNanos >= 0L) {
+            putDuration(details, "scene_soft_hold", softHoldStartedNanos, nowNanos);
+            pendingSoftHoldDurationNanos.set(Math.max(
+                    0L,
+                    nowNanos - softHoldStartedNanos
+            ));
+            metrics.recordEvent("scene_soft_hold_finished", 0L, 0L, details);
+            softHoldStartedNanos = -1L;
+        }
+        if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
+            softReacquireStartedNanos = nowNanos;
+            metrics.recordEvent("scene_soft_reacquire_started", 0L, 0L, details);
+        } else if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
+            metrics.recordEvent("scene_active_target_released", 0L, 0L, details);
+        } else if (decision.action == SceneTransitionAction.HARD_RESET) {
+            if (lastAppliedContinuityState == SceneContinuityState.REACQUIRING) {
+                putDuration(details, "scene_reacquire", softReacquireStartedNanos, nowNanos);
+                metrics.recordEvent("scene_soft_reacquire_failed", 0L, 0L, details);
+                pendingReacquireFailedEvents.incrementAndGet();
+                pendingReacquireDurationNanos.set(Math.max(
+                        0L,
+                        softReacquireStartedNanos < 0L
+                                ? 0L : nowNanos - softReacquireStartedNanos
+                ));
+            }
+            metrics.recordEvent("scene_hard_reset", 0L, 0L, details);
+        }
+        lastAppliedContinuityState = snapshot.state;
+    }
+
+    private static JSONObject continuityEventDetails(
+            SceneTransitionDecision decision,
+            SceneContinuitySnapshot snapshot,
+            SceneEvidence evidence
+    ) {
+        JSONObject details = new JSONObject();
+        try {
+            details.put("scene_handling_mode", decision.mode.wireName());
+            details.put("scene_continuity_profile", "initial_v2");
+            details.put("visual_change_classification",
+                    decision.assessment.classification.name());
+            details.put("scene_transition_action", decision.action.name());
+            details.put("scene_transition_reason", decision.reason);
+            details.put("scene_continuity_state", snapshot.state.name());
+            details.put("target_continuity_score",
+                    decision.assessment.targetContinuityScore);
+            details.put("vehicle_continuity_score",
+                    decision.assessment.vehicleContinuityScore);
+            details.put("motion_explanation_score",
+                    decision.assessment.motionExplanationScore);
+            details.put("cut_evidence_score", decision.assessment.cutEvidenceScore);
+            details.put("scene_generation", snapshot.sceneGeneration);
+            details.put("visual_epoch", snapshot.visualEpoch);
+            details.put("finalization_suspended", snapshot.finalizationSuspended);
+            if (evidence != null) {
+                details.put("raw_visual_change_score", evidence.rawVisualChangeScore);
+                details.put("target_continuity_level", evidence.target.level.name());
+                details.put("target_geometry_validated", evidence.target.geometryValidated);
+                details.put("vehicle_entities_before", evidence.vehicles.entitiesBefore);
+                details.put("vehicle_entities_after", evidence.vehicles.entitiesAfter);
+                details.put("vehicle_entities_reassociated",
+                        evidence.vehicles.entitiesReassociated);
+                details.put("vehicle_reassociation_ratio",
+                        evidence.vehicles.reassociationRatio);
+                details.put("camera_motion_available", evidence.motion.gyroAvailable);
+                details.put("camera_moving", evidence.motion.cameraMoving);
+                details.put("rapid_camera_motion", evidence.motion.rapidCameraMotion);
+                details.put("camera_motion_magnitude",
+                        evidence.motion.angularMotionMagnitude);
+            }
+        } catch (JSONException ignored) {
+            // Telemetry must never influence runtime scene policy.
+        }
+        return details;
+    }
+
+    private static void putDuration(
+            JSONObject details,
+            String name,
+            long startedNanos,
+            long nowNanos
+    ) {
+        if (startedNanos < 0L) return;
+        try {
+            details.put(name + "_ms", Math.max(0L, nowNanos - startedNanos)
+                    / 1_000_000.0);
+        } catch (JSONException ignored) {
+            // Best-effort telemetry only.
+        }
     }
 
     private PipelineResult stampAndValidateResult(
@@ -1315,6 +1588,16 @@ public final class AlprPipeline {
         if (disposition == ContinuityResultDisposition.REJECT_ALL) {
             stamped.close();
             frameGate.requestImmediateFrame();
+            JSONObject details = new JSONObject();
+            try {
+                details.put("result_scene_generation", processingStamp.sceneGeneration);
+                details.put("current_scene_generation",
+                        sceneTransitionCoordinator.snapshot().sceneGeneration);
+            } catch (JSONException ignored) {
+                // Best-effort telemetry only.
+            }
+            metrics.recordEvent("scene_stale_result_dropped", 0L, 0L, details);
+            pendingStaleResultEvents.incrementAndGet();
             return null;
         }
         if (disposition != ContinuityResultDisposition.ACCEPT_ALL
@@ -1337,10 +1620,13 @@ public final class AlprPipeline {
     }
 
     public synchronized void requestTrackingReset() {
-        applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
+        SceneTransitionDecision decision = sceneTransitionCoordinator.requestStructuralReset(
                 "external_tracking_reset",
                 System.nanoTime()
-        ));
+        );
+        lastSceneDecision = decision;
+        lastSceneEvidence = null;
+        applySceneTransition(decision);
     }
 
 
@@ -1484,6 +1770,7 @@ public final class AlprPipeline {
                 System.nanoTime()
         );
         if (engine != null) engine.setSceneHandlingMode(safeMode);
+        metrics.setSceneContinuityConfiguration(safeMode.wireName(), "initial_v2");
     }
 
     public void setCameraTransformInProgress(boolean inProgress) {
@@ -1521,10 +1808,13 @@ public final class AlprPipeline {
     }
 
     public synchronized void requestImmediateTargetRecovery() {
-        applySceneTransition(sceneTransitionCoordinator.requestSoftReacquire(
+        SceneTransitionDecision decision = sceneTransitionCoordinator.requestSoftReacquire(
                 "immediate_target_recovery",
                 System.nanoTime()
-        ));
+        );
+        lastSceneDecision = decision;
+        lastSceneEvidence = null;
+        applySceneTransition(decision);
     }
 
     public void setAutoZoomTargetLock(
@@ -1623,8 +1913,7 @@ public final class AlprPipeline {
             float anchorDriftScore,
             float anchorChangedFraction
     ) {
-        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
-                new SceneEvidence(
+        SceneEvidence evidence = new SceneEvidence(
                         previewEvidenceIds.incrementAndGet(),
                         Math.max(0L, sourceTimestampNanos),
                         rawVisualChange,
@@ -1651,9 +1940,13 @@ public final class AlprPipeline {
                         false,
                         false,
                         false
-                ),
+                );
+        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
+                evidence,
                 System.nanoTime()
         );
+        lastSceneEvidence = evidence;
+        lastSceneDecision = decision;
         applySceneTransition(decision);
         return decision;
     }

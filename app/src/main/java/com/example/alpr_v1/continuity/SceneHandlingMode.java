@@ -14,4 +14,13 @@ public enum SceneHandlingMode {
     public String wireName() {
         return wireName;
     }
+
+    public static SceneHandlingMode fromWireName(String value) {
+        if (value != null) {
+            for (SceneHandlingMode mode : values()) {
+                if (mode.wireName.equalsIgnoreCase(value.trim())) return mode;
+            }
+        }
+        return DYNAMIC_CONTINUITY;
+    }
 }

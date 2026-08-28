@@ -36,6 +36,7 @@ import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.ui.ModelStatusFormatter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.camera.CameraResolutionCatalog;
 import com.example.alpr_v1.camera.CameraResolutionSelection;
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
@@ -69,6 +70,7 @@ public final class SettingsActivity extends AppCompatActivity {
     public static final String KEY_EXPERIMENT_SCENARIO_ID = "experiment_scenario_id";
     public static final String KEY_EXPERIMENT_REPLICATE_INDEX = "experiment_replicate_index";
     public static final String KEY_EXPERIMENT_NOTES = "experiment_notes";
+    public static final String KEY_SCENE_HANDLING_MODE = "scene_handling_mode";
 
     private static final String LOG_TAG = "SettingsActivity";
 
@@ -161,6 +163,7 @@ public final class SettingsActivity extends AppCompatActivity {
         configureProfileControls();
         configureResolutionControls();
         configureCropControls();
+        configureSceneHandlingControls();
         configureRoiBudgetControls();
         configureExperimentIdentity();
         configurePipelineControls();
@@ -409,6 +412,67 @@ public final class SettingsActivity extends AppCompatActivity {
                     : CropCapacityPolicy.AUTO;
             saveString("crop_limit", value);
         });
+    }
+
+    private void configureSceneHandlingControls() {
+        MaterialButtonToggleGroup group = findViewById(
+                R.id.settings_scene_handling_group
+        );
+        boolean experimentEnabled = preferences.getBoolean(
+                KEY_EXPERIMENT_MODE_ENABLED,
+                false
+        );
+        SceneHandlingMode stored = SceneHandlingMode.fromWireName(
+                preferences.getString(
+                        KEY_SCENE_HANDLING_MODE,
+                        SceneHandlingMode.DYNAMIC_CONTINUITY.wireName()
+                )
+        );
+        SceneHandlingMode effective = experimentEnabled
+                ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : stored;
+        group.check(effective == SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                ? R.id.settings_scene_strict
+                : R.id.settings_scene_dynamic);
+        setSceneHandlingControlsEnabled(group, !experimentEnabled);
+        group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
+            if (!isChecked || preferences.getBoolean(
+                    KEY_EXPERIMENT_MODE_ENABLED,
+                    false
+            )) {
+                refreshSceneHandlingControls();
+                return;
+            }
+            SceneHandlingMode selected = checkedId == R.id.settings_scene_strict
+                    ? SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                    : SceneHandlingMode.DYNAMIC_CONTINUITY;
+            saveString(KEY_SCENE_HANDLING_MODE, selected.wireName());
+        });
+        refreshSceneHandlingControls();
+    }
+
+    private void refreshSceneHandlingControls() {
+        MaterialButtonToggleGroup group = findViewById(
+                R.id.settings_scene_handling_group
+        );
+        TextView summary = findViewById(R.id.settings_scene_handling_summary);
+        boolean experimentEnabled = preferences.getBoolean(
+                KEY_EXPERIMENT_MODE_ENABLED,
+                false
+        );
+        if (experimentEnabled) group.check(R.id.settings_scene_strict);
+        setSceneHandlingControlsEnabled(group, !experimentEnabled);
+        summary.setText(experimentEnabled
+                ? R.string.settings_scene_mode_experiment_locked
+                : R.string.settings_scene_mode_description);
+    }
+
+    private static void setSceneHandlingControlsEnabled(
+            MaterialButtonToggleGroup group,
+            boolean enabled
+    ) {
+        for (int index = 0; index < group.getChildCount(); index++) {
+            group.getChildAt(index).setEnabled(enabled);
+        }
     }
 
     private void configurePipelineControls() {
@@ -1095,6 +1159,7 @@ public final class SettingsActivity extends AppCompatActivity {
 
                     markChanged();
                     refreshNodeBadges();
+                    refreshSceneHandlingControls();
                 }
         );
 

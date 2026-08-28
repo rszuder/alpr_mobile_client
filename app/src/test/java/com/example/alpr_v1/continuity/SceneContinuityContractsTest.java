@@ -54,6 +54,14 @@ public final class SceneContinuityContractsTest {
                 "dynamic_continuity",
                 SceneHandlingMode.DYNAMIC_CONTINUITY.wireName()
         );
+        assertEquals(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY,
+                SceneHandlingMode.fromWireName("strict_scene_boundary")
+        );
+        assertEquals(
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneHandlingMode.fromWireName("unknown")
+        );
     }
 
     @Test

@@ -939,9 +939,7 @@ public final class MainActivity extends AppCompatActivity {
                 experimentRoiBudgetPolicy
         );
         pipeline.setSceneHandlingMode(
-                experimentModeEnabled
-                        ? SceneHandlingMode.STRICT_SCENE_BOUNDARY
-                        : SceneHandlingMode.DYNAMIC_CONTINUITY
+                effectiveSceneHandlingMode()
         );
 
 
@@ -6165,6 +6163,14 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
     }
+    private SceneHandlingMode effectiveSceneHandlingMode() {
+        if (experimentModeEnabled) return SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+        return SceneHandlingMode.fromWireName(uiPreferences.getString(
+                SettingsActivity.KEY_SCENE_HANDLING_MODE,
+                SceneHandlingMode.DYNAMIC_CONTINUITY.wireName()
+        ));
+    }
+
     private void applyExperimentConfiguration(
             boolean enabled,
             RoiBudgetPolicy roiPolicy
@@ -6195,9 +6201,7 @@ public final class MainActivity extends AppCompatActivity {
                 experimentRoiBudgetPolicy
         );
         pipeline.setSceneHandlingMode(
-                experimentModeEnabled
-                        ? SceneHandlingMode.STRICT_SCENE_BOUNDARY
-                        : SceneHandlingMode.DYNAMIC_CONTINUITY
+                effectiveSceneHandlingMode()
         );
 
         overlayTracker.reset();
