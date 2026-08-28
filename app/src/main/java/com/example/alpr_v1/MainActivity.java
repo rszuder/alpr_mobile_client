@@ -3364,6 +3364,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private List<AutoZoomController.Sample> autoZoomSamples(PipelineResult result) {
         List<AutoZoomController.Sample> samples = new ArrayList<>();
+        TargetSnapshot target = targetStateMachine.snapshot();
         for (PlateObservation observation : result.plateObservations) {
             OverlayItem plate = null;
             for (OverlayItem item : result.overlayItems) {
@@ -3386,7 +3387,9 @@ public final class MainActivity extends AppCompatActivity {
                     plate.normalizedKeypoints.size() == 4,
                     observation.freshMzAttempted,
                     observation.freshMzSuccessful,
-                    observation.text
+                    observation.text,
+                    target.state == TargetSnapshot.State.LOCKED
+                            && target.trackId == observation.trackId
             ));
         }
         return samples;

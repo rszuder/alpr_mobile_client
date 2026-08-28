@@ -69,6 +69,33 @@ public class AutoZoomControllerTest {
     }
 
     @Test
+    public void lockedSmallPlateCanStartRescueAfterFirstSuccessfulMz() {
+        AutoZoomController controller = new AutoZoomController();
+        controller.setEnabled(true);
+
+        AutoZoomController.Decision decision = controller.evaluate(
+                Collections.singletonList(new AutoZoomController.Sample(
+                        12L,
+                        0.5f,
+                        0.5f,
+                        0.09f,
+                        0.74,
+                        false,
+                        1,
+                        true,
+                        true,
+                        true,
+                        "A600",
+                        true
+                )),
+                1L
+        );
+
+        assertEquals(AutoZoomController.Action.REQUEST_ZOOM, decision.action);
+        assertEquals("small_plate", decision.reason);
+    }
+
+    @Test
     public void sceneResetDoesNotChangeUsersEnabledSetting() {
         AutoZoomController controller = new AutoZoomController();
         controller.setEnabled(true);

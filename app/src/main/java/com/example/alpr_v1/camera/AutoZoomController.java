@@ -46,6 +46,7 @@ public final class AutoZoomController {
         public final boolean recognitionExecuted;
         public final boolean recognitionSuccessful;
         public final String text;
+        public final boolean stableTargetGeometry;
 
         public Sample(
                 long trackId,
@@ -60,6 +61,36 @@ public final class AutoZoomController {
                 boolean recognitionSuccessful,
                 String text
         ) {
+            this(
+                    trackId,
+                    centerX,
+                    centerY,
+                    normalizedWidth,
+                    recognitionConfidence,
+                    confirmed,
+                    observations,
+                    validQuad,
+                    recognitionExecuted,
+                    recognitionSuccessful,
+                    text,
+                    false
+            );
+        }
+
+        public Sample(
+                long trackId,
+                float centerX,
+                float centerY,
+                float normalizedWidth,
+                double recognitionConfidence,
+                boolean confirmed,
+                int observations,
+                boolean validQuad,
+                boolean recognitionExecuted,
+                boolean recognitionSuccessful,
+                String text,
+                boolean stableTargetGeometry
+        ) {
             this.trackId = trackId;
             this.centerX = clamp(centerX);
             this.centerY = clamp(centerY);
@@ -71,6 +102,7 @@ public final class AutoZoomController {
             this.recognitionExecuted = recognitionExecuted;
             this.recognitionSuccessful = recognitionExecuted && recognitionSuccessful;
             this.text = normalizeText(text);
+            this.stableTargetGeometry = stableTargetGeometry;
         }
     }
 
@@ -313,11 +345,17 @@ public final class AutoZoomController {
         for (Sample sample : samples) {
             boolean failedFreshRecognition = sample.recognitionExecuted
                     && !sample.recognitionSuccessful;
+            boolean lockedSingleObservationRescue = sample.stableTargetGeometry
+                    && sample.recognitionExecuted
+                    && sample.recognitionSuccessful
+                    && sample.observations >= 1
+                    && sample.normalizedWidth < SMALL_PLATE_WIDTH;
             if (sample.trackId <= 0L
                     || attemptedTrackIds.contains(sample.trackId)
                     || (!sample.text.isEmpty() && attemptedPlateTexts.contains(sample.text))
                     || attemptedPlateRegions.contains(regionKey(sample))
                     || (!failedFreshRecognition
+                    && !lockedSingleObservationRescue
                     && sample.observations < MINIMUM_TRACK_OBSERVATIONS)
                     || !sample.validQuad) continue;
 
