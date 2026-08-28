@@ -1,0 +1,562 @@
+package com.example.alpr_v1.continuity;
+
+/**
+ * Central policy owner that converts merged evidence into one deduplicated runtime action.
+ * This class owns policy state only; runtime side effects remain with its caller.
+ */
+public final class SceneTransitionCoordinator {
+    private final SceneContinuityProfile profile;
+    private final TargetContinuityEvaluator targetEvaluator;
+    private final VehicleContinuityEvaluator vehicleEvaluator;
+    private final MotionExplanationEvaluator motionEvaluator;
+    private final ContinuityBreakEvaluator breakEvaluator;
+    private final long transitionCooldownNanos;
+
+    private SceneHandlingMode mode;
+    private SceneContinuityState currentState = SceneContinuityState.STABLE;
+    private ContinuityAssessment assessment = ContinuityAssessment.none();
+    private long decisionRevision;
+    private long lastTransitionNanos;
+    private long stateEnteredNanos;
+    private long unexplainedSinceNanos = -1L;
+    private long reacquireStartedNanos = -1L;
+    private long lastSourceFrameId = -1L;
+    private long lastSourceTimestampNanos = -1L;
+    private boolean finalizationSuspended;
+    private boolean heavyInferenceSuspended;
+    private boolean reacquireFailed;
+    private boolean pendingActiveTargetRelease;
+
+    public SceneTransitionCoordinator(
+            SceneHandlingMode mode,
+            SceneContinuityProfile profile
+    ) {
+        this(
+                mode,
+                profile,
+                new TargetContinuityEvaluator(),
+                new VehicleContinuityEvaluator(),
+                new MotionExplanationEvaluator(),
+                new ContinuityBreakEvaluator(),
+                profile == null ? 0L : profile.motionSettleNanos
+        );
+    }
+
+    SceneTransitionCoordinator(
+            SceneHandlingMode mode,
+            SceneContinuityProfile profile,
+            TargetContinuityEvaluator targetEvaluator,
+            VehicleContinuityEvaluator vehicleEvaluator,
+            MotionExplanationEvaluator motionEvaluator,
+            ContinuityBreakEvaluator breakEvaluator,
+            long transitionCooldownNanos
+    ) {
+        this.mode = Contracts.required("mode", mode);
+        this.profile = Contracts.required("profile", profile);
+        this.targetEvaluator = Contracts.required("targetEvaluator", targetEvaluator);
+        this.vehicleEvaluator = Contracts.required("vehicleEvaluator", vehicleEvaluator);
+        this.motionEvaluator = Contracts.required("motionEvaluator", motionEvaluator);
+        this.breakEvaluator = Contracts.required("breakEvaluator", breakEvaluator);
+        this.transitionCooldownNanos = Contracts.nonNegative(
+                "transitionCooldownNanos", transitionCooldownNanos
+        );
+    }
+
+    public synchronized SceneTransitionDecision observe(
+            SceneEvidence evidence,
+            long nowNanos
+    ) {
+        Contracts.required("evidence", evidence);
+        Contracts.nonNegative("nowNanos", nowNanos);
+
+        if (isDuplicate(evidence) && !pendingActiveTargetRelease && !reacquireFailed) {
+            return idleDecision("duplicate_evidence");
+        }
+        rememberEvidence(evidence);
+
+        if (evidence.structuralChange()) {
+            return hardReset(structuralReason(evidence), nowNanos);
+        }
+        if (currentState == SceneContinuityState.HARD_RESETTING) {
+            enterState(SceneContinuityState.STABLE, nowNanos);
+        }
+
+        assessment = assess(evidence);
+        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
+            return observeStrict(evidence, nowNanos);
+        }
+        return observeDynamic(evidence, nowNanos);
+    }
+
+    public synchronized void setMode(SceneHandlingMode mode, long nowNanos) {
+        Contracts.required("mode", mode);
+        Contracts.nonNegative("nowNanos", nowNanos);
+        if (this.mode == mode) return;
+        this.mode = mode;
+        resetRecoveryState();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        assessment = ContinuityAssessment.none();
+        finalizationSuspended = false;
+        heavyInferenceSuspended = false;
+        clearEvidenceDeduplication();
+    }
+
+    public synchronized void onSoftReacquireResult(
+            SoftReacquireResult result,
+            long nowNanos
+    ) {
+        Contracts.required("result", result);
+        Contracts.nonNegative("nowNanos", nowNanos);
+        if (currentState != SceneContinuityState.REACQUIRING) return;
+
+        switch (result) {
+            case TARGET_RECOVERED:
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = false;
+                heavyInferenceSuspended = false;
+                break;
+            case ACTIVE_TARGET_LOST:
+                pendingActiveTargetRelease = true;
+                reacquireFailed = true;
+                break;
+            case FAILED:
+                reacquireFailed = true;
+                break;
+            default:
+                throw new AssertionError("Unhandled reacquire result: " + result);
+        }
+    }
+
+    public synchronized SceneContinuitySnapshot snapshot() {
+        return new SceneContinuitySnapshot(
+                mode,
+                currentState,
+                assessment.classification,
+                decisionRevision,
+                0L,
+                0L,
+                0L,
+                finalizationSuspended,
+                heavyInferenceSuspended,
+                lastTransitionNanos,
+                assessment
+        );
+    }
+
+    public synchronized SceneTransitionDecision requestStructuralReset(
+            String reason,
+            long nowNanos
+    ) {
+        Contracts.nonNegative("nowNanos", nowNanos);
+        assessment = new ContinuityAssessment(
+                VisualChangeClassification.CONTINUITY_BREAK,
+                0f, 0f, 0f, 1f,
+                false, false, false,
+                Contracts.reason(reason).isEmpty() ? "structural_reset" : reason
+        );
+        return hardReset(assessment.reason, nowNanos);
+    }
+
+    private ContinuityAssessment assess(SceneEvidence evidence) {
+        float targetScore = targetEvaluator.evaluate(evidence.target, profile);
+        float vehicleScore = vehicleEvaluator.evaluate(evidence.vehicles);
+        float motionScore = motionEvaluator.evaluate(evidence, targetScore, vehicleScore);
+        float cutScore = breakEvaluator.evaluate(
+                evidence, targetScore, vehicleScore, motionScore
+        );
+        boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve;
+        boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve;
+        boolean motionExplained = motionScore >= profile.minimumMotionExplanation;
+
+        VisualChangeClassification classification;
+        String reason;
+        if (!evidence.rawVisualChange) {
+            classification = VisualChangeClassification.NONE;
+            reason = "no_raw_visual_change";
+        } else if (motionExplained && (targetPreserved || poolPreserved)) {
+            classification = VisualChangeClassification.MOTION_EXPLAINED_CHANGE;
+            reason = targetPreserved
+                    ? "local_target_explains_visual_change"
+                    : "vehicle_pool_explains_visual_change";
+        } else if (!targetPreserved && !poolPreserved && !motionExplained) {
+            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
+            reason = "visual_change_has_no_continuity_explanation";
+        } else {
+            classification = VisualChangeClassification.RAW_VISUAL_CHANGE;
+            reason = "visual_change_requires_more_evidence";
+        }
+
+        boolean freshValidatedTarget = targetPreserved
+                && evidence.target.geometryValidated
+                && (evidence.target.freshVehicleMeasurement
+                || evidence.target.freshPlateMeasurement)
+                && evidence.target.level != TargetContinuityLevel.PREDICTED_ONLY;
+        return new ContinuityAssessment(
+                classification,
+                targetScore,
+                vehicleScore,
+                motionScore,
+                cutScore,
+                targetPreserved,
+                poolPreserved,
+                freshValidatedTarget,
+                reason
+        );
+    }
+
+    private SceneTransitionDecision observeStrict(
+            SceneEvidence evidence,
+            long nowNanos
+    ) {
+        if (evidence.rawVisualChange) {
+            assessment = withClassification(
+                    assessment,
+                    VisualChangeClassification.CONTINUITY_BREAK,
+                    "strict_raw_visual_change"
+            );
+            return hardReset(assessment.reason, nowNanos);
+        }
+        resetRecoveryState();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        finalizationSuspended = !assessment.finalizationAllowed;
+        heavyInferenceSuspended = false;
+        return emitNone(nowNanos, assessment.reason);
+    }
+
+    private SceneTransitionDecision observeDynamic(
+            SceneEvidence evidence,
+            long nowNanos
+    ) {
+        if (pendingActiveTargetRelease && assessment.vehiclePoolPreserved) {
+            pendingActiveTargetRelease = false;
+            resetRecoveryState();
+            enterState(SceneContinuityState.STABLE, nowNanos);
+            finalizationSuspended = false;
+            heavyInferenceSuspended = false;
+            return emitReleaseActiveTarget(nowNanos, "active_target_lost_pool_preserved");
+        }
+
+        if (currentState == SceneContinuityState.REACQUIRING
+                && shouldHardResetAfterFailedReacquire(nowNanos)) {
+            assessment = withClassification(
+                    assessment,
+                    VisualChangeClassification.CONTINUITY_BREAK,
+                    "soft_reacquire_failed_after_persistent_cut_evidence"
+            );
+            return hardReset(assessment.reason, nowNanos);
+        }
+
+        if (!evidence.rawVisualChange) {
+            return observeNoRawChange(evidence, nowNanos);
+        }
+
+        if (assessment.classification == VisualChangeClassification.UNEXPLAINED_CHANGE
+                || assessment.classification == VisualChangeClassification.RAW_VISUAL_CHANGE) {
+            if (unexplainedSinceNanos < 0L) unexplainedSinceNanos = nowNanos;
+        } else {
+            unexplainedSinceNanos = -1L;
+        }
+
+        if (assessment.classification
+                == VisualChangeClassification.MOTION_EXPLAINED_CHANGE
+                && assessment.focusedTargetPreserved
+                && !evidence.motion.rapidCameraMotion) {
+            resetRecoveryState();
+            enterState(SceneContinuityState.STABLE, nowNanos);
+            finalizationSuspended = !assessment.finalizationAllowed;
+            heavyInferenceSuspended = false;
+            return emitNone(nowNanos, assessment.reason);
+        }
+
+        if (evidence.motion.cameraMoving
+                || evidence.motion.rapidCameraMotion
+                || evidence.motion.cameraTransformInProgress) {
+            return beginSoftHold(nowNanos, "motion_requires_stable_observation");
+        }
+        return beginSoftReacquire(nowNanos, "stationary_visual_change_requires_reacquire");
+    }
+
+    private SceneTransitionDecision observeNoRawChange(
+            SceneEvidence evidence,
+            long nowNanos
+    ) {
+        if (currentState == SceneContinuityState.MOTION_HOLD) {
+            if (assessment.focusedTargetPreserved) {
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = !assessment.finalizationAllowed;
+                heavyInferenceSuspended = false;
+                return emitNone(nowNanos, "target_continuity_restored_during_hold");
+            }
+            long holdDuration = elapsedSince(stateEnteredNanos, nowNanos);
+            boolean motionSettled = !evidence.motion.cameraMoving
+                    && !evidence.motion.rapidCameraMotion
+                    && !evidence.motion.cameraTransformInProgress
+                    && holdDuration >= profile.motionSettleNanos;
+            if (motionSettled || holdDuration >= profile.maximumSoftHoldNanos) {
+                return beginSoftReacquire(nowNanos, "motion_settled_force_fresh_reacquire");
+            }
+            finalizationSuspended = true;
+            heavyInferenceSuspended = true;
+            return emitNone(nowNanos, "motion_hold_waiting_for_settle");
+        }
+
+        if (currentState == SceneContinuityState.REACQUIRING) {
+            if (assessment.focusedTargetPreserved && assessment.finalizationAllowed) {
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = false;
+                heavyInferenceSuspended = false;
+                return emitNone(nowNanos, "fresh_target_revalidated");
+            }
+            finalizationSuspended = true;
+            heavyInferenceSuspended = false;
+            return emitNone(nowNanos, "soft_reacquire_in_progress");
+        }
+
+        resetRecoveryState();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        finalizationSuspended = !assessment.finalizationAllowed;
+        heavyInferenceSuspended = false;
+        return emitNone(nowNanos, assessment.reason);
+    }
+
+    private boolean shouldHardResetAfterFailedReacquire(long nowNanos) {
+        boolean timedOut = reacquireStartedNanos >= 0L
+                && elapsedSince(reacquireStartedNanos, nowNanos) >= profile.reacquireTimeoutNanos;
+        boolean persistent = unexplainedSinceNanos >= 0L
+                && elapsedSince(unexplainedSinceNanos, nowNanos)
+                >= profile.strongCutPersistenceNanos;
+        return (reacquireFailed || timedOut)
+                && persistent
+                && assessment.cutEvidenceScore >= profile.continuityBreakThreshold
+                && assessment.targetContinuityScore
+                < profile.minimumTargetContinuityToPreserve
+                && assessment.vehicleContinuityScore
+                < profile.minimumVehicleContinuityToPreserve
+                && assessment.motionExplanationScore < profile.minimumMotionExplanation;
+    }
+
+    private SceneTransitionDecision beginSoftHold(long nowNanos, String reason) {
+        if (currentState == SceneContinuityState.MOTION_HOLD) {
+            finalizationSuspended = true;
+            heavyInferenceSuspended = true;
+            return emitNone(nowNanos, "motion_hold_already_active");
+        }
+        enterState(SceneContinuityState.MOTION_HOLD, nowNanos);
+        finalizationSuspended = true;
+        heavyInferenceSuspended = true;
+        return emit(
+                SceneTransitionAction.SOFT_HOLD,
+                true, true, true,
+                true, true, true,
+                false, false, false,
+                false, false,
+                true, false,
+                reason,
+                nowNanos
+        );
+    }
+
+    private SceneTransitionDecision beginSoftReacquire(long nowNanos, String reason) {
+        boolean needsNewVisualEpoch = currentState != SceneContinuityState.MOTION_HOLD;
+        if (currentState == SceneContinuityState.REACQUIRING) {
+            finalizationSuspended = true;
+            heavyInferenceSuspended = false;
+            return emitNone(nowNanos, "soft_reacquire_already_active");
+        }
+        enterState(SceneContinuityState.REACQUIRING, nowNanos);
+        reacquireStartedNanos = nowNanos;
+        reacquireFailed = false;
+        finalizationSuspended = true;
+        heavyInferenceSuspended = false;
+        return emit(
+                SceneTransitionAction.SOFT_REACQUIRE,
+                true, true, true,
+                true, false, true,
+                true, true, false,
+                true, true,
+                needsNewVisualEpoch, false,
+                reason,
+                nowNanos
+        );
+    }
+
+    private SceneTransitionDecision emitReleaseActiveTarget(
+            long nowNanos,
+            String reason
+    ) {
+        return emit(
+                SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                true, false, false,
+                true, false, false,
+                false, false, true,
+                true, true,
+                false, false,
+                reason,
+                nowNanos
+        );
+    }
+
+    private SceneTransitionDecision hardReset(String reason, long nowNanos) {
+        if (currentState == SceneContinuityState.HARD_RESETTING
+                && elapsedSince(lastTransitionNanos, nowNanos) < transitionCooldownNanos) {
+            return idleDecision("hard_reset_deduplicated");
+        }
+        resetRecoveryState();
+        enterState(SceneContinuityState.HARD_RESETTING, nowNanos);
+        finalizationSuspended = true;
+        heavyInferenceSuspended = true;
+        return emit(
+                SceneTransitionAction.HARD_RESET,
+                false, false, false,
+                true, true, true,
+                false, false, false,
+                true, true,
+                true, true,
+                reason,
+                nowNanos
+        );
+    }
+
+    private SceneTransitionDecision emitNone(long nowNanos, String reason) {
+        decisionRevision++;
+        return new SceneTransitionDecision(
+                decisionRevision,
+                SceneTransitionAction.NONE,
+                mode,
+                currentState,
+                assessment,
+                true, true, true,
+                false,
+                heavyInferenceSuspended,
+                finalizationSuspended,
+                false, false, false,
+                false, false,
+                false, false,
+                reason
+        );
+    }
+
+    private SceneTransitionDecision idleDecision(String reason) {
+        return new SceneTransitionDecision(
+                decisionRevision,
+                SceneTransitionAction.NONE,
+                mode,
+                currentState,
+                assessment,
+                true, true, true,
+                false,
+                heavyInferenceSuspended,
+                finalizationSuspended,
+                false, false, false,
+                false, false,
+                false, false,
+                reason
+        );
+    }
+
+    private SceneTransitionDecision emit(
+            SceneTransitionAction action,
+            boolean preserveVehicleEntities,
+            boolean preserveTargetSession,
+            boolean preserveDomainConsensus,
+            boolean cancelInFlightInference,
+            boolean suspendHeavyInference,
+            boolean suspendFinalization,
+            boolean forceMpRefresh,
+            boolean forceMtRefresh,
+            boolean releaseOnlyActiveTarget,
+            boolean clearVehicleRoiCache,
+            boolean resetFocusedTracker,
+            boolean incrementVisualEpoch,
+            boolean incrementSceneGeneration,
+            String reason,
+            long nowNanos
+    ) {
+        decisionRevision++;
+        lastTransitionNanos = nowNanos;
+        return new SceneTransitionDecision(
+                decisionRevision,
+                action,
+                mode,
+                currentState,
+                assessment,
+                preserveVehicleEntities,
+                preserveTargetSession,
+                preserveDomainConsensus,
+                cancelInFlightInference,
+                suspendHeavyInference,
+                suspendFinalization,
+                forceMpRefresh,
+                forceMtRefresh,
+                releaseOnlyActiveTarget,
+                clearVehicleRoiCache,
+                resetFocusedTracker,
+                incrementVisualEpoch,
+                incrementSceneGeneration,
+                reason
+        );
+    }
+
+    private void enterState(SceneContinuityState state, long nowNanos) {
+        if (currentState != state) {
+            currentState = state;
+            stateEnteredNanos = nowNanos;
+            lastTransitionNanos = nowNanos;
+        }
+    }
+
+    private void resetRecoveryState() {
+        unexplainedSinceNanos = -1L;
+        reacquireStartedNanos = -1L;
+        reacquireFailed = false;
+        pendingActiveTargetRelease = false;
+    }
+
+    private boolean isDuplicate(SceneEvidence evidence) {
+        return evidence.sourceFrameId == lastSourceFrameId
+                && evidence.sourceTimestampNanos == lastSourceTimestampNanos;
+    }
+
+    private void rememberEvidence(SceneEvidence evidence) {
+        lastSourceFrameId = evidence.sourceFrameId;
+        lastSourceTimestampNanos = evidence.sourceTimestampNanos;
+    }
+
+    private void clearEvidenceDeduplication() {
+        lastSourceFrameId = -1L;
+        lastSourceTimestampNanos = -1L;
+    }
+
+    private static long elapsedSince(long startNanos, long nowNanos) {
+        return nowNanos >= startNanos ? nowNanos - startNanos : 0L;
+    }
+
+    private static String structuralReason(SceneEvidence evidence) {
+        if (evidence.cameraRestarted) return "camera_restarted";
+        if (evidence.lensChanged) return "physical_camera_changed";
+        if (evidence.sourceDimensionsChanged) return "source_dimensions_changed";
+        if (evidence.orientationChanged) return "unsupported_orientation_change";
+        return "structural_change";
+    }
+
+    private static ContinuityAssessment withClassification(
+            ContinuityAssessment source,
+            VisualChangeClassification classification,
+            String reason
+    ) {
+        return new ContinuityAssessment(
+                classification,
+                source.targetContinuityScore,
+                source.vehicleContinuityScore,
+                source.motionExplanationScore,
+                source.cutEvidenceScore,
+                source.focusedTargetPreserved,
+                source.vehiclePoolPreserved,
+                false,
+                reason
+        );
+    }
+}

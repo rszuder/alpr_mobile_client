@@ -39,7 +39,9 @@ public final class MotionExplanationEvaluator {
 
         float sum = 0f;
         float availableWeight = 0f;
-        if (evidence.gyroAvailable || evidence.cameraTransformInProgress) {
+        if (evidence.cameraMoving
+                || evidence.rapidCameraMotion
+                || evidence.cameraTransformInProgress) {
             float gyroMotionScore = evidence.cameraTransformInProgress
                     || evidence.rapidCameraMotion
                     ? 1f
