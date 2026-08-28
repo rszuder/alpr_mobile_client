@@ -128,6 +128,63 @@ public class VehicleEntityRepositoryTest {
     }
 
     @Test
+    public void plateTrackHasOneOwnerAndControlledReassignmentIsAtomic() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity first = repository.create(1L, VEHICLE, null, 10L);
+        VehicleEntity second = repository.create(2L, VEHICLE, null, 10L);
+
+        assertEquals(
+                PlateTrackAttachmentStatus.ATTACHED,
+                repository.attachPlate(
+                        first.entityId(), 77L, plateQuad(), descriptor(0.8f), 20L
+                )
+        );
+        assertEquals(
+                PlateTrackAttachmentStatus.CONFLICT_REJECTED,
+                repository.attachPlate(
+                        second.entityId(), 77L, plateQuad(), descriptor(0.9f), 30L
+                )
+        );
+        assertSame(first, repository.findByPlateTrackId(77L));
+        assertNull(second.plateTrackId());
+
+        assertEquals(
+                PlateTrackAttachmentStatus.REASSIGNED,
+                repository.reassignPlateTrack(
+                        77L,
+                        first.entityId(),
+                        second.entityId(),
+                        plateQuad(),
+                        descriptor(0.9f),
+                        40L
+                )
+        );
+        assertNull(first.plateTrackId());
+        assertEquals(Long.valueOf(77L), second.plateTrackId());
+        assertSame(second, repository.findByPlateTrackId(77L));
+
+        repository.markAcquired(second.entityId());
+        assertNull(repository.findByPlateTrackId(77L));
+    }
+
+    @Test
+    public void sceneResetAndExpirationClearPlateOwnershipIndex() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity expiring = repository.create(1L, VEHICLE, null, 10L);
+        repository.attachPlate(
+                expiring.entityId(), 91L, plateQuad(), null, 10L
+        );
+
+        repository.expireOldEntities(1_000L, 100L);
+        assertNull(repository.findByPlateTrackId(91L));
+
+        VehicleEntity reset = repository.create(2L, VEHICLE, null, 1_100L);
+        repository.attachPlate(reset.entityId(), 92L, plateQuad(), null, 1_100L);
+        repository.resetScene();
+        assertNull(repository.findByPlateTrackId(92L));
+    }
+
+    @Test
     public void activeAndCompletedRepositoriesAreBounded() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         for (int index = 0; index < VehicleEntityRepository.MAX_ACTIVE_ENTITIES + 10; index++) {

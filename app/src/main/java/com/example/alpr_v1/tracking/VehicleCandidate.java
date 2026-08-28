@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.EntityAcquisitionState;
 
 /** Immutable entity-aware vehicle snapshot passed between runtime layers. */
 public final class VehicleCandidate {
@@ -16,6 +17,7 @@ public final class VehicleCandidate {
     public final long snapshotTimestampNanos;
     public final long predictionAgeNanos;
     public final int sourceIndex;
+    public final EntityAcquisitionState acquisitionState;
 
     public VehicleCandidate(
             long entityId,
@@ -32,7 +34,8 @@ public final class VehicleCandidate {
         this(
                 entityId, vehicleTrackId, bounds, detectionConfidence,
                 effectiveConfidence, exitUrgency, predicted, missedUpdates,
-                lastMeasurementTimestampNanos, snapshotTimestampNanos, -1
+                lastMeasurementTimestampNanos, snapshotTimestampNanos, -1,
+                EntityAcquisitionState.NEW
         );
     }
 
@@ -48,6 +51,28 @@ public final class VehicleCandidate {
             long lastMeasurementTimestampNanos,
             long snapshotTimestampNanos,
             int sourceIndex
+    ) {
+        this(
+                entityId, vehicleTrackId, bounds, detectionConfidence,
+                effectiveConfidence, exitUrgency, predicted, missedUpdates,
+                lastMeasurementTimestampNanos, snapshotTimestampNanos, sourceIndex,
+                EntityAcquisitionState.NEW
+        );
+    }
+
+    public VehicleCandidate(
+            long entityId,
+            long vehicleTrackId,
+            NormalizedBounds bounds,
+            float detectionConfidence,
+            float effectiveConfidence,
+            float exitUrgency,
+            boolean predicted,
+            int missedUpdates,
+            long lastMeasurementTimestampNanos,
+            long snapshotTimestampNanos,
+            int sourceIndex,
+            EntityAcquisitionState acquisitionState
     ) {
         if (entityId <= 0L) throw new IllegalArgumentException("entityId must be positive");
         if (vehicleTrackId <= 0L) {
@@ -74,6 +99,8 @@ public final class VehicleCandidate {
                 this.snapshotTimestampNanos - this.lastMeasurementTimestampNanos
         );
         this.sourceIndex = sourceIndex;
+        this.acquisitionState = acquisitionState == null
+                ? EntityAcquisitionState.NEW : acquisitionState;
     }
 
     public double predictionAgeMillis() {

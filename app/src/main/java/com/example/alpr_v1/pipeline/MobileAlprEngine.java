@@ -10,6 +10,8 @@ import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.domain.NormalizedQuad;
 import com.example.alpr_v1.domain.PlateTextConsensus;
+import com.example.alpr_v1.domain.PlateTrackAttachmentStatus;
+import com.example.alpr_v1.domain.RegistrationConsensusSource;
 import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.inference.InferenceBackend;
 import com.example.alpr_v1.inference.InferenceRunResult;
@@ -155,9 +157,7 @@ final class MobileAlprEngine implements AutoCloseable {
             throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
         }
         this.vehicleTrackingCoordinator = vehicleTrackingCoordinator;
-        this.plateEntityBinder = new PlateEntityBinder(
-                vehicleTrackingCoordinator.repository()
-        );
+        this.plateEntityBinder = new PlateEntityBinder(vehicleTrackingCoordinator);
         this.roiBudgetPolicy = roiBudgetPolicy == null
                 ? RoiBudgetPolicy.FULL_FRAME
                 : roiBudgetPolicy;
@@ -909,7 +909,6 @@ final class MobileAlprEngine implements AutoCloseable {
                     liveTarget,
                     frame
             );
-            associationByPlateTrack.put(decision.trackId, association);
             workKindByPlateTrack.put(decision.trackId, workKind);
             workReasonByPlateTrack.put(decision.trackId, workReason);
 
@@ -928,29 +927,57 @@ final class MobileAlprEngine implements AutoCloseable {
                 );
             }
             if (association.assigned()) {
-                plateEntityBinder.attachPlate(
+                PlateTrackAttachmentStatus attachmentStatus =
+                        plateEntityBinder.attachPlate(
                         association,
                         decision.trackId,
                         normalizedQuad(plateCandidate.corners, frame),
                         new AppearanceDescriptor(appearance),
                         SystemClock.elapsedRealtimeNanos()
                 );
-                trace.putCount("plate_attached_to_entity", 1);
-                trace.putAttribute(
-                        "vehicle_roi_entity_id", String.valueOf(association.entityId)
-                );
-                trace.putAttribute(
-                        "vehicle_roi_track_id", String.valueOf(association.vehicleTrackId)
-                );
-                vehicleTrackingCoordinator.recordEvent(
-                        "plate_attached_to_entity",
-                        association.entityId,
-                        association.vehicleTrackId,
-                        decision.trackId,
-                        trace.frameId(),
-                        SystemClock.elapsedRealtimeNanos(),
-                        association.reason
-                );
+                if (attachmentStatus.accepted()) {
+                    trace.putCount("plate_attached_to_entity", 1);
+                    trace.putAttribute(
+                            "vehicle_roi_entity_id", String.valueOf(association.entityId)
+                    );
+                    trace.putAttribute(
+                            "vehicle_roi_track_id", String.valueOf(association.vehicleTrackId)
+                    );
+                    vehicleTrackingCoordinator.recordEvent(
+                            "plate_attached_to_entity",
+                            association.entityId,
+                            association.vehicleTrackId,
+                            decision.trackId,
+                            trace.frameId(),
+                            SystemClock.elapsedRealtimeNanos(),
+                            association.reason
+                    );
+                    if (attachmentStatus == PlateTrackAttachmentStatus.ATTACHED) {
+                        vehicleTrackingCoordinator.recordEvent(
+                                "plate_track_attached",
+                                association.entityId,
+                                association.vehicleTrackId,
+                                decision.trackId,
+                                trace.frameId(),
+                                SystemClock.elapsedRealtimeNanos(),
+                                association.reason
+                        );
+                    }
+                } else {
+                    trace.putCount("plate_track_conflicts_rejected", 1);
+                    vehicleTrackingCoordinator.recordEvent(
+                            "plate_track_conflict_rejected",
+                            association.entityId,
+                            association.vehicleTrackId,
+                            decision.trackId,
+                            trace.frameId(),
+                            SystemClock.elapsedRealtimeNanos(),
+                            association.reason
+                    );
+                    association = PlateVehicleAssociation.unassigned(
+                            "plate_track_conflict_rejected"
+                    );
+                }
             } else if (association.status == VehicleAssociationStatus.AMBIGUOUS) {
                 trace.putCount("plate_entity_association_ambiguous", 1);
                 vehicleTrackingCoordinator.recordEvent(
@@ -966,6 +993,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         SystemClock.elapsedRealtimeNanos(), association.reason
                 );
             }
+            associationByPlateTrack.put(decision.trackId, association);
             trace.putAttribute("plate_association_status", association.status.name());
             trace.putAttribute("plate_association_reason", association.reason);
             trace.putConfidence("plate_association_confidence", association.confidence);
@@ -1124,10 +1152,19 @@ final class MobileAlprEngine implements AutoCloseable {
                     decision.trackId,
                     PlateVehicleAssociation.unassigned("missing_plate_track_association")
             );
-            if (vehicleAssociation.assigned()
-                    && decision.recognize
-                    && trackResult != null) {
-                plateEntityBinder.updateRegistration(
+            if (vehicleAssociation.assigned() && trackResult != null) {
+                MtReason registrationReason = workReasonByPlateTrack.getOrDefault(
+                        decision.trackId, MtReason.UNKNOWN
+                );
+                RegistrationConsensusSource registrationSource =
+                        !decision.recognize
+                                ? RegistrationConsensusSource.TRACK_MEMORY
+                                : registrationReason == MtReason.AFTER_ZOOM
+                                        ? RegistrationConsensusSource.ZOOM_RETRY
+                                        : vehicleAssociation.reason.contains("reassociat")
+                                                ? RegistrationConsensusSource.REASSOCIATION
+                                                : RegistrationConsensusSource.FRESH_MZ;
+                boolean consensusUpdated = plateEntityBinder.updateRegistration(
                         vehicleAssociation,
                         new PlateTextConsensus(
                                 trackResult.text,
@@ -1135,8 +1172,24 @@ final class MobileAlprEngine implements AutoCloseable {
                                 trackResult.observations,
                                 trackResult.stable
                         ),
-                        SystemClock.elapsedRealtimeNanos()
+                        SystemClock.elapsedRealtimeNanos(),
+                        decision.recognize,
+                        registrationSource
                 );
+                if (consensusUpdated) {
+                    trace.putAttribute(
+                            "vehicle_registration_source", registrationSource.name()
+                    );
+                    vehicleTrackingCoordinator.recordEvent(
+                            "vehicle_registration_consensus_updated",
+                            vehicleAssociation.entityId,
+                            vehicleAssociation.vehicleTrackId,
+                            decision.trackId,
+                            trace.frameId(),
+                            SystemClock.elapsedRealtimeNanos(),
+                            registrationSource.name()
+                    );
+                }
             }
             plateObservations.add(new PlateObservation(
                     decision.trackId,

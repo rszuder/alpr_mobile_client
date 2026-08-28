@@ -16,6 +16,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
 import com.example.alpr_v1.tracking.VehicleTrackingEvent;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.nio.ByteBuffer;
@@ -1218,6 +1219,11 @@ public final class AlprPipeline {
         engine = null;
         reloadRequested = false;
         sourceSceneDetector.reset();
+    }
+
+    /** Immutable entity-aware snapshot for the Phase 3 acquisition controller. */
+    public VehicleTrackingFrame latestVehicleTrackingFrame() {
+        return vehicleTrackingCoordinator.latestFrame();
     }
 
     private void recordVehicleTrackingEvents() {

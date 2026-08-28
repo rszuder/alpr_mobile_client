@@ -12,6 +12,7 @@ public final class VehicleEntityRepository {
     public static final int MAX_COMPLETED_ENTITIES = 256;
     private final Map<Long, VehicleEntity> byEntityId = new LinkedHashMap<>();
     private final Map<Long, Long> entityIdByVehicleTrack = new LinkedHashMap<>();
+    private final Map<Long, Long> entityIdByPlateTrack = new LinkedHashMap<>();
     private final Map<Long, VehicleEntitySummary> completedByEntityId =
             new LinkedHashMap<>();
     private long nextEntityId = 1L;
@@ -53,11 +54,8 @@ public final class VehicleEntityRepository {
 
     public synchronized VehicleEntity findByPlateTrackId(long plateTrackId) {
         if (plateTrackId <= 0L) return null;
-        for (VehicleEntity entity : byEntityId.values()) {
-            Long candidate = entity.plateTrackId();
-            if (candidate != null && candidate == plateTrackId) return entity;
-        }
-        return null;
+        Long entityId = entityIdByPlateTrack.get(plateTrackId);
+        return entityId == null ? null : byEntityId.get(entityId);
     }
 
     public synchronized List<VehicleEntity> activeEntities() {
@@ -135,26 +133,93 @@ public final class VehicleEntityRepository {
         return entity;
     }
 
-    public synchronized void attachPlate(
+    public synchronized PlateTrackAttachmentStatus attachPlate(
             long entityId,
             long plateTrackId,
             NormalizedQuad quad,
             AppearanceDescriptor appearance,
             long nowNanos
     ) {
-        required(entityId).attachPlate(plateTrackId, quad, appearance, nowNanos);
+        if (plateTrackId <= 0L) {
+            throw new IllegalArgumentException("plateTrackId must be positive");
+        }
+        VehicleEntity entity = required(entityId);
+        Long owner = entityIdByPlateTrack.get(plateTrackId);
+        if (owner != null && owner != entityId) {
+            return PlateTrackAttachmentStatus.CONFLICT_REJECTED;
+        }
+        Long previousTrackId = entity.plateTrackId();
+        if (previousTrackId != null && previousTrackId != plateTrackId) {
+            entityIdByPlateTrack.remove(previousTrackId);
+            entity.detachPlateTrack(previousTrackId);
+        }
+        entity.attachPlate(plateTrackId, quad, appearance, nowNanos);
+        entityIdByPlateTrack.put(plateTrackId, entityId);
+        return owner == null
+                ? PlateTrackAttachmentStatus.ATTACHED
+                : PlateTrackAttachmentStatus.REFRESHED;
+    }
+
+    public synchronized PlateTrackAttachmentStatus reassignPlateTrack(
+            long plateTrackId,
+            long fromEntityId,
+            long toEntityId,
+            NormalizedQuad quad,
+            AppearanceDescriptor appearance,
+            long nowNanos
+    ) {
+        if (plateTrackId <= 0L) {
+            throw new IllegalArgumentException("plateTrackId must be positive");
+        }
+        Long owner = entityIdByPlateTrack.get(plateTrackId);
+        if (owner == null || owner != fromEntityId) {
+            return PlateTrackAttachmentStatus.CONFLICT_REJECTED;
+        }
+        VehicleEntity from = required(fromEntityId);
+        VehicleEntity to = required(toEntityId);
+        if (fromEntityId == toEntityId) {
+            to.attachPlate(plateTrackId, quad, appearance, nowNanos);
+            return PlateTrackAttachmentStatus.REFRESHED;
+        }
+        Long displacedTrackId = to.plateTrackId();
+        if (displacedTrackId != null && displacedTrackId != plateTrackId) {
+            entityIdByPlateTrack.remove(displacedTrackId);
+            to.detachPlateTrack(displacedTrackId);
+        }
+        from.detachPlateTrack(plateTrackId);
+        to.attachPlate(plateTrackId, quad, appearance, nowNanos);
+        entityIdByPlateTrack.put(plateTrackId, toEntityId);
+        return PlateTrackAttachmentStatus.REASSIGNED;
     }
 
     public synchronized void recordMtAttempt(long entityId, long nowNanos) {
         required(entityId).recordMtAttempt(nowNanos);
     }
 
-    public synchronized void updateRegistration(
+    public synchronized boolean updateRegistration(
             long entityId,
             PlateTextConsensus consensus,
             long nowNanos
     ) {
-        required(entityId).updateRegistration(consensus, nowNanos);
+        return updateRegistration(
+                entityId,
+                consensus,
+                nowNanos,
+                true,
+                RegistrationConsensusSource.FRESH_MZ
+        );
+    }
+
+    public synchronized boolean updateRegistration(
+            long entityId,
+            PlateTextConsensus consensus,
+            long nowNanos,
+            boolean freshMzAttempted,
+            RegistrationConsensusSource source
+    ) {
+        return required(entityId).updateRegistration(
+                consensus, nowNanos, freshMzAttempted, source
+        );
     }
 
     public synchronized void considerCrop(long entityId, CropReference crop) {
@@ -183,6 +248,7 @@ public final class VehicleEntityRepository {
         );
         byEntityId.remove(entityId);
         entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+        removePlateOwnership(entity);
         trimCompleted();
     }
 
@@ -198,6 +264,7 @@ public final class VehicleEntityRepository {
                     && entity.acquisitionState() != EntityAcquisitionState.EXPIRED) {
                 entity.expire();
                 entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+                removePlateOwnership(entity);
                 iterator.remove();
                 expired++;
             }
@@ -213,6 +280,7 @@ public final class VehicleEntityRepository {
             VehicleEntity entity = iterator.next().getValue();
             if (entity.acquisitionState() != EntityAcquisitionState.EXPIRED) continue;
             entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+            removePlateOwnership(entity);
             iterator.remove();
             purged++;
         }
@@ -222,6 +290,7 @@ public final class VehicleEntityRepository {
     public synchronized void resetScene() {
         byEntityId.clear();
         entityIdByVehicleTrack.clear();
+        entityIdByPlateTrack.clear();
     }
 
     public synchronized int size() {
@@ -253,8 +322,15 @@ public final class VehicleEntityRepository {
             if (removed != null) {
                 removed.expire();
                 entityIdByVehicleTrack.remove(removed.vehicleTrackId());
+                removePlateOwnership(removed);
             }
         }
+    }
+
+    private void removePlateOwnership(VehicleEntity entity) {
+        if (entity == null) return;
+        Long plateTrackId = entity.plateTrackId();
+        if (plateTrackId != null) entityIdByPlateTrack.remove(plateTrackId);
     }
 
     private void trimCompleted() {

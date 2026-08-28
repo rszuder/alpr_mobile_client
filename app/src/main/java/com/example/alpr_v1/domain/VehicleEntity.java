@@ -14,6 +14,8 @@ public final class VehicleEntity {
     private AppearanceDescriptor vehicleAppearance = new AppearanceDescriptor(null);
     private AppearanceDescriptor plateAppearance = new AppearanceDescriptor(null);
     private PlateTextConsensus registration = PlateTextConsensus.EMPTY;
+    private RegistrationConsensusSource registrationSource =
+            RegistrationConsensusSource.NONE;
     private EntityAcquisitionState acquisitionState = EntityAcquisitionState.NEW;
     private SearchMatchState searchMatchState = SearchMatchState.NOT_EVALUATED;
     private PersistentLockIdentityState lockIdentityState =
@@ -59,6 +61,9 @@ public final class VehicleEntity {
     public synchronized AppearanceDescriptor vehicleAppearance() { return vehicleAppearance; }
     public synchronized AppearanceDescriptor plateAppearance() { return plateAppearance; }
     public synchronized PlateTextConsensus registration() { return registration; }
+    public synchronized RegistrationConsensusSource registrationSource() {
+        return registrationSource;
+    }
     public synchronized EntityAcquisitionState acquisitionState() { return acquisitionState; }
     public synchronized SearchMatchState searchMatchState() { return searchMatchState; }
     public synchronized PersistentLockIdentityState lockIdentityState() { return lockIdentityState; }
@@ -106,15 +111,31 @@ public final class VehicleEntity {
         acquisitionState = EntityAcquisitionState.PLATE_LOCALIZED;
     }
 
+    synchronized void detachPlateTrack(long expectedTrackId) {
+        if (plateTrackId != null && plateTrackId == expectedTrackId) {
+            plateTrackId = null;
+        }
+    }
+
     synchronized void recordMtAttempt(long nowNanos) {
         mtAttempts++;
         lastMtNanos = Math.max(lastMtNanos, nowNanos);
     }
 
-    synchronized void updateRegistration(PlateTextConsensus consensus, long nowNanos) {
-        registration = consensus == null ? PlateTextConsensus.EMPTY : consensus;
-        mzAttempts++;
+    synchronized boolean updateRegistration(
+            PlateTextConsensus consensus,
+            long nowNanos,
+            boolean freshMzAttempted,
+            RegistrationConsensusSource source
+    ) {
+        PlateTextConsensus incoming = consensus == null
+                ? PlateTextConsensus.EMPTY : consensus;
+        if (freshMzAttempted) mzAttempts++;
         lastMzNanos = Math.max(lastMzNanos, nowNanos);
+        if (!shouldAdoptConsensus(registration, incoming)) return false;
+        registration = incoming;
+        registrationSource = source == null
+                ? RegistrationConsensusSource.NONE : source;
         lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
         acquisitionState = registration.stable
                 ? EntityAcquisitionState.ACQUIRED
@@ -124,6 +145,23 @@ public final class VehicleEntity {
                 : registration.available()
                         ? PersistentLockIdentityState.PARTIALLY_IDENTIFIED
                         : PersistentLockIdentityState.UNIDENTIFIED;
+        return true;
+    }
+
+    private static boolean shouldAdoptConsensus(
+            PlateTextConsensus current,
+            PlateTextConsensus incoming
+    ) {
+        if (incoming == null || !incoming.available()) return false;
+        if (current == null || !current.available()) return true;
+        if (current.stable && !incoming.stable) return false;
+        if (incoming.stable && !current.stable) return true;
+        if (current.text.equals(incoming.text)) {
+            return incoming.observations >= current.observations
+                    || incoming.confidence >= current.confidence;
+        }
+        return incoming.confidence > current.confidence
+                && incoming.observations >= current.observations;
     }
 
     synchronized void considerCrop(CropReference crop) {

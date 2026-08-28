@@ -108,7 +108,10 @@ public final class VehicleTrackingCoordinator {
         return latestFrame;
     }
 
-    public synchronized VehicleTrackingFrame latestFrame() { return latestFrame; }
+    public synchronized VehicleTrackingFrame latestFrame() {
+        latestFrame = withCurrentAcquisitionStates(latestFrame);
+        return latestFrame;
+    }
     public synchronized long lastMpObservationGapNanos() {
         return lastMpObservationGapNanos;
     }
@@ -285,6 +288,9 @@ public final class VehicleTrackingCoordinator {
         List<VehicleCandidate> candidates = new ArrayList<>(snapshots.size());
         for (VehicleTrackManager.Snapshot snapshot : snapshots) {
             float effectiveConfidence = effectiveConfidence(snapshot, snapshotTimestampNanos);
+            com.example.alpr_v1.domain.VehicleEntity entity = repository.get(
+                    snapshot.entityId
+            );
             candidates.add(new VehicleCandidate(
                     snapshot.entityId,
                     snapshot.vehicleTrackId,
@@ -296,7 +302,8 @@ public final class VehicleTrackingCoordinator {
                     snapshot.missedUpdates,
                     snapshot.lastMeasurementTimestampNanos,
                     snapshotTimestampNanos,
-                    snapshot.sourceIndex
+                    snapshot.sourceIndex,
+                    entity == null ? null : entity.acquisitionState()
             ));
         }
         return new VehicleTrackingFrame(
@@ -305,6 +312,47 @@ public final class VehicleTrackingCoordinator {
                 snapshotTimestampNanos,
                 sceneGeneration,
                 candidates
+        );
+    }
+
+    private VehicleTrackingFrame withCurrentAcquisitionStates(
+            VehicleTrackingFrame source
+    ) {
+        List<VehicleCandidate> refreshed = new ArrayList<>(source.candidates.size());
+        boolean changed = false;
+        for (VehicleCandidate candidate : source.candidates) {
+            com.example.alpr_v1.domain.VehicleEntity entity = repository.get(
+                    candidate.entityId
+            );
+            if (entity == null) {
+                changed = true;
+                continue;
+            }
+            com.example.alpr_v1.domain.EntityAcquisitionState currentState =
+                    entity.acquisitionState();
+            if (currentState != candidate.acquisitionState) changed = true;
+            refreshed.add(new VehicleCandidate(
+                    candidate.entityId,
+                    candidate.vehicleTrackId,
+                    candidate.bounds,
+                    candidate.detectionConfidence,
+                    candidate.effectiveConfidence,
+                    candidate.exitUrgency,
+                    candidate.predicted,
+                    candidate.missedUpdates,
+                    candidate.lastMeasurementTimestampNanos,
+                    candidate.snapshotTimestampNanos,
+                    candidate.sourceIndex,
+                    currentState
+            ));
+        }
+        if (!changed) return source;
+        return new VehicleTrackingFrame(
+                source.sourceFrameId,
+                source.sourceTimestampNanos,
+                source.snapshotTimestampNanos,
+                source.sceneGeneration,
+                refreshed
         );
     }
 

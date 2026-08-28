@@ -174,7 +174,8 @@ final class VehicleRoiSelector {
                     0,
                     tracked.lastMeasurementTimestampNanos,
                     tracked.lastMeasurementTimestampNanos,
-                    sourceIndex
+                    sourceIndex,
+                    tracked.acquisitionState
             );
             result.add(new VehicleRoi(
                     rawCandidate,
