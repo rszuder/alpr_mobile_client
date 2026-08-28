@@ -16,6 +16,11 @@ public final class SceneTransitionCoordinator {
     private SceneContinuityState currentState = SceneContinuityState.STABLE;
     private ContinuityAssessment assessment = ContinuityAssessment.none();
     private long decisionRevision;
+    private long sceneGeneration;
+    private long visualEpoch;
+    private long cameraTransformGeneration;
+    private long hardResetRevision;
+    private long visualEpochRevision;
     private long lastTransitionNanos;
     private long stateEnteredNanos;
     private long unexplainedSinceNanos = -1L;
@@ -134,14 +139,33 @@ public final class SceneTransitionCoordinator {
                 currentState,
                 assessment.classification,
                 decisionRevision,
-                0L,
-                0L,
-                0L,
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                hardResetRevision,
+                visualEpochRevision,
                 finalizationSuspended,
                 heavyInferenceSuspended,
                 lastTransitionNanos,
                 assessment
         );
+    }
+
+    public synchronized ContinuityStamp stamp(long sourceTimestampNanos) {
+        return new ContinuityStamp(
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                sourceTimestampNanos
+        );
+    }
+
+    /** Controlled zoom/transform changes geometry but do not create a new scene. */
+    public synchronized long advanceCameraTransformGeneration(long nowNanos) {
+        Contracts.nonNegative("nowNanos", nowNanos);
+        cameraTransformGeneration++;
+        lastTransitionNanos = nowNanos;
+        return cameraTransformGeneration;
     }
 
     public synchronized SceneTransitionDecision requestStructuralReset(
@@ -360,7 +384,6 @@ public final class SceneTransitionCoordinator {
     }
 
     private SceneTransitionDecision beginSoftReacquire(long nowNanos, String reason) {
-        boolean needsNewVisualEpoch = currentState != SceneContinuityState.MOTION_HOLD;
         if (currentState == SceneContinuityState.REACQUIRING) {
             finalizationSuspended = true;
             heavyInferenceSuspended = false;
@@ -377,7 +400,7 @@ public final class SceneTransitionCoordinator {
                 true, false, true,
                 true, true, false,
                 true, true,
-                needsNewVisualEpoch, false,
+                true, false,
                 reason,
                 nowNanos
         );
@@ -476,6 +499,14 @@ public final class SceneTransitionCoordinator {
             long nowNanos
     ) {
         decisionRevision++;
+        if (incrementSceneGeneration) {
+            sceneGeneration++;
+            hardResetRevision = decisionRevision;
+        }
+        if (incrementVisualEpoch) {
+            visualEpoch++;
+            visualEpochRevision = decisionRevision;
+        }
         lastTransitionNanos = nowNanos;
         return new SceneTransitionDecision(
                 decisionRevision,

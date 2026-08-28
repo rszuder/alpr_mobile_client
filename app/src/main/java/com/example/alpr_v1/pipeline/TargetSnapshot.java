@@ -3,6 +3,7 @@ package com.example.alpr_v1.pipeline;
 import android.graphics.RectF;
 import android.graphics.PointF;
 
+import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.ArrayList;
@@ -34,6 +35,10 @@ public final class TargetSnapshot {
     public final long timeToLockMillis;
     public final long lockRevision;
     public final int lockReassociations;
+    public final long sceneGeneration;
+    public final long visualEpoch;
+    public final long cameraTransformGeneration;
+    public final long sourceTimestampNanos;
 
     TargetSnapshot(
             State state,
@@ -58,6 +63,42 @@ public final class TargetSnapshot {
             long lockRevision,
             int lockReassociations
     ) {
+        this(
+                state, trackId, overlayItem, trackingQuality, driftScore, supportRatio,
+                trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
+                stableUpdates, updatedAtNanos, appearanceDescriptor, lockedTrackId,
+                transitionReason, lockSwitches, lockLosses, framesToLock,
+                timeToLockMillis, lockRevision, lockReassociations,
+                ContinuityStamp.initial(updatedAtNanos)
+        );
+    }
+
+    TargetSnapshot(
+            State state,
+            long trackId,
+            OverlayItem overlayItem,
+            float trackingQuality,
+            float driftScore,
+            float supportRatio,
+            int trackerInliers,
+            int consecutiveFailures,
+            int ageFrames,
+            int framesSinceMtAnchor,
+            int stableUpdates,
+            long updatedAtNanos,
+            float[] appearanceDescriptor,
+            long lockedTrackId,
+            String transitionReason,
+            int lockSwitches,
+            int lockLosses,
+            int framesToLock,
+            long timeToLockMillis,
+            long lockRevision,
+            int lockReassociations,
+            ContinuityStamp continuityStamp
+    ) {
+        ContinuityStamp safeStamp = continuityStamp == null
+                ? ContinuityStamp.initial(updatedAtNanos) : continuityStamp;
         this.state = state == null ? State.SEARCHING : state;
         this.trackId = trackId;
         this.overlayItem = copyOverlay(overlayItem);
@@ -83,6 +124,10 @@ public final class TargetSnapshot {
         this.timeToLockMillis = Math.max(0L, timeToLockMillis);
         this.lockRevision = Math.max(0L, lockRevision);
         this.lockReassociations = Math.max(0, lockReassociations);
+        this.sceneGeneration = safeStamp.sceneGeneration;
+        this.visualEpoch = safeStamp.visualEpoch;
+        this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
     }
 
     public static TargetSnapshot searching() {
@@ -110,7 +155,29 @@ public final class TargetSnapshot {
                 supportRatio, trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
                 stableUpdates, System.nanoTime(), appearanceDescriptor,
                 lockedTrackId, transitionReason, lockSwitches, lockLosses,
-                framesToLock, timeToLockMillis, lockRevision, lockReassociations
+                framesToLock, timeToLockMillis, lockRevision, lockReassociations,
+                continuityStamp().withSourceTimestamp(System.nanoTime())
+        );
+    }
+
+    public TargetSnapshot withContinuityStamp(ContinuityStamp stamp) {
+        if (stamp == null) throw new IllegalArgumentException("stamp");
+        return new TargetSnapshot(
+                state, trackId, overlayItem, trackingQuality, driftScore,
+                supportRatio, trackerInliers, consecutiveFailures, ageFrames,
+                framesSinceMtAnchor, stableUpdates, updatedAtNanos,
+                appearanceDescriptor, lockedTrackId, transitionReason,
+                lockSwitches, lockLosses, framesToLock, timeToLockMillis,
+                lockRevision, lockReassociations, stamp
+        );
+    }
+
+    public ContinuityStamp continuityStamp() {
+        return new ContinuityStamp(
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                sourceTimestampNanos
         );
     }
 

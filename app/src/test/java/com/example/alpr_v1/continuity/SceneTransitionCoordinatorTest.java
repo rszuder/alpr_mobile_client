@@ -65,7 +65,7 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
-    public void settledMotionForcesFreshReacquireWithoutSecondEpochIncrement() {
+    public void settledMotionForcesFreshReacquireInAnotherVisualEpoch() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
         );
@@ -81,7 +81,7 @@ public final class SceneTransitionCoordinatorTest {
         assertTrue(decision.forceMpRefresh);
         assertTrue(decision.forceMtRefresh);
         assertTrue(decision.clearVehicleRoiCache);
-        assertFalse(decision.incrementVisualEpoch);
+        assertTrue(decision.incrementVisualEpoch);
     }
 
     @Test

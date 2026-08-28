@@ -2,6 +2,8 @@ package com.example.alpr_v1.pipeline;
 
 import android.graphics.Bitmap;
 
+import com.example.alpr_v1.continuity.ContinuityStamp;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -18,6 +20,10 @@ public final class PlateObservation {
     public final MtReason sourceMtReason;
     public final long trackId;
     public final long frameId;
+    public final long sceneGeneration;
+    public final long visualEpoch;
+    public final long cameraTransformGeneration;
+    public final long sourceTimestampNanos;
     public final Bitmap previewBitmap;
     public final String text;
     public final double plateConfidence;
@@ -70,8 +76,72 @@ public final class PlateObservation {
             String predictionBefore,
             String predictionAfter
     ) {
+        this(
+                trackId,
+                association,
+                sourceRoiKind,
+                sourceMtReason,
+                frameId,
+                previewBitmap,
+                text,
+                plateConfidence,
+                recognitionConfidence,
+                confirmed,
+                observations,
+                characters,
+                capturedAtMillis,
+                capturedElapsedNanos,
+                sharpness,
+                appearanceDescriptor,
+                timing,
+                geometry,
+                freshMzAttempted,
+                freshMzSuccessful,
+                freshPrediction,
+                cropSupportsConsensus,
+                mzAttemptIndex,
+                layout,
+                rowCounts,
+                predictionBefore,
+                predictionAfter,
+                ContinuityStamp.initial(capturedElapsedNanos)
+        );
+    }
+
+    public PlateObservation(
+            long trackId,
+            PlateVehicleAssociation association,
+            MtWorkKind sourceRoiKind,
+            MtReason sourceMtReason,
+            long frameId,
+            Bitmap previewBitmap,
+            String text,
+            double plateConfidence,
+            double recognitionConfidence,
+            boolean confirmed,
+            int observations,
+            List<PlateCharacter> characters,
+            long capturedAtMillis,
+            long capturedElapsedNanos,
+            float sharpness,
+            float[] appearanceDescriptor,
+            CropInferenceTiming timing,
+            PlateGeometry geometry,
+            boolean freshMzAttempted,
+            boolean freshMzSuccessful,
+            String freshPrediction,
+            boolean cropSupportsConsensus,
+            int mzAttemptIndex,
+            String layout,
+            List<Integer> rowCounts,
+            String predictionBefore,
+            String predictionAfter,
+            ContinuityStamp continuityStamp
+    ) {
         PlateVehicleAssociation safeAssociation = association == null
                 ? PlateVehicleAssociation.unassigned("missing_association") : association;
+        ContinuityStamp safeStamp = continuityStamp == null
+                ? ContinuityStamp.initial(capturedElapsedNanos) : continuityStamp;
         this.entityId = safeAssociation.entityId;
         this.vehicleTrackId = safeAssociation.vehicleTrackId;
         this.plateTrackId = trackId;
@@ -82,6 +152,10 @@ public final class PlateObservation {
         this.sourceMtReason = sourceMtReason == null ? MtReason.UNKNOWN : sourceMtReason;
         this.trackId = trackId;
         this.frameId = frameId;
+        this.sceneGeneration = safeStamp.sceneGeneration;
+        this.visualEpoch = safeStamp.visualEpoch;
+        this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
         this.previewBitmap = previewBitmap;
         this.text = text == null ? "" : text;
         this.plateConfidence = plateConfidence;
@@ -107,6 +181,15 @@ public final class PlateObservation {
         ));
         this.predictionBefore = predictionBefore == null ? "" : predictionBefore;
         this.predictionAfter = predictionAfter == null ? "" : predictionAfter;
+    }
+
+    public ContinuityStamp continuityStamp() {
+        return new ContinuityStamp(
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                sourceTimestampNanos
+        );
     }
 
     void recyclePreview() {

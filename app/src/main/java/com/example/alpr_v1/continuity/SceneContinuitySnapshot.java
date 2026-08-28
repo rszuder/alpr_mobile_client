@@ -9,6 +9,8 @@ public final class SceneContinuitySnapshot {
     public final long sceneGeneration;
     public final long visualEpoch;
     public final long cameraTransformGeneration;
+    public final long hardResetRevision;
+    public final long visualEpochRevision;
     public final boolean finalizationSuspended;
     public final boolean heavyInferenceSuspended;
     public final long lastTransitionNanos;
@@ -27,6 +29,30 @@ public final class SceneContinuitySnapshot {
             long lastTransitionNanos,
             ContinuityAssessment assessment
     ) {
+        this(
+                mode, state, classification, decisionRevision,
+                sceneGeneration, visualEpoch, cameraTransformGeneration,
+                0L, 0L,
+                finalizationSuspended, heavyInferenceSuspended,
+                lastTransitionNanos, assessment
+        );
+    }
+
+    public SceneContinuitySnapshot(
+            SceneHandlingMode mode,
+            SceneContinuityState state,
+            VisualChangeClassification classification,
+            long decisionRevision,
+            long sceneGeneration,
+            long visualEpoch,
+            long cameraTransformGeneration,
+            long hardResetRevision,
+            long visualEpochRevision,
+            boolean finalizationSuspended,
+            boolean heavyInferenceSuspended,
+            long lastTransitionNanos,
+            ContinuityAssessment assessment
+    ) {
         this.mode = Contracts.required("mode", mode);
         this.state = Contracts.required("state", state);
         this.classification = Contracts.required("classification", classification);
@@ -39,6 +65,12 @@ public final class SceneContinuitySnapshot {
         this.visualEpoch = Contracts.nonNegative("visualEpoch", visualEpoch);
         this.cameraTransformGeneration = Contracts.nonNegative(
                 "cameraTransformGeneration", cameraTransformGeneration
+        );
+        this.hardResetRevision = Contracts.nonNegative(
+                "hardResetRevision", hardResetRevision
+        );
+        this.visualEpochRevision = Contracts.nonNegative(
+                "visualEpochRevision", visualEpochRevision
         );
         this.finalizationSuspended = finalizationSuspended;
         this.heavyInferenceSuspended = heavyInferenceSuspended;

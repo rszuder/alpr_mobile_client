@@ -3,6 +3,8 @@ package com.example.alpr_v1.metrics;
 import android.os.SystemClock;
 import android.os.Debug;
 
+import com.example.alpr_v1.continuity.ContinuityStamp;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -14,6 +16,7 @@ public final class InferenceTrace {
     private final long frameId;
     private final long timestampMillis;
     private final long elapsedRealtimeNanos;
+    private final ContinuityStamp continuityStamp;
     private final Map<String, Long> stageStarts = new LinkedHashMap<>();
     private final Map<String, Long> durationsNanos = new LinkedHashMap<>();
     private final Map<String, Double> confidences = new LinkedHashMap<>();
@@ -28,9 +31,16 @@ public final class InferenceTrace {
     private final boolean memorySampled;
 
     public InferenceTrace(long frameId) {
+        this(frameId, ContinuityStamp.initial(SystemClock.elapsedRealtimeNanos()));
+    }
+
+    public InferenceTrace(long frameId, ContinuityStamp continuityStamp) {
         this.frameId = frameId;
         this.timestampMillis = System.currentTimeMillis();
         this.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
+        this.continuityStamp = continuityStamp == null
+                ? ContinuityStamp.initial(this.elapsedRealtimeNanos)
+                : continuityStamp;
         this.memorySampled = frameId % 30 == 1;
         this.pssStartKb = memorySampled ? Debug.getPss() : -1;
         this.nativeHeapStartBytes = memorySampled ? Debug.getNativeHeapAllocatedSize() : -1;
@@ -82,6 +92,13 @@ public final class InferenceTrace {
     public long frameId() { return frameId; }
     public long timestampMillis() { return timestampMillis; }
     public long elapsedRealtimeNanos() { return elapsedRealtimeNanos; }
+    public long sceneGeneration() { return continuityStamp.sceneGeneration; }
+    public long visualEpoch() { return continuityStamp.visualEpoch; }
+    public long cameraTransformGeneration() {
+        return continuityStamp.cameraTransformGeneration;
+    }
+    public long sourceTimestampNanos() { return continuityStamp.sourceTimestampNanos; }
+    public ContinuityStamp continuityStamp() { return continuityStamp; }
     public String status() { return status; }
     public String recognizedText() { return recognizedText; }
     public Map<String, Long> durationsNanos() { return Collections.unmodifiableMap(durationsNanos); }
@@ -103,6 +120,10 @@ public final class InferenceTrace {
         json.put("frame_id", frameId);
         json.put("timestamp_ms", timestampMillis);
         json.put("elapsed_realtime_ns", elapsedRealtimeNanos);
+        json.put("scene_generation", continuityStamp.sceneGeneration);
+        json.put("visual_epoch", continuityStamp.visualEpoch);
+        json.put("camera_transform_generation", continuityStamp.cameraTransformGeneration);
+        json.put("source_timestamp_ns", continuityStamp.sourceTimestampNanos);
         json.put("status", status);
         json.put("text", recognizedText);
         JSONObject stages = new JSONObject();

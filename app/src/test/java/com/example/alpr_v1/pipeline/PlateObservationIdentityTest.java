@@ -3,6 +3,7 @@ package com.example.alpr_v1.pipeline;
 import static org.junit.Assert.assertEquals;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 
 import org.junit.Test;
@@ -45,7 +46,8 @@ public class PlateObservationIdentityTest {
                 TemporalCharacterAggregator.LAYOUT_SINGLE_ROW,
                 Collections.singletonList(7),
                 "WE911G",
-                "WE911GT"
+                "WE911GT",
+                new ContinuityStamp(2L, 7L, 4L, 200L)
         );
 
         assertEquals(21L, observation.entityId);
@@ -53,5 +55,9 @@ public class PlateObservationIdentityTest {
         assertEquals(41L, observation.plateTrackId);
         assertEquals(VehicleAssociationStatus.DIRECT_ROI, observation.associationStatus);
         assertEquals(MtWorkKind.VEHICLE_ROI, observation.sourceRoiKind);
+        assertEquals(2L, observation.sceneGeneration);
+        assertEquals(7L, observation.visualEpoch);
+        assertEquals(4L, observation.cameraTransformGeneration);
+        assertEquals(200L, observation.sourceTimestampNanos);
     }
 }

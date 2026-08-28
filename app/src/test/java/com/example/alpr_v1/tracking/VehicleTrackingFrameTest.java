@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.continuity.ContinuityStamp;
 
 import org.junit.Test;
 
@@ -41,6 +42,21 @@ public class VehicleTrackingFrameTest {
         );
 
         frame.candidates.clear();
+    }
+
+    @Test
+    public void frameCanCarryAllContinuityGenerations() {
+        VehicleTrackingFrame frame = new VehicleTrackingFrame(
+                3L, 100L, 160L,
+                2L, 7L, 4L,
+                java.util.Collections.singletonList(candidate(1L, 2L, 100L, 160L))
+        );
+
+        ContinuityStamp stamp = frame.continuityStamp();
+        assertEquals(2L, stamp.sceneGeneration);
+        assertEquals(7L, stamp.visualEpoch);
+        assertEquals(4L, stamp.cameraTransformGeneration);
+        assertEquals(100L, stamp.sourceTimestampNanos);
     }
 
     private static VehicleCandidate candidate(

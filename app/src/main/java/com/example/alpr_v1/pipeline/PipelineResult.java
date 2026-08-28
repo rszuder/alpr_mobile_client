@@ -1,5 +1,6 @@
 package com.example.alpr_v1.pipeline;
 
+import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.ArrayList;
@@ -16,6 +17,10 @@ public final class PipelineResult implements AutoCloseable {
     public final List<PlateObservation> plateObservations;
     public final int sourceWidth;
     public final int sourceHeight;
+    public final long sceneGeneration;
+    public final long visualEpoch;
+    public final long cameraTransformGeneration;
+    public final long sourceTimestampNanos;
 
     public final boolean sceneReset;
 
@@ -60,6 +65,32 @@ public final class PipelineResult implements AutoCloseable {
             int sourceHeight,
             boolean sceneReset
     ) {
+        this(
+                status,
+                message,
+                recognizedText,
+                confidence,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                sceneReset,
+                ContinuityStamp.initial(0L)
+        );
+    }
+
+    public PipelineResult(
+            String status,
+            String message,
+            String recognizedText,
+            double confidence,
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            boolean sceneReset,
+            ContinuityStamp continuityStamp
+    ) {
+        ContinuityStamp safeStamp = continuityStamp == null
+                ? ContinuityStamp.initial(0L) : continuityStamp;
         this.status = status;
         this.message = message;
         this.recognizedText = recognizedText == null ? "" : recognizedText;
@@ -82,6 +113,10 @@ public final class PipelineResult implements AutoCloseable {
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
         this.sceneReset = sceneReset;
+        this.sceneGeneration = safeStamp.sceneGeneration;
+        this.visualEpoch = safeStamp.visualEpoch;
+        this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
     }
 
     public PipelineResult(
@@ -127,6 +162,32 @@ public final class PipelineResult implements AutoCloseable {
             List<PlateObservation> plateObservations,
             boolean sceneReset
     ) {
+        this(
+                status,
+                message,
+                recognitions,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                plateObservations,
+                sceneReset,
+                ContinuityStamp.initial(0L)
+        );
+    }
+
+    public PipelineResult(
+            String status,
+            String message,
+            List<PlateRecognition> recognitions,
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            List<PlateObservation> plateObservations,
+            boolean sceneReset,
+            ContinuityStamp continuityStamp
+    ) {
+        ContinuityStamp safeStamp = continuityStamp == null
+                ? ContinuityStamp.initial(0L) : continuityStamp;
         this.status = status;
         this.message = message;
 
@@ -162,6 +223,19 @@ public final class PipelineResult implements AutoCloseable {
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
         this.sceneReset = sceneReset;
+        this.sceneGeneration = safeStamp.sceneGeneration;
+        this.visualEpoch = safeStamp.visualEpoch;
+        this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
+    }
+
+    public ContinuityStamp continuityStamp() {
+        return new ContinuityStamp(
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                sourceTimestampNanos
+        );
     }
 
     public static PipelineResult waitingForModels() {
