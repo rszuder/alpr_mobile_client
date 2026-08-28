@@ -182,6 +182,20 @@ public final class SceneTransitionCoordinator {
         return hardReset(assessment.reason, nowNanos);
     }
 
+    public synchronized SceneTransitionDecision requestSoftReacquire(
+            String reason,
+            long nowNanos
+    ) {
+        Contracts.nonNegative("nowNanos", nowNanos);
+        if (currentState == SceneContinuityState.HARD_RESETTING) {
+            enterState(SceneContinuityState.STABLE, nowNanos);
+        }
+        return beginSoftReacquire(
+                nowNanos,
+                Contracts.reason(reason).isEmpty() ? "soft_reacquire_requested" : reason
+        );
+    }
+
     private ContinuityAssessment assess(SceneEvidence evidence) {
         float targetScore = targetEvaluator.evaluate(evidence.target, profile);
         float vehicleScore = vehicleEvaluator.evaluate(evidence.vehicles);

@@ -248,6 +248,30 @@ public final class PipelineResult implements AutoCloseable {
         );
     }
 
+    public static PipelineResult waitingForModels(ContinuityStamp stamp) {
+        return waitingForModels().withContinuityStamp(stamp);
+    }
+
+    public PipelineResult withContinuityStamp(ContinuityStamp stamp) {
+        List<PlateObservation> stampedObservations = new ArrayList<>(
+                plateObservations.size()
+        );
+        for (PlateObservation observation : plateObservations) {
+            stampedObservations.add(observation.withContinuityStamp(stamp));
+        }
+        return new PipelineResult(
+                status,
+                message,
+                recognitions,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                stampedObservations,
+                sceneReset,
+                stamp
+        );
+    }
+
     public boolean hasConfirmedRecognition() {
         for (PlateRecognition recognition : recognitions) {
             if (recognition.confirmed) return true;

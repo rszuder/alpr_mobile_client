@@ -192,6 +192,58 @@ public final class PlateObservation {
         );
     }
 
+    public PlateObservation withContinuityStamp(ContinuityStamp stamp) {
+        return new PlateObservation(
+                trackId,
+                copiedAssociation(),
+                sourceRoiKind,
+                sourceMtReason,
+                frameId,
+                previewBitmap,
+                text,
+                plateConfidence,
+                recognitionConfidence,
+                confirmed,
+                observations,
+                characters,
+                capturedAtMillis,
+                capturedElapsedNanos,
+                sharpness,
+                appearanceDescriptor,
+                timing,
+                geometry,
+                freshMzAttempted,
+                freshMzSuccessful,
+                freshPrediction,
+                cropSupportsConsensus,
+                mzAttemptIndex,
+                layout,
+                rowCounts,
+                predictionBefore,
+                predictionAfter,
+                stamp
+        );
+    }
+
+    private PlateVehicleAssociation copiedAssociation() {
+        if (associationStatus == VehicleAssociationStatus.DIRECT_ROI) {
+            return PlateVehicleAssociation.directValidated(
+                    entityId, vehicleTrackId, associationConfidence, associationReason
+            );
+        }
+        if (associationStatus == VehicleAssociationStatus.ASSOCIATED_FULL_FRAME) {
+            return PlateVehicleAssociation.associated(
+                    entityId, vehicleTrackId, associationConfidence, associationReason
+            );
+        }
+        if (associationStatus == VehicleAssociationStatus.AMBIGUOUS) {
+            return PlateVehicleAssociation.ambiguous(
+                    associationConfidence, associationReason
+            );
+        }
+        return PlateVehicleAssociation.unassigned(associationReason);
+    }
+
     void recyclePreview() {
         if (previewBitmap != null && !previewBitmap.isRecycled()) previewBitmap.recycle();
     }
