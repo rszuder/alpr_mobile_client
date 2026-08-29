@@ -2269,12 +2269,8 @@ public final class MainActivity extends AppCompatActivity {
         long generation =
                 uiSceneGeneration.incrementAndGet();
 
-        if (pipeline != null && requestPipelineReset) {
-            targetStateMachine.reset();
-            pipeline.requestTrackingReset();
-        } else {
-            targetStateMachine.reset();
-        }
+        /* Pipeline decision has already been applied by SceneTransitionCoordinator. */
+        targetStateMachine.reset();
 
         clearAutoZoomRecognitionMemory();
         if (currentCameraZoomRatio > 1.01f) {
@@ -4050,15 +4046,33 @@ public final class MainActivity extends AppCompatActivity {
         abortAutoZoomAfterTransform = true;
         autoZoomController.requestReturn();
         clearAutoZoomRecognitionMemory();
-        uiSceneGeneration.incrementAndGet();
-        if (pipeline != null) pipeline.requestTrackingReset();
-        targetStateMachine.reset();
-        overlayTracker.reset();
-        previewPlateTracker.reset();
-        latestDiagnosticOverlayItems = java.util.Collections.emptyList();
-        latestPipelinePlateItems = java.util.Collections.emptyList();
-        overlayView.setItems(java.util.Collections.emptyList());
-        liveHudAwaitingFreshResult = true;
+        if (pipeline != null) {
+            if (cameraMotionMonitor != null) {
+                pipeline.setCameraMotionEvidence(
+                        cameraMotionMonitor.isAvailable(),
+                        cameraMotionMonitor.isMoving(),
+                        cameraMotionMonitor.isRapidMotion(),
+                        cameraMotionMonitor.magnitude()
+                );
+            }
+            SceneTransitionDecision decision = pipeline.onPreviewSceneEvidence(
+                    System.nanoTime(),
+                    false,
+                    0f,
+                    0f,
+                    0f,
+                    0f,
+                    0f,
+                    false,
+                    true
+            );
+            renderPreviewContinuityDecision(
+                    decision,
+                    0f,
+                    0f,
+                    currentOverlayItems()
+            );
+        }
         livePresentation.showState(
                 LivePresentationController.State.RECOVERING,
                 hudRoiLabel() + " · RUCH KAMERY"
@@ -4370,11 +4384,29 @@ public final class MainActivity extends AppCompatActivity {
                 autoZoomPreZoomSceneAnchorGuard.evaluate(previewBitmap);
         if (returned.changed) {
             recordInfo("Auto zoom: po powrocie wykryto inną scenę");
-            invalidateUiForPreviewSceneChange(
+            if (pipeline == null) return;
+            SceneTransitionDecision decision = pipeline.onPreviewSceneEvidence(
+                    System.nanoTime(),
+                    true,
                     returned.score,
-                    returned.changedFraction
+                    returned.changedFraction,
+                    0f,
+                    returned.score,
+                    returned.changedFraction,
+                    false,
+                    false
             );
-            return;
+            renderPreviewContinuityDecision(
+                    decision,
+                    returned.score,
+                    returned.changedFraction,
+                    currentOverlayItems()
+            );
+            if (decision.action != SceneTransitionAction.NONE
+                    || decision.nextState
+                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE) {
+                return;
+            }
         }
 
         /* Ta sama scena: zachowujemy wynik i jedynie ponownie kotwiczymy UI. */
@@ -4384,6 +4416,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorPending = false;
 
         if (autoZoomMemoryVisible) {
+            ContinuityStamp sourceStamp = currentContinuityStamp(System.nanoTime());
             List<OverlayItem> returnedOverlay = transformOverlayItems(
                     autoZoomBaseMemoryOverlayItems,
                     1f,
@@ -4400,10 +4433,11 @@ public final class MainActivity extends AppCompatActivity {
                     latestOverlaySourceHeight
             )) {
                 if (pipeline != null) {
-                    pipeline.setTargetSnapshot(
+                    pipeline.setTargetSnapshotIfCurrent(
                             targetStateMachine.onMtAnchor(
                                     activeTrackingOverlayItems(returnedOverlay)
-                            )
+                            ),
+                            sourceStamp
                     );
                 }
                 previewPlateTracker.update(previewBitmap);

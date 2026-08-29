@@ -123,6 +123,8 @@ final class MobileAlprEngine implements AutoCloseable {
     private SoftReacquireReport pendingSoftReacquireReport = SoftReacquireReport.none();
     private VehicleContinuityEvidence latestSoftReacquireVehicles =
             VehicleContinuityEvidence.empty();
+    private InternalSceneEvidence pendingInternalSceneEvidence =
+            InternalSceneEvidence.none();
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -353,6 +355,12 @@ final class MobileAlprEngine implements AutoCloseable {
         return report;
     }
 
+    InternalSceneEvidence consumeInternalSceneEvidence() {
+        InternalSceneEvidence evidence = pendingInternalSceneEvidence;
+        pendingInternalSceneEvidence = InternalSceneEvidence.none();
+        return evidence;
+    }
+
     void setRapidCameraMotion(boolean rapid) {
         rapidCameraMotion = rapid;
     }
@@ -450,16 +458,24 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putAttribute("continuity_reason", continuityReason);
             throw new ProcessingCancelledException();
         }
+        pendingInternalSceneEvidence = InternalSceneEvidence.none();
         SceneChangeDetector.Result scene =
                 sceneChangeDetector.update(frame);
 
         boolean effectiveSceneChanged = scene.sceneChanged
                 && !cameraTransformInProgress;
-        boolean hardSceneBoundary = shouldHardResetInternalScene(
-                sceneHandlingMode,
+        boolean internalSceneEvidence = shouldReportInternalSceneEvidence(
                 scene.sceneChanged,
                 cameraTransformInProgress
         );
+        if (internalSceneEvidence) {
+            pendingInternalSceneEvidence = InternalSceneEvidence.detected(
+                    scene.score,
+                    scene.changedFraction,
+                    scene.brightnessDelta
+            );
+        }
+        boolean hardSceneBoundary = false;
 
         trace.putConfidence(
                 "scene_change_score",
@@ -505,21 +521,8 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         cancelIfRequested(cancellationRequested);
 
-        if (hardSceneBoundary) {
-
-            resetSceneDependentState();
-
-            trace.putCount("scene_reset", 1);
-            trace.putAttribute("mz_state_event", "SCENE_RESET");
-
-            android.util.Log.d(
-                    "ALPR_SCENE",
-                    "RESET frame=" + trace.frameId()
-                            + " -> wyczyszczono tracki MT/MZ i cache MP"
-            );
-        } else {
-            trace.putCount("scene_reset", 0);
-        }
+        trace.putCount("internal_scene_change_evidence", internalSceneEvidence ? 1 : 0);
+        trace.putCount("scene_reset", 0);
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoi> vehicleRois = new ArrayList<>();
@@ -1587,14 +1590,12 @@ final class MobileAlprEngine implements AutoCloseable {
         );
     }
 
-    static boolean shouldHardResetInternalScene(
-            SceneHandlingMode mode,
+    static boolean shouldReportInternalSceneEvidence(
             boolean confirmedRawChange,
             boolean cameraTransformInProgress
     ) {
         return confirmedRawChange
-                && !cameraTransformInProgress
-                && mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+                && !cameraTransformInProgress;
     }
 
     private void recordFreshMpReassociation(

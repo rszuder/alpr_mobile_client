@@ -4,8 +4,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import com.example.alpr_v1.continuity.SceneHandlingMode;
-
 import org.junit.Test;
 
 public final class MobileAlprEngineContinuityApiTest {
@@ -26,21 +24,15 @@ public final class MobileAlprEngineContinuityApiTest {
     }
 
     @Test
-    public void internalDetectorIsEvidenceOnlyInDynamicMode() {
-        assertTrue(MobileAlprEngine.shouldHardResetInternalScene(
-                SceneHandlingMode.STRICT_SCENE_BOUNDARY,
-                true,
-                false
+    public void internalDetectorOnlyReportsEvidenceAndNeverChoosesResetMode() {
+        assertTrue(MobileAlprEngine.shouldReportInternalSceneEvidence(
+                true, false
         ));
-        assertFalse(MobileAlprEngine.shouldHardResetInternalScene(
-                SceneHandlingMode.DYNAMIC_CONTINUITY,
-                true,
-                false
+        assertFalse(MobileAlprEngine.shouldReportInternalSceneEvidence(
+                true, true
         ));
-        assertFalse(MobileAlprEngine.shouldHardResetInternalScene(
-                SceneHandlingMode.STRICT_SCENE_BOUNDARY,
-                true,
-                true
+        assertFalse(MobileAlprEngine.shouldReportInternalSceneEvidence(
+                false, false
         ));
     }
 }

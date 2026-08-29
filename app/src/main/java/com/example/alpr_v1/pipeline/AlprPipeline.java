@@ -507,7 +507,22 @@ public final class AlprPipeline {
                         "engine_total"
                 );
             }
-            handleSoftReacquireReport(engine.consumeSoftReacquireReport());
+            SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
+            InternalSceneEvidence internalEvidence = engine.consumeInternalSceneEvidence();
+            SceneTransitionDecision internalDecision = handleInternalSceneEvidence(
+                    internalEvidence, processingStamp
+            );
+            if (internalDecision != null
+                    && internalDecision.action == SceneTransitionAction.HARD_RESET
+                    && sceneChangeCallback != null) {
+                sceneChangeCallback.onSceneChanged(
+                        internalEvidence.score,
+                        internalEvidence.changedFraction
+                );
+            }
+            if (isCurrentContinuityStamp(processingStamp)) {
+                handleSoftReacquireReport(softReport);
+            }
             trace.putAttribute(
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -740,7 +755,22 @@ public final class AlprPipeline {
             } finally {
                 trace.stop("engine_total");
             }
-            handleSoftReacquireReport(engine.consumeSoftReacquireReport());
+            SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
+            InternalSceneEvidence internalEvidence = engine.consumeInternalSceneEvidence();
+            SceneTransitionDecision internalDecision = handleInternalSceneEvidence(
+                    internalEvidence, processingStamp
+            );
+            if (internalDecision != null
+                    && internalDecision.action == SceneTransitionAction.HARD_RESET
+                    && sceneChangeCallback != null) {
+                sceneChangeCallback.onSceneChanged(
+                        internalEvidence.score,
+                        internalEvidence.changedFraction
+                );
+            }
+            if (isCurrentContinuityStamp(processingStamp)) {
+                handleSoftReacquireReport(softReport);
+            }
             trace.putAttribute(
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -1144,6 +1174,24 @@ public final class AlprPipeline {
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
         return decision;
+    }
+
+    private SceneTransitionDecision handleInternalSceneEvidence(
+            InternalSceneEvidence internal,
+            ContinuityStamp sourceStamp
+    ) {
+        if (internal == null || !internal.detected || sourceStamp == null) return null;
+        return onPreviewSceneEvidence(
+                sourceStamp.sourceTimestampNanos,
+                true,
+                internal.score,
+                internal.changedFraction,
+                internal.brightnessDelta,
+                0f,
+                0f,
+                false,
+                false
+        );
     }
 
     private TargetContinuityEvidence currentTargetEvidence(long nowNanos) {

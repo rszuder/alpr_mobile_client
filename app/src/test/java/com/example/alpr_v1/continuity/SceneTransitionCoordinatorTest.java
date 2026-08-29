@@ -307,6 +307,55 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void physicalMotionDuringZoomRequestsSoftRecoveryInDynamicMode() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        SceneEvidence zoomMotion = new SceneEvidence(
+                5L, 50L, false,
+                0f, 0f, 0f, 0f, 0f,
+                targetEvidence(
+                        TargetContinuityLevel.PLATE_ONLY,
+                        0.4f, 1, 0.3f,
+                        0.3f, 0.3f, 0f, 0f, 0f,
+                        false
+                ),
+                VehicleContinuityEvidence.empty(),
+                new MotionExplanationEvidence(
+                        true, true, true, 1f,
+                        true, false, 0f, 0f, 0f, 0f
+                ),
+                false, true,
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(zoomMotion, 1_000L);
+
+        assertEquals(SceneTransitionAction.SOFT_HOLD, decision.action);
+        assertEquals(0L, coordinator.snapshot().sceneGeneration);
+    }
+
+    @Test
+    public void returnedSceneDifferenceUsesCoordinatorDecision() {
+        SceneTransitionCoordinator dynamic = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        SceneTransitionCoordinator strict = coordinator(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY
+        );
+
+        SceneTransitionDecision dynamicDecision = dynamic.observe(
+                unexplainedScene(6L), 1_000L
+        );
+        SceneTransitionDecision strictDecision = strict.observe(
+                unexplainedScene(6L), 1_000L
+        );
+
+        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, dynamicDecision.action);
+        assertEquals(SceneTransitionAction.HARD_RESET, strictDecision.action);
+    }
+
+    @Test
     public void lostActiveTargetReleasesOnlyTargetWhenPoolSurvives() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
