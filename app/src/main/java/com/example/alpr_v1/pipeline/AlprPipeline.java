@@ -126,6 +126,7 @@ public final class AlprPipeline {
     private final AutoTuneManager autoTuneManager;
     private final AdaptiveFrameGate frameGate;
     private final SceneChangeDetector sourceSceneDetector = new SceneChangeDetector();
+    private final SceneChangeDetector rotatedSceneDetector = new SceneChangeDetector();
     private final SceneTransitionCoordinator sceneTransitionCoordinator;
     private final ContinuityGenerationGate continuityGenerationGate =
             new ContinuityGenerationGate();
@@ -353,6 +354,81 @@ public final class AlprPipeline {
         try {
 
             trace.start(
+                    "camera_conversion"
+            );
+
+            try {
+
+                com.example.alpr_v1.vision.CameraImageConverter.Result
+                        conversion =
+                        com.example.alpr_v1.vision.CameraImageConverter
+                                .convert(
+                                        image
+                                );
+
+                frame =
+                        conversion.bitmap;
+
+                trace.putDurationNanos(
+                        "camera_to_bitmap",
+                        conversion.toBitmapNanos
+                );
+
+                trace.putDurationNanos(
+                        "camera_rotation",
+                        conversion.rotationNanos
+                );
+
+                trace.putCount(
+                        "camera_rotation_degrees",
+                        conversion.rotationDegrees
+                );
+
+            } finally {
+
+                trace.stop(
+                        "camera_conversion"
+                );
+            }
+
+            InternalSceneEvidence secondaryEvidence =
+                    inspectSecondarySceneBeforeInference(frame);
+            SceneTransitionDecision secondaryDecision =
+                    handleInternalSceneEvidence(
+                            secondaryEvidence,
+                            processingStamp
+                    );
+            appendSecondaryScenePreflightTelemetry(
+                    trace,
+                    secondaryEvidence,
+                    secondaryDecision
+            );
+            SecondaryScenePreflightGate secondaryPreflightGate =
+                    SecondaryScenePreflightGate.from(
+                            secondaryDecision,
+                            sceneTransitionCoordinator.snapshot()
+                                    .heavyInferenceSuspended
+                    );
+            if (secondaryPreflightGate.skipsInference()) {
+                recordContinuityFrameSkip(secondaryDecision);
+                if (sceneChangeCallback != null
+                        && secondaryDecision.action
+                        == SceneTransitionAction.HARD_RESET) {
+                    sceneChangeCallback.onSceneChanged(
+                            secondaryEvidence.score,
+                            secondaryEvidence.changedFraction
+                    );
+                }
+                trace.putCount("secondary_scene_preflight_skipped_inference", 1);
+                trace.stop("total");
+                appendTimingAudit(trace);
+                trace.finish("secondary_scene_preflight_skip", "");
+                trace.captureMemoryAfterMeasurement();
+                metrics.add(trace);
+                return null;
+            }
+
+            trace.start(
                     "engine_setup"
             );
 
@@ -395,9 +471,6 @@ public final class AlprPipeline {
                     engine.setCameraTransformInProgress(
                             cameraTransformInProgress
                     );
-                    engine.setSceneHandlingMode(
-                            sceneTransitionCoordinator.snapshot().mode
-                    );
                     engine.setSoftReacquireResultListener(
                             this::handleSoftReacquireReport
                     );
@@ -438,7 +511,6 @@ public final class AlprPipeline {
                         engine.applyCameraZoomTransform(pendingZoomRatio);
                     }
                     engine.setCameraTransformInProgress(false);
-                    engine.resetSceneDetectorReference();
                 }
 
             } finally {
@@ -447,48 +519,8 @@ public final class AlprPipeline {
                         "engine_setup"
                 );
             }
-            trace.start(
-                    "camera_conversion"
-            );
-
-            try {
-
-                com.example.alpr_v1.vision.CameraImageConverter.Result
-                        conversion =
-                        com.example.alpr_v1.vision.CameraImageConverter
-                                .convert(
-                                        image
-                                );
-
-
-                frame =
-                        conversion.bitmap;
-
-
-                trace.putDurationNanos(
-                        "camera_to_bitmap",
-                        conversion.toBitmapNanos
-                );
-
-
-                trace.putDurationNanos(
-                        "camera_rotation",
-                        conversion.rotationNanos
-                );
-
-
-                trace.putCount(
-                        "camera_rotation_degrees",
-                        conversion.rotationDegrees
-                );
-
-            } finally {
-
-                trace.stop(
-                        "camera_conversion"
-                );
-            }
             PipelineResult result;
+            final Bitmap inferenceFrame = frame;
             final long processingHardResetRevision = hardResetRevision.get();
             final long processingVisualEpochRevision = visualEpochRevision.get();
 
@@ -499,9 +531,9 @@ public final class AlprPipeline {
 
             try {
 
-                result =
-                        engine.run(
-                                frame,
+                result = secondaryPreflightGate.run(
+                        () -> engine.run(
+                                inferenceFrame,
                                 trace,
                                 processingStamp,
                                 plateDetectionCallback,
@@ -509,7 +541,8 @@ public final class AlprPipeline {
                                         != processingHardResetRevision
                                         || visualEpochRevision.get()
                                         != processingVisualEpochRevision
-                        );
+                        )
+                );
 
             } finally {
 
@@ -518,18 +551,6 @@ public final class AlprPipeline {
                 );
             }
             SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
-            InternalSceneEvidence internalEvidence = engine.consumeInternalSceneEvidence();
-            SceneTransitionDecision internalDecision = handleInternalSceneEvidence(
-                    internalEvidence, processingStamp
-            );
-            if (internalDecision != null
-                    && internalDecision.action == SceneTransitionAction.HARD_RESET
-                    && sceneChangeCallback != null) {
-                sceneChangeCallback.onSceneChanged(
-                        internalEvidence.score,
-                        internalEvidence.changedFraction
-                );
-            }
             if (isCurrentContinuityStamp(processingStamp)) {
                 handleSoftReacquireReport(softReport);
             }
@@ -715,9 +736,6 @@ public final class AlprPipeline {
                     engine.setRecognitionProfile(recognitionProfile);
                     engine.setRapidCameraMotion(rapidCameraMotion);
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
-                    engine.setSceneHandlingMode(
-                            sceneTransitionCoordinator.snapshot().mode
-                    );
                     engine.setSoftReacquireResultListener(
                             this::handleSoftReacquireReport
                     );
@@ -750,7 +768,6 @@ public final class AlprPipeline {
                         engine.applyCameraZoomTransform(pendingZoomRatio);
                     }
                     engine.setCameraTransformInProgress(false);
-                    engine.resetSceneDetectorReference();
                 }
             } finally {
                 trace.stop("engine_setup");
@@ -774,18 +791,6 @@ public final class AlprPipeline {
                 trace.stop("engine_total");
             }
             SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
-            InternalSceneEvidence internalEvidence = engine.consumeInternalSceneEvidence();
-            SceneTransitionDecision internalDecision = handleInternalSceneEvidence(
-                    internalEvidence, processingStamp
-            );
-            if (internalDecision != null
-                    && internalDecision.action == SceneTransitionAction.HARD_RESET
-                    && sceneChangeCallback != null) {
-                sceneChangeCallback.onSceneChanged(
-                        internalEvidence.score,
-                        internalEvidence.changedFraction
-                );
-            }
             if (isCurrentContinuityStamp(processingStamp)) {
                 handleSoftReacquireReport(softReport);
             }
@@ -1212,6 +1217,56 @@ public final class AlprPipeline {
         );
     }
 
+    private InternalSceneEvidence inspectSecondarySceneBeforeInference(
+            Bitmap frame
+    ) {
+        if (frame == null || frame.isRecycled()) {
+            return InternalSceneEvidence.none();
+        }
+        SceneChangeDetector.Result result = rotatedSceneDetector.update(frame);
+        if (!result.sceneChanged || cameraTransformInProgress) {
+            return InternalSceneEvidence.none();
+        }
+        return InternalSceneEvidence.detected(
+                result.score,
+                result.changedFraction,
+                result.brightnessDelta
+        );
+    }
+
+    private void appendSecondaryScenePreflightTelemetry(
+            InferenceTrace trace,
+            InternalSceneEvidence evidence,
+            SceneTransitionDecision decision
+    ) {
+        boolean detected = evidence != null && evidence.detected;
+        String action = decision == null
+                ? "NONE" : decision.action.name();
+        trace.putCount("secondary_scene_preflight_detected", detected ? 1 : 0);
+        trace.putAttribute("secondary_scene_preflight_action", action);
+        if (!detected) return;
+        boolean skippedInference = decision != null
+                && shouldSkipHeavyInference(decision);
+        metrics.secondaryScenePreflight(action, skippedInference);
+        try {
+            JSONObject details = new JSONObject();
+            details.put("secondary_scene_preflight_detected", true);
+            details.put("secondary_scene_preflight_action", action);
+            details.put(
+                    "secondary_scene_preflight_skipped_inference",
+                    skippedInference
+            );
+            details.put("score", evidence.score);
+            details.put("changed_fraction", evidence.changedFraction);
+            details.put("brightness_delta", evidence.brightnessDelta);
+            metrics.recordEvent(
+                    "secondary_scene_preflight", 0L, 0L, details
+            );
+        } catch (JSONException ignored) {
+            // Telemetry cannot influence the preflight decision.
+        }
+    }
+
     private TargetContinuityEvidence currentTargetEvidence(long nowNanos) {
         TargetSnapshot target = targetSnapshot;
         if (target == null || !target.hasTrack()) {
@@ -1345,7 +1400,7 @@ public final class AlprPipeline {
         sceneTransitionCoordinator.onSoftReacquireResult(report.result, nowNanos);
         if (shouldRebaseSceneReference(report.result)) {
             sourceSceneDetector.reset();
-            if (engine != null) engine.resetSceneDetectorReference();
+            rotatedSceneDetector.reset();
         }
         if (report.result == SoftReacquireResult.TARGET_RECOVERED
                 || report.result == SoftReacquireResult.VEHICLE_POOL_RECOVERED) {
@@ -1433,6 +1488,7 @@ public final class AlprPipeline {
         if (decision.action == SceneTransitionAction.HARD_RESET) {
             lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             trackingResetRequested = true;
+            rotatedSceneDetector.reset();
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
                     sceneTransitionCoordinator.stamp(sourceTimestampNanos)
             );
@@ -1859,6 +1915,7 @@ public final class AlprPipeline {
             trackingResetRequested = false;
         }
         sourceSceneDetector.reset();
+        rotatedSceneDetector.reset();
     }
 
 
@@ -1983,7 +2040,6 @@ public final class AlprPipeline {
                 safeMode,
                 SystemClock.elapsedRealtimeNanos()
         );
-        if (engine != null) engine.setSceneHandlingMode(safeMode);
         metrics.setSceneContinuityConfiguration(safeMode.wireName(), "initial_v2");
     }
 
@@ -2085,10 +2141,10 @@ public final class AlprPipeline {
             );
         }
         sourceSceneDetector.reset();
+        rotatedSceneDetector.reset();
         if (engine != null) {
             engine.setCameraTransformInProgress(false);
             engine.invalidateVehicleBackgroundAfterCameraTransform();
-            engine.resetSceneDetectorReference();
         }
     }
 
@@ -2107,6 +2163,7 @@ public final class AlprPipeline {
             );
         }
         sourceSceneDetector.reset();
+        rotatedSceneDetector.reset();
     }
 
     public synchronized void close() {
@@ -2114,6 +2171,7 @@ public final class AlprPipeline {
         engine = null;
         reloadRequested = false;
         sourceSceneDetector.reset();
+        rotatedSceneDetector.reset();
     }
 
     /** Immutable entity-aware snapshot for the Phase 3 acquisition controller. */

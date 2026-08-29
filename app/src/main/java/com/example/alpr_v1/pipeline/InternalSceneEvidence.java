@@ -1,6 +1,6 @@
 package com.example.alpr_v1.pipeline;
 
-/** One-shot raw evidence emitted by the engine's secondary scene detector. */
+/** One-shot raw evidence emitted by the pipeline's pre-inference bitmap detector. */
 final class InternalSceneEvidence {
     final boolean detected;
     final float score;

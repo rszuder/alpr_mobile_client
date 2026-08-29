@@ -7,7 +7,6 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.continuity.ContinuityStamp;
-import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
@@ -48,7 +47,6 @@ import com.example.alpr_v1.vision.PreparedInput;
 import com.example.alpr_v1.vision.YoloOutputSpec;
 import com.example.alpr_v1.vision.YoloEndToEndDecoder;
 import com.example.alpr_v1.vision.YoloRawDecoder;
-import com.example.alpr_v1.vision.SceneChangeDetector;
 import com.example.alpr_v1.vision.ReadingOrderResolver;
 
 import java.nio.ByteBuffer;
@@ -97,7 +95,6 @@ final class MobileAlprEngine implements AutoCloseable {
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
     private final PlateEntityBinder plateEntityBinder;
 
-    private final SceneChangeDetector sceneChangeDetector = new SceneChangeDetector();
     private final List<VehicleRoi> cachedVehicleRois = new ArrayList<>();
     private final List<Detection> cachedVehicleDetections = new ArrayList<>();
     private final Map<Long, float[]> plateAppearanceByTrack = new java.util.HashMap<>();
@@ -117,8 +114,6 @@ final class MobileAlprEngine implements AutoCloseable {
     private volatile boolean continuitySoftHold;
     private volatile long continuityVisualEpoch;
     private volatile String continuityReason = "";
-    private volatile SceneHandlingMode sceneHandlingMode =
-            SceneHandlingMode.STRICT_SCENE_BOUNDARY;
     private boolean continuityFreshMpRequired;
     private long continuityReacquireStartedRuntimeNanos;
     private long continuityReacquireTriggerSourceTimestampNanos;
@@ -128,8 +123,6 @@ final class MobileAlprEngine implements AutoCloseable {
     private SoftReacquireReport pendingSoftReacquireReport = SoftReacquireReport.none();
     private VehicleContinuityEvidence latestSoftReacquireVehicles =
             VehicleContinuityEvidence.empty();
-    private InternalSceneEvidence pendingInternalSceneEvidence =
-            InternalSceneEvidence.none();
     private SoftReacquireResultListener softReacquireResultListener;
 
     private static final class VehicleDetectionResult {
@@ -276,7 +269,6 @@ final class MobileAlprEngine implements AutoCloseable {
 
     void hardResetScene(String reason) {
         resetSceneDependentState();
-        sceneChangeDetector.reset();
         continuitySoftHold = false;
         continuityReacquireActive = false;
         continuityReason = reason == null ? "" : reason;
@@ -377,19 +369,8 @@ final class MobileAlprEngine implements AutoCloseable {
         softReacquireResultListener = listener;
     }
 
-    InternalSceneEvidence consumeInternalSceneEvidence() {
-        InternalSceneEvidence evidence = pendingInternalSceneEvidence;
-        pendingInternalSceneEvidence = InternalSceneEvidence.none();
-        return evidence;
-    }
-
     void setRapidCameraMotion(boolean rapid) {
         rapidCameraMotion = rapid;
-    }
-
-    void setSceneHandlingMode(SceneHandlingMode mode) {
-        sceneHandlingMode = mode == null
-                ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
     }
 
     void setCameraTransformInProgress(boolean inProgress) {
@@ -427,10 +408,6 @@ final class MobileAlprEngine implements AutoCloseable {
         } else {
             autoZoomTargetLock.clear();
         }
-    }
-
-    void resetSceneDetectorReference() {
-        sceneChangeDetector.reset();
     }
 
     void applyCameraZoomTransform(float relativeRatio) {
@@ -480,62 +457,7 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putAttribute("continuity_reason", continuityReason);
             throw new ProcessingCancelledException();
         }
-        pendingInternalSceneEvidence = InternalSceneEvidence.none();
-        SceneChangeDetector.Result scene =
-                sceneChangeDetector.update(frame);
-
-        boolean effectiveSceneChanged = scene.sceneChanged
-                && !cameraTransformInProgress;
-        boolean internalSceneEvidence = shouldReportInternalSceneEvidence(
-                scene.sceneChanged,
-                cameraTransformInProgress
-        );
-        if (internalSceneEvidence) {
-            pendingInternalSceneEvidence = InternalSceneEvidence.detected(
-                    scene.score,
-                    scene.changedFraction,
-                    scene.brightnessDelta
-            );
-        }
         boolean hardSceneBoundary = false;
-
-        trace.putConfidence(
-                "scene_change_score",
-                scene.score
-        );
-
-        trace.putConfidence(
-                "scene_change_fraction",
-                scene.changedFraction
-        );
-
-        trace.putConfidence(
-                "scene_brightness_delta",
-                scene.brightnessDelta
-        );
-
-        trace.putCount(
-                "scene_change_candidate",
-                scene.rawCandidate ? 1 : 0
-        );
-
-        android.util.Log.d(
-                "ALPR_SCENE",
-                String.format(
-                        Locale.ROOT,
-                        "frame=%d changed=%s candidate=%s armed=%s "
-                                + "score=%.3f fraction=%.3f brightness=%.3f size=%dx%d",
-                        trace.frameId(),
-                        effectiveSceneChanged,
-                        scene.rawCandidate,
-                        scene.armed,
-                        scene.score,
-                        scene.changedFraction,
-                        scene.brightnessDelta,
-                        frame.getWidth(),
-                        frame.getHeight()
-                )
-        );
 
         trace.putCount(
                 "camera_transform_in_progress",
@@ -543,7 +465,6 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         cancelIfRequested(cancellationRequested);
 
-        trace.putCount("internal_scene_change_evidence", internalSceneEvidence ? 1 : 0);
         trace.putCount("scene_reset", 0);
         if (continuityReacquireActive) {
             trace.putAttribute(
@@ -1642,14 +1563,6 @@ final class MobileAlprEngine implements AutoCloseable {
                 plateObservations,
                 hardSceneBoundary
         );
-    }
-
-    static boolean shouldReportInternalSceneEvidence(
-            boolean confirmedRawChange,
-            boolean cameraTransformInProgress
-    ) {
-        return confirmedRawChange
-                && !cameraTransformInProgress;
     }
 
     private void recordFreshMpReassociation(

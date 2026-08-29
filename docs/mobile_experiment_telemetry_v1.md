@@ -91,6 +91,24 @@ Wartości z tych domen nie są porównywane bezpośrednio. Czas projekcji
 `VehicleTrackingFrame.snapshotTimestampNanos` pozostaje w domenie źródłowej;
 czas eventu trackingu jest przekazywany oddzielnie w domenie runtime.
 
+## SECONDARY_SCENE_PREFLIGHT — `report.json`
+
+Pełnobitmapowy detektor obrazu po rotacji działa przed `MobileAlprEngine.run()`.
+Raport zawiera:
+
+```text
+secondary_scene_preflight_detected
+secondary_scene_preflight_holds
+secondary_scene_preflight_reacquires
+secondary_scene_preflight_hard_resets
+secondary_scene_preflight_skipped_inference
+```
+
+Event `secondary_scene_preflight` zapisuje `secondary_scene_preflight_action`,
+`secondary_scene_preflight_skipped_inference`, score, changed fraction i zmianę
+jasności. Wykrycie skutkujące hold/reacquire/resetem nie może uruchomić
+MP/MT/MZ dla tej samej klatki.
+
 ## THERMAL — `thermal.csv`
 
 Próbkowanie około 1 Hz, niezależne od processed FPS.

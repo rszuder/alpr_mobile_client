@@ -31,16 +31,25 @@ public final class MobileAlprEngineContinuityApiTest {
     }
 
     @Test
-    public void internalDetectorOnlyReportsEvidenceAndNeverChoosesResetMode() {
-        assertTrue(MobileAlprEngine.shouldReportInternalSceneEvidence(
-                true, false
+    public void secondarySceneDetectorIsNotOwnedByMutatingEngine()
+            throws Exception {
+        assertNotNull(AlprPipeline.class.getDeclaredField(
+                "rotatedSceneDetector"
         ));
-        assertFalse(MobileAlprEngine.shouldReportInternalSceneEvidence(
-                true, true
-        ));
-        assertFalse(MobileAlprEngine.shouldReportInternalSceneEvidence(
-                false, false
-        ));
+        try {
+            MobileAlprEngine.class.getDeclaredField("sceneChangeDetector");
+            org.junit.Assert.fail("engine must not own the secondary detector");
+        } catch (NoSuchFieldException expected) {
+            // Expected: preflight belongs to AlprPipeline.
+        }
+        try {
+            MobileAlprEngine.class.getDeclaredMethod(
+                    "consumeInternalSceneEvidence"
+            );
+            org.junit.Assert.fail("engine must not expose post-run scene evidence");
+        } catch (NoSuchMethodException expected) {
+            // Expected: evidence is consumed before engine.run().
+        }
     }
 
     @Test

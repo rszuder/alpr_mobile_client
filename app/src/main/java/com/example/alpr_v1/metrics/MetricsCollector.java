@@ -131,6 +131,11 @@ public final class MetricsCollector {
     private long finalResultsDroppedBeforeUi;
     private long finalResultsDroppedBeforeCrop;
     private long finalResultDispatchAccepted;
+    private long secondaryScenePreflightDetections;
+    private long secondaryScenePreflightHolds;
+    private long secondaryScenePreflightReacquires;
+    private long secondaryScenePreflightHardResets;
+    private long secondaryScenePreflightSkippedInference;
     private long estimatedUpstreamGaps;
     private long lastSourceTimestampNanos = -1L;
     private double expectedSourceIntervalNanos = Double.NaN;
@@ -193,6 +198,11 @@ public final class MetricsCollector {
         finalResultsDroppedBeforeUi = 0L;
         finalResultsDroppedBeforeCrop = 0L;
         finalResultDispatchAccepted = 0L;
+        secondaryScenePreflightDetections = 0L;
+        secondaryScenePreflightHolds = 0L;
+        secondaryScenePreflightReacquires = 0L;
+        secondaryScenePreflightHardResets = 0L;
+        secondaryScenePreflightSkippedInference = 0L;
         estimatedUpstreamGaps = 0L;
         lastSourceTimestampNanos = -1L;
         expectedSourceIntervalNanos = Double.NaN;
@@ -314,6 +324,23 @@ public final class MetricsCollector {
 
     public synchronized void finalResultDispatchAccepted() {
         if (measurementSessionActive) finalResultDispatchAccepted++;
+    }
+
+    public synchronized void secondaryScenePreflight(
+            String action,
+            boolean skippedInference
+    ) {
+        if (!measurementSessionActive) return;
+        secondaryScenePreflightDetections++;
+        String safeAction = action == null ? "NONE" : action;
+        if ("SOFT_HOLD".equals(safeAction)) {
+            secondaryScenePreflightHolds++;
+        } else if ("SOFT_REACQUIRE".equals(safeAction)) {
+            secondaryScenePreflightReacquires++;
+        } else if ("HARD_RESET".equals(safeAction)) {
+            secondaryScenePreflightHardResets++;
+        }
+        if (skippedInference) secondaryScenePreflightSkippedInference++;
     }
 
     /** Zachowany alias dla starszych wywołań; nowe miejsca powinny podawać przyczynę. */
@@ -1267,6 +1294,29 @@ public final class MetricsCollector {
                 finalResultsDroppedBeforeCrop
         );
         report.put("final_result_dispatch", finalResultDispatch);
+
+        JSONObject secondaryPreflight = new JSONObject();
+        secondaryPreflight.put(
+                "secondary_scene_preflight_detected",
+                secondaryScenePreflightDetections
+        );
+        secondaryPreflight.put(
+                "secondary_scene_preflight_holds",
+                secondaryScenePreflightHolds
+        );
+        secondaryPreflight.put(
+                "secondary_scene_preflight_reacquires",
+                secondaryScenePreflightReacquires
+        );
+        secondaryPreflight.put(
+                "secondary_scene_preflight_hard_resets",
+                secondaryScenePreflightHardResets
+        );
+        secondaryPreflight.put(
+                "secondary_scene_preflight_skipped_inference",
+                secondaryScenePreflightSkippedInference
+        );
+        report.put("secondary_scene_preflight", secondaryPreflight);
 
         report.put("thermal", thermalSummaryJson());
 
