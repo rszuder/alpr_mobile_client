@@ -59,10 +59,10 @@ final class SoftReacquireReport {
             Set<Long> entitiesBefore,
             long activeEntityId,
             VehicleTrackingFrame frame,
-            long recoveryStartedNanos,
-            long nowNanos
+            long triggerSourceTimestampNanos
     ) {
-        if (frame.sourceTimestampNanos < recoveryStartedNanos) {
+        if (triggerSourceTimestampNanos > 0L
+                && frame.sourceTimestampNanos < triggerSourceTimestampNanos) {
             return pending(
                     VehicleContinuityEvidence.empty(),
                     "mp_source_frame_predates_recovery"
@@ -78,15 +78,21 @@ final class SoftReacquireReport {
             boolean existedBefore = entitiesBefore.contains(candidate.entityId);
             boolean freshMeasured = existedBefore
                     && !candidate.predicted
-                    && candidate.lastMeasurementTimestampNanos >= recoveryStartedNanos;
+                    && candidate.lastMeasurementTimestampNanos
+                    >= triggerSourceTimestampNanos;
             boolean anyFreshMeasurement = !candidate.predicted
-                    && candidate.lastMeasurementTimestampNanos >= recoveryStartedNanos;
+                    && candidate.lastMeasurementTimestampNanos
+                    >= triggerSourceTimestampNanos;
             if (anyFreshMeasurement) freshMeasuredEntities++;
             if (freshMeasured) {
                 reassociated++;
                 newestAgeNanos = Math.min(
                         newestAgeNanos,
-                        Math.max(0L, nowNanos - candidate.lastMeasurementTimestampNanos)
+                        Math.max(
+                                0L,
+                                frame.snapshotTimestampNanos
+                                        - candidate.lastMeasurementTimestampNanos
+                        )
                 );
             } else if (existedBefore && candidate.predicted) {
                 predicted++;
@@ -110,7 +116,13 @@ final class SoftReacquireReport {
                 0f,
                 0f,
                 newestAgeNanos == Long.MAX_VALUE
-                        ? Math.max(0L, nowNanos - recoveryStartedNanos)
+                        ? (triggerSourceTimestampNanos <= 0L
+                        ? 0L
+                        : Math.max(
+                                0L,
+                                frame.snapshotTimestampNanos
+                                        - triggerSourceTimestampNanos
+                        ))
                         : newestAgeNanos,
                 false,
                 false,

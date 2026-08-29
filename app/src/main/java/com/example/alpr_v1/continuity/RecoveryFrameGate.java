@@ -11,6 +11,8 @@ public final class RecoveryFrameGate {
         return recovery != null
                 && recovery.available
                 && recovery.active
-                && sourceTimestampNanos < recovery.startedNanos;
+                && recovery.triggerSourceTimestampNanos > 0L
+                && sourceTimestampNanos
+                < recovery.triggerSourceTimestampNanos;
     }
 }

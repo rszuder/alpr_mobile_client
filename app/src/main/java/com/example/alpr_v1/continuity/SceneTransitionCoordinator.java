@@ -24,7 +24,7 @@ public final class SceneTransitionCoordinator {
     private long lastTransitionNanos;
     private long stateEnteredNanos;
     private long unexplainedSinceNanos = -1L;
-    private long reacquireStartedNanos = -1L;
+    private long reacquireStartedRuntimeNanos = -1L;
     private long lastSourceFrameId = -1L;
     private long lastSourceTimestampNanos = -1L;
     private boolean finalizationSuspended;
@@ -246,12 +246,28 @@ public final class SceneTransitionCoordinator {
             String reason,
             long nowNanos
     ) {
+        return requestSoftReacquire(
+                reason,
+                nowNanos,
+                Math.max(0L, lastSourceTimestampNanos)
+        );
+    }
+
+    public synchronized SceneTransitionDecision requestSoftReacquire(
+            String reason,
+            long nowNanos,
+            long triggerSourceTimestampNanos
+    ) {
         Contracts.nonNegative("nowNanos", nowNanos);
+        Contracts.nonNegative(
+                "triggerSourceTimestampNanos", triggerSourceTimestampNanos
+        );
         if (currentState == SceneContinuityState.HARD_RESETTING) {
             enterState(SceneContinuityState.STABLE, nowNanos);
         }
         return beginSoftReacquire(
                 nowNanos,
+                triggerSourceTimestampNanos,
                 Contracts.reason(reason).isEmpty() ? "soft_reacquire_requested" : reason
         );
     }
@@ -343,6 +359,7 @@ public final class SceneTransitionCoordinator {
                 || evidence.focusedTrackingDegraded)) {
             return beginSoftReacquire(
                     nowNanos,
+                    evidence.sourceTimestampNanos,
                     evidence.focusedTrackingLost
                             ? "strict_focused_tracking_lost"
                             : "strict_focused_tracking_degraded"
@@ -378,6 +395,7 @@ public final class SceneTransitionCoordinator {
             }
             return beginSoftReacquire(
                     nowNanos,
+                    evidence.sourceTimestampNanos,
                     evidence.focusedTrackingLost
                             ? "focused_tracking_lost_without_global_change"
                             : "focused_tracking_degraded_without_global_change"
@@ -411,7 +429,11 @@ public final class SceneTransitionCoordinator {
                 || evidence.motion.cameraTransformInProgress) {
             return beginSoftHold(nowNanos, "motion_requires_stable_observation");
         }
-        return beginSoftReacquire(nowNanos, "stationary_visual_change_requires_reacquire");
+        return beginSoftReacquire(
+                nowNanos,
+                evidence.sourceTimestampNanos,
+                "stationary_visual_change_requires_reacquire"
+        );
     }
 
     private SceneTransitionDecision observeNoRawChange(
@@ -432,7 +454,11 @@ public final class SceneTransitionCoordinator {
                     && !evidence.motion.cameraTransformInProgress
                     && holdDuration >= profile.motionSettleNanos;
             if (motionSettled || holdDuration >= profile.maximumSoftHoldNanos) {
-                return beginSoftReacquire(nowNanos, "motion_settled_force_fresh_reacquire");
+                return beginSoftReacquire(
+                        nowNanos,
+                        evidence.sourceTimestampNanos,
+                        "motion_settled_force_fresh_reacquire"
+                );
             }
             finalizationSuspended = true;
             heavyInferenceSuspended = true;
@@ -461,7 +487,7 @@ public final class SceneTransitionCoordinator {
 
     private boolean reacquireDeadlineReached(long nowNanos) {
         return reacquireContext != null
-                && elapsedSince(reacquireContext.startedNanos, nowNanos)
+                && elapsedSince(reacquireContext.startedRuntimeNanos, nowNanos)
                 >= profile.reacquireTimeoutNanos;
     }
 
@@ -515,17 +541,22 @@ public final class SceneTransitionCoordinator {
         );
     }
 
-    private SceneTransitionDecision beginSoftReacquire(long nowNanos, String reason) {
+    private SceneTransitionDecision beginSoftReacquire(
+            long nowNanos,
+            long triggerSourceTimestampNanos,
+            String reason
+    ) {
         if (currentState == SceneContinuityState.REACQUIRING) {
             finalizationSuspended = true;
             heavyInferenceSuspended = false;
             return emitNone(nowNanos, "soft_reacquire_already_active");
         }
         enterState(SceneContinuityState.REACQUIRING, nowNanos);
-        reacquireStartedNanos = nowNanos;
+        reacquireStartedRuntimeNanos = nowNanos;
         reacquireContext = ReacquireContext.begin(
                 assessment,
                 nowNanos,
+                triggerSourceTimestampNanos,
                 lastActiveTargetPresent
         );
         lastReacquireContext = null;
@@ -682,7 +713,7 @@ public final class SceneTransitionCoordinator {
 
     private void resetRecoveryState() {
         unexplainedSinceNanos = -1L;
-        reacquireStartedNanos = -1L;
+        reacquireStartedRuntimeNanos = -1L;
         reacquireFailed = false;
         pendingActiveTargetRelease = false;
         reacquireContext = null;

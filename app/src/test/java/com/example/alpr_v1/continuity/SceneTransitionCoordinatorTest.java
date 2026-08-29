@@ -314,11 +314,24 @@ public final class SceneTransitionCoordinatorTest {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
         );
-        coordinator.requestSoftReacquire("low_evidence_refresh", 1_000L);
+        long runtimeStartNanos = 1_000_000_000L;
+        long triggerSourceTimestampNanos = 8_000_000_000L;
+        coordinator.requestSoftReacquire(
+                "low_evidence_refresh",
+                runtimeStartNanos,
+                triggerSourceTimestampNanos
+        );
+
+        ReacquireTelemetry active = coordinator.reacquireTelemetry();
+        assertEquals(runtimeStartNanos, active.startedRuntimeNanos);
+        assertEquals(
+                triggerSourceTimestampNanos,
+                active.triggerSourceTimestampNanos
+        );
 
         SceneTransitionDecision decision = coordinator.observe(
                 stableNoTargetScene(3L),
-                1_000L + PROFILE.reacquireTimeoutNanos
+                runtimeStartNanos + PROFILE.reacquireTimeoutNanos
         );
 
         assertEquals(SceneTransitionAction.NONE, decision.action);

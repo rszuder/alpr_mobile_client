@@ -40,6 +40,7 @@ public class VehicleEntityRepositoryTest {
                 11L, VEHICLE, MotionState.STATIONARY, descriptor(1f), 100L
         );
         repository.attachPlate(1L, 71L, plateQuad(), descriptor(0.8f), 150L);
+        assertEquals(150L, entity.lastMtSourceTimestampNanos());
         repository.updateRegistration(
                 1L,
                 new PlateTextConsensus("we 911gt", 0.92f, 4, true),

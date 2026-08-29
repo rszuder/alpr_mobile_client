@@ -25,7 +25,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 15L, fresh, 900L, 1_010L
+                before, 15L, fresh, 900L
         );
 
         assertFalse(report.attempted);
@@ -43,7 +43,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 15L, fresh, 900L, 1_010L
+                before, 15L, fresh, 900L
         );
 
         assertEquals(SoftReacquireResult.ACTIVE_TARGET_LOST, report.result);
@@ -60,7 +60,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 0L, fresh, 900L, 1_010L
+                before, 0L, fresh, 900L
         );
 
         assertTrue(report.attempted);
@@ -77,7 +77,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 0L, fresh, 900L, 1_010L
+                before, 0L, fresh, 900L
         );
 
         assertTrue(report.attempted);
@@ -95,7 +95,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 0L, predicted, 1_000L, 1_200L
+                before, 0L, predicted, 1_000L
         );
 
         assertEquals(SoftReacquireResult.FAILED, report.result);
@@ -115,7 +115,7 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 0L, measured, 1_000L, 1_200L
+                before, 0L, measured, 1_000L
         );
 
         assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, report.result);
@@ -137,13 +137,38 @@ public final class SoftReacquireReportTest {
         );
 
         SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
-                before, 0L, stale, 1_000L, 1_200L
+                before, 0L, stale, 1_000L
         );
 
         assertFalse(report.attempted);
         assertEquals(null, report.result);
         assertEquals(0, report.vehicles.entitiesReassociated);
         assertEquals("mp_source_frame_predates_recovery", report.reason);
+    }
+
+    @Test
+    public void freshMpUsesSourceClockWhenRuntimeClockHasDifferentOffset() {
+        long triggerSourceTimestampNanos = 8_000_000_000L;
+        VehicleTrackingFrame fresh = new VehicleTrackingFrame(
+                14L,
+                8_001_000_000L,
+                8_002_000_000L,
+                0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 704L, false, 8_001_000_000L)
+                )
+        );
+
+        SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
+                new HashSet<>(java.util.Collections.singletonList(15L)),
+                0L,
+                fresh,
+                triggerSourceTimestampNanos
+        );
+
+        assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, report.result);
+        assertEquals(1, report.vehicles.freshMeasuredEntities);
+        assertEquals(1_000_000L, report.vehicles.newestMeasurementAgeNanos);
     }
 
     private static VehicleCandidate candidate(long entityId, long vehicleTrackId) {

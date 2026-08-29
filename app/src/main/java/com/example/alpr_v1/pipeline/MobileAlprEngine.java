@@ -120,7 +120,8 @@ final class MobileAlprEngine implements AutoCloseable {
     private volatile SceneHandlingMode sceneHandlingMode =
             SceneHandlingMode.STRICT_SCENE_BOUNDARY;
     private boolean continuityFreshMpRequired;
-    private long continuityReacquireStartedNanos;
+    private long continuityReacquireStartedRuntimeNanos;
+    private long continuityReacquireTriggerSourceTimestampNanos;
     private long continuityActiveEntityId;
     private boolean continuityReacquireActive;
     private final Set<Long> continuityEntitiesBefore = new HashSet<>();
@@ -293,7 +294,12 @@ final class MobileAlprEngine implements AutoCloseable {
         continuityReason = reason == null ? "" : reason;
     }
 
-    void beginSoftReacquire(long visualEpoch, String reason) {
+    void beginSoftReacquire(
+            long visualEpoch,
+            String reason,
+            long startedRuntimeNanos,
+            long triggerSourceTimestampNanos
+    ) {
         continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
         continuitySoftHold = false;
         continuityReason = reason == null ? "" : reason;
@@ -302,7 +308,12 @@ final class MobileAlprEngine implements AutoCloseable {
         lastVehicleDetectionFrame = Long.MIN_VALUE;
         continuityFreshMpRequired = true;
         continuityReacquireActive = true;
-        continuityReacquireStartedNanos = SystemClock.elapsedRealtimeNanos();
+        continuityReacquireStartedRuntimeNanos = Math.max(
+                0L, startedRuntimeNanos
+        );
+        continuityReacquireTriggerSourceTimestampNanos = Math.max(
+                0L, triggerSourceTimestampNanos
+        );
         continuityEntitiesBefore.clear();
         for (VehicleEntity entity
                 : vehicleTrackingCoordinator.repository().activeEntities()) {
@@ -345,7 +356,8 @@ final class MobileAlprEngine implements AutoCloseable {
                     continuityActiveEntityId
             );
             boolean freshMt = entity != null
-                    && entity.lastMtNanos() >= continuityReacquireStartedNanos
+                    && entity.lastMtSourceTimestampNanos()
+                    >= continuityReacquireTriggerSourceTimestampNanos
                     && entity.plateTrackId() != null;
             if (freshMt) {
                 report = SoftReacquireReport.terminal(
@@ -533,6 +545,24 @@ final class MobileAlprEngine implements AutoCloseable {
 
         trace.putCount("internal_scene_change_evidence", internalSceneEvidence ? 1 : 0);
         trace.putCount("scene_reset", 0);
+        if (continuityReacquireActive) {
+            trace.putAttribute(
+                    "reacquire_started_runtime_nanos",
+                    String.valueOf(continuityReacquireStartedRuntimeNanos)
+            );
+            trace.putAttribute(
+                    "reacquire_trigger_source_timestamp_nanos",
+                    String.valueOf(
+                            continuityReacquireTriggerSourceTimestampNanos
+                    )
+            );
+            trace.putAttribute(
+                    "source_timestamp_domain", "source_monotonic_nanos"
+            );
+            trace.putAttribute(
+                    "runtime_timestamp_domain", "elapsed_realtime_nanos"
+            );
+        }
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoi> vehicleRois = new ArrayList<>();
@@ -635,8 +665,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         detectVehicleRegions(frame, trace, sourceTimestampNanos);
                 if (continuityFreshMpRequired) {
                     recordFreshMpReassociation(
-                            vehicleTrackingCoordinator.latestFrame(),
-                            SystemClock.elapsedRealtimeNanos()
+                            vehicleTrackingCoordinator.latestFrame()
                     );
                 }
                 cachedVehicleRois.clear();
@@ -1091,7 +1120,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         decision.trackId,
                         normalizedQuad(plateCandidate.corners, frame),
                         new AppearanceDescriptor(appearance),
-                        SystemClock.elapsedRealtimeNanos()
+                        sourceTimestampNanos
                 );
                 if (attachmentStatus.accepted()) {
                     trace.putCount("plate_attached_to_entity", 1);
@@ -1624,15 +1653,13 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private void recordFreshMpReassociation(
-            VehicleTrackingFrame frame,
-            long nowNanos
+            VehicleTrackingFrame frame
     ) {
         pendingSoftReacquireReport = SoftReacquireReport.fromFreshMp(
                 continuityEntitiesBefore,
                 continuityActiveEntityId,
                 frame,
-                continuityReacquireStartedNanos,
-                nowNanos
+                continuityReacquireTriggerSourceTimestampNanos
         );
         latestSoftReacquireVehicles = pendingSoftReacquireReport.vehicles;
         if (pendingSoftReacquireReport.attempted) {
@@ -1658,7 +1685,8 @@ final class MobileAlprEngine implements AutoCloseable {
                 continuityActiveEntityId
         );
         boolean freshMt = entity != null
-                && entity.lastMtNanos() >= continuityReacquireStartedNanos
+                && entity.lastMtSourceTimestampNanos()
+                >= continuityReacquireTriggerSourceTimestampNanos
                 && entity.plateTrackId() != null;
         if (!freshMt) return;
         pendingSoftReacquireReport = SoftReacquireReport.terminal(
@@ -2042,7 +2070,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 rawMpVehicleDetections.size()
         );
 
-        long resultAvailableNanos = SystemClock.elapsedRealtimeNanos();
+        long resultAvailableRuntimeNanos = SystemClock.elapsedRealtimeNanos();
+        long resultAvailableSourceTimestampNanos = estimateSourceTimestampAtRuntime(
+                sourceTimestampNanos,
+                trace,
+                resultAvailableRuntimeNanos
+        );
         List<VehicleTrackManager.Observation> vehicleObservations = new ArrayList<>(
                 rawMpVehicleDetections.size()
         );
@@ -2058,11 +2091,12 @@ final class MobileAlprEngine implements AutoCloseable {
         VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.updateFromMp(
                 trace.frameId(),
                 sourceTimestampNanos,
-                resultAvailableNanos,
+                resultAvailableSourceTimestampNanos,
                 vehicleObservations,
                 continuityFreshMpRequired
                         ? continuityEntitiesBefore
-                        : java.util.Collections.emptySet()
+                        : java.util.Collections.emptySet(),
+                resultAvailableRuntimeNanos
         );
         trace.putConfidence(
                 "mp_observation_gap_ms",
@@ -2140,9 +2174,17 @@ final class MobileAlprEngine implements AutoCloseable {
             InferenceTrace trace,
             long sourceTimestampNanos
     ) {
-        long snapshotNanos = SystemClock.elapsedRealtimeNanos();
+        long snapshotRuntimeNanos = SystemClock.elapsedRealtimeNanos();
+        long snapshotSourceTimestampNanos = estimateSourceTimestampAtRuntime(
+                sourceTimestampNanos,
+                trace,
+                snapshotRuntimeNanos
+        );
         VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.predict(
-                trace.frameId(), sourceTimestampNanos, snapshotNanos
+                trace.frameId(),
+                sourceTimestampNanos,
+                snapshotSourceTimestampNanos,
+                snapshotRuntimeNanos
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
@@ -2332,9 +2374,25 @@ final class MobileAlprEngine implements AutoCloseable {
                     candidate.bounds.right * frame.getWidth(),
                     candidate.bounds.bottom * frame.getHeight(),
                     Collections.emptyList()
-            ));
+        ));
         }
         return detections;
+    }
+
+    private static long estimateSourceTimestampAtRuntime(
+            long sourceTimestampNanos,
+            InferenceTrace trace,
+            long runtimeTimestampNanos
+    ) {
+        long runtimeStartNanos = trace == null
+                ? runtimeTimestampNanos : trace.elapsedRealtimeNanos();
+        long elapsedNanos = Math.max(
+                0L, runtimeTimestampNanos - runtimeStartNanos
+        );
+        if (sourceTimestampNanos > Long.MAX_VALUE - elapsedNanos) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(0L, sourceTimestampNanos) + elapsedNanos;
     }
 
     private static Set<Integer> resolveVehicleClassIds(List<String> labels) {

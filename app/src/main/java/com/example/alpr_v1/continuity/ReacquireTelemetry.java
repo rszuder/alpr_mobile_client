@@ -11,7 +11,8 @@ public final class ReacquireTelemetry {
     public final boolean activeTargetPresent;
     public final boolean vehiclePoolRecovered;
     public final boolean deadlineReached;
-    public final long startedNanos;
+    public final long startedRuntimeNanos;
+    public final long triggerSourceTimestampNanos;
 
     private ReacquireTelemetry(
             boolean available,
@@ -23,7 +24,8 @@ public final class ReacquireTelemetry {
             boolean activeTargetPresent,
             boolean vehiclePoolRecovered,
             boolean deadlineReached,
-            long startedNanos
+            long startedRuntimeNanos,
+            long triggerSourceTimestampNanos
     ) {
         this.available = available;
         this.active = active;
@@ -34,13 +36,16 @@ public final class ReacquireTelemetry {
         this.activeTargetPresent = activeTargetPresent;
         this.vehiclePoolRecovered = vehiclePoolRecovered;
         this.deadlineReached = deadlineReached;
-        this.startedNanos = Math.max(0L, startedNanos);
+        this.startedRuntimeNanos = Math.max(0L, startedRuntimeNanos);
+        this.triggerSourceTimestampNanos = Math.max(
+                0L, triggerSourceTimestampNanos
+        );
     }
 
     static ReacquireTelemetry none() {
         return new ReacquireTelemetry(
                 false, false, "", null,
-                0f, 0f, false, false, false, 0L
+                0f, 0f, false, false, false, 0L, 0L
         );
     }
 
@@ -62,7 +67,8 @@ public final class ReacquireTelemetry {
                 context.activeTargetPresent,
                 vehiclePoolRecovered,
                 deadlineReached,
-                context.startedNanos
+                context.startedRuntimeNanos,
+                context.triggerSourceTimestampNanos
         );
     }
 }

@@ -7,25 +7,30 @@ import org.junit.Test;
 
 public final class RecoveryFrameGateTest {
     @Test
-    public void frameCapturedBeforeRecoveryIsSkipped() {
+    public void sourceGateDoesNotAssumeRuntimeAndSourceClockOffsetsMatch() {
+        long runtimeStartNanos = 1_000_000_000L;
+        long triggerSourceTimestampNanos = 8_000_000_000L;
         ReacquireContext context = ReacquireContext.begin(
                 new ContinuityAssessment(
                         VisualChangeClassification.UNEXPLAINED_CHANGE,
                         0f, 0f, 0f, 0.8f,
                         false, false, false, "test"
                 ),
-                1_000L,
+                runtimeStartNanos,
+                triggerSourceTimestampNanos,
                 false
         );
         ReacquireTelemetry active = ReacquireTelemetry.from(
                 context, true, "", false, false
         );
 
-        assertTrue(RecoveryFrameGate.shouldSkip(active, 999L));
-        assertFalse(RecoveryFrameGate.shouldSkip(active, 1_000L));
+        assertTrue(RecoveryFrameGate.shouldSkip(active, 7_999_000_000L));
+        assertFalse(RecoveryFrameGate.shouldSkip(active, 8_000_000_000L));
+        assertFalse(RecoveryFrameGate.shouldSkip(active, 8_001_000_000L));
+        assertTrue(active.startedRuntimeNanos != active.triggerSourceTimestampNanos);
         assertFalse(RecoveryFrameGate.shouldSkip(
                 ReacquireTelemetry.from(context, false, "FAILED", false, true),
-                999L
+                7_999_000_000L
         ));
     }
 }

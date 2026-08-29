@@ -76,6 +76,21 @@ Odrzucenie końcowego wyniku ma osobny event
 pełny stamp wyniku, pełny aktualny stamp pipeline oraz
 `source_timestamp_nanos`. Nie jest grupowany ze stale intermediate MT.
 
+## RECOVERY — domeny czasu
+
+Recovery zapisuje dwie niezależne osie czasu:
+
+| Pole | Domena | Zastosowanie |
+| --- | --- | --- |
+| `reacquire_started_runtime_nanos` | `elapsed_realtime_nanos` | deadline, duration i cooldown |
+| `reacquire_trigger_source_timestamp_nanos` | `source_monotonic_nanos` | kolejność klatek oraz fresh MP/MT |
+| `runtime_timestamp_domain` | string | jawna nazwa domeny runtime |
+| `source_timestamp_domain` | string | jawna nazwa domeny źródłowej |
+
+Wartości z tych domen nie są porównywane bezpośrednio. Czas projekcji
+`VehicleTrackingFrame.snapshotTimestampNanos` pozostaje w domenie źródłowej;
+czas eventu trackingu jest przekazywany oddzielnie w domenie runtime.
+
 ## THERMAL — `thermal.csv`
 
 Próbkowanie około 1 Hz, niezależne od processed FPS.

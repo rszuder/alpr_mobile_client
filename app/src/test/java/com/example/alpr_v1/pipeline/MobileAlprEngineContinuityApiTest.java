@@ -19,7 +19,11 @@ public final class MobileAlprEngineContinuityApiTest {
                 "beginSoftHold", long.class, String.class
         ));
         assertNotNull(MobileAlprEngine.class.getDeclaredMethod(
-                "beginSoftReacquire", long.class, String.class
+                "beginSoftReacquire",
+                long.class,
+                String.class,
+                long.class,
+                long.class
         ));
         assertNotNull(MobileAlprEngine.class.getDeclaredMethod(
                 "releaseFocusedTarget", String.class

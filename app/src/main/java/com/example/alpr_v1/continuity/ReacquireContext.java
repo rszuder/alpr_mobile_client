@@ -8,7 +8,8 @@ public final class ReacquireContext {
     public final float triggerVehicleContinuityScore;
     public final float triggerMotionExplanationScore;
     public final float maximumCutEvidenceDuringRecovery;
-    public final long startedNanos;
+    public final long startedRuntimeNanos;
+    public final long triggerSourceTimestampNanos;
     public final boolean activeTargetPresent;
 
     private ReacquireContext(
@@ -18,7 +19,8 @@ public final class ReacquireContext {
             float triggerVehicleContinuityScore,
             float triggerMotionExplanationScore,
             float maximumCutEvidenceDuringRecovery,
-            long startedNanos,
+            long startedRuntimeNanos,
+            long triggerSourceTimestampNanos,
             boolean activeTargetPresent
     ) {
         this.triggerClassification = Contracts.required(
@@ -39,13 +41,19 @@ public final class ReacquireContext {
         this.maximumCutEvidenceDuringRecovery = Contracts.unit(
                 "maximumCutEvidenceDuringRecovery", maximumCutEvidenceDuringRecovery
         );
-        this.startedNanos = Contracts.nonNegative("startedNanos", startedNanos);
+        this.startedRuntimeNanos = Contracts.nonNegative(
+                "startedRuntimeNanos", startedRuntimeNanos
+        );
+        this.triggerSourceTimestampNanos = Contracts.nonNegative(
+                "triggerSourceTimestampNanos", triggerSourceTimestampNanos
+        );
         this.activeTargetPresent = activeTargetPresent;
     }
 
     static ReacquireContext begin(
             ContinuityAssessment trigger,
-            long startedNanos,
+            long startedRuntimeNanos,
+            long triggerSourceTimestampNanos,
             boolean activeTargetPresent
     ) {
         Contracts.required("trigger", trigger);
@@ -56,7 +64,8 @@ public final class ReacquireContext {
                 trigger.vehicleContinuityScore,
                 trigger.motionExplanationScore,
                 trigger.cutEvidenceScore,
-                startedNanos,
+                startedRuntimeNanos,
+                triggerSourceTimestampNanos,
                 activeTargetPresent
         );
     }
@@ -75,7 +84,8 @@ public final class ReacquireContext {
                 triggerVehicleContinuityScore,
                 triggerMotionExplanationScore,
                 maximum,
-                startedNanos,
+                startedRuntimeNanos,
+                triggerSourceTimestampNanos,
                 activeTargetPresent
         );
     }

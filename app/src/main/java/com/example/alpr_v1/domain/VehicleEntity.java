@@ -26,7 +26,7 @@ public final class VehicleEntity {
     private final long firstSeenNanos;
     private long lastSeenNanos;
     private long lastMpNanos;
-    private long lastMtNanos;
+    private long lastMtSourceTimestampNanos;
     private long lastFreshMzNanos;
     private long lastConsensusUpdateNanos;
     private int mtAttempts;
@@ -74,7 +74,9 @@ public final class VehicleEntity {
     public synchronized long firstSeenNanos() { return firstSeenNanos; }
     public synchronized long lastSeenNanos() { return lastSeenNanos; }
     public synchronized long lastMpNanos() { return lastMpNanos; }
-    public synchronized long lastMtNanos() { return lastMtNanos; }
+    public synchronized long lastMtSourceTimestampNanos() {
+        return lastMtSourceTimestampNanos;
+    }
     /** Historical accessor retained for callers that mean the last real MZ attempt. */
     public synchronized long lastMzNanos() { return lastFreshMzNanos; }
     public synchronized long lastFreshMzNanos() { return lastFreshMzNanos; }
@@ -112,7 +114,9 @@ public final class VehicleEntity {
         if (quad != null) plateQuad = quad;
         if (appearance != null && appearance.available()) plateAppearance = appearance;
         mtAttempts++;
-        lastMtNanos = Math.max(lastMtNanos, nowNanos);
+        lastMtSourceTimestampNanos = Math.max(
+                lastMtSourceTimestampNanos, nowNanos
+        );
         lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
         acquisitionState = EntityAcquisitionState.advance(
                 acquisitionState,
@@ -128,7 +132,9 @@ public final class VehicleEntity {
 
     synchronized void recordMtAttempt(long nowNanos) {
         mtAttempts++;
-        lastMtNanos = Math.max(lastMtNanos, nowNanos);
+        lastMtSourceTimestampNanos = Math.max(
+                lastMtSourceTimestampNanos, nowNanos
+        );
     }
 
     synchronized boolean updateRegistration(
@@ -148,7 +154,6 @@ public final class VehicleEntity {
         registrationSource = source == null
                 ? RegistrationConsensusSource.NONE : source;
         lastConsensusUpdateNanos = Math.max(lastConsensusUpdateNanos, nowNanos);
-        lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
         acquisitionState = EntityAcquisitionState.advance(
                 acquisitionState,
                 registration.stable

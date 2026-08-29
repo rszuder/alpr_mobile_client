@@ -54,7 +54,8 @@ public final class VehicleTrackingCoordinator {
                 sourceTimestampNanos,
                 snapshotTimestampNanos,
                 observations,
-                Collections.emptySet()
+                Collections.emptySet(),
+                snapshotTimestampNanos
         );
     }
 
@@ -64,6 +65,24 @@ public final class VehicleTrackingCoordinator {
             long snapshotTimestampNanos,
             List<VehicleTrackManager.Observation> observations,
             Set<Long> protectedReassociationEntityIds
+    ) {
+        return updateFromMp(
+                sourceFrameId,
+                sourceTimestampNanos,
+                snapshotTimestampNanos,
+                observations,
+                protectedReassociationEntityIds,
+                snapshotTimestampNanos
+        );
+    }
+
+    public synchronized VehicleTrackingFrame updateFromMp(
+            long sourceFrameId,
+            long sourceTimestampNanos,
+            long snapshotTimestampNanos,
+            List<VehicleTrackManager.Observation> observations,
+            Set<Long> protectedReassociationEntityIds,
+            long eventRuntimeNanos
     ) {
         Map<Long, VehicleCandidate> previousByEntity = candidatesByEntity(
                 latestFrame.candidates
@@ -95,7 +114,7 @@ public final class VehicleTrackingCoordinator {
                 previousByEntity,
                 activeBefore,
                 latestFrame,
-                snapshotTimestampNanos
+                eventRuntimeNanos
         );
         return latestFrame;
     }
@@ -104,6 +123,20 @@ public final class VehicleTrackingCoordinator {
             long sourceFrameId,
             long sourceTimestampNanos,
             long snapshotTimestampNanos
+    ) {
+        return predict(
+                sourceFrameId,
+                sourceTimestampNanos,
+                snapshotTimestampNanos,
+                snapshotTimestampNanos
+        );
+    }
+
+    public synchronized VehicleTrackingFrame predict(
+            long sourceFrameId,
+            long sourceTimestampNanos,
+            long snapshotTimestampNanos,
+            long eventRuntimeNanos
     ) {
         Map<Long, VehicleCandidate> previousByEntity = candidatesByEntity(
                 latestFrame.candidates
@@ -122,7 +155,7 @@ public final class VehicleTrackingCoordinator {
                 previousByEntity,
                 activeBefore,
                 latestFrame,
-                snapshotTimestampNanos
+                eventRuntimeNanos
         );
         return latestFrame;
     }

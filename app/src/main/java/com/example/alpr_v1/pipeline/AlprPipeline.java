@@ -1187,7 +1187,7 @@ public final class AlprPipeline {
                 );
         SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
                 evidence,
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
@@ -1341,7 +1341,7 @@ public final class AlprPipeline {
                         + " new=" + report.vehicles.newlyCreatedEntities
         );
         lastReacquireVehicleEvidence = report.vehicles;
-        long nowNanos = System.nanoTime();
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
         sceneTransitionCoordinator.onSoftReacquireResult(report.result, nowNanos);
         if (shouldRebaseSceneReference(report.result)) {
             sourceSceneDetector.reset();
@@ -1387,6 +1387,18 @@ public final class AlprPipeline {
         );
     }
 
+    private long latestContinuitySourceTimestampNanos() {
+        SceneEvidence evidence = lastSceneEvidence;
+        if (evidence != null && evidence.sourceTimestampNanos > 0L) {
+            return evidence.sourceTimestampNanos;
+        }
+        TargetSnapshot target = targetSnapshot;
+        if (target != null && target.sourceTimestampNanos > 0L) {
+            return target.sourceTimestampNanos;
+        }
+        return 0L;
+    }
+
     private void recordContinuityFrameSkip(SceneTransitionDecision decision) {
         if (decision == null) return;
         if (decision.action == SceneTransitionAction.HARD_RESET
@@ -1404,6 +1416,11 @@ public final class AlprPipeline {
     private synchronized void applySceneTransition(SceneTransitionDecision decision) {
         if (decision == null) return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
+        ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
+        long sourceTimestampNanos = recovery.active
+                && recovery.triggerSourceTimestampNanos > 0L
+                ? recovery.triggerSourceTimestampNanos
+                : latestContinuitySourceTimestampNanos();
         sceneGeneration.set(snapshot.sceneGeneration);
         visualEpoch.set(snapshot.visualEpoch);
         if (decision.incrementSceneGeneration) {
@@ -1417,7 +1434,7 @@ public final class AlprPipeline {
             lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             trackingResetRequested = true;
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
-                    sceneTransitionCoordinator.stamp(System.nanoTime())
+                    sceneTransitionCoordinator.stamp(sourceTimestampNanos)
             );
             frameGate.requestImmediateFrame();
         } else if (decision.action == SceneTransitionAction.SOFT_HOLD) {
@@ -1427,17 +1444,22 @@ public final class AlprPipeline {
         } else if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
             targetSnapshot = targetSnapshot.withState(TargetSnapshot.State.DEGRADED)
                     .withContinuityStamp(
-                            sceneTransitionCoordinator.stamp(System.nanoTime())
+                            sceneTransitionCoordinator.stamp(sourceTimestampNanos)
                     );
             if (engine != null) {
-                engine.beginSoftReacquire(snapshot.visualEpoch, decision.reason);
+                engine.beginSoftReacquire(
+                        snapshot.visualEpoch,
+                        decision.reason,
+                        recovery.startedRuntimeNanos,
+                        recovery.triggerSourceTimestampNanos
+                );
             }
             frameGate.requestImmediateFrame();
         } else if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
             lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             if (engine != null) engine.releaseFocusedTarget(decision.reason);
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
-                    sceneTransitionCoordinator.stamp(System.nanoTime())
+                    sceneTransitionCoordinator.stamp(sourceTimestampNanos)
             );
         } else if (decision.action == SceneTransitionAction.NONE
                 && snapshot.state
@@ -1592,6 +1614,20 @@ public final class AlprPipeline {
         if (recovery.available) {
             trace.putConfidence("reacquire_trigger_cut_score", recovery.triggerCutScore);
             trace.putConfidence("reacquire_max_cut_score", recovery.maximumCutScore);
+            trace.putAttribute(
+                    "reacquire_started_runtime_nanos",
+                    String.valueOf(recovery.startedRuntimeNanos)
+            );
+            trace.putAttribute(
+                    "reacquire_trigger_source_timestamp_nanos",
+                    String.valueOf(recovery.triggerSourceTimestampNanos)
+            );
+            trace.putAttribute(
+                    "source_timestamp_domain", "source_monotonic_nanos"
+            );
+            trace.putAttribute(
+                    "runtime_timestamp_domain", "elapsed_realtime_nanos"
+            );
         }
     }
 
@@ -1602,7 +1638,7 @@ public final class AlprPipeline {
     ) {
         if (decision.revision <= lastContinuityTelemetryRevision) return;
         lastContinuityTelemetryRevision = decision.revision;
-        long nowNanos = System.nanoTime();
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
         JSONObject details = continuityEventDetails(decision, snapshot, evidence);
         VisualChangeClassification classification = decision.assessment.classification;
         if (evidence != null && evidence.rawVisualChange) {
@@ -1691,6 +1727,20 @@ public final class AlprPipeline {
             if (recovery.available) {
                 details.put("reacquire_trigger_cut_score", recovery.triggerCutScore);
                 details.put("reacquire_max_cut_score", recovery.maximumCutScore);
+                details.put(
+                        "reacquire_started_runtime_nanos",
+                        recovery.startedRuntimeNanos
+                );
+                details.put(
+                        "reacquire_trigger_source_timestamp_nanos",
+                        recovery.triggerSourceTimestampNanos
+                );
+                details.put(
+                        "source_timestamp_domain", "source_monotonic_nanos"
+                );
+                details.put(
+                        "runtime_timestamp_domain", "elapsed_realtime_nanos"
+                );
             }
             if (evidence != null) {
                 details.put("raw_visual_change_score", evidence.rawVisualChangeScore);
@@ -1786,7 +1836,7 @@ public final class AlprPipeline {
     public synchronized void requestTrackingReset() {
         SceneTransitionDecision decision = sceneTransitionCoordinator.requestStructuralReset(
                 "external_tracking_reset",
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         lastSceneDecision = decision;
         lastSceneEvidence = null;
@@ -1802,7 +1852,7 @@ public final class AlprPipeline {
     public synchronized void resetTracking() {
         applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
                 "explicit_pipeline_reset",
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         ));
         if (engine != null && trackingResetRequested) {
             engine.hardResetScene("explicit_pipeline_reset");
@@ -1931,7 +1981,7 @@ public final class AlprPipeline {
                 ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
         sceneTransitionCoordinator.setMode(
                 safeMode,
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         if (engine != null) engine.setSceneHandlingMode(safeMode);
         metrics.setSceneContinuityConfiguration(safeMode.wireName(), "initial_v2");
@@ -1976,9 +2026,11 @@ public final class AlprPipeline {
     }
 
     public synchronized void requestImmediateTargetRecovery() {
+        long triggerSourceTimestampNanos = latestContinuitySourceTimestampNanos();
         SceneTransitionDecision decision = sceneTransitionCoordinator.requestSoftReacquire(
                 "immediate_target_recovery",
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos(),
+                triggerSourceTimestampNanos
         );
         lastSceneDecision = decision;
         lastSceneEvidence = null;
@@ -2028,7 +2080,9 @@ public final class AlprPipeline {
         boolean transformWasActive = cameraTransformInProgress;
         cameraTransformInProgress = false;
         if (transformWasActive) {
-            sceneTransitionCoordinator.advanceCameraTransformGeneration(System.nanoTime());
+            sceneTransitionCoordinator.advanceCameraTransformGeneration(
+                    SystemClock.elapsedRealtimeNanos()
+            );
         }
         sourceSceneDetector.reset();
         if (engine != null) {
@@ -2048,7 +2102,9 @@ public final class AlprPipeline {
         boolean transformWasActive = cameraTransformInProgress;
         cameraTransformInProgress = false;
         if (transformWasActive) {
-            sceneTransitionCoordinator.advanceCameraTransformGeneration(System.nanoTime());
+            sceneTransitionCoordinator.advanceCameraTransformGeneration(
+                    SystemClock.elapsedRealtimeNanos()
+            );
         }
         sourceSceneDetector.reset();
     }
@@ -2140,7 +2196,7 @@ public final class AlprPipeline {
                 );
         SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
                 evidence,
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         if (rawVisualChange || decision.action != SceneTransitionAction.NONE) {
             android.util.Log.d(
