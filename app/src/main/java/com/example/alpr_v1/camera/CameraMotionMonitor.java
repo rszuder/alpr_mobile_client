@@ -11,7 +11,11 @@ import android.os.SystemClock;
 public final class CameraMotionMonitor implements SensorEventListener {
     private final SensorManager sensorManager;
     private final Sensor gyroscope;
-    private final MotionIntensityFilter filter = new MotionIntensityFilter();
+    private final Sensor accelerometer;
+    private final Sensor activeSensor;
+    private final MotionIntensityFilter gyroFilter = new MotionIntensityFilter();
+    private final AccelerometerMotionFilter accelerometerFilter =
+            new AccelerometerMotionFilter();
     private boolean running;
 
     public CameraMotionMonitor(Context context) {
@@ -19,37 +23,57 @@ public final class CameraMotionMonitor implements SensorEventListener {
         gyroscope = sensorManager == null
                 ? null
                 : sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        accelerometer = sensorManager == null
+                ? null
+                : sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        activeSensor = gyroscope != null ? gyroscope : accelerometer;
     }
 
     public void start() {
-        if (running || sensorManager == null || gyroscope == null) return;
+        if (running || sensorManager == null || activeSensor == null) return;
         running = sensorManager.registerListener(
-                this, gyroscope, SensorManager.SENSOR_DELAY_GAME
+                this, activeSensor, SensorManager.SENSOR_DELAY_GAME
         );
     }
 
     public void stop() {
         if (sensorManager != null && running) sensorManager.unregisterListener(this);
         running = false;
-        filter.reset();
+        gyroFilter.reset();
+        accelerometerFilter.reset();
     }
 
     public boolean isRapidMotion() {
-        return filter.isRapid(SystemClock.elapsedRealtimeNanos());
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
+        return gyroscope != null
+                ? gyroFilter.isRapid(nowNanos)
+                : accelerometerFilter.isRapid(nowNanos);
     }
 
     public boolean isMoving() {
-        return filter.isMoving(SystemClock.elapsedRealtimeNanos());
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
+        return gyroscope != null
+                ? gyroFilter.isMoving(nowNanos)
+                : accelerometerFilter.isMoving(nowNanos);
     }
 
-    public float magnitude() { return filter.magnitude(); }
+    public float magnitude() { return gyroscope == null ? 0f : gyroFilter.magnitude(); }
 
-    public boolean isAvailable() { return gyroscope != null; }
+    public boolean isAvailable() { return activeSensor != null; }
+
+    public boolean isGyroscopeAvailable() { return gyroscope != null; }
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() != Sensor.TYPE_GYROSCOPE || event.values.length < 3) return;
-        filter.update(event.values[0], event.values[1], event.values[2], event.timestamp);
+        if (event.values.length < 3) return;
+        if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            gyroFilter.update(event.values[0], event.values[1], event.values[2], event.timestamp);
+        } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER
+                && gyroscope == null) {
+            accelerometerFilter.update(
+                    event.values[0], event.values[1], event.values[2], event.timestamp
+            );
+        }
     }
 
     @Override

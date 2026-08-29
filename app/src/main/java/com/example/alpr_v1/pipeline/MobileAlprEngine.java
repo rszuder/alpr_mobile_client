@@ -64,6 +64,10 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 final class MobileAlprEngine implements AutoCloseable {
+    interface SoftReacquireResultListener {
+        void onResult(SoftReacquireReport report);
+    }
+
     static final class ProcessingCancelledException extends RuntimeException {
         ProcessingCancelledException() {
             super("scene_superseded", null, false, false);
@@ -125,6 +129,7 @@ final class MobileAlprEngine implements AutoCloseable {
             VehicleContinuityEvidence.empty();
     private InternalSceneEvidence pendingInternalSceneEvidence =
             InternalSceneEvidence.none();
+    private SoftReacquireResultListener softReacquireResultListener;
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -299,8 +304,9 @@ final class MobileAlprEngine implements AutoCloseable {
         continuityReacquireActive = true;
         continuityReacquireStartedNanos = SystemClock.elapsedRealtimeNanos();
         continuityEntitiesBefore.clear();
-        for (VehicleCandidate candidate : vehicleTrackingCoordinator.latestFrame().candidates) {
-            continuityEntitiesBefore.add(candidate.entityId);
+        for (VehicleEntity entity
+                : vehicleTrackingCoordinator.repository().activeEntities()) {
+            continuityEntitiesBefore.add(entity.entityId());
         }
         VehicleEntity focused = targetSnapshot == null
                 ? null
@@ -353,6 +359,10 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         pendingSoftReacquireReport = SoftReacquireReport.none();
         return report;
+    }
+
+    void setSoftReacquireResultListener(SoftReacquireResultListener listener) {
+        softReacquireResultListener = listener;
     }
 
     InternalSceneEvidence consumeInternalSceneEvidence() {
@@ -616,7 +626,8 @@ final class MobileAlprEngine implements AutoCloseable {
                 && roiBudgetPolicy.usesVehicleCascade()
                 && vehicleBackend != null;
         if (useVehicleRegions) {
-            boolean refreshVehicles = cachedVehicleRois.isEmpty()
+            boolean refreshVehicles = continuityFreshMpRequired
+                    || cachedVehicleRois.isEmpty()
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
             if (refreshVehicles) {
@@ -627,7 +638,6 @@ final class MobileAlprEngine implements AutoCloseable {
                             vehicleTrackingCoordinator.latestFrame(),
                             SystemClock.elapsedRealtimeNanos()
                     );
-                    continuityFreshMpRequired = false;
                 }
                 cachedVehicleRois.clear();
                 cachedVehicleRois.addAll(vehicleResult.selectedRois);
@@ -680,6 +690,13 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         cancelIfRequested(cancellationRequested);
 
+        android.util.Log.d(
+                "ALPR_MT_CALLBACK_GATE",
+                "mt_started frame=" + trace.frameId()
+                        + " scene=" + sourceStamp.sceneGeneration
+                        + " visual=" + sourceStamp.visualEpoch
+                        + " transform=" + sourceStamp.cameraTransformGeneration
+        );
         long[] plateDurations = new long[3];
         List<Detection> plates = new ArrayList<>();
         Map<Detection, VehicleRoi> vehicleRoiByPlate = new IdentityHashMap<>();
@@ -1149,6 +1166,7 @@ final class MobileAlprEngine implements AutoCloseable {
          * Publikujemy teraz samą geometrię, aby UI nie czekało na OCR i mogło
          * utrzymywać świeżą ramkę przez cały dalszy przebieg auto-zoomu.
          */
+        publishFreshMtRecoveryIfReady();
         if (plateDetectionCallback != null && !decisions.isEmpty()) {
             List<OverlayItem> mtOverlays = new ArrayList<>(overlays);
             for (PlateTrackCoordinator.Decision decision : decisions) {
@@ -1167,6 +1185,13 @@ final class MobileAlprEngine implements AutoCloseable {
                         decision.trackId
                 ));
             }
+            android.util.Log.d(
+                    "ALPR_MT_CALLBACK_GATE",
+                    "callback_emitted frame=" + trace.frameId()
+                            + " scene=" + sourceStamp.sceneGeneration
+                            + " visual=" + sourceStamp.visualEpoch
+                            + " transform=" + sourceStamp.cameraTransformGeneration
+            );
             plateDetectionCallback.onPlateDetections(
                     Collections.unmodifiableList(mtOverlays),
                     frame.getWidth(),
@@ -1613,7 +1638,44 @@ final class MobileAlprEngine implements AutoCloseable {
         if (pendingSoftReacquireReport.attempted) {
             continuityFreshMpRequired = false;
             continuityReacquireActive = false;
+            publishTerminalSoftReacquireReport();
+        } else if (!shouldContinueForcedFreshMp(pendingSoftReacquireReport)) {
+            // Fresh MP recovered the active vehicle. MP no longer needs to be
+            // forced while the recovery waits for a fresh MT anchor.
+            continuityFreshMpRequired = false;
         }
+    }
+
+    static boolean shouldContinueForcedFreshMp(SoftReacquireReport report) {
+        return report != null
+                && !report.attempted
+                && report.vehicles.freshMeasuredEntities == 0;
+    }
+
+    private void publishFreshMtRecoveryIfReady() {
+        if (!continuityReacquireActive || continuityActiveEntityId <= 0L) return;
+        VehicleEntity entity = vehicleTrackingCoordinator.repository().get(
+                continuityActiveEntityId
+        );
+        boolean freshMt = entity != null
+                && entity.lastMtNanos() >= continuityReacquireStartedNanos
+                && entity.plateTrackId() != null;
+        if (!freshMt) return;
+        pendingSoftReacquireReport = SoftReacquireReport.terminal(
+                com.example.alpr_v1.continuity.SoftReacquireResult.TARGET_RECOVERED,
+                latestSoftReacquireVehicles,
+                "fresh_mp_mt_recovered_active_target"
+        );
+        continuityFreshMpRequired = false;
+        continuityReacquireActive = false;
+        publishTerminalSoftReacquireReport();
+    }
+
+    private void publishTerminalSoftReacquireReport() {
+        SoftReacquireReport report = pendingSoftReacquireReport;
+        if (!report.attempted || softReacquireResultListener == null) return;
+        pendingSoftReacquireReport = SoftReacquireReport.none();
+        softReacquireResultListener.onResult(report);
     }
 
     private void recordSchedulerDecision(
@@ -1997,7 +2059,10 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace.frameId(),
                 sourceTimestampNanos,
                 resultAvailableNanos,
-                vehicleObservations
+                vehicleObservations,
+                continuityFreshMpRequired
+                        ? continuityEntitiesBefore
+                        : java.util.Collections.emptySet()
         );
         trace.putConfidence(
                 "mp_observation_gap_ms",

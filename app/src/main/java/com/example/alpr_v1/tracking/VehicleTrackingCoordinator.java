@@ -5,6 +5,7 @@ import com.example.alpr_v1.domain.VehicleEntityRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -17,7 +18,8 @@ import java.util.Set;
 public final class VehicleTrackingCoordinator {
     public static final long CONFIDENCE_DECAY_HORIZON_NANOS = 2_500_000_000L;
     public static final long MIN_ADAPTIVE_TRACK_TTL_NANOS = 3_000_000_000L;
-    public static final long MAX_ADAPTIVE_TRACK_TTL_NANOS = 4_900_000_000L;
+    public static final long MAX_ADAPTIVE_TRACK_TTL_NANOS =
+            VehicleTrackManager.DEFAULT_ENTITY_TTL_NANOS - 100_000_000L;
     public static final double TRACK_TTL_GAP_MULTIPLIER = 1.75;
     private static final float[] MISSED_UPDATE_PENALTIES = {1f, 0.75f, 0.50f, 0.25f};
     private final VehicleEntityRepository repository;
@@ -47,6 +49,22 @@ public final class VehicleTrackingCoordinator {
             long snapshotTimestampNanos,
             List<VehicleTrackManager.Observation> observations
     ) {
+        return updateFromMp(
+                sourceFrameId,
+                sourceTimestampNanos,
+                snapshotTimestampNanos,
+                observations,
+                Collections.emptySet()
+        );
+    }
+
+    public synchronized VehicleTrackingFrame updateFromMp(
+            long sourceFrameId,
+            long sourceTimestampNanos,
+            long snapshotTimestampNanos,
+            List<VehicleTrackManager.Observation> observations,
+            Set<Long> protectedReassociationEntityIds
+    ) {
         Map<Long, VehicleCandidate> previousByEntity = candidatesByEntity(
                 latestFrame.candidates
         );
@@ -61,11 +79,12 @@ public final class VehicleTrackingCoordinator {
         );
         List<VehicleTrackManager.Snapshot> measured = tracker.update(
                 observations,
-                sourceTimestampNanos
+                sourceTimestampNanos,
+                protectedReassociationEntityIds
         );
         List<VehicleTrackManager.Snapshot> snapshots = snapshotTimestampNanos
                 > sourceTimestampNanos
-                ? tracker.predict(snapshotTimestampNanos) : measured;
+                ? tracker.projectAfterMeasurement(snapshotTimestampNanos) : measured;
         latestFrame = frame(
                 sourceFrameId,
                 sourceTimestampNanos,

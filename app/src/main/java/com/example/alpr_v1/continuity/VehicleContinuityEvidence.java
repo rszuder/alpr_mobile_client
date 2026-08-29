@@ -12,6 +12,7 @@ public final class VehicleContinuityEvidence {
     public final float trajectoryAgreement;
     public final boolean appearanceAgreementAvailable;
     public final boolean trajectoryAgreementAvailable;
+    public final int freshMeasuredEntities;
     public final long newestMeasurementAgeNanos;
 
     public VehicleContinuityEvidence(
@@ -36,7 +37,8 @@ public final class VehicleContinuityEvidence {
                 trajectoryAgreement,
                 newestMeasurementAgeNanos,
                 true,
-                true
+                true,
+                entitiesReassociated
         );
     }
 
@@ -52,6 +54,29 @@ public final class VehicleContinuityEvidence {
             long newestMeasurementAgeNanos,
             boolean appearanceAgreementAvailable,
             boolean trajectoryAgreementAvailable
+    ) {
+        this(
+                entitiesBefore, entitiesAfter, entitiesReassociated,
+                entitiesStillPredicted, newlyCreatedEntities, reassociationRatio,
+                appearanceAgreement, trajectoryAgreement, newestMeasurementAgeNanos,
+                appearanceAgreementAvailable, trajectoryAgreementAvailable,
+                entitiesReassociated
+        );
+    }
+
+    public VehicleContinuityEvidence(
+            int entitiesBefore,
+            int entitiesAfter,
+            int entitiesReassociated,
+            int entitiesStillPredicted,
+            int newlyCreatedEntities,
+            float reassociationRatio,
+            float appearanceAgreement,
+            float trajectoryAgreement,
+            long newestMeasurementAgeNanos,
+            boolean appearanceAgreementAvailable,
+            boolean trajectoryAgreementAvailable,
+            int freshMeasuredEntities
     ) {
         this.entitiesBefore = Contracts.nonNegative("entitiesBefore", entitiesBefore);
         this.entitiesAfter = Contracts.nonNegative("entitiesAfter", entitiesAfter);
@@ -78,6 +103,9 @@ public final class VehicleContinuityEvidence {
         );
         this.appearanceAgreementAvailable = appearanceAgreementAvailable;
         this.trajectoryAgreementAvailable = trajectoryAgreementAvailable;
+        this.freshMeasuredEntities = Contracts.nonNegative(
+                "freshMeasuredEntities", freshMeasuredEntities
+        );
         this.newestMeasurementAgeNanos = Contracts.nonNegative(
                 "newestMeasurementAgeNanos", newestMeasurementAgeNanos
         );
@@ -85,7 +113,7 @@ public final class VehicleContinuityEvidence {
 
     public static VehicleContinuityEvidence empty() {
         return new VehicleContinuityEvidence(
-                0, 0, 0, 0, 0, 0f, 0f, 0f, 0L, false, false
+                0, 0, 0, 0, 0, 0f, 0f, 0f, 0L, false, false, 0
         );
     }
 }

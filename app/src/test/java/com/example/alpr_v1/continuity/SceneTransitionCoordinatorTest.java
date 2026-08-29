@@ -28,6 +28,51 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void strictRawChangePreemptsExpiredSoftReacquire() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY
+        );
+        SceneEvidence localLossBeforeRawChange = new SceneEvidence(
+                1L, 10L, false,
+                0f, 0f, 0f, 0f, 0f,
+                targetEvidence(
+                        TargetContinuityLevel.PREDICTED_ONLY,
+                        0.20f, 1, 0.20f,
+                        0.20f, 0.20f, 0f, 0f, 0.20f,
+                        false
+                ),
+                VehicleContinuityEvidence.empty(),
+                MotionExplanationEvidence.none(),
+                false, true,
+                false, false, false, false
+        );
+
+        SceneTransitionDecision reacquire = coordinator.observe(
+                localLossBeforeRawChange,
+                1_000L
+        );
+        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, reacquire.action);
+
+        SceneEvidence delayedRawChange = new SceneEvidence(
+                2L, 20L, true,
+                0.17f, 0.58f, 0f, 0f, 0f,
+                TargetContinuityEvidence.noTarget(),
+                VehicleContinuityEvidence.empty(),
+                MotionExplanationEvidence.none(),
+                false, false, false, false
+        );
+        SceneTransitionDecision decision = coordinator.observe(
+                delayedRawChange,
+                2_000_000_000L
+        );
+
+        assertEquals(SceneTransitionAction.HARD_RESET, decision.action);
+        assertEquals("strict_raw_visual_change", decision.reason);
+        assertTrue(decision.incrementSceneGeneration);
+        assertTrue(decision.incrementVisualEpoch);
+    }
+
+    @Test
     public void dynamicModeKeepsStrongTargetThroughChangingBackground() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
@@ -254,6 +299,14 @@ public final class SceneTransitionCoordinatorTest {
         assertEquals(SceneContinuityState.HARD_RESETTING, decision.nextState);
         assertEquals(VisualChangeClassification.CONTINUITY_BREAK,
                 decision.assessment.classification);
+        ReacquireTelemetry telemetry = coordinator.reacquireTelemetry();
+        assertTrue(telemetry.available);
+        assertEquals("FAILED", telemetry.result);
+        assertTrue(telemetry.deadlineReached);
+        assertEquals(
+                VisualChangeClassification.UNEXPLAINED_CHANGE,
+                telemetry.triggerClassification
+        );
     }
 
     @Test
@@ -414,6 +467,9 @@ public final class SceneTransitionCoordinatorTest {
         assertEquals(visualEpoch, snapshot.visualEpoch);
         assertFalse(snapshot.finalizationSuspended);
         assertFalse(snapshot.heavyInferenceSuspended);
+        ReacquireTelemetry telemetry = coordinator.reacquireTelemetry();
+        assertEquals("VEHICLE_POOL_RECOVERED", telemetry.result);
+        assertTrue(telemetry.vehiclePoolRecovered);
     }
 
     @Test

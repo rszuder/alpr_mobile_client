@@ -33,6 +33,10 @@ public final class SceneTransitionCoordinator {
     private boolean pendingActiveTargetRelease;
     private boolean lastActiveTargetPresent;
     private ReacquireContext reacquireContext;
+    private ReacquireContext lastReacquireContext;
+    private String lastReacquireResult = "";
+    private boolean lastReacquireVehiclePoolRecovered;
+    private boolean lastReacquireDeadlineReached;
 
     public SceneTransitionCoordinator(
             SceneHandlingMode mode,
@@ -96,6 +100,17 @@ public final class SceneTransitionCoordinator {
                 && reacquireContext != null) {
             reacquireContext = reacquireContext.observe(assessment);
         }
+        /*
+         * W trybie strict potwierdzona zmiana obrazu jest nadrzędna wobec
+         * timeoutu rozpoczętego wcześniej soft reacquire. Na wolnym urządzeniu
+         * pierwsza klatka po cięciu może zgłosić tylko utratę lokalnego trackera,
+         * a dopiero kolejna rawVisualChange. Nie wolno wtedy zakończyć recovery
+         * ścieżką dynamiczną tuż przed obsłużeniem granicy sceny.
+         */
+        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                && evidence.rawVisualChange) {
+            return observeStrict(evidence, nowNanos);
+        }
         if (currentState == SceneContinuityState.REACQUIRING
                 && !pendingActiveTargetRelease
                 && (reacquireFailed || reacquireDeadlineReached(nowNanos))) {
@@ -142,16 +157,23 @@ public final class SceneTransitionCoordinator {
         switch (result) {
             case TARGET_RECOVERED:
             case VEHICLE_POOL_RECOVERED:
+                recordReacquireOutcome(
+                        result.name(),
+                        result == SoftReacquireResult.VEHICLE_POOL_RECOVERED,
+                        false
+                );
                 resetRecoveryState();
                 enterState(SceneContinuityState.STABLE, nowNanos);
                 finalizationSuspended = false;
                 heavyInferenceSuspended = false;
                 break;
             case ACTIVE_TARGET_LOST:
+                recordReacquireOutcome(result.name(), true, false);
                 pendingActiveTargetRelease = true;
                 reacquireFailed = true;
                 break;
             case FAILED:
+                recordReacquireOutcome(result.name(), false, false);
                 reacquireFailed = true;
                 break;
             default:
@@ -183,6 +205,18 @@ public final class SceneTransitionCoordinator {
                 visualEpoch,
                 cameraTransformGeneration,
                 sourceTimestampNanos
+        );
+    }
+
+    public synchronized ReacquireTelemetry reacquireTelemetry() {
+        ReacquireContext context = reacquireContext != null
+                ? reacquireContext : lastReacquireContext;
+        return ReacquireTelemetry.from(
+                context,
+                reacquireContext != null,
+                lastReacquireResult,
+                lastReacquireVehiclePoolRecovered,
+                lastReacquireDeadlineReached
         );
     }
 
@@ -433,6 +467,8 @@ public final class SceneTransitionCoordinator {
 
     private SceneTransitionDecision finishUnsuccessfulReacquire(long nowNanos) {
         ReacquireContext context = reacquireContext;
+        boolean deadlineReached = reacquireDeadlineReached(nowNanos);
+        recordReacquireOutcome("FAILED", false, deadlineReached);
         boolean confirmedBreak = context != null
                 && context.maximumCutEvidenceDuringRecovery
                 >= profile.continuityBreakThreshold;
@@ -492,6 +528,10 @@ public final class SceneTransitionCoordinator {
                 nowNanos,
                 lastActiveTargetPresent
         );
+        lastReacquireContext = null;
+        lastReacquireResult = "";
+        lastReacquireVehiclePoolRecovered = false;
+        lastReacquireDeadlineReached = false;
         reacquireFailed = false;
         finalizationSuspended = true;
         heavyInferenceSuspended = false;
@@ -646,6 +686,17 @@ public final class SceneTransitionCoordinator {
         reacquireFailed = false;
         pendingActiveTargetRelease = false;
         reacquireContext = null;
+    }
+
+    private void recordReacquireOutcome(
+            String result,
+            boolean vehiclePoolRecovered,
+            boolean deadlineReached
+    ) {
+        if (reacquireContext != null) lastReacquireContext = reacquireContext;
+        lastReacquireResult = result == null ? "" : result;
+        lastReacquireVehiclePoolRecovered = vehiclePoolRecovered;
+        lastReacquireDeadlineReached = deadlineReached;
     }
 
     private boolean isDuplicate(SceneEvidence evidence) {

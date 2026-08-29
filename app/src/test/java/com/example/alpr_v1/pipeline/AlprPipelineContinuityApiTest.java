@@ -8,6 +8,7 @@ import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
+import com.example.alpr_v1.continuity.SoftReacquireResult;
 
 import org.junit.Test;
 
@@ -79,6 +80,22 @@ public final class AlprPipelineContinuityApiTest {
                 ContinuityStamp.class,
                 callback.getParameterTypes()[3]
         );
+    }
+
+    @Test
+    public void onlySuccessfulRecoveryRebasesSceneDetectorReference() {
+        org.junit.Assert.assertTrue(AlprPipeline.shouldRebaseSceneReference(
+                SoftReacquireResult.TARGET_RECOVERED
+        ));
+        org.junit.Assert.assertTrue(AlprPipeline.shouldRebaseSceneReference(
+                SoftReacquireResult.VEHICLE_POOL_RECOVERED
+        ));
+        org.junit.Assert.assertFalse(AlprPipeline.shouldRebaseSceneReference(
+                SoftReacquireResult.ACTIVE_TARGET_LOST
+        ));
+        org.junit.Assert.assertFalse(AlprPipeline.shouldRebaseSceneReference(
+                SoftReacquireResult.FAILED
+        ));
     }
 
     private static Field field(String name) throws Exception {

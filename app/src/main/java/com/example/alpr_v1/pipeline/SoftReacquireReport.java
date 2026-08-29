@@ -62,9 +62,16 @@ final class SoftReacquireReport {
             long recoveryStartedNanos,
             long nowNanos
     ) {
+        if (frame.sourceTimestampNanos < recoveryStartedNanos) {
+            return pending(
+                    VehicleContinuityEvidence.empty(),
+                    "mp_source_frame_predates_recovery"
+            );
+        }
         int reassociated = 0;
         int predicted = 0;
         int newlyCreated = 0;
+        int freshMeasuredEntities = 0;
         long newestAgeNanos = Long.MAX_VALUE;
         boolean activeRecovered = false;
         for (VehicleCandidate candidate : frame.candidates) {
@@ -72,6 +79,9 @@ final class SoftReacquireReport {
             boolean freshMeasured = existedBefore
                     && !candidate.predicted
                     && candidate.lastMeasurementTimestampNanos >= recoveryStartedNanos;
+            boolean anyFreshMeasurement = !candidate.predicted
+                    && candidate.lastMeasurementTimestampNanos >= recoveryStartedNanos;
+            if (anyFreshMeasurement) freshMeasuredEntities++;
             if (freshMeasured) {
                 reassociated++;
                 newestAgeNanos = Math.min(
@@ -103,7 +113,8 @@ final class SoftReacquireReport {
                         ? Math.max(0L, nowNanos - recoveryStartedNanos)
                         : newestAgeNanos,
                 false,
-                false
+                false,
+                freshMeasuredEntities
         );
         float vehicleScore = new VehicleContinuityEvaluator().evaluate(vehicles);
         boolean poolRecovered = before > 0 && reassociated > 0 && vehicleScore >= 0.50f;

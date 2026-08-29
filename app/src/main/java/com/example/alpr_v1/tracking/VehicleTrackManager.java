@@ -21,7 +21,7 @@ import java.util.Set;
 public final class VehicleTrackManager {
     public static final int DEFAULT_MAX_TRACKED_VEHICLES = 16;
     public static final long DEFAULT_TRACK_TTL_NANOS = 1_800_000_000L;
-    public static final long DEFAULT_ENTITY_TTL_NANOS = 5_000_000_000L;
+    public static final long DEFAULT_ENTITY_TTL_NANOS = 15_000_000_000L;
     public static final float MIN_ACTIVE_ASSOCIATION_SCORE = 0.36f;
     public static final float MIN_REASSOCIATION_SCORE = 0.50f;
     public static final float MIN_ASSOCIATION_MARGIN = 0.035f;
@@ -185,8 +185,22 @@ public final class VehicleTrackManager {
             List<Observation> rawObservations,
             long nowNanos
     ) {
+        return update(rawObservations, nowNanos, Collections.emptySet());
+    }
+
+    /**
+     * Updates MP measurements while allowing a bounded recovery caller to keep
+     * selected dormant entities eligible for real observation reassociation.
+     */
+    public synchronized List<Snapshot> update(
+            List<Observation> rawObservations,
+            long nowNanos,
+            Set<Long> protectedReassociationEntityIds
+    ) {
         long trackingStarted = System.nanoTime();
         long safeNow = Math.max(0L, nowNanos);
+        Set<Long> protectedIds = protectedReassociationEntityIds == null
+                ? Collections.emptySet() : protectedReassociationEntityIds;
         tracksExpired += removeExpiredTracks(safeNow);
         List<Observation> observations = validObservations(rawObservations);
         boolean[] usedTracks = new boolean[tracks.size()];
@@ -268,7 +282,7 @@ public final class VehicleTrackManager {
             }
             Observation observation = observations.get(observationIndex);
             VehicleEntity reassociated = findDormantEntity(
-                    observation, assignedEntityIds, safeNow
+                    observation, assignedEntityIds, safeNow, protectedIds
             );
             long trackId = nextTrackId++;
             VehicleEntity entity;
@@ -298,7 +312,21 @@ public final class VehicleTrackManager {
         }
 
         entitiesExpired += repository.expireOldEntities(safeNow, entityTtlNanos);
-        List<Snapshot> result = snapshots(safeNow);
+        List<Snapshot> result = snapshots(safeNow, false);
+        lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
+        trackingNanos += lastTrackingNanos;
+        return result;
+    }
+
+    /**
+     * Projects geometry after a just-completed MP update while preserving which
+     * tracks were actually measured by that update.
+     */
+    public synchronized List<Snapshot> projectAfterMeasurement(long nowNanos) {
+        long trackingStarted = System.nanoTime();
+        long safeNow = Math.max(0L, nowNanos);
+        tracksExpired += removeExpiredTracks(safeNow);
+        List<Snapshot> result = snapshots(safeNow, false);
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
         trackingNanos += lastTrackingNanos;
         return result;
@@ -309,8 +337,7 @@ public final class VehicleTrackManager {
         long trackingStarted = System.nanoTime();
         long safeNow = Math.max(0L, nowNanos);
         tracksExpired += removeExpiredTracks(safeNow);
-        entitiesExpired += repository.expireOldEntities(safeNow, entityTtlNanos);
-        List<Snapshot> result = snapshots(safeNow);
+        List<Snapshot> result = snapshots(safeNow, true);
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
         trackingNanos += lastTrackingNanos;
         return result;
@@ -359,14 +386,16 @@ public final class VehicleTrackManager {
     private VehicleEntity findDormantEntity(
             Observation observation,
             Set<Long> assignedEntityIds,
-            long nowNanos
+            long nowNanos,
+            Set<Long> protectedReassociationEntityIds
     ) {
         VehicleEntity best = null;
         float bestScore = MIN_REASSOCIATION_SCORE;
         for (VehicleEntity entity : repository.activeEntities()) {
             if (assignedEntityIds.contains(entity.entityId())
                     || entity.acquisitionState() == EntityAcquisitionState.EXPIRED
-                    || nowNanos - entity.lastSeenNanos() > entityTtlNanos
+                    || (!protectedReassociationEntityIds.contains(entity.entityId())
+                    && nowNanos - entity.lastSeenNanos() > entityTtlNanos)
                     || entity.vehicleBounds() == null) continue;
             NormalizedBounds predicted = predictEntity(entity, nowNanos);
             float score = associationScore(
@@ -403,7 +432,7 @@ public final class VehicleTrackManager {
         );
     }
 
-    private List<Snapshot> snapshots(long nowNanos) {
+    private List<Snapshot> snapshots(long nowNanos, boolean predictionOnly) {
         List<Snapshot> result = new ArrayList<>(tracks.size());
         for (Track track : tracks) {
             NormalizedBounds bounds = track.predicted(nowNanos);
@@ -419,7 +448,7 @@ public final class VehicleTrackManager {
                     track.lastSeenNanos,
                     track.missedUpdates,
                     track.sourceIndex,
-                    track.sourceIndex < 0 || nowNanos > track.lastSeenNanos
+                    predictionOnly || track.sourceIndex < 0
             ));
         }
         return Collections.unmodifiableList(result);

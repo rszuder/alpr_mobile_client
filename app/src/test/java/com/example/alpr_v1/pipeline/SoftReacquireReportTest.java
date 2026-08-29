@@ -121,6 +121,7 @@ public final class SoftReacquireReportTest {
         assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, report.result);
         assertEquals(1, report.vehicles.entitiesReassociated);
         assertEquals(100L, report.vehicles.newestMeasurementAgeNanos);
+        assertEquals(1, report.vehicles.freshMeasuredEntities);
         assertFalse(report.vehicles.appearanceAgreementAvailable);
         assertFalse(report.vehicles.trajectoryAgreementAvailable);
     }
@@ -139,8 +140,10 @@ public final class SoftReacquireReportTest {
                 before, 0L, stale, 1_000L, 1_200L
         );
 
-        assertEquals(SoftReacquireResult.FAILED, report.result);
+        assertFalse(report.attempted);
+        assertEquals(null, report.result);
         assertEquals(0, report.vehicles.entitiesReassociated);
+        assertEquals("mp_source_frame_predates_recovery", report.reason);
     }
 
     private static VehicleCandidate candidate(long entityId, long vehicleTrackId) {

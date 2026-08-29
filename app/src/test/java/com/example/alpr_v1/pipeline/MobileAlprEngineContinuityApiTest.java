@@ -4,6 +4,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.example.alpr_v1.continuity.SoftReacquireResult;
+import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
+
 import org.junit.Test;
 
 public final class MobileAlprEngineContinuityApiTest {
@@ -34,5 +37,30 @@ public final class MobileAlprEngineContinuityApiTest {
         assertFalse(MobileAlprEngine.shouldReportInternalSceneEvidence(
                 false, false
         ));
+    }
+
+    @Test
+    public void forcedFreshMpContinuesOnlyWhileNoFreshMeasurementExists() {
+        SoftReacquireReport stale = SoftReacquireReport.pending(
+                VehicleContinuityEvidence.empty(),
+                "mp_source_frame_predates_recovery"
+        );
+        VehicleContinuityEvidence freshVehicles = new VehicleContinuityEvidence(
+                1, 1, 1, 0, 0, 1f,
+                0f, 0f, 0L, false, false, 1
+        );
+        SoftReacquireReport waitingForMt = SoftReacquireReport.pending(
+                freshVehicles,
+                "fresh_mp_recovered_active_vehicle_waiting_for_mt"
+        );
+        SoftReacquireReport terminal = SoftReacquireReport.terminal(
+                SoftReacquireResult.VEHICLE_POOL_RECOVERED,
+                freshVehicles,
+                "fresh_mp_recovered_vehicle_pool"
+        );
+
+        assertTrue(MobileAlprEngine.shouldContinueForcedFreshMp(stale));
+        assertFalse(MobileAlprEngine.shouldContinueForcedFreshMp(waitingForMt));
+        assertFalse(MobileAlprEngine.shouldContinueForcedFreshMp(terminal));
     }
 }

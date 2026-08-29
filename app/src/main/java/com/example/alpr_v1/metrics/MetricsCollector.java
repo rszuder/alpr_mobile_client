@@ -38,7 +38,9 @@ public final class MetricsCollector {
         long framesProcessed;
         long framesSkippedGate;
         long framesSkippedCameraTransform;
-        long framesSkippedSceneChange;
+        long framesSkippedHardSceneReset;
+        long framesSkippedContinuityHold;
+        long framesSkippedContinuityReacquire;
         long estimatedUpstreamGaps;
 
         FrameFlowBucket(long elapsedMs) {
@@ -122,7 +124,9 @@ public final class MetricsCollector {
     private long framesProcessed;
     private long framesSkippedGate;
     private long framesSkippedCameraTransform;
-    private long framesSkippedSceneChange;
+    private long framesSkippedHardSceneReset;
+    private long framesSkippedContinuityHold;
+    private long framesSkippedContinuityReacquire;
     private long estimatedUpstreamGaps;
     private long lastSourceTimestampNanos = -1L;
     private double expectedSourceIntervalNanos = Double.NaN;
@@ -178,7 +182,9 @@ public final class MetricsCollector {
         framesProcessed = 0L;
         framesSkippedGate = 0L;
         framesSkippedCameraTransform = 0L;
-        framesSkippedSceneChange = 0L;
+        framesSkippedHardSceneReset = 0L;
+        framesSkippedContinuityHold = 0L;
+        framesSkippedContinuityReacquire = 0L;
         estimatedUpstreamGaps = 0L;
         lastSourceTimestampNanos = -1L;
         expectedSourceIntervalNanos = Double.NaN;
@@ -264,11 +270,25 @@ public final class MetricsCollector {
         currentFrameFlowBucket().framesSkippedCameraTransform++;
     }
 
-    public synchronized void frameSkippedBySceneChange() {
+    public synchronized void frameSkippedByHardSceneReset() {
         if (!measurementSessionActive) return;
         droppedFrames++;
-        framesSkippedSceneChange++;
-        currentFrameFlowBucket().framesSkippedSceneChange++;
+        framesSkippedHardSceneReset++;
+        currentFrameFlowBucket().framesSkippedHardSceneReset++;
+    }
+
+    public synchronized void frameSkippedByContinuityHold() {
+        if (!measurementSessionActive) return;
+        droppedFrames++;
+        framesSkippedContinuityHold++;
+        currentFrameFlowBucket().framesSkippedContinuityHold++;
+    }
+
+    public synchronized void frameSkippedByContinuityReacquire() {
+        if (!measurementSessionActive) return;
+        droppedFrames++;
+        framesSkippedContinuityReacquire++;
+        currentFrameFlowBucket().framesSkippedContinuityReacquire++;
     }
 
     /** Zachowany alias dla starszych wywołań; nowe miejsca powinny podawać przyczynę. */
@@ -1182,9 +1202,11 @@ public final class MetricsCollector {
         JSONObject frameFlow = new JSONObject();
         frameFlow.put("frames_received", framesReceived);
         frameFlow.put("frames_processed", framesProcessed);
-        frameFlow.put("frames_skipped_gate", framesSkippedGate);
+        frameFlow.put("frames_skipped_frame_gate", framesSkippedGate);
         frameFlow.put("frames_skipped_camera_transform", framesSkippedCameraTransform);
-        frameFlow.put("frames_skipped_scene_change", framesSkippedSceneChange);
+        frameFlow.put("frames_skipped_hard_scene_reset", framesSkippedHardSceneReset);
+        frameFlow.put("frames_skipped_continuity_hold", framesSkippedContinuityHold);
+        frameFlow.put("frames_skipped_continuity_reacquire", framesSkippedContinuityReacquire);
         frameFlow.put("estimated_upstream_gaps", estimatedUpstreamGaps);
         frameFlow.put("upstream_gaps_are_estimated", true);
         frameFlow.put("bucket_ms", 1_000);
@@ -1744,7 +1766,7 @@ public final class MetricsCollector {
 
     public synchronized String createFrameFlowCsv() {
         StringBuilder csv = new StringBuilder(
-                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_gate,frames_skipped_camera_transform,frames_skipped_scene_change,estimated_upstream_gaps\n"
+                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_frame_gate,frames_skipped_camera_transform,frames_skipped_hard_scene_reset,frames_skipped_continuity_hold,frames_skipped_continuity_reacquire,estimated_upstream_gaps\n"
         );
         for (FrameFlowBucket bucket : frameFlowBuckets.values()) {
             csv.append(csvCell(experimentSessionId)).append(',')
@@ -1753,7 +1775,9 @@ public final class MetricsCollector {
                     .append(bucket.framesProcessed).append(',')
                     .append(bucket.framesSkippedGate).append(',')
                     .append(bucket.framesSkippedCameraTransform).append(',')
-                    .append(bucket.framesSkippedSceneChange).append(',')
+                    .append(bucket.framesSkippedHardSceneReset).append(',')
+                    .append(bucket.framesSkippedContinuityHold).append(',')
+                    .append(bucket.framesSkippedContinuityReacquire).append(',')
                     .append(bucket.estimatedUpstreamGaps).append('\n');
         }
         return csv.toString();

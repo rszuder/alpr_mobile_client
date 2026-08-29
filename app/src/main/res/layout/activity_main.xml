@@ -95,7 +95,8 @@
             android:maxLines="1"
             android:textColor="@color/alpr_text_secondary"
             android:textSize="10sp"
-            tools:text="R2 · LOCK · 10 FPS" />
+            android:visibility="gone"
+            tools:text="" />
 
         <ImageButton
             android:id="@+id/live_diagnostics_toggle"

@@ -13,6 +13,8 @@ import com.example.alpr_v1.continuity.ContinuityGenerationGate;
 import com.example.alpr_v1.continuity.ContinuityResultDisposition;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.MotionExplanationEvidence;
+import com.example.alpr_v1.continuity.ReacquireTelemetry;
+import com.example.alpr_v1.continuity.RecoveryFrameGate;
 import com.example.alpr_v1.continuity.SceneContinuityProfile;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneContinuityState;
@@ -284,6 +286,11 @@ public final class AlprPipeline {
             metrics.frameSkippedByCameraTransform();
             return null;
         }
+        if (isPreRecoveryFrame(sourceTimestampNanos)) {
+            metrics.frameSkippedByContinuityReacquire();
+            frameGate.requestImmediateFrame();
+            return null;
+        }
         long frameId = frameIds.incrementAndGet();
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.updateSamples(
                 sampleLuminance(image),
@@ -297,7 +304,7 @@ public final class AlprPipeline {
         );
         applySceneTransition(sceneDecision);
         if (shouldSkipHeavyInference(sceneDecision)) {
-            metrics.frameSkippedBySceneChange();
+            recordContinuityFrameSkip(sceneDecision);
             if (sceneChangeCallback != null
                     && sceneDecision.action == SceneTransitionAction.HARD_RESET) {
                 sceneChangeCallback.onSceneChanged(
@@ -390,6 +397,9 @@ public final class AlprPipeline {
                     );
                     engine.setSceneHandlingMode(
                             sceneTransitionCoordinator.snapshot().mode
+                    );
+                    engine.setSoftReacquireResultListener(
+                            this::handleSoftReacquireReport
                     );
                 }
 
@@ -623,6 +633,11 @@ public final class AlprPipeline {
             metrics.frameSkippedByCameraTransform();
             return null;
         }
+        if (isPreRecoveryFrame(sourceTimestampNanos)) {
+            metrics.frameSkippedByContinuityReacquire();
+            frameGate.requestImmediateFrame();
+            return null;
+        }
         long frameId = frameIds.incrementAndGet();
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
         SceneTransitionDecision sceneDecision = observeSourceScene(
@@ -632,7 +647,7 @@ public final class AlprPipeline {
         );
         applySceneTransition(sceneDecision);
         if (shouldSkipHeavyInference(sceneDecision)) {
-            metrics.frameSkippedBySceneChange();
+            recordContinuityFrameSkip(sceneDecision);
             if (sceneChangeCallback != null
                     && sceneDecision.action == SceneTransitionAction.HARD_RESET) {
                 sceneChangeCallback.onSceneChanged(sourceScene.score, sourceScene.changedFraction);
@@ -702,6 +717,9 @@ public final class AlprPipeline {
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
                     engine.setSceneHandlingMode(
                             sceneTransitionCoordinator.snapshot().mode
+                    );
+                    engine.setSoftReacquireResultListener(
+                            this::handleSoftReacquireReport
                     );
                 }
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
@@ -1311,9 +1329,24 @@ public final class AlprPipeline {
 
     private void handleSoftReacquireReport(SoftReacquireReport report) {
         if (report == null || !report.attempted) return;
+        android.util.Log.d(
+                "ALPR_REACQUIRE_RESULT",
+                "result=" + report.result
+                        + " reason=" + report.reason
+                        + " before=" + report.vehicles.entitiesBefore
+                        + " after=" + report.vehicles.entitiesAfter
+                        + " measured=" + report.vehicles.freshMeasuredEntities
+                        + " predicted=" + report.vehicles.entitiesStillPredicted
+                        + " reassociated=" + report.vehicles.entitiesReassociated
+                        + " new=" + report.vehicles.newlyCreatedEntities
+        );
         lastReacquireVehicleEvidence = report.vehicles;
         long nowNanos = System.nanoTime();
         sceneTransitionCoordinator.onSoftReacquireResult(report.result, nowNanos);
+        if (shouldRebaseSceneReference(report.result)) {
+            sourceSceneDetector.reset();
+            if (engine != null) engine.resetSceneDetectorReference();
+        }
         if (report.result == SoftReacquireResult.TARGET_RECOVERED
                 || report.result == SoftReacquireResult.VEHICLE_POOL_RECOVERED) {
             JSONObject details = lastSceneDecision == null
@@ -1335,11 +1368,37 @@ public final class AlprPipeline {
         }
     }
 
+    static boolean shouldRebaseSceneReference(SoftReacquireResult result) {
+        return result == SoftReacquireResult.TARGET_RECOVERED
+                || result == SoftReacquireResult.VEHICLE_POOL_RECOVERED;
+    }
+
     private boolean shouldSkipHeavyInference(SceneTransitionDecision decision) {
         if (decision == null) return false;
         return decision.action == SceneTransitionAction.HARD_RESET
                 || decision.action == SceneTransitionAction.SOFT_REACQUIRE
                 || sceneTransitionCoordinator.snapshot().heavyInferenceSuspended;
+    }
+
+    private boolean isPreRecoveryFrame(long sourceTimestampNanos) {
+        return RecoveryFrameGate.shouldSkip(
+                sceneTransitionCoordinator.reacquireTelemetry(),
+                sourceTimestampNanos
+        );
+    }
+
+    private void recordContinuityFrameSkip(SceneTransitionDecision decision) {
+        if (decision == null) return;
+        if (decision.action == SceneTransitionAction.HARD_RESET
+                || decision.nextState == SceneContinuityState.HARD_RESETTING) {
+            metrics.frameSkippedByHardSceneReset();
+        } else if (decision.action == SceneTransitionAction.SOFT_HOLD
+                || decision.nextState == SceneContinuityState.MOTION_HOLD) {
+            metrics.frameSkippedByContinuityHold();
+        } else if (decision.action == SceneTransitionAction.SOFT_REACQUIRE
+                || decision.nextState == SceneContinuityState.REACQUIRING) {
+            metrics.frameSkippedByContinuityReacquire();
+        }
     }
 
     private synchronized void applySceneTransition(SceneTransitionDecision decision) {
@@ -1424,6 +1483,7 @@ public final class AlprPipeline {
         trace.putCount("visual_epoch", snapshot.visualEpoch);
         trace.putCount("finalization_suspended",
                 snapshot.finalizationSuspended ? 1 : 0);
+        appendReacquireTelemetry(trace);
 
         VisualChangeClassification classification = decision.assessment.classification;
         trace.putCount("raw_visual_change_events",
@@ -1472,6 +1532,16 @@ public final class AlprPipeline {
         trace.putCount("vehicle_entities_after", evidence.vehicles.entitiesAfter);
         trace.putCount("vehicle_entities_reassociated",
                 evidence.vehicles.entitiesReassociated);
+        trace.putCount("fresh_mp_measured_entities",
+                evidence.vehicles.freshMeasuredEntities);
+        trace.putCount("fresh_mp_predicted_entities",
+                evidence.vehicles.entitiesStillPredicted);
+        trace.putCount("fresh_mp_reassociated_entities",
+                evidence.vehicles.entitiesReassociated);
+        trace.putCount("vehicle_appearance_agreement_available",
+                evidence.vehicles.appearanceAgreementAvailable ? 1 : 0);
+        trace.putCount("vehicle_trajectory_agreement_available",
+                evidence.vehicles.trajectoryAgreementAvailable ? 1 : 0);
         trace.putConfidence("vehicle_reassociation_ratio",
                 evidence.vehicles.reassociationRatio);
         trace.putConfidence("vehicle_trajectory_agreement",
@@ -1498,6 +1568,30 @@ public final class AlprPipeline {
                         Math.max(0L, nowNanos - missingSince)
                 );
             }
+        }
+    }
+
+    private void appendReacquireTelemetry(InferenceTrace trace) {
+        ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
+        trace.putCount("reacquire_context_available", recovery.available ? 1 : 0);
+        trace.putAttribute(
+                "reacquire_result",
+                recovery.result.isEmpty() ? "UNAVAILABLE" : recovery.result
+        );
+        trace.putAttribute(
+                "reacquire_trigger_classification",
+                recovery.triggerClassification == null
+                        ? "UNAVAILABLE" : recovery.triggerClassification.name()
+        );
+        trace.putCount("reacquire_active_target_present",
+                recovery.activeTargetPresent ? 1 : 0);
+        trace.putCount("reacquire_vehicle_pool_recovered",
+                recovery.vehiclePoolRecovered ? 1 : 0);
+        trace.putCount("reacquire_deadline_reached",
+                recovery.deadlineReached ? 1 : 0);
+        if (recovery.available) {
+            trace.putConfidence("reacquire_trigger_cut_score", recovery.triggerCutScore);
+            trace.putConfidence("reacquire_max_cut_score", recovery.maximumCutScore);
         }
     }
 
@@ -1558,7 +1652,7 @@ public final class AlprPipeline {
         lastAppliedContinuityState = snapshot.state;
     }
 
-    private static JSONObject continuityEventDetails(
+    private JSONObject continuityEventDetails(
             SceneTransitionDecision decision,
             SceneContinuitySnapshot snapshot,
             SceneEvidence evidence
@@ -1582,6 +1676,22 @@ public final class AlprPipeline {
             details.put("scene_generation", snapshot.sceneGeneration);
             details.put("visual_epoch", snapshot.visualEpoch);
             details.put("finalization_suspended", snapshot.finalizationSuspended);
+            ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
+            details.put("reacquire_context_available", recovery.available);
+            details.put("reacquire_result",
+                    recovery.result.isEmpty() ? "UNAVAILABLE" : recovery.result);
+            details.put("reacquire_trigger_classification",
+                    recovery.triggerClassification == null
+                            ? "UNAVAILABLE" : recovery.triggerClassification.name());
+            details.put("reacquire_active_target_present",
+                    recovery.activeTargetPresent);
+            details.put("reacquire_vehicle_pool_recovered",
+                    recovery.vehiclePoolRecovered);
+            details.put("reacquire_deadline_reached", recovery.deadlineReached);
+            if (recovery.available) {
+                details.put("reacquire_trigger_cut_score", recovery.triggerCutScore);
+                details.put("reacquire_max_cut_score", recovery.maximumCutScore);
+            }
             if (evidence != null) {
                 details.put("raw_visual_change_score", evidence.rawVisualChangeScore);
                 details.put("target_continuity_level", evidence.target.level.name());
@@ -1590,6 +1700,16 @@ public final class AlprPipeline {
                 details.put("vehicle_entities_after", evidence.vehicles.entitiesAfter);
                 details.put("vehicle_entities_reassociated",
                         evidence.vehicles.entitiesReassociated);
+                details.put("fresh_mp_measured_entities",
+                        evidence.vehicles.freshMeasuredEntities);
+                details.put("fresh_mp_predicted_entities",
+                        evidence.vehicles.entitiesStillPredicted);
+                details.put("fresh_mp_reassociated_entities",
+                        evidence.vehicles.entitiesReassociated);
+                details.put("vehicle_appearance_agreement_available",
+                        evidence.vehicles.appearanceAgreementAvailable);
+                details.put("vehicle_trajectory_agreement_available",
+                        evidence.vehicles.trajectoryAgreementAvailable);
                 details.put("vehicle_reassociation_ratio",
                         evidence.vehicles.reassociationRatio);
                 details.put("camera_motion_available", evidence.motion.gyroAvailable);
@@ -2030,6 +2150,7 @@ public final class AlprPipeline {
                             "raw=%s focused_lost=%s focused_degraded=%s "
                                     + "score=%.3f fraction=%.3f local_valid=%s "
                                     + "local_similarity=%.3f target=%.3f vehicle=%.3f "
+                                    + "moving=%s rapid=%s angular=%.3f "
                                     + "class=%s action=%s reason=%s",
                             rawVisualChange,
                             focusedTrackingLost,
@@ -2040,6 +2161,9 @@ public final class AlprPipeline {
                             targetEvidence.plateAppearanceSimilarity,
                             decision.assessment.targetContinuityScore,
                             decision.assessment.vehicleContinuityScore,
+                            cameraMoving,
+                            rapidCameraMotion,
+                            angularMotionMagnitude,
                             decision.assessment.classification,
                             decision.action,
                             decision.reason

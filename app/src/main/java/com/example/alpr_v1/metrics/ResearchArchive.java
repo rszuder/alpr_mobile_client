@@ -59,7 +59,7 @@ public final class ResearchArchive {
                 reportJson,
                 tracesCsv,
                 "experiment_session_id,elapsed_ms,battery_temperature_c,thermal_status,thermal_headroom,headroom_available,battery_percent,charging,available_memory_bytes\n",
-                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_gate,frames_skipped_camera_transform,frames_skipped_scene_change,estimated_upstream_gaps\n",
+                "experiment_session_id,elapsed_ms,frames_received,frames_processed,frames_skipped_frame_gate,frames_skipped_camera_transform,frames_skipped_hard_scene_reset,frames_skipped_continuity_hold,frames_skipped_continuity_reacquire,estimated_upstream_gaps\n",
                 "",
                 applicationLog,
                 crops,

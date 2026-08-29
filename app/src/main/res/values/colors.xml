@@ -19,6 +19,10 @@
     <color name="alpr_table_header">#FF0C1521</color>
     <color name="alpr_table_divider">#FF344154</color>
     <color name="alpr_error">#FFFB7185</color>
+    <color name="alpr_status_searching">#E01B3242</color>
+    <color name="alpr_status_working">#E03A3018</color>
+    <color name="alpr_status_success">#E015352C</color>
+    <color name="alpr_status_error">#E03D1C25</color>
     <color name="alpr_primary">#FF38BDF8</color>
     <color name="alpr_primary_dark">#FF075985</color>
     <color name="alpr_secondary">#FFA78BFA</color>

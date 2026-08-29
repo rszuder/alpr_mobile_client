@@ -46,7 +46,6 @@ public final class LivePresentationController {
     private final TextView resultMeta;
 
     private State state = State.STOPPED;
-    private String secondary = "";
     private String lastEvent = "";
     private int eventGeneration;
     private boolean diagnosticsExpanded;
@@ -76,6 +75,7 @@ public final class LivePresentationController {
         this.statusDot = statusDot;
         this.statusPrimary = statusPrimary;
         this.statusSecondary = statusSecondary;
+        this.statusSecondary.setVisibility(View.GONE);
         this.event = event;
         this.diagnosticsPanel = diagnosticsPanel;
         this.diagnosticsText = diagnosticsText;
@@ -97,13 +97,12 @@ public final class LivePresentationController {
                 && (safeState == State.TRACKING || safeState == State.RECOGNIZING)) {
             safeState = State.CONFIRMED;
         }
-        String safeSecondary = secondaryText == null ? "" : secondaryText.trim();
         boolean changed = safeState != state;
         state = safeState;
-        if (!safeSecondary.equals(secondary)) {
-            secondary = safeSecondary;
-            statusSecondary.setText(secondary);
-        }
+        // Szczegóły techniczne przekazywane przez starsze wywołania są dostępne
+        // w rozwijanej diagnostyce. Pasek główny pokazuje tylko komunikat użytkowy.
+        statusSecondary.setText("");
+        statusSecondary.setVisibility(View.GONE);
         if (state == State.STOPPED) {
             statusStrip.setVisibility(View.GONE);
             diagnosticsPanel.setVisibility(View.GONE);
@@ -174,11 +173,11 @@ public final class LivePresentationController {
             resultTray.setVisibility(View.VISIBLE);
             resultTray.animate().alpha(1f).translationY(0f).setDuration(180L).start();
         }
-        showState(stable ? State.CONFIRMED : State.RECOGNIZING, secondary);
+        showState(stable ? State.CONFIRMED : State.RECOGNIZING, "");
     }
 
     public void onTargetLost() {
-        showState(State.RECOVERING, secondary);
+        showState(State.RECOVERING, "");
         long elapsed = android.os.SystemClock.elapsedRealtime() - resultShownAtMillis;
         long delay = Math.max(0L, RESULT_MINIMUM_HOLD_MS - elapsed);
         handler.postDelayed(() -> {
@@ -249,8 +248,8 @@ public final class LivePresentationController {
 
     private int hintText(State value) {
         switch (value) {
-            case TRACKING:
-            case RECOGNIZING: return R.string.recognition_stabilizing;
+            case TRACKING: return R.string.live_hint_tracking;
+            case RECOGNIZING: return R.string.live_hint_recognizing;
             case CONFIRMED: return R.string.live_hint_confirmed;
             case RECOVERING: return R.string.live_hint_recovering;
             case ERROR: return R.string.recognition_unavailable;
@@ -260,18 +259,38 @@ public final class LivePresentationController {
     }
 
     private void tintDot(State value) {
-        int color;
+        int accentColor;
+        int backgroundColor;
         switch (value) {
             case CONFIRMED:
-            case TRACKING: color = R.color.alpr_success; break;
+            case TRACKING:
+                accentColor = R.color.alpr_success;
+                backgroundColor = R.color.alpr_status_success;
+                break;
             case RECOGNIZING:
-            case RECOVERING: color = R.color.alpr_warning; break;
-            case ERROR: color = R.color.alpr_error; break;
+            case RECOVERING:
+                accentColor = R.color.alpr_warning;
+                backgroundColor = R.color.alpr_status_working;
+                break;
+            case ERROR:
+                accentColor = R.color.alpr_error;
+                backgroundColor = R.color.alpr_status_error;
+                break;
             case SEARCHING:
-            default: color = R.color.alpr_text_secondary; break;
+            default:
+                accentColor = R.color.alpr_accent;
+                backgroundColor = R.color.alpr_status_searching;
+                break;
         }
+        int resolvedAccent = ContextCompat.getColor(
+                statusDot.getContext(), accentColor
+        );
         statusDot.setBackgroundTintList(ColorStateList.valueOf(
-                ContextCompat.getColor(statusDot.getContext(), color)
+                resolvedAccent
+        ));
+        statusPrimary.setTextColor(resolvedAccent);
+        statusStrip.setBackgroundTintList(ColorStateList.valueOf(
+                ContextCompat.getColor(statusStrip.getContext(), backgroundColor)
         ));
     }
 }

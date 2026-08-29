@@ -191,6 +191,9 @@ public final class MainActivity extends AppCompatActivity {
      */
     private volatile boolean previewSceneAnchorPending;
     private long previewSceneAnchorLockRevision = -1L;
+    private com.example.alpr_v1.continuity.SceneContinuityState
+            lastRenderedContinuityState =
+            com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
 
     private List<OverlayItem> latestDiagnosticOverlayItems =
             java.util.Collections.emptyList();
@@ -383,6 +386,7 @@ public final class MainActivity extends AppCompatActivity {
                             zoomedAnchorResult.changedFraction
                     )
             );
+            refreshPipelineCameraMotionEvidence();
             SceneTransitionDecision continuityDecision = pipeline == null
                     ? null
                     : pipeline.onPreviewSceneEvidence(
@@ -413,6 +417,8 @@ public final class MainActivity extends AppCompatActivity {
                             && (continuityDecision.action
                             != SceneTransitionAction.NONE
                             || continuityDecision.nextState
+                            != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
+                            || lastRenderedContinuityState
                             != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
                         renderPreviewContinuityDecision(
                                 continuityDecision,
@@ -548,6 +554,7 @@ public final class MainActivity extends AppCompatActivity {
         boolean trackingLost = trackedItems.isEmpty();
         boolean trackingDegraded = targetStateMachine.snapshot().state
                 == TargetSnapshot.State.DEGRADED;
+        refreshPipelineCameraMotionEvidence();
         SceneTransitionDecision lumaContinuityDecision = pipeline == null
                 ? null
                 : pipeline.onPreviewSceneEvidence(
@@ -570,6 +577,8 @@ public final class MainActivity extends AppCompatActivity {
                     && (lumaContinuityDecision.action
                     != SceneTransitionAction.NONE
                     || lumaContinuityDecision.nextState
+                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
+                    || lastRenderedContinuityState
                     != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
                 renderPreviewContinuityDecision(
                         lumaContinuityDecision,
@@ -2100,6 +2109,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean needsPreviewSceneSampling() {
         return previewSceneAnchorPending
+                || lastRenderedContinuityState
+                != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
                 || !latestPipelinePlateItems.isEmpty()
                 || !latestDiagnosticOverlayItems.isEmpty()
                 || autoZoomMemoryVisible
@@ -2136,6 +2147,21 @@ public final class MainActivity extends AppCompatActivity {
             List<OverlayItem> trackedItems
     ) {
         if (decision == null) return;
+        if (decision.action == SceneTransitionAction.NONE
+                && decision.nextState
+                == com.example.alpr_v1.continuity.SceneContinuityState.STABLE) {
+            lastRenderedContinuityState =
+                    com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
+            TargetSnapshot target = targetStateMachine.snapshot();
+            livePresentation.showState(
+                    target != null && target.hasTrack()
+                            ? LivePresentationController.State.TRACKING
+                            : LivePresentationController.State.SEARCHING,
+                    hudRoiLabel()
+            );
+            return;
+        }
+        lastRenderedContinuityState = decision.nextState;
         SceneTransitionAction action = decision.action;
         if (action == SceneTransitionAction.HARD_RESET) {
             invalidateUiForPreviewSceneChange(sceneScore, changedFraction, false);
@@ -2456,6 +2482,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startCamera(boolean beginNewMeasurement) {
         if (cameraStarted) return;
+        lastRenderedContinuityState =
+                com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
         if (beginNewMeasurement) {
             autoZoomHandler.removeCallbacksAndMessages(null);
             autoZoomController.resetSession();
@@ -2580,7 +2608,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
                     pipeline.setCameraMotionEvidence(
-                            cameraMotionMonitor.isAvailable(),
+                            cameraMotionMonitor.isGyroscopeAvailable(),
                             cameraMotionMonitor.isMoving(),
                             cameraMotionMonitor.isRapidMotion(),
                             cameraMotionMonitor.magnitude()
@@ -2596,6 +2624,20 @@ public final class MainActivity extends AppCompatActivity {
                                     conversion.rotationNanos,
                                     conversion.rotationDegrees,
                                     (overlayItems, sourceWidth, sourceHeight, sourceStamp) -> {
+                                        if (pipeline == null
+                                                || !pipeline.isCurrentContinuityStamp(
+                                                        sourceStamp
+                                                )) {
+                                            android.util.Log.d(
+                                                    "ALPR_MT_CALLBACK_GATE",
+                                                    "callback_rejected phase=analyzer"
+                                                            + " scene=" + sourceStamp.sceneGeneration
+                                                            + " visual=" + sourceStamp.visualEpoch
+                                                            + " transform="
+                                                            + sourceStamp.cameraTransformGeneration
+                                            );
+                                            return;
+                                        }
                                         if (autoZoomController.state()
                                                 != AutoZoomController.State.ZOOMED_RETRY) {
                                             return;
@@ -2613,8 +2655,32 @@ public final class MainActivity extends AppCompatActivity {
                                                     || cameraTransformInProgress
                                                     || autoZoomController.state()
                                                     != AutoZoomController.State.ZOOMED_RETRY) {
+                                                if (pipeline == null
+                                                        || !pipeline.isCurrentContinuityStamp(
+                                                                sourceStamp
+                                                        )) {
+                                                    android.util.Log.d(
+                                                            "ALPR_MT_CALLBACK_GATE",
+                                                            "callback_rejected phase=ui"
+                                                                    + " scene="
+                                                                    + sourceStamp.sceneGeneration
+                                                                    + " visual="
+                                                                    + sourceStamp.visualEpoch
+                                                                    + " transform="
+                                                                    + sourceStamp.cameraTransformGeneration
+                                                    );
+                                                }
                                                 return;
                                             }
+                                            android.util.Log.d(
+                                                    "ALPR_MT_CALLBACK_GATE",
+                                                    "callback_accepted scene="
+                                                            + sourceStamp.sceneGeneration
+                                                            + " visual="
+                                                            + sourceStamp.visualEpoch
+                                                            + " transform="
+                                                            + sourceStamp.cameraTransformGeneration
+                                            );
                                             presentZoomedMtStage(
                                                     overlayItems,
                                                     sourceWidth,
@@ -3062,33 +3128,24 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         LivePresentationController.State presentationState;
-        String targetLabel;
         switch (target.state) {
             case LOCKED:
                 presentationState = LivePresentationController.State.TRACKING;
-                targetLabel = "LOCK";
                 break;
             case TRACKING:
             case ACQUIRED:
                 presentationState = LivePresentationController.State.RECOGNIZING;
-                targetLabel = "CEL";
                 break;
             case DEGRADED:
             case LOST:
                 presentationState = LivePresentationController.State.RECOVERING;
-                targetLabel = "RECOVERY";
                 break;
             case SEARCHING:
             default:
                 presentationState = LivePresentationController.State.SEARCHING;
-                targetLabel = "SZUKAM";
                 break;
         }
-        String secondaryStatus = (experimentModeEnabled ? "EXP " : "")
-                + hudRoiLabel()
-                + " · "
-                + targetLabel;
-        livePresentation.showState(presentationState, secondaryStatus);
+        livePresentation.showState(presentationState, "");
         livePresentation.updateDiagnostics(hudText);
         updateAutoZoomButton();
     }
@@ -4047,14 +4104,7 @@ public final class MainActivity extends AppCompatActivity {
         autoZoomController.requestReturn();
         clearAutoZoomRecognitionMemory();
         if (pipeline != null) {
-            if (cameraMotionMonitor != null) {
-                pipeline.setCameraMotionEvidence(
-                        cameraMotionMonitor.isAvailable(),
-                        cameraMotionMonitor.isMoving(),
-                        cameraMotionMonitor.isRapidMotion(),
-                        cameraMotionMonitor.magnitude()
-                );
-            }
+            refreshPipelineCameraMotionEvidence();
             SceneTransitionDecision decision = pipeline.onPreviewSceneEvidence(
                     System.nanoTime(),
                     false,
@@ -4079,6 +4129,18 @@ public final class MainActivity extends AppCompatActivity {
         );
         livePresentation.showTransient(getString(R.string.scene_change_analyzing));
         recordInfo("Auto zoom przerwany: telefon zmienił kadr podczas zbliżenia");
+    }
+
+    private void refreshPipelineCameraMotionEvidence() {
+        AlprPipeline activePipeline = pipeline;
+        CameraMotionMonitor activeMonitor = cameraMotionMonitor;
+        if (activePipeline == null || activeMonitor == null) return;
+        activePipeline.setCameraMotionEvidence(
+                activeMonitor.isGyroscopeAvailable(),
+                activeMonitor.isMoving(),
+                activeMonitor.isRapidMotion(),
+                activeMonitor.magnitude()
+        );
     }
 
     private void freezeCurrentOverlayAsMemory() {
@@ -6091,6 +6153,23 @@ public final class MainActivity extends AppCompatActivity {
                     requestedExperimentRoi
             );
         }
+
+        /*
+         * NORMALNA KONFIGURACJA:
+         * polityka ciągłości sceny. Ustawienie jest zapisywane w osobnym
+         * Activity, więc musi zostać przekazane do już działającego pipeline'u
+         * po powrocie użytkownika. setSceneHandlingMode() jest bezpieczne dla
+         * pozostałych zmian ustawień, ponieważ koordynator zeruje stan tylko
+         * wtedy, gdy tryb rzeczywiście się zmienił.
+         */
+        SceneHandlingMode requestedSceneHandlingMode =
+                effectiveSceneHandlingMode();
+        pipeline.setSceneHandlingMode(requestedSceneHandlingMode);
+        android.util.Log.d(
+                "ALPR_SCENE_MODE",
+                "applied=" + requestedSceneHandlingMode.wireName()
+                        + " settings_revision=" + revision
+        );
 
 
 

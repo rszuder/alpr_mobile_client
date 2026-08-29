@@ -13,7 +13,12 @@ public final class SceneContinuityProfile {
             0.70f,
             3,
             0.30f,
-            350_000_000L
+            350_000_000L,
+            0.90f,
+            0.55f,
+            0.65f,
+            2.0f,
+            700_000_000L
     );
 
     public final long motionSettleNanos;
@@ -27,6 +32,11 @@ public final class SceneContinuityProfile {
     public final int minimumTrackerInliers;
     public final float localAppearanceContradictionThreshold;
     public final long maximumFocusedEvidenceAgeNanos;
+    public final float accelerometerGravityAlpha;
+    public final float accelerometerMagnitudeAlpha;
+    public final float accelerometerMovingThreshold;
+    public final float accelerometerRapidThreshold;
+    public final long accelerometerEventRetentionNanos;
 
     public SceneContinuityProfile(
             long motionSettleNanos,
@@ -50,7 +60,12 @@ public final class SceneContinuityProfile {
                 continuityBreakThreshold,
                 minimumTrackerInliers,
                 0.30f,
-                350_000_000L
+                350_000_000L,
+                0.90f,
+                0.55f,
+                0.65f,
+                2.0f,
+                700_000_000L
         );
     }
 
@@ -66,6 +81,44 @@ public final class SceneContinuityProfile {
             int minimumTrackerInliers,
             float localAppearanceContradictionThreshold,
             long maximumFocusedEvidenceAgeNanos
+    ) {
+        this(
+                motionSettleNanos,
+                reacquireTimeoutNanos,
+                strongCutPersistenceNanos,
+                maximumSoftHoldNanos,
+                minimumTargetContinuityToPreserve,
+                minimumVehicleContinuityToPreserve,
+                minimumMotionExplanation,
+                continuityBreakThreshold,
+                minimumTrackerInliers,
+                localAppearanceContradictionThreshold,
+                maximumFocusedEvidenceAgeNanos,
+                0.90f,
+                0.55f,
+                0.65f,
+                2.0f,
+                700_000_000L
+        );
+    }
+
+    public SceneContinuityProfile(
+            long motionSettleNanos,
+            long reacquireTimeoutNanos,
+            long strongCutPersistenceNanos,
+            long maximumSoftHoldNanos,
+            float minimumTargetContinuityToPreserve,
+            float minimumVehicleContinuityToPreserve,
+            float minimumMotionExplanation,
+            float continuityBreakThreshold,
+            int minimumTrackerInliers,
+            float localAppearanceContradictionThreshold,
+            long maximumFocusedEvidenceAgeNanos,
+            float accelerometerGravityAlpha,
+            float accelerometerMagnitudeAlpha,
+            float accelerometerMovingThreshold,
+            float accelerometerRapidThreshold,
+            long accelerometerEventRetentionNanos
     ) {
         this.motionSettleNanos = Contracts.positive(
                 "motionSettleNanos", motionSettleNanos
@@ -108,6 +161,26 @@ public final class SceneContinuityProfile {
         this.maximumFocusedEvidenceAgeNanos = Contracts.positive(
                 "maximumFocusedEvidenceAgeNanos",
                 maximumFocusedEvidenceAgeNanos
+        );
+        this.accelerometerGravityAlpha = Contracts.unit(
+                "accelerometerGravityAlpha", accelerometerGravityAlpha
+        );
+        this.accelerometerMagnitudeAlpha = Contracts.unit(
+                "accelerometerMagnitudeAlpha", accelerometerMagnitudeAlpha
+        );
+        this.accelerometerMovingThreshold = Contracts.nonNegativeFinite(
+                "accelerometerMovingThreshold", accelerometerMovingThreshold
+        );
+        this.accelerometerRapidThreshold = Contracts.nonNegativeFinite(
+                "accelerometerRapidThreshold", accelerometerRapidThreshold
+        );
+        if (accelerometerRapidThreshold < accelerometerMovingThreshold) {
+            throw new IllegalArgumentException(
+                    "accelerometerRapidThreshold must cover moving threshold"
+            );
+        }
+        this.accelerometerEventRetentionNanos = Contracts.positive(
+                "accelerometerEventRetentionNanos", accelerometerEventRetentionNanos
         );
     }
 }

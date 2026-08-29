@@ -52,9 +52,11 @@ Klucz: `frame_id`. Synchronizacja z pozostałymi szeregami: `elapsed_ms`.
 | `elapsed_ms` | int | ms | Początek bucketu 1 s |
 | `frames_received` | int | klatki | Wejścia do analizatora |
 | `frames_processed` | int | klatki | Pełne `InferenceTrace` |
-| `frames_skipped_gate` | int | klatki | Pominięcia AdaptiveFrameGate |
+| `frames_skipped_frame_gate` | int | klatki | Pominięcia AdaptiveFrameGate |
 | `frames_skipped_camera_transform` | int | klatki | Pominięcia transformacji/zoomu |
-| `frames_skipped_scene_change` | int | klatki | Klatka przeznaczona na szybkie unieważnienie starej sceny |
+| `frames_skipped_hard_scene_reset` | int | klatki | Pominięcia po skoordynowanym `HARD_RESET` |
+| `frames_skipped_continuity_hold` | int | klatki | Pominięcia podczas `MOTION_HOLD` |
+| `frames_skipped_continuity_reacquire` | int | klatki | Pominięcia podczas `REACQUIRING` |
 | `estimated_upstream_gaps` | int | klatki | Estymacja z timestampów CameraX |
 
 `estimated_upstream_gaps` nie może być prezentowane jako bezpośrednio zmierzone

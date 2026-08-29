@@ -46,6 +46,11 @@ public final class SceneContinuityContractsTest {
         assertEquals(0.50f, profile.minimumMotionExplanation, 0.0001f);
         assertEquals(0.70f, profile.continuityBreakThreshold, 0.0001f);
         assertEquals(3, profile.minimumTrackerInliers);
+        assertEquals(0.90f, profile.accelerometerGravityAlpha, 0.0001f);
+        assertEquals(0.55f, profile.accelerometerMagnitudeAlpha, 0.0001f);
+        assertEquals(0.65f, profile.accelerometerMovingThreshold, 0.0001f);
+        assertEquals(2.0f, profile.accelerometerRapidThreshold, 0.0001f);
+        assertEquals(700_000_000L, profile.accelerometerEventRetentionNanos);
         assertEquals(
                 "strict_scene_boundary",
                 SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName()
