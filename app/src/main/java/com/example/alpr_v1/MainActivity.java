@@ -369,12 +369,14 @@ public final class MainActivity extends AppCompatActivity {
                     && cameraMotionMonitor.isMoving()
                     && autoZoomDynamicFrameGraceCount < 2;
             boolean trackingLost = trackingFrame != null && trackedItems.isEmpty();
-            boolean continuityChange = changed || trackingLost;
-            float evidenceScore = trackingLost ? 1f : Math.max(
+            boolean trackingDegraded = trackingFrame != null
+                    && targetStateMachine.snapshot().state
+                    == TargetSnapshot.State.DEGRADED;
+            float evidenceScore = Math.max(
                     scene.score,
                     Math.max(anchorResult.score, zoomedAnchorResult.score)
             );
-            float evidenceFraction = trackingLost ? 1f : Math.max(
+            float evidenceFraction = Math.max(
                     scene.changedFraction,
                     Math.max(
                             anchorResult.changedFraction,
@@ -385,7 +387,7 @@ public final class MainActivity extends AppCompatActivity {
                     ? null
                     : pipeline.onPreviewSceneEvidence(
                     continuityStamp.sourceTimestampNanos,
-                    continuityChange,
+                    changed,
                     evidenceScore,
                     evidenceFraction,
                     scene.brightnessDelta,
@@ -393,7 +395,9 @@ public final class MainActivity extends AppCompatActivity {
                     Math.max(
                             anchorResult.changedFraction,
                             zoomedAnchorResult.changedFraction
-                    )
+                    ),
+                    trackingLost,
+                    trackingDegraded
             );
 
             bitmapHandedToUi = true;
@@ -542,16 +546,20 @@ public final class MainActivity extends AppCompatActivity {
         }
         List<OverlayItem> trackedItems = trackingFrame.overlayItems;
         boolean trackingLost = trackedItems.isEmpty();
+        boolean trackingDegraded = targetStateMachine.snapshot().state
+                == TargetSnapshot.State.DEGRADED;
         SceneTransitionDecision lumaContinuityDecision = pipeline == null
                 ? null
                 : pipeline.onPreviewSceneEvidence(
                 frame.timestampNanos,
-                trackingLost,
-                trackingLost ? 1f : 0f,
-                trackingLost ? 1f : 0f,
+                false,
                 0f,
-                trackingLost ? 1f : 0f,
-                trackingLost ? 1f : 0f
+                0f,
+                0f,
+                0f,
+                0f,
+                trackingLost,
+                trackingDegraded
         );
         runOnUiThread(() -> {
             if (!cameraStarted
@@ -565,8 +573,8 @@ public final class MainActivity extends AppCompatActivity {
                     != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
                 renderPreviewContinuityDecision(
                         lumaContinuityDecision,
-                        trackingLost ? 1f : 0f,
-                        trackingLost ? 1f : 0f,
+                        0f,
+                        0f,
                         trackedItems
                 );
             } else if (trackedItems.isEmpty()) {

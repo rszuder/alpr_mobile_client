@@ -1912,6 +1912,30 @@ public final class AlprPipeline {
             float anchorDriftScore,
             float anchorChangedFraction
     ) {
+        return onPreviewSceneEvidence(
+                sourceTimestampNanos,
+                rawVisualChange,
+                rawVisualChangeScore,
+                changedFraction,
+                brightnessDelta,
+                anchorDriftScore,
+                anchorChangedFraction,
+                false,
+                false
+        );
+    }
+
+    public synchronized SceneTransitionDecision onPreviewSceneEvidence(
+            long sourceTimestampNanos,
+            boolean rawVisualChange,
+            float rawVisualChangeScore,
+            float changedFraction,
+            float brightnessDelta,
+            float anchorDriftScore,
+            float anchorChangedFraction,
+            boolean focusedTrackingLost,
+            boolean focusedTrackingDegraded
+    ) {
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
                 Math.max(0L, sourceTimestampNanos)
         );
@@ -1938,6 +1962,8 @@ public final class AlprPipeline {
                                 0f,
                                 0f
                         ),
+                        focusedTrackingLost,
+                        focusedTrackingDegraded,
                         false,
                         false,
                         false,
@@ -1952,10 +1978,13 @@ public final class AlprPipeline {
                     "ALPR_SCENE_EVIDENCE",
                     String.format(
                             java.util.Locale.ROOT,
-                            "raw=%s score=%.3f fraction=%.3f local_valid=%s "
+                            "raw=%s focused_lost=%s focused_degraded=%s "
+                                    + "score=%.3f fraction=%.3f local_valid=%s "
                                     + "local_similarity=%.3f target=%.3f vehicle=%.3f "
                                     + "class=%s action=%s reason=%s",
                             rawVisualChange,
+                            focusedTrackingLost,
+                            focusedTrackingDegraded,
                             rawVisualChangeScore,
                             changedFraction,
                             targetEvidence.localAppearanceValidated,

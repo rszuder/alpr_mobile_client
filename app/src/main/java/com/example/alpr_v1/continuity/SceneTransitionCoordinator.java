@@ -89,11 +89,28 @@ public final class SceneTransitionCoordinator {
         }
 
         assessment = assess(evidence);
-        lastActiveTargetPresent = evidence.target.level != TargetContinuityLevel.NO_TARGET
+        lastActiveTargetPresent = evidence.focusedTrackingLost
+                || evidence.target.level != TargetContinuityLevel.NO_TARGET
                 && evidence.target.level != TargetContinuityLevel.LOST;
         if (currentState == SceneContinuityState.REACQUIRING
                 && reacquireContext != null) {
             reacquireContext = reacquireContext.observe(assessment);
+        }
+        if (currentState == SceneContinuityState.REACQUIRING
+                && !pendingActiveTargetRelease
+                && (reacquireFailed || reacquireDeadlineReached(nowNanos))) {
+            return finishUnsuccessfulReacquire(nowNanos);
+        }
+        if (pendingActiveTargetRelease) {
+            pendingActiveTargetRelease = false;
+            resetRecoveryState();
+            enterState(SceneContinuityState.STABLE, nowNanos);
+            finalizationSuspended = false;
+            heavyInferenceSuspended = false;
+            return emitReleaseActiveTarget(
+                    nowNanos,
+                    "active_target_lost_pool_preserved"
+            );
         }
         if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
             return observeStrict(evidence, nowNanos);
@@ -282,6 +299,21 @@ public final class SceneTransitionCoordinator {
             SceneEvidence evidence,
             long nowNanos
     ) {
+        if (currentState == SceneContinuityState.REACQUIRING
+                && !evidence.rawVisualChange) {
+            return observeNoRawChange(evidence, nowNanos);
+        }
+        if (currentState != SceneContinuityState.REACQUIRING
+                && !evidence.rawVisualChange
+                && (evidence.focusedTrackingLost
+                || evidence.focusedTrackingDegraded)) {
+            return beginSoftReacquire(
+                    nowNanos,
+                    evidence.focusedTrackingLost
+                            ? "strict_focused_tracking_lost"
+                            : "strict_focused_tracking_degraded"
+            );
+        }
         if (evidence.rawVisualChange) {
             assessment = withClassification(
                     assessment,
@@ -301,18 +333,21 @@ public final class SceneTransitionCoordinator {
             SceneEvidence evidence,
             long nowNanos
     ) {
-        if (pendingActiveTargetRelease) {
-            pendingActiveTargetRelease = false;
-            resetRecoveryState();
-            enterState(SceneContinuityState.STABLE, nowNanos);
-            finalizationSuspended = false;
-            heavyInferenceSuspended = false;
-            return emitReleaseActiveTarget(nowNanos, "active_target_lost_pool_preserved");
-        }
-
-        if (currentState == SceneContinuityState.REACQUIRING
-                && (reacquireFailed || reacquireDeadlineReached(nowNanos))) {
-            return finishUnsuccessfulReacquire(nowNanos);
+        if (currentState != SceneContinuityState.REACQUIRING
+                && !evidence.rawVisualChange
+                && (evidence.focusedTrackingLost
+                || evidence.focusedTrackingDegraded)) {
+            if (evidence.motion.cameraMoving
+                    || evidence.motion.rapidCameraMotion
+                    || evidence.motion.cameraTransformInProgress) {
+                return beginSoftHold(nowNanos, "local_tracking_loss_during_motion");
+            }
+            return beginSoftReacquire(
+                    nowNanos,
+                    evidence.focusedTrackingLost
+                            ? "focused_tracking_lost_without_global_change"
+                            : "focused_tracking_degraded_without_global_change"
+            );
         }
 
         if (!evidence.rawVisualChange) {

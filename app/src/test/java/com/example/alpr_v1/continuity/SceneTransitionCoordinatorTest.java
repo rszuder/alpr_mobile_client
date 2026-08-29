@@ -274,6 +274,39 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void localTrackingLossWithoutGlobalChangeDoesNotBecomeRawVisualChange() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        SceneEvidence localLoss = new SceneEvidence(
+                4L, 40L, false,
+                0f, 0f, 0f, 0f, 0f,
+                new TargetContinuityEvidence(
+                        1L, 11L, 21L, TargetContinuityLevel.LOST,
+                        0f, 0, 0f, 2,
+                        0f, 0f, 0f, 0f, 0f, 0f,
+                        false, false, false, 100L
+                ),
+                new VehicleContinuityEvidence(
+                        2, 2, 2, 0, 0,
+                        1f, 0f, 0f, 10L,
+                        false, false
+                ),
+                MotionExplanationEvidence.none(),
+                true, false,
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(localLoss, 1_000L);
+
+        assertFalse(localLoss.rawVisualChange);
+        assertEquals(VisualChangeClassification.NONE,
+                decision.assessment.classification);
+        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, decision.action);
+        assertEquals(0L, coordinator.snapshot().sceneGeneration);
+    }
+
+    @Test
     public void lostActiveTargetReleasesOnlyTargetWhenPoolSurvives() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
