@@ -11,7 +11,9 @@ public final class SceneContinuityProfile {
             0.50f,
             0.50f,
             0.70f,
-            3
+            3,
+            0.30f,
+            350_000_000L
     );
 
     public final long motionSettleNanos;
@@ -23,6 +25,8 @@ public final class SceneContinuityProfile {
     public final float minimumMotionExplanation;
     public final float continuityBreakThreshold;
     public final int minimumTrackerInliers;
+    public final float localAppearanceContradictionThreshold;
+    public final long maximumFocusedEvidenceAgeNanos;
 
     public SceneContinuityProfile(
             long motionSettleNanos,
@@ -34,6 +38,34 @@ public final class SceneContinuityProfile {
             float minimumMotionExplanation,
             float continuityBreakThreshold,
             int minimumTrackerInliers
+    ) {
+        this(
+                motionSettleNanos,
+                reacquireTimeoutNanos,
+                strongCutPersistenceNanos,
+                maximumSoftHoldNanos,
+                minimumTargetContinuityToPreserve,
+                minimumVehicleContinuityToPreserve,
+                minimumMotionExplanation,
+                continuityBreakThreshold,
+                minimumTrackerInliers,
+                0.30f,
+                350_000_000L
+        );
+    }
+
+    public SceneContinuityProfile(
+            long motionSettleNanos,
+            long reacquireTimeoutNanos,
+            long strongCutPersistenceNanos,
+            long maximumSoftHoldNanos,
+            float minimumTargetContinuityToPreserve,
+            float minimumVehicleContinuityToPreserve,
+            float minimumMotionExplanation,
+            float continuityBreakThreshold,
+            int minimumTrackerInliers,
+            float localAppearanceContradictionThreshold,
+            long maximumFocusedEvidenceAgeNanos
     ) {
         this.motionSettleNanos = Contracts.positive(
                 "motionSettleNanos", motionSettleNanos
@@ -68,6 +100,14 @@ public final class SceneContinuityProfile {
         );
         this.minimumTrackerInliers = Contracts.nonNegative(
                 "minimumTrackerInliers", minimumTrackerInliers
+        );
+        this.localAppearanceContradictionThreshold = Contracts.unit(
+                "localAppearanceContradictionThreshold",
+                localAppearanceContradictionThreshold
+        );
+        this.maximumFocusedEvidenceAgeNanos = Contracts.positive(
+                "maximumFocusedEvidenceAgeNanos",
+                maximumFocusedEvidenceAgeNanos
         );
     }
 }

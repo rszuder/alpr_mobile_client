@@ -5,8 +5,6 @@ package com.example.alpr_v1.continuity;
  * This class owns policy state only; runtime side effects remain with its caller.
  */
 public final class SceneTransitionCoordinator {
-    private static final float LOCAL_APPEARANCE_CONTRADICTION_THRESHOLD = 0.30f;
-    private static final long MAX_FOCUSED_EVIDENCE_AGE_NANOS = 350_000_000L;
     private final SceneContinuityProfile profile;
     private final TargetContinuityEvaluator targetEvaluator;
     private final VehicleContinuityEvaluator vehicleEvaluator;
@@ -33,6 +31,8 @@ public final class SceneTransitionCoordinator {
     private boolean heavyInferenceSuspended;
     private boolean reacquireFailed;
     private boolean pendingActiveTargetRelease;
+    private boolean lastActiveTargetPresent;
+    private ReacquireContext reacquireContext;
 
     public SceneTransitionCoordinator(
             SceneHandlingMode mode,
@@ -89,6 +89,12 @@ public final class SceneTransitionCoordinator {
         }
 
         assessment = assess(evidence);
+        lastActiveTargetPresent = evidence.target.level != TargetContinuityLevel.NO_TARGET
+                && evidence.target.level != TargetContinuityLevel.LOST;
+        if (currentState == SceneContinuityState.REACQUIRING
+                && reacquireContext != null) {
+            reacquireContext = reacquireContext.observe(assessment);
+        }
         if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
             return observeStrict(evidence, nowNanos);
         }
@@ -212,14 +218,14 @@ public final class SceneTransitionCoordinator {
                 && !evidence.motion.cameraTransformInProgress
                 && evidence.target.localAppearanceValidated
                 && evidence.target.plateAppearanceSimilarity
-                < LOCAL_APPEARANCE_CONTRADICTION_THRESHOLD;
+                < profile.localAppearanceContradictionThreshold;
         boolean stationaryStaleTargetEvidence = evidence.rawVisualChange
                 && !evidence.motion.cameraMoving
                 && !evidence.motion.rapidCameraMotion
                 && !evidence.motion.cameraTransformInProgress
                 && evidence.target.level != TargetContinuityLevel.NO_TARGET
                 && evidence.target.measurementAgeNanos
-                > MAX_FOCUSED_EVIDENCE_AGE_NANOS;
+                > profile.maximumFocusedEvidenceAgeNanos;
         boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve
                 && !stationaryLocalContradiction
                 && !stationaryStaleTargetEvidence;
@@ -295,7 +301,7 @@ public final class SceneTransitionCoordinator {
             SceneEvidence evidence,
             long nowNanos
     ) {
-        if (pendingActiveTargetRelease && assessment.vehiclePoolPreserved) {
+        if (pendingActiveTargetRelease) {
             pendingActiveTargetRelease = false;
             resetRecoveryState();
             enterState(SceneContinuityState.STABLE, nowNanos);
@@ -305,13 +311,8 @@ public final class SceneTransitionCoordinator {
         }
 
         if (currentState == SceneContinuityState.REACQUIRING
-                && shouldHardResetAfterFailedReacquire(nowNanos)) {
-            assessment = withClassification(
-                    assessment,
-                    VisualChangeClassification.CONTINUITY_BREAK,
-                    "soft_reacquire_failed_after_persistent_cut_evidence"
-            );
-            return hardReset(assessment.reason, nowNanos);
+                && (reacquireFailed || reacquireDeadlineReached(nowNanos))) {
+            return finishUnsuccessfulReacquire(nowNanos);
         }
 
         if (!evidence.rawVisualChange) {
@@ -389,20 +390,37 @@ public final class SceneTransitionCoordinator {
         return emitNone(nowNanos, assessment.reason);
     }
 
-    private boolean shouldHardResetAfterFailedReacquire(long nowNanos) {
-        boolean timedOut = reacquireStartedNanos >= 0L
-                && elapsedSince(reacquireStartedNanos, nowNanos) >= profile.reacquireTimeoutNanos;
-        boolean persistent = unexplainedSinceNanos >= 0L
-                && elapsedSince(unexplainedSinceNanos, nowNanos)
-                >= profile.strongCutPersistenceNanos;
-        return (reacquireFailed || timedOut)
-                && persistent
-                && assessment.cutEvidenceScore >= profile.continuityBreakThreshold
-                && assessment.targetContinuityScore
-                < profile.minimumTargetContinuityToPreserve
-                && assessment.vehicleContinuityScore
-                < profile.minimumVehicleContinuityToPreserve
-                && assessment.motionExplanationScore < profile.minimumMotionExplanation;
+    private boolean reacquireDeadlineReached(long nowNanos) {
+        return reacquireContext != null
+                && elapsedSince(reacquireContext.startedNanos, nowNanos)
+                >= profile.reacquireTimeoutNanos;
+    }
+
+    private SceneTransitionDecision finishUnsuccessfulReacquire(long nowNanos) {
+        ReacquireContext context = reacquireContext;
+        boolean confirmedBreak = context != null
+                && context.maximumCutEvidenceDuringRecovery
+                >= profile.continuityBreakThreshold;
+        if (confirmedBreak) {
+            assessment = withClassification(
+                    assessment,
+                    VisualChangeClassification.CONTINUITY_BREAK,
+                    "reacquire_failed_trigger_evidence_confirms_break"
+            );
+            return hardReset(assessment.reason, nowNanos);
+        }
+        boolean releaseTarget = context != null && context.activeTargetPresent;
+        resetRecoveryState();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        finalizationSuspended = false;
+        heavyInferenceSuspended = false;
+        if (releaseTarget) {
+            return emitReleaseActiveTarget(
+                    nowNanos,
+                    "reacquire_deadline_without_break_release_active_target"
+            );
+        }
+        return emitNone(nowNanos, "reacquire_deadline_without_break_return_stable");
     }
 
     private SceneTransitionDecision beginSoftHold(long nowNanos, String reason) {
@@ -434,6 +452,11 @@ public final class SceneTransitionCoordinator {
         }
         enterState(SceneContinuityState.REACQUIRING, nowNanos);
         reacquireStartedNanos = nowNanos;
+        reacquireContext = ReacquireContext.begin(
+                assessment,
+                nowNanos,
+                lastActiveTargetPresent
+        );
         reacquireFailed = false;
         finalizationSuspended = true;
         heavyInferenceSuspended = false;
@@ -587,6 +610,7 @@ public final class SceneTransitionCoordinator {
         reacquireStartedNanos = -1L;
         reacquireFailed = false;
         pendingActiveTargetRelease = false;
+        reacquireContext = null;
     }
 
     private boolean isDuplicate(SceneEvidence evidence) {

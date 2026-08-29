@@ -239,6 +239,41 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void reacquireTimeoutUsesTriggerEvidenceAfterRawChangeDisappears() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(unexplainedScene(1L), 1_000L);
+
+        SceneTransitionDecision decision = coordinator.observe(
+                stableNoTargetScene(2L),
+                1_000L + PROFILE.reacquireTimeoutNanos
+        );
+
+        assertEquals(SceneTransitionAction.HARD_RESET, decision.action);
+        assertEquals(SceneContinuityState.HARD_RESETTING, decision.nextState);
+        assertEquals(VisualChangeClassification.CONTINUITY_BREAK,
+                decision.assessment.classification);
+    }
+
+    @Test
+    public void reacquireCannotRemainNonTerminalPastDeadline() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.requestSoftReacquire("low_evidence_refresh", 1_000L);
+
+        SceneTransitionDecision decision = coordinator.observe(
+                stableNoTargetScene(3L),
+                1_000L + PROFILE.reacquireTimeoutNanos
+        );
+
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertEquals(SceneContinuityState.STABLE, decision.nextState);
+        assertFalse(coordinator.snapshot().finalizationSuspended);
+    }
+
+    @Test
     public void lostActiveTargetReleasesOnlyTargetWhenPoolSurvives() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
@@ -425,6 +460,17 @@ public final class SceneTransitionCoordinatorTest {
                         false, false, 0f, 0f,
                         0f, 0f
                 ),
+                false, false, false, false
+        );
+    }
+
+    private static SceneEvidence stableNoTargetScene(long frameId) {
+        return new SceneEvidence(
+                frameId, frameId * 10L, false,
+                0f, 0f, 0f, 0f, 0f,
+                TargetContinuityEvidence.noTarget(),
+                VehicleContinuityEvidence.empty(),
+                MotionExplanationEvidence.none(),
                 false, false, false, false
         );
     }
