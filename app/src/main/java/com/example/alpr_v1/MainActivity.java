@@ -96,6 +96,7 @@ import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
 import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
+import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.ExperimentIdentity;
@@ -361,17 +362,9 @@ public final class MainActivity extends AppCompatActivity {
 
             boolean zoomedRetry = autoZoomController.state()
                     == AutoZoomController.State.ZOOMED_RETRY;
-            boolean targetStillTracked = zoomedRetry
-                    && trackedItems != null
-                    && !trackedItems.isEmpty()
-                    && findAutoZoomTargetOverlay(trackedItems) != null;
             boolean changed = scene.sceneChanged
                     || anchorResult.changed
                     || (zoomedRetry && zoomedAnchorResult.changed);
-            boolean shortMotionGrace = zoomedRetry
-                    && cameraMotionMonitor != null
-                    && cameraMotionMonitor.isMoving()
-                    && autoZoomDynamicFrameGraceCount < 2;
             boolean trackingLost = trackingFrame != null && trackedItems.isEmpty();
             boolean trackingDegraded = trackingFrame != null
                     && targetStateMachine.snapshot().state
@@ -414,33 +407,35 @@ public final class MainActivity extends AppCompatActivity {
                             != uiCameraTransformGeneration.get()) {
                         return;
                     }
-                    if (continuityDecision != null
-                            && (continuityDecision.action
-                            != SceneTransitionAction.NONE
-                            || continuityDecision.nextState
-                            != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
-                            || lastRenderedContinuityState
-                            != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
+                    PreviewContinuityUiPolicy.Outcome uiOutcome =
+                            PreviewContinuityUiPolicy.decide(
+                                    continuityDecision,
+                                    changed,
+                                    trackedItems != null
+                                            && !trackedItems.isEmpty()
+                            );
+                    recordPreviewDecisionAuthority(uiOutcome, "bitmap");
+                    if (uiOutcome.renderCoordinatorDecision) {
                         renderPreviewContinuityDecision(
                                 continuityDecision,
                                 evidenceScore,
                                 evidenceFraction,
                                 trackedItems
                         );
-                    } else if (changed && (targetStillTracked || shortMotionGrace
-                            || continuityDecision != null
-                            && continuityDecision.assessment.focusedTargetPreserved)) {
-                        autoZoomDynamicFrameGraceCount = targetStillTracked
-                                ? 0 : autoZoomDynamicFrameGraceCount + 1;
-                        previewSceneDetector.reset();
-                        previewSceneDetector.update(previewBitmap);
-                        previewSceneAnchorGuard.anchor(previewBitmap);
-                        autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
-                        if (targetStillTracked) {
+                        autoZoomDynamicFrameGraceCount = 0;
+                        if (uiOutcome.rebaseAcceptedPreviewScene) {
+                            previewSceneDetector.reset();
+                            previewSceneDetector.update(previewBitmap);
+                            previewSceneAnchorGuard.anchor(previewBitmap);
+                            autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                        }
+                        if (uiOutcome.presentTrackedOverlay) {
                             presentTrackedPreviewOverlay(trackedItems);
                         }
-                    } else if (changed) {
-                        autoZoomDynamicFrameGraceCount = 0;
+                        return;
+                    }
+                    autoZoomDynamicFrameGraceCount = 0;
+                    if (uiOutcome.legacySceneInvalidation) {
                         invalidateUiForPreviewSceneChange(
                                 Math.max(scene.score, Math.max(
                                         anchorResult.score,
@@ -449,20 +444,12 @@ public final class MainActivity extends AppCompatActivity {
                                 Math.max(scene.changedFraction, Math.max(
                                         anchorResult.changedFraction,
                                         zoomedAnchorResult.changedFraction
-                                )),
-                                continuityDecision == null
+                                ))
                         );
-                    } else {
-                        autoZoomDynamicFrameGraceCount = 0;
-                        if (trackedItems != null) {
-                            if (trackedItems.isEmpty()) {
-                                if (continuityDecision == null) {
-                                    invalidateUiForLostPreviewTracking();
-                                }
-                            } else {
-                                presentTrackedPreviewOverlay(trackedItems);
-                            }
-                        }
+                    } else if (uiOutcome.legacyTrackingLossInvalidation) {
+                        invalidateUiForLostPreviewTracking();
+                    } else if (uiOutcome.presentTrackedOverlay) {
+                        presentTrackedPreviewOverlay(trackedItems);
                     }
                 } finally {
                     recycleBitmap(previewBitmap);
@@ -574,22 +561,28 @@ public final class MainActivity extends AppCompatActivity {
                     || sceneGeneration != uiSceneGeneration.get()
                     || transformGeneration != uiCameraTransformGeneration.get()
                     || cameraTransformInProgress) return;
-            if (lumaContinuityDecision != null
-                    && (lumaContinuityDecision.action
-                    != SceneTransitionAction.NONE
-                    || lumaContinuityDecision.nextState
-                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
-                    || lastRenderedContinuityState
-                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE)) {
+            PreviewContinuityUiPolicy.Outcome uiOutcome =
+                    PreviewContinuityUiPolicy.decide(
+                            lumaContinuityDecision,
+                            false,
+                            !trackedItems.isEmpty()
+                    );
+            recordPreviewDecisionAuthority(uiOutcome, "direct_luma");
+            if (uiOutcome.renderCoordinatorDecision) {
                 renderPreviewContinuityDecision(
                         lumaContinuityDecision,
                         0f,
                         0f,
                         trackedItems
                 );
-            } else if (trackedItems.isEmpty()) {
+                if (uiOutcome.presentTrackedOverlay) {
+                    presentTrackedPreviewOverlay(trackedItems);
+                }
+                return;
+            }
+            if (uiOutcome.legacyTrackingLossInvalidation) {
                 invalidateUiForLostPreviewTracking();
-            } else {
+            } else if (uiOutcome.presentTrackedOverlay) {
                 presentTrackedPreviewOverlay(trackedItems);
             }
         });
@@ -2135,12 +2128,6 @@ public final class MainActivity extends AppCompatActivity {
     }
 
 
-    private void invalidateUiForPreviewSceneChange(
-            SceneChangeDetector.Result scene
-    ) {
-        invalidateUiForPreviewSceneChange(scene.score, scene.changedFraction);
-    }
-
     private void renderPreviewContinuityDecision(
             SceneTransitionDecision decision,
             float sceneScore,
@@ -2165,7 +2152,7 @@ public final class MainActivity extends AppCompatActivity {
         lastRenderedContinuityState = decision.nextState;
         SceneTransitionAction action = decision.action;
         if (action == SceneTransitionAction.HARD_RESET) {
-            invalidateUiForPreviewSceneChange(sceneScore, changedFraction, false);
+            invalidateUiForPreviewSceneChange(sceneScore, changedFraction);
             return;
         }
         if (action == SceneTransitionAction.RELEASE_ACTIVE_TARGET) {
@@ -2244,6 +2231,25 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void recordPreviewDecisionAuthority(
+            PreviewContinuityUiPolicy.Outcome outcome,
+            String source
+    ) {
+        if (outcome == null) return;
+        String authority = outcome.authority
+                == PreviewContinuityUiPolicy.Authority.COORDINATOR
+                ? "coordinator" : "legacy_fallback";
+        metricsCollector.previewDecisionAuthority(authority);
+        if (outcome.authority
+                == PreviewContinuityUiPolicy.Authority.LEGACY_FALLBACK) {
+            android.util.Log.d(
+                    "ALPR_PREVIEW_AUTHORITY",
+                    "authority=legacy_fallback source="
+                            + (source == null ? "unknown" : source)
+            );
+        }
+    }
+
     private void markVehicleOverlaysPredicted() {
         List<OverlayItem> predicted = new ArrayList<>();
         for (OverlayItem item : currentOverlayItems()) {
@@ -2272,14 +2278,6 @@ public final class MainActivity extends AppCompatActivity {
             float sceneScore,
             float changedFraction
     ) {
-        invalidateUiForPreviewSceneChange(sceneScore, changedFraction, true);
-    }
-
-    private void invalidateUiForPreviewSceneChange(
-            float sceneScore,
-            float changedFraction,
-            boolean requestPipelineReset
-    ) {
 
         if (isAutoZoomHoldingMemory()) {
             previewSceneDetector.reset();
@@ -2293,8 +2291,7 @@ public final class MainActivity extends AppCompatActivity {
          * Wszystkie wyniki pipeline'u rozpoczęte przed tym
          * momentem należą już do starej sceny.
          */
-        long generation =
-                uiSceneGeneration.incrementAndGet();
+        long generation = uiSceneGeneration.incrementAndGet();
 
         /* Pipeline decision has already been applied by SceneTransitionCoordinator. */
         targetStateMachine.reset();
@@ -2403,12 +2400,11 @@ public final class MainActivity extends AppCompatActivity {
         /*
          * Tracker Preview stracił wszystkie tablice.
          *
-         * Traktujemy to jako zmianę kontekstu obrazu,
-         * nawet jeżeli globalny SceneChangeDetector
-         * nie przekroczył jeszcze swojego progu.
+         * To jest wyłącznie awaryjna ścieżka utraty lokalnego trackera.
+         * Nie tworzy globalnej generacji sceny. Jeżeli pipeline istnieje,
+         * jego koordynator zwiększy visualEpoch przez soft recovery.
          */
-        long generation =
-                uiSceneGeneration.incrementAndGet();
+        long generation = uiSceneGeneration.get();
 
 
         /*

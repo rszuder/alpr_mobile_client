@@ -36,6 +36,15 @@ public final class SceneContinuityTelemetryContractTest {
                 "secondaryScenePreflight", String.class, boolean.class
         ));
         assertNotNull(MetricsCollector.class.getDeclaredField(
+                "previewCoordinatorDecisions"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "legacyPreviewFallbacks"
+        ));
+        assertNotNull(MetricsCollector.class.getMethod(
+                "previewDecisionAuthority", String.class
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
                 "frozenSceneContinuityProfile"
         ));
         assertNotNull(MetricsCollector.class.getMethod(

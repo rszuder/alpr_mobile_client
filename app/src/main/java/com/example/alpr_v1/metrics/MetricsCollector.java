@@ -136,6 +136,9 @@ public final class MetricsCollector {
     private long secondaryScenePreflightReacquires;
     private long secondaryScenePreflightHardResets;
     private long secondaryScenePreflightSkippedInference;
+    private long previewCoordinatorDecisions;
+    private long legacyPreviewFallbacks;
+    private String previewDecisionAuthority = "unavailable";
     private long estimatedUpstreamGaps;
     private long lastSourceTimestampNanos = -1L;
     private double expectedSourceIntervalNanos = Double.NaN;
@@ -203,6 +206,9 @@ public final class MetricsCollector {
         secondaryScenePreflightReacquires = 0L;
         secondaryScenePreflightHardResets = 0L;
         secondaryScenePreflightSkippedInference = 0L;
+        previewCoordinatorDecisions = 0L;
+        legacyPreviewFallbacks = 0L;
+        previewDecisionAuthority = "unavailable";
         estimatedUpstreamGaps = 0L;
         lastSourceTimestampNanos = -1L;
         expectedSourceIntervalNanos = Double.NaN;
@@ -341,6 +347,19 @@ public final class MetricsCollector {
             secondaryScenePreflightHardResets++;
         }
         if (skippedInference) secondaryScenePreflightSkippedInference++;
+    }
+
+    public synchronized void previewDecisionAuthority(String authority) {
+        if (!measurementSessionActive) return;
+        String safeAuthority = authority == null
+                ? "unavailable" : authority.trim();
+        if (safeAuthority.isEmpty()) safeAuthority = "unavailable";
+        previewDecisionAuthority = safeAuthority;
+        if ("coordinator".equals(safeAuthority)) {
+            previewCoordinatorDecisions++;
+        } else if ("legacy_fallback".equals(safeAuthority)) {
+            legacyPreviewFallbacks++;
+        }
     }
 
     /** Zachowany alias dla starszych wywołań; nowe miejsca powinny podawać przyczynę. */
@@ -1317,6 +1336,18 @@ public final class MetricsCollector {
                 secondaryScenePreflightSkippedInference
         );
         report.put("secondary_scene_preflight", secondaryPreflight);
+
+        JSONObject previewAuthority = new JSONObject();
+        previewAuthority.put(
+                "preview_decision_authority", previewDecisionAuthority
+        );
+        previewAuthority.put(
+                "preview_coordinator_decisions", previewCoordinatorDecisions
+        );
+        previewAuthority.put(
+                "legacy_preview_fallbacks", legacyPreviewFallbacks
+        );
+        report.put("preview_decision_authority", previewAuthority);
 
         report.put("thermal", thermalSummaryJson());
 

@@ -109,6 +109,19 @@ Event `secondary_scene_preflight` zapisuje `secondary_scene_preflight_action`,
 jasności. Wykrycie skutkujące hold/reacquire/resetem nie może uruchomić
 MP/MT/MZ dla tej samej klatki.
 
+## PREVIEW_DECISION_AUTHORITY — `report.json`
+
+```text
+preview_decision_authority = coordinator / legacy_fallback / unavailable
+preview_coordinator_decisions
+legacy_preview_fallbacks
+```
+
+Jeżeli pipeline zwrócił `SceneTransitionDecision`, UI nie interpretuje już
+samodzielnie flagi `changed` ani utraty lokalnego trackera. `legacy_fallback`
+jest dopuszczalny wyłącznie przy braku decyzji, np. przed inicjalizacją
+pipeline'u.
+
 ## THERMAL — `thermal.csv`
 
 Próbkowanie około 1 Hz, niezależne od processed FPS.
