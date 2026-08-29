@@ -12,6 +12,7 @@ import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import org.junit.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class AlprPipelineContinuityApiTest {
@@ -67,6 +68,17 @@ public final class AlprPipelineContinuityApiTest {
                 TargetSnapshot.class,
                 ContinuityStamp.class
         ));
+    }
+
+    @Test
+    public void intermediateMtCallbackCarriesSourceContinuityStamp() throws Exception {
+        Method callback = AlprPipeline.PlateDetectionCallback.class.getDeclaredMethods()[0];
+
+        assertEquals(4, callback.getParameterTypes().length);
+        assertEquals(
+                ContinuityStamp.class,
+                callback.getParameterTypes()[3]
+        );
     }
 
     private static Field field(String name) throws Exception {

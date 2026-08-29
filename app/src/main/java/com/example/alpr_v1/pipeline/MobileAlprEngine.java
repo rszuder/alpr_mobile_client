@@ -6,6 +6,7 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
@@ -426,16 +427,24 @@ final class MobileAlprEngine implements AutoCloseable {
             AlprPipeline.PlateDetectionCallback plateDetectionCallback
     ) {
         long nowNanos = SystemClock.elapsedRealtimeNanos();
-        return run(frame, trace, nowNanos, plateDetectionCallback, () -> false);
+        return run(
+                frame,
+                trace,
+                ContinuityStamp.initial(nowNanos),
+                plateDetectionCallback,
+                () -> false
+        );
     }
 
     PipelineResult run(
             Bitmap frame,
             InferenceTrace trace,
-            long sourceTimestampNanos,
+            ContinuityStamp sourceStamp,
             AlprPipeline.PlateDetectionCallback plateDetectionCallback,
             BooleanSupplier cancellationRequested
     ) {
+        if (sourceStamp == null) throw new IllegalArgumentException("sourceStamp");
+        long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
         if (continuitySoftHold) {
             trace.putAttribute("continuity_state", "MOTION_HOLD");
             trace.putAttribute("continuity_reason", continuityReason);
@@ -1158,7 +1167,8 @@ final class MobileAlprEngine implements AutoCloseable {
             plateDetectionCallback.onPlateDetections(
                     Collections.unmodifiableList(mtOverlays),
                     frame.getWidth(),
-                    frame.getHeight()
+                    frame.getHeight(),
+                    sourceStamp
             );
         }
 

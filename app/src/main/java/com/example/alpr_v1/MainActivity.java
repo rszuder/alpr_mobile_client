@@ -2599,13 +2599,17 @@ public final class MainActivity extends AppCompatActivity {
                                     conversion.toBitmapNanos,
                                     conversion.rotationNanos,
                                     conversion.rotationDegrees,
-                                    (overlayItems, sourceWidth, sourceHeight) -> {
+                                    (overlayItems, sourceWidth, sourceHeight, sourceStamp) -> {
                                         if (autoZoomController.state()
                                                 != AutoZoomController.State.ZOOMED_RETRY) {
                                             return;
                                         }
                                         runOnUiThread(() -> {
                                             if (!cameraStarted
+                                                    || pipeline == null
+                                                    || !pipeline.isCurrentContinuityStamp(
+                                                            sourceStamp
+                                                    )
                                                     || sceneGenerationAtStart
                                                     != uiSceneGeneration.get()
                                                     || transformGenerationAtStart
@@ -2618,7 +2622,8 @@ public final class MainActivity extends AppCompatActivity {
                                             presentZoomedMtStage(
                                                     overlayItems,
                                                     sourceWidth,
-                                                    sourceHeight
+                                                    sourceHeight,
+                                                    sourceStamp
                                             );
                                         });
                                     },
@@ -4111,11 +4116,14 @@ public final class MainActivity extends AppCompatActivity {
     private void presentZoomedMtStage(
             List<OverlayItem> overlayItems,
             int sourceWidth,
-            int sourceHeight
+            int sourceHeight,
+            ContinuityStamp sourceStamp
     ) {
         if (overlayItems == null
                 || sourceWidth <= 0
                 || sourceHeight <= 0
+                || pipeline == null
+                || !pipeline.isCurrentContinuityStamp(sourceStamp)
                 || !containsPlate(overlayItems)) return;
 
         latestOverlaySourceWidth = sourceWidth;
@@ -4137,8 +4145,9 @@ public final class MainActivity extends AppCompatActivity {
 
         if (previewPlateTracker.anchor(visibleItems, sourceWidth, sourceHeight)) {
             if (pipeline != null) {
-                pipeline.setTargetSnapshot(
-                        targetStateMachine.onMtAnchor(visibleItems)
+                pipeline.setTargetSnapshotIfCurrent(
+                        targetStateMachine.onMtAnchor(visibleItems),
+                        sourceStamp
                 );
             }
             previewSceneAnchorPending = true;

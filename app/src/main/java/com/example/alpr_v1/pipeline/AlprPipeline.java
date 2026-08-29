@@ -56,7 +56,8 @@ public final class AlprPipeline {
         void onPlateDetections(
                 List<OverlayItem> overlayItems,
                 int sourceWidth,
-                int sourceHeight
+                int sourceHeight,
+                ContinuityStamp sourceStamp
         );
     }
 
@@ -492,7 +493,7 @@ public final class AlprPipeline {
                         engine.run(
                                 frame,
                                 trace,
-                                sourceTimestampNanos,
+                                processingStamp,
                                 plateDetectionCallback,
                                 () -> hardResetRevision.get()
                                         != processingHardResetRevision
@@ -730,7 +731,7 @@ public final class AlprPipeline {
                 result = engine.run(
                         frame,
                         trace,
-                        sourceTimestampNanos,
+                        processingStamp,
                         plateDetectionCallback,
                         () -> hardResetRevision.get() != processingHardResetRevision
                                 || visualEpochRevision.get()
