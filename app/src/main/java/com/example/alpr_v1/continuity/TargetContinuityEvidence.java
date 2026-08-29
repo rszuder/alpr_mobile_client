@@ -20,6 +20,7 @@ public final class TargetContinuityEvidence {
     public final boolean freshPlateMeasurement;
     public final boolean geometryValidated;
     public final long measurementAgeNanos;
+    public final boolean localAppearanceValidated;
 
     public TargetContinuityEvidence(
             long entityId,
@@ -40,6 +41,38 @@ public final class TargetContinuityEvidence {
             boolean freshPlateMeasurement,
             boolean geometryValidated,
             long measurementAgeNanos
+    ) {
+        this(
+                entityId, vehicleTrackId, plateTrackId, level,
+                focusedTrackingQuality, trackerInliers, supportRatio,
+                consecutiveFailures, kalmanInnovationScore, geometryConsistency,
+                scaleConsistency, vehicleAppearanceSimilarity,
+                plateAppearanceSimilarity, registrationConsistency,
+                freshVehicleMeasurement, freshPlateMeasurement, geometryValidated,
+                measurementAgeNanos, false
+        );
+    }
+
+    public TargetContinuityEvidence(
+            long entityId,
+            long vehicleTrackId,
+            long plateTrackId,
+            TargetContinuityLevel level,
+            float focusedTrackingQuality,
+            int trackerInliers,
+            float supportRatio,
+            int consecutiveFailures,
+            float kalmanInnovationScore,
+            float geometryConsistency,
+            float scaleConsistency,
+            float vehicleAppearanceSimilarity,
+            float plateAppearanceSimilarity,
+            float registrationConsistency,
+            boolean freshVehicleMeasurement,
+            boolean freshPlateMeasurement,
+            boolean geometryValidated,
+            long measurementAgeNanos,
+            boolean localAppearanceValidated
     ) {
         this.entityId = Contracts.nonNegative("entityId", entityId);
         this.vehicleTrackId = Contracts.nonNegative("vehicleTrackId", vehicleTrackId);
@@ -75,6 +108,7 @@ public final class TargetContinuityEvidence {
         this.measurementAgeNanos = Contracts.nonNegative(
                 "measurementAgeNanos", measurementAgeNanos
         );
+        this.localAppearanceValidated = localAppearanceValidated;
     }
 
     public static TargetContinuityEvidence noTarget() {

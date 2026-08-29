@@ -215,6 +215,11 @@ public final class SceneAnchorGuard {
     }
 
 
+    public synchronized boolean hasAnchor() {
+        return anchorSamples != null;
+    }
+
+
     private static float[] sampleLuminance(
             Bitmap frame
     ) {

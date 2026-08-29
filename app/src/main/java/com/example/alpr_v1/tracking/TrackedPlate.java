@@ -16,6 +16,9 @@ public final class TrackedPlate {
     public final int consecutiveFailures;
     public final int ageFrames;
     public final int framesSinceMtAnchor;
+    public final float localAppearanceSimilarity;
+    public final boolean localAppearanceValidated;
+    public final float[] localAppearanceDescriptor;
     public final long updatedAtNanos;
 
     TrackedPlate(
@@ -27,6 +30,9 @@ public final class TrackedPlate {
             int consecutiveFailures,
             int ageFrames,
             int framesSinceMtAnchor,
+            float localAppearanceSimilarity,
+            boolean localAppearanceValidated,
+            float[] localAppearanceDescriptor,
             long updatedAtNanos
     ) {
         this.overlayItem = overlayItem;
@@ -41,6 +47,10 @@ public final class TrackedPlate {
         this.consecutiveFailures = Math.max(0, consecutiveFailures);
         this.ageFrames = Math.max(0, ageFrames);
         this.framesSinceMtAnchor = Math.max(0, framesSinceMtAnchor);
+        this.localAppearanceSimilarity = clamp01(localAppearanceSimilarity);
+        this.localAppearanceValidated = localAppearanceValidated;
+        this.localAppearanceDescriptor = localAppearanceDescriptor == null
+                ? null : localAppearanceDescriptor.clone();
         this.updatedAtNanos = Math.max(0L, updatedAtNanos);
     }
 

@@ -52,6 +52,9 @@ public final class PreviewPlateTracker {
     private static final int MAX_CONSECUTIVE_FAILURES =
             3;
 
+    private static final int APPEARANCE_GRID_X = 20;
+    private static final int APPEARANCE_GRID_Y = 8;
+
 
     private static final class TrackState {
 
@@ -84,6 +87,9 @@ public final class PreviewPlateTracker {
         float trackingQuality = 1f;
         float supportRatio = 1f;
         float meanMatchError;
+        float[] anchorAppearance;
+        float localAppearanceSimilarity;
+        boolean localAppearanceValidated;
 
 
         TrackState(
@@ -323,6 +329,14 @@ public final class PreviewPlateTracker {
                 track.trackingQuality = 1f;
                 track.supportRatio = 1f;
                 track.meanMatchError = 0f;
+                track.anchorAppearance = localAppearanceDescriptor(
+                        current.gray,
+                        current.width,
+                        current.height,
+                        initialPoints
+                );
+                track.localAppearanceSimilarity = 0f;
+                track.localAppearanceValidated = false;
             }
 
 
@@ -394,7 +408,10 @@ public final class PreviewPlateTracker {
                     track.lastTrackedOverlay = affinePlate;
                     visible.add(affinePlate);
                     technicalResults.add(
-                            technicalResult(track, affinePlate, updatedAtNanos)
+                            technicalResult(
+                                    track, affinePlate, current.gray,
+                                    trackerWidth, trackerHeight, updatedAtNanos
+                            )
                     );
                     survivingTracks.add(track);
                     android.util.Log.d(
@@ -497,7 +514,10 @@ public final class PreviewPlateTracker {
                         );
 
                         technicalResults.add(
-                                technicalResult(track, unchanged, updatedAtNanos)
+                                technicalResult(
+                                        track, unchanged, current.gray,
+                                        trackerWidth, trackerHeight, updatedAtNanos
+                                )
                         );
 
                         survivingTracks.add(
@@ -569,7 +589,10 @@ public final class PreviewPlateTracker {
                 );
 
                 technicalResults.add(
-                        technicalResult(track, trackedPlate, updatedAtNanos)
+                        technicalResult(
+                                track, trackedPlate, current.gray,
+                                trackerWidth, trackerHeight, updatedAtNanos
+                        )
                 );
 
                 survivingTracks.add(
@@ -1094,8 +1117,22 @@ public final class PreviewPlateTracker {
     private static TrackedPlate technicalResult(
             TrackState track,
             OverlayItem overlay,
+            byte[] currentGray,
+            int width,
+            int height,
             long updatedAtNanos
     ) {
+        float[] currentAppearance = localAppearanceDescriptor(
+                currentGray,
+                width,
+                height,
+                track.trackedPoints
+        );
+        track.localAppearanceValidated = track.anchorAppearance != null
+                && currentAppearance != null;
+        track.localAppearanceSimilarity = track.localAppearanceValidated
+                ? localAppearanceSimilarity(track.anchorAppearance, currentAppearance)
+                : 0f;
         return new TrackedPlate(
                 overlay,
                 track.trackingQuality,
@@ -1105,8 +1142,82 @@ public final class PreviewPlateTracker {
                 track.consecutiveFailures,
                 track.ageFrames,
                 track.framesSinceMtAnchor,
+                track.localAppearanceSimilarity,
+                track.localAppearanceValidated,
+                currentAppearance,
                 updatedAtNanos
         );
+    }
+
+
+    private static float[] localAppearanceDescriptor(
+            byte[] gray,
+            int width,
+            int height,
+            List<PointF> points
+    ) {
+        if (gray == null || width <= 0 || height <= 0
+                || gray.length < width * height || points == null || points.size() < 4) {
+            return null;
+        }
+        float left = Float.POSITIVE_INFINITY;
+        float top = Float.POSITIVE_INFINITY;
+        float right = Float.NEGATIVE_INFINITY;
+        float bottom = Float.NEGATIVE_INFINITY;
+        for (PointF point : points) {
+            if (point == null) continue;
+            left = Math.min(left, point.x);
+            top = Math.min(top, point.y);
+            right = Math.max(right, point.x);
+            bottom = Math.max(bottom, point.y);
+        }
+        int cropLeft = clamp(Math.round(left), 0, width - 1);
+        int cropTop = clamp(Math.round(top), 0, height - 1);
+        int cropRight = clamp(Math.round(right), cropLeft + 1, width);
+        int cropBottom = clamp(Math.round(bottom), cropTop + 1, height);
+        int cropWidth = cropRight - cropLeft;
+        int cropHeight = cropBottom - cropTop;
+        if (cropWidth < 4 || cropHeight < 2) return null;
+
+        float[] descriptor = new float[APPEARANCE_GRID_X * APPEARANCE_GRID_Y];
+        float sum = 0f;
+        int index = 0;
+        for (int gy = 0; gy < APPEARANCE_GRID_Y; gy++) {
+            int y = clamp(
+                    cropTop + Math.round((gy + 0.5f) * cropHeight / APPEARANCE_GRID_Y),
+                    cropTop,
+                    cropBottom - 1
+            );
+            for (int gx = 0; gx < APPEARANCE_GRID_X; gx++) {
+                int x = clamp(
+                        cropLeft + Math.round((gx + 0.5f) * cropWidth / APPEARANCE_GRID_X),
+                        cropLeft,
+                        cropRight - 1
+                );
+                float value = gray[y * width + x] & 0xff;
+                descriptor[index++] = value;
+                sum += value;
+            }
+        }
+
+        float mean = sum / descriptor.length;
+        float energy = 0f;
+        for (int i = 0; i < descriptor.length; i++) {
+            descriptor[i] -= mean;
+            energy += descriptor[i] * descriptor[i];
+        }
+        if (energy < 1e-3f) return null;
+        float norm = (float) Math.sqrt(energy);
+        for (int i = 0; i < descriptor.length; i++) descriptor[i] /= norm;
+        return descriptor;
+    }
+
+
+    static float localAppearanceSimilarity(float[] anchor, float[] current) {
+        if (anchor == null || current == null || anchor.length != current.length) return 0f;
+        float dot = 0f;
+        for (int i = 0; i < anchor.length; i++) dot += anchor[i] * current[i];
+        return clamp(dot, 0f, 1f);
     }
 
 
@@ -1861,6 +1972,11 @@ public final class PreviewPlateTracker {
                         value
                 )
         );
+    }
+
+
+    private static int clamp(int value, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
     }
 
 

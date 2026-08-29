@@ -1181,24 +1181,22 @@ public final class AlprPipeline {
             level = com.example.alpr_v1.continuity.TargetContinuityLevel.PLATE_ONLY;
         }
 
-        long latestMeasurementNanos = target.updatedAtNanos;
+        long latestMeasurementNanos = target.sourceTimestampNanos > 0L
+                ? target.sourceTimestampNanos : target.updatedAtNanos;
         boolean freshVehicle = false;
-        boolean vehicleAppearanceAvailable = false;
-        boolean plateAppearanceAvailable = false;
         float registrationConsistency = 0f;
         if (entity != null) {
-            latestMeasurementNanos = Math.max(
-                    latestMeasurementNanos,
-                    Math.max(entity.lastMpNanos(), entity.lastMtNanos())
-            );
             freshVehicle = nowNanos >= entity.lastMpNanos()
                     && nowNanos - entity.lastMpNanos()
                     <= SceneContinuityProfile.INITIAL.reacquireTimeoutNanos;
-            vehicleAppearanceAvailable = entity.vehicleAppearance().available();
-            plateAppearanceAvailable = entity.plateAppearance().available();
+        }
+        long focusedEvidenceAgeNanos = nowNanos >= latestMeasurementNanos
+                ? nowNanos - latestMeasurementNanos : 0L;
+        boolean freshPlate = target.framesSinceMtAnchor <= 1
+                && focusedEvidenceAgeNanos <= 350_000_000L;
+        if (entity != null && freshPlate) {
             registrationConsistency = entity.registration().confidence;
         }
-        boolean freshPlate = target.framesSinceMtAnchor <= 1;
         boolean geometryValidated = target.overlayItem != null
                 && target.driftScore <= 0.50f
                 && target.state != TargetSnapshot.State.DEGRADED;
@@ -1216,13 +1214,15 @@ public final class AlprPipeline {
                 geometryConsistency,
                 geometryConsistency,
                 geometryConsistency,
-                vehicleAppearanceAvailable ? 1f : 0f,
-                plateAppearanceAvailable ? 1f : 0f,
+                0f,
+                target.localAppearanceValidated
+                        ? target.localAppearanceSimilarity : 0f,
                 registrationConsistency,
                 freshVehicle,
                 freshPlate,
                 geometryValidated,
-                Math.max(0L, nowNanos - latestMeasurementNanos)
+                focusedEvidenceAgeNanos,
+                target.localAppearanceValidated
         );
     }
 
@@ -1326,6 +1326,10 @@ public final class AlprPipeline {
                 engine.beginSoftHold(snapshot.visualEpoch, decision.reason);
             }
         } else if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
+            targetSnapshot = targetSnapshot.withState(TargetSnapshot.State.DEGRADED)
+                    .withContinuityStamp(
+                            sceneTransitionCoordinator.stamp(System.nanoTime())
+                    );
             if (engine != null) {
                 engine.beginSoftReacquire(snapshot.visualEpoch, decision.reason);
             }
@@ -1784,8 +1788,11 @@ public final class AlprPipeline {
     public synchronized void setTargetSnapshot(TargetSnapshot snapshot) {
         TargetSnapshot safeSnapshot = snapshot == null
                 ? TargetSnapshot.searching() : snapshot;
+        long sourceTimestampNanos = safeSnapshot.sourceTimestampNanos > 0L
+                ? safeSnapshot.sourceTimestampNanos
+                : safeSnapshot.updatedAtNanos;
         targetSnapshot = safeSnapshot.withContinuityStamp(
-                sceneTransitionCoordinator.stamp(safeSnapshot.updatedAtNanos)
+                sceneTransitionCoordinator.stamp(sourceTimestampNanos)
         );
         long now = System.nanoTime();
         long previous = lastPreviewTrackingNanos.getAndSet(now);
@@ -1803,7 +1810,8 @@ public final class AlprPipeline {
             ContinuityStamp sourceStamp
     ) {
         if (!isCurrentContinuityStamp(sourceStamp)) return false;
-        setTargetSnapshot(snapshot);
+        setTargetSnapshot(snapshot == null
+                ? null : snapshot.withContinuityStamp(sourceStamp));
         return true;
     }
 
@@ -1913,6 +1921,9 @@ public final class AlprPipeline {
             float anchorDriftScore,
             float anchorChangedFraction
     ) {
+        TargetContinuityEvidence targetEvidence = currentTargetEvidence(
+                Math.max(0L, sourceTimestampNanos)
+        );
         SceneEvidence evidence = new SceneEvidence(
                         previewEvidenceIds.incrementAndGet(),
                         Math.max(0L, sourceTimestampNanos),
@@ -1922,7 +1933,7 @@ public final class AlprPipeline {
                         clamp01(brightnessDelta),
                         clamp01(anchorDriftScore),
                         clamp01(anchorChangedFraction),
-                        currentTargetEvidence(Math.max(0L, sourceTimestampNanos)),
+                        targetEvidence,
                         currentVehicleEvidence(),
                         new MotionExplanationEvidence(
                                 motionSensorAvailable,
@@ -1945,6 +1956,27 @@ public final class AlprPipeline {
                 evidence,
                 System.nanoTime()
         );
+        if (rawVisualChange || decision.action != SceneTransitionAction.NONE) {
+            android.util.Log.d(
+                    "ALPR_SCENE_EVIDENCE",
+                    String.format(
+                            java.util.Locale.ROOT,
+                            "raw=%s score=%.3f fraction=%.3f local_valid=%s "
+                                    + "local_similarity=%.3f target=%.3f vehicle=%.3f "
+                                    + "class=%s action=%s reason=%s",
+                            rawVisualChange,
+                            rawVisualChangeScore,
+                            changedFraction,
+                            targetEvidence.localAppearanceValidated,
+                            targetEvidence.plateAppearanceSimilarity,
+                            decision.assessment.targetContinuityScore,
+                            decision.assessment.vehicleContinuityScore,
+                            decision.assessment.classification,
+                            decision.action,
+                            decision.reason
+                    )
+            );
+        }
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
         applySceneTransition(decision);

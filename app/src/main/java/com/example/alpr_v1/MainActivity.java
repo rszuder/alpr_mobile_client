@@ -85,6 +85,7 @@ import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.pipeline.TargetSnapshot;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.SceneAnchorRefreshPolicy;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
@@ -189,6 +190,7 @@ public final class MainActivity extends AppCompatActivity {
      * PreviewView stanie się referencją dla trackera.
      */
     private volatile boolean previewSceneAnchorPending;
+    private long previewSceneAnchorLockRevision = -1L;
 
     private List<OverlayItem> latestDiagnosticOverlayItems =
             java.util.Collections.emptyList();
@@ -2169,8 +2171,36 @@ public final class MainActivity extends AppCompatActivity {
                 || decision.nextState
                 == com.example.alpr_v1.continuity.SceneContinuityState.REACQUIRING;
         if (reacquiring) {
-            if (trackedItems != null && !trackedItems.isEmpty()) {
-                presentTrackedPreviewOverlay(trackedItems);
+            if (decision.resetFocusedTracker
+                    || action == SceneTransitionAction.SOFT_REACQUIRE) {
+                previewPlateTracker.reset();
+                overlayTracker.reset();
+                latestPipelinePlateItems = java.util.Collections.emptyList();
+                lastCaptureByTrack.clear();
+                overlayView.setFocusedTrackId(0L);
+
+                List<OverlayItem> vehicles = new ArrayList<>();
+                for (OverlayItem item : currentOverlayItems()) {
+                    if (item.kind != OverlayItem.Kind.PLATE) {
+                        vehicles.add(item.kind == OverlayItem.Kind.VEHICLE
+                                || item.kind == OverlayItem.Kind.VEHICLE_ROI
+                                ? new OverlayItem(
+                                        item.kind,
+                                        item.normalizedBounds,
+                                        item.normalizedKeypoints,
+                                        item.label,
+                                        item.trackId,
+                                        true
+                                )
+                                : item);
+                    }
+                }
+                applyVisibleOverlay(
+                        vehicles,
+                        latestOverlaySourceWidth,
+                        latestOverlaySourceHeight
+                );
+                livePresentation.clearResult();
             }
             livePresentation.showState(
                     LivePresentationController.State.RECOVERING,
@@ -3317,19 +3347,21 @@ public final class MainActivity extends AppCompatActivity {
                             appearanceByTrack
                     );
             if (pipeline != null) {
-                pipeline.setTargetSnapshot(anchoredTarget);
+                pipeline.setTargetSnapshotIfCurrent(
+                        anchoredTarget,
+                        result.continuityStamp()
+                );
             }
-            if (anchoredTarget.hasTrack()) {
+            if (SceneAnchorRefreshPolicy.shouldRefresh(
+                    anchoredTarget.hasTrack(),
+                    previewSceneAnchorGuard.hasAnchor(),
+                    anchoredTarget.lockRevision,
+                    previewSceneAnchorLockRevision
+            )) {
                 previewSceneAnchorPending = true;
+                previewSceneAnchorLockRevision = anchoredTarget.lockRevision;
             }
 
-            /*
-             * Nie mamy tutaj Bitmap PreviewView.
-             * Następny tick lekkiego monitora ustawi
-             * referencję obrazu.
-             */
-            previewSceneAnchorPending =
-                    true;
         }
         if (collectionActive) collectCrops(result.plateObservations);
         if ("models_missing".equals(result.status) || "pipeline_error".equals(result.status)) {

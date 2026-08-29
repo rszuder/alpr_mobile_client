@@ -5,6 +5,8 @@ package com.example.alpr_v1.continuity;
  * This class owns policy state only; runtime side effects remain with its caller.
  */
 public final class SceneTransitionCoordinator {
+    private static final float LOCAL_APPEARANCE_CONTRADICTION_THRESHOLD = 0.30f;
+    private static final long MAX_FOCUSED_EVIDENCE_AGE_NANOS = 350_000_000L;
     private final SceneContinuityProfile profile;
     private final TargetContinuityEvaluator targetEvaluator;
     private final VehicleContinuityEvaluator vehicleEvaluator;
@@ -203,9 +205,27 @@ public final class SceneTransitionCoordinator {
         float cutScore = breakEvaluator.evaluate(
                 evidence, targetScore, vehicleScore, motionScore
         );
-        boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve;
+        boolean stationaryLocalContradiction = evidence.rawVisualChange
+                && !evidence.motion.cameraMoving
+                && !evidence.motion.rapidCameraMotion
+                && !evidence.motion.cameraTransformInProgress
+                && evidence.target.localAppearanceValidated
+                && evidence.target.plateAppearanceSimilarity
+                < LOCAL_APPEARANCE_CONTRADICTION_THRESHOLD;
+        boolean stationaryStaleTargetEvidence = evidence.rawVisualChange
+                && !evidence.motion.cameraMoving
+                && !evidence.motion.rapidCameraMotion
+                && !evidence.motion.cameraTransformInProgress
+                && evidence.target.level != TargetContinuityLevel.NO_TARGET
+                && evidence.target.measurementAgeNanos
+                > MAX_FOCUSED_EVIDENCE_AGE_NANOS;
+        boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve
+                && !stationaryLocalContradiction
+                && !stationaryStaleTargetEvidence;
         boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve;
-        boolean motionExplained = motionScore >= profile.minimumMotionExplanation;
+        boolean motionExplained = motionScore >= profile.minimumMotionExplanation
+                && !stationaryLocalContradiction
+                && !stationaryStaleTargetEvidence;
 
         VisualChangeClassification classification;
         String reason;
@@ -217,6 +237,12 @@ public final class SceneTransitionCoordinator {
             reason = targetPreserved
                     ? "local_target_explains_visual_change"
                     : "vehicle_pool_explains_visual_change";
+        } else if (stationaryLocalContradiction) {
+            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
+            reason = "stationary_local_appearance_contradiction";
+        } else if (stationaryStaleTargetEvidence) {
+            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
+            reason = "stationary_target_evidence_predates_visual_change";
         } else if (!targetPreserved && !poolPreserved && !motionExplained) {
             classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
             reason = "visual_change_has_no_continuity_explanation";

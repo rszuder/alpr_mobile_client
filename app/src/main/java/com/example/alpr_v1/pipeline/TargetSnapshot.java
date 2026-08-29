@@ -27,6 +27,8 @@ public final class TargetSnapshot {
     public final int stableUpdates;
     public final long updatedAtNanos;
     public final float[] appearanceDescriptor;
+    public final float localAppearanceSimilarity;
+    public final boolean localAppearanceValidated;
     public final long lockedTrackId;
     public final String transitionReason;
     public final int lockSwitches;
@@ -97,6 +99,42 @@ public final class TargetSnapshot {
             int lockReassociations,
             ContinuityStamp continuityStamp
     ) {
+        this(
+                state, trackId, overlayItem, trackingQuality, driftScore, supportRatio,
+                trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
+                stableUpdates, updatedAtNanos, appearanceDescriptor, lockedTrackId,
+                transitionReason, lockSwitches, lockLosses, framesToLock,
+                timeToLockMillis, lockRevision, lockReassociations, continuityStamp,
+                0f, false
+        );
+    }
+
+    private TargetSnapshot(
+            State state,
+            long trackId,
+            OverlayItem overlayItem,
+            float trackingQuality,
+            float driftScore,
+            float supportRatio,
+            int trackerInliers,
+            int consecutiveFailures,
+            int ageFrames,
+            int framesSinceMtAnchor,
+            int stableUpdates,
+            long updatedAtNanos,
+            float[] appearanceDescriptor,
+            long lockedTrackId,
+            String transitionReason,
+            int lockSwitches,
+            int lockLosses,
+            int framesToLock,
+            long timeToLockMillis,
+            long lockRevision,
+            int lockReassociations,
+            ContinuityStamp continuityStamp,
+            float localAppearanceSimilarity,
+            boolean localAppearanceValidated
+    ) {
         ContinuityStamp safeStamp = continuityStamp == null
                 ? ContinuityStamp.initial(updatedAtNanos) : continuityStamp;
         this.state = state == null ? State.SEARCHING : state;
@@ -116,6 +154,8 @@ public final class TargetSnapshot {
         this.updatedAtNanos = Math.max(0L, updatedAtNanos);
         this.appearanceDescriptor = appearanceDescriptor == null
                 ? null : appearanceDescriptor.clone();
+        this.localAppearanceSimilarity = clamp01(localAppearanceSimilarity);
+        this.localAppearanceValidated = localAppearanceValidated;
         this.lockedTrackId = Math.max(0L, lockedTrackId);
         this.transitionReason = transitionReason == null ? "" : transitionReason;
         this.lockSwitches = Math.max(0, lockSwitches);
@@ -156,7 +196,8 @@ public final class TargetSnapshot {
                 stableUpdates, System.nanoTime(), appearanceDescriptor,
                 lockedTrackId, transitionReason, lockSwitches, lockLosses,
                 framesToLock, timeToLockMillis, lockRevision, lockReassociations,
-                continuityStamp().withSourceTimestamp(System.nanoTime())
+                continuityStamp().withSourceTimestamp(System.nanoTime()),
+                localAppearanceSimilarity, localAppearanceValidated
         );
     }
 
@@ -168,7 +209,20 @@ public final class TargetSnapshot {
                 framesSinceMtAnchor, stableUpdates, updatedAtNanos,
                 appearanceDescriptor, lockedTrackId, transitionReason,
                 lockSwitches, lockLosses, framesToLock, timeToLockMillis,
-                lockRevision, lockReassociations, stamp
+                lockRevision, lockReassociations, stamp,
+                localAppearanceSimilarity, localAppearanceValidated
+        );
+    }
+
+    TargetSnapshot withLocalAppearance(float similarity, boolean validated) {
+        return new TargetSnapshot(
+                state, trackId, overlayItem, trackingQuality, driftScore,
+                supportRatio, trackerInliers, consecutiveFailures, ageFrames,
+                framesSinceMtAnchor, stableUpdates, updatedAtNanos,
+                appearanceDescriptor, lockedTrackId, transitionReason,
+                lockSwitches, lockLosses, framesToLock, timeToLockMillis,
+                lockRevision, lockReassociations, continuityStamp(),
+                similarity, validated
         );
     }
 

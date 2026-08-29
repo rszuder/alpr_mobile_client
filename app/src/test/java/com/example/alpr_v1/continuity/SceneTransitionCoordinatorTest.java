@@ -47,6 +47,141 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void stationaryCutCannotBeExplainedByKltWhenLocalAppearanceContradicts() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        TargetContinuityEvidence staleKlt = new TargetContinuityEvidence(
+                15L, 31L, 71L, TargetContinuityLevel.VEHICLE_AND_PLATE,
+                0.95f, 8, 1f, 0,
+                0.95f, 0.95f, 0.95f,
+                0f, 0.08f, 0f,
+                false, false, true, 2_000_000_000L,
+                true
+        );
+        SceneEvidence cut = new SceneEvidence(
+                1L, 10L, true,
+                0.95f, 0.90f, 0f, 0.90f, 0.90f,
+                staleKlt,
+                new VehicleContinuityEvidence(
+                        1, 1, 1, 0, 0,
+                        1f, 1f, 1f, 2_000_000_000L
+                ),
+                new MotionExplanationEvidence(
+                        true, false, false, 0f,
+                        false, false, 0f, 0f,
+                        0.95f, 0.95f
+                ),
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(cut, 3_000_000_000L);
+
+        assertEquals(VisualChangeClassification.UNEXPLAINED_CHANGE,
+                decision.assessment.classification);
+        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, decision.action);
+        assertFalse(decision.assessment.focusedTargetPreserved);
+    }
+
+    @Test
+    public void stalePerfectTargetEvidenceCannotExplainStationaryCut() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        TargetContinuityEvidence stalePerfectTarget = new TargetContinuityEvidence(
+                15L, 31L, 71L, TargetContinuityLevel.VEHICLE_AND_PLATE,
+                0.98f, 8, 1f, 0,
+                0.98f, 0.98f, 0.98f,
+                1f, 1f, 1f,
+                true, true, true, 2_000_000_000L,
+                true
+        );
+        SceneEvidence cut = new SceneEvidence(
+                2L, 20L, true,
+                0.90f, 0.80f, 0f, 0.90f, 0.80f,
+                stalePerfectTarget,
+                VehicleContinuityEvidence.empty(),
+                new MotionExplanationEvidence(
+                        true, false, false, 0f,
+                        false, false, 0f, 0f,
+                        1f, 0f
+                ),
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(cut, 3_000_000_000L);
+
+        assertEquals(VisualChangeClassification.UNEXPLAINED_CHANGE,
+                decision.assessment.classification);
+        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, decision.action);
+        assertEquals("stationary_target_evidence_predates_visual_change",
+                decision.assessment.reason);
+    }
+
+    @Test
+    public void partialEvidenceRemainsRawVisualChangeUntilPolicyCanDecide() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        TargetContinuityEvidence moderate = targetEvidence(
+                TargetContinuityLevel.PLATE_ONLY,
+                0.55f, 2, 0.55f,
+                0.55f, 0.55f, 0f, 0.55f, 0.55f,
+                true
+        );
+        SceneEvidence evidence = new SceneEvidence(
+                1L, 10L, true,
+                0.80f, 0.80f, 0f, 0.40f, 0.40f,
+                moderate,
+                VehicleContinuityEvidence.empty(),
+                new MotionExplanationEvidence(
+                        false, false, false, 0f,
+                        false, false, 0f, 0f,
+                        0.55f, 0f
+                ),
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(evidence, 1_000L);
+
+        assertEquals(VisualChangeClassification.RAW_VISUAL_CHANGE,
+                decision.assessment.classification);
+    }
+
+    @Test
+    public void gyroAndStrongTargetExplainChangeButBlurStillStartsHold() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(
+                explainedTargetScene(1L, true, true),
+                1_000L
+        );
+
+        assertEquals(VisualChangeClassification.MOTION_EXPLAINED_CHANGE,
+                decision.assessment.classification);
+        assertEquals(SceneTransitionAction.SOFT_HOLD, decision.action);
+    }
+
+    @Test
+    public void reassociatedVehiclePoolExplainsChangeWithoutFocusedTarget() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(
+                vehiclePoolScene(1L),
+                1_000L
+        );
+
+        assertEquals(VisualChangeClassification.MOTION_EXPLAINED_CHANGE,
+                decision.assessment.classification);
+        assertTrue(decision.assessment.vehiclePoolPreserved);
+        assertFalse(decision.incrementSceneGeneration);
+    }
+
+    @Test
     public void rapidCameraMotionStartsOneSoftHoldAndDeduplicatesEvidence() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY

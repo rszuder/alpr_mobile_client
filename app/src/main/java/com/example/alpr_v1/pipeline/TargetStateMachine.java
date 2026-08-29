@@ -101,9 +101,19 @@ public final class TargetStateMachine {
         long now = System.nanoTime();
         boolean targetChanged = snapshot.trackId != selected.trackId;
         if (targetChanged && !reassociated) beginAcquisition(selected.trackId, now);
+        float[] freshAppearance = appearanceByTrack == null
+                ? null : appearanceByTrack.get(selected.trackId);
+        boolean localAppearanceValidated = lockedAppearance != null
+                && freshAppearance != null
+                && lockedAppearance.length == freshAppearance.length;
+        float localAppearanceSimilarity = localAppearanceValidated
+                ? Math.max(0f, PlateAppearanceDescriptor.similarity(
+                        lockedAppearance,
+                        freshAppearance
+                ))
+                : 0f;
         updateAppearance(
-                appearanceByTrack == null
-                        ? null : appearanceByTrack.get(selected.trackId),
+                freshAppearance,
                 targetChanged && !reassociated
         );
         acquisitionFrames++;
@@ -140,6 +150,9 @@ public final class TargetStateMachine {
                 0,
                 reason,
                 now
+        ).withLocalAppearance(
+                localAppearanceSimilarity,
+                localAppearanceValidated
         );
         return snapshot;
     }
@@ -202,6 +215,15 @@ public final class TargetStateMachine {
             }
         }
 
+        boolean lockedAppearanceValidated = lockedAppearance != null
+                && selected.localAppearanceDescriptor != null
+                && lockedAppearance.length == selected.localAppearanceDescriptor.length;
+        float lockedAppearanceSimilarity = lockedAppearanceValidated
+                ? Math.max(0f, PlateAppearanceDescriptor.similarity(
+                        lockedAppearance,
+                        selected.localAppearanceDescriptor
+                ))
+                : selected.localAppearanceSimilarity;
         snapshot = snapshot(
                 state,
                 selected.trackId,
@@ -215,6 +237,9 @@ public final class TargetStateMachine {
                 selected.framesSinceMtAnchor,
                 reason,
                 now
+        ).withLocalAppearance(
+                lockedAppearanceSimilarity,
+                lockedAppearanceValidated || selected.localAppearanceValidated
         );
         return snapshot;
     }
@@ -316,14 +341,30 @@ public final class TargetStateMachine {
 
     private void updateAppearance(float[] fresh, boolean replace) {
         if (fresh == null) return;
+        if (lockedTrackId > 0L) {
+            if (lockedAppearance == null) {
+                lockedAppearance = fresh.clone();
+                currentAppearance = fresh.clone();
+                return;
+            }
+            float similarity = PlateAppearanceDescriptor.similarity(
+                    lockedAppearance,
+                    fresh
+            );
+            if (similarity < 0.45f) {
+                return;
+            }
+            lockedAppearance = PlateAppearanceDescriptor.blend(
+                    lockedAppearance,
+                    fresh,
+                    0.08f
+            );
+            currentAppearance = cloneDescriptor(lockedAppearance);
+            return;
+        }
         currentAppearance = replace || currentAppearance == null
                 ? fresh.clone()
                 : PlateAppearanceDescriptor.blend(currentAppearance, fresh, 0.16f);
-        if (lockedTrackId > 0L) {
-            lockedAppearance = lockedAppearance == null
-                    ? fresh.clone()
-                    : PlateAppearanceDescriptor.blend(lockedAppearance, fresh, 0.10f);
-        }
     }
 
     private TargetSnapshot snapshot(
