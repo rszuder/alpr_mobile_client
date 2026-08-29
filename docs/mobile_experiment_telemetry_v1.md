@@ -62,6 +62,20 @@ Klucz: `frame_id`. Synchronizacja z pozostałymi szeregami: `elapsed_ms`.
 `estimated_upstream_gaps` nie może być prezentowane jako bezpośrednio zmierzone
 `CameraX dropped_frames`.
 
+## FINAL_RESULT_DISPATCH — `report.json`
+
+| Pole | Typ | Jednostka | Semantyka |
+| --- | --- | --- | --- |
+| `final_results_dropped_after_return` | int | wyniki | Stary wynik odrzucony po powrocie z pipeline lub przed telemetrią rozpoznania |
+| `final_results_dropped_before_ui` | int | wyniki | Stary wynik odrzucony na głównym wątku lub przez defensywny guard prezentacji |
+| `final_results_dropped_before_crop` | int | wyniki | Stary wynik odrzucony bezpośrednio przed zapisem cropa |
+| `final_result_dispatch_accepted` | int | wyniki | Aktualny wynik przekazany do UI albo ścieżki crop-only |
+
+Odrzucenie końcowego wyniku ma osobny event
+`final_pipeline_result_dropped`. Event zawiera `final_result_drop_phase`,
+pełny stamp wyniku, pełny aktualny stamp pipeline oraz
+`source_timestamp_nanos`. Nie jest grupowany ze stale intermediate MT.
+
 ## THERMAL — `thermal.csv`
 
 Próbkowanie około 1 Hz, niezależne od processed FPS.
@@ -87,7 +101,7 @@ Każda linia jest niezależnym obiektem JSON. Wspólne pola:
 Obsługiwane typy obejmują: `track_created`, `track_lost`, `mz_attempt`,
 `mz_result`, `consensus_updated`, `consensus_confirmed`, `scene_reset`,
 `auto_zoom_started`, `lock_acquired`, `lock_lost`, `mz_retry_after_zoom`,
-`auto_zoom_return_started` i `zoom_finished`.
+`auto_zoom_return_started`, `zoom_finished` i `final_pipeline_result_dropped`.
 
 ## TRACK/CROP — `samples/*` i `crop_session.records`
 

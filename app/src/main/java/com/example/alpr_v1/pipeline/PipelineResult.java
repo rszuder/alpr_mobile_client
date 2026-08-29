@@ -6,8 +6,31 @@ import com.example.alpr_v1.ui.OverlayItem;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class PipelineResult implements AutoCloseable {
+    private static final class ResourceOwner {
+        final List<PlateObservation> observations;
+        final AtomicBoolean closed = new AtomicBoolean(false);
+        final AtomicInteger effectiveCloseCount = new AtomicInteger();
+
+        ResourceOwner(List<PlateObservation> observations) {
+            this.observations = observations == null
+                    ? Collections.emptyList()
+                    : new ArrayList<>(observations);
+        }
+
+        void close() {
+            if (!closed.compareAndSet(false, true)) return;
+            effectiveCloseCount.incrementAndGet();
+            for (PlateObservation observation : observations) {
+                observation.recyclePreview();
+            }
+        }
+    }
+
+    private final ResourceOwner resourceOwner;
     public final String status;
     public final String message;
     public final String recognizedText;
@@ -110,6 +133,7 @@ public final class PipelineResult implements AutoCloseable {
                 );
 
         this.plateObservations = Collections.emptyList();
+        this.resourceOwner = new ResourceOwner(this.plateObservations);
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
         this.sceneReset = sceneReset;
@@ -186,6 +210,32 @@ public final class PipelineResult implements AutoCloseable {
             boolean sceneReset,
             ContinuityStamp continuityStamp
     ) {
+        this(
+                status,
+                message,
+                recognitions,
+                overlayItems,
+                sourceWidth,
+                sourceHeight,
+                plateObservations,
+                sceneReset,
+                continuityStamp,
+                null
+        );
+    }
+
+    private PipelineResult(
+            String status,
+            String message,
+            List<PlateRecognition> recognitions,
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            List<PlateObservation> plateObservations,
+            boolean sceneReset,
+            ContinuityStamp continuityStamp,
+            ResourceOwner sharedResourceOwner
+    ) {
         ContinuityStamp safeStamp = continuityStamp == null
                 ? ContinuityStamp.initial(0L) : continuityStamp;
         this.status = status;
@@ -219,6 +269,9 @@ public final class PipelineResult implements AutoCloseable {
                 Collections.unmodifiableList(
                         new ArrayList<>(plateObservations)
                 );
+        this.resourceOwner = sharedResourceOwner == null
+                ? new ResourceOwner(this.plateObservations)
+                : sharedResourceOwner;
 
         this.sourceWidth = sourceWidth;
         this.sourceHeight = sourceHeight;
@@ -268,7 +321,8 @@ public final class PipelineResult implements AutoCloseable {
                 sourceHeight,
                 stampedObservations,
                 sceneReset,
-                stamp
+                stamp,
+                resourceOwner
         );
     }
 
@@ -282,9 +336,7 @@ public final class PipelineResult implements AutoCloseable {
                     recognition.observations
             ));
         }
-        for (PlateObservation observation : plateObservations) {
-            observation.recyclePreview();
-        }
+        close();
         return new PipelineResult(
                 status,
                 message,
@@ -305,8 +357,16 @@ public final class PipelineResult implements AutoCloseable {
         return false;
     }
 
+    public boolean isClosed() {
+        return resourceOwner.closed.get();
+    }
+
+    int effectiveCloseCountForTest() {
+        return resourceOwner.effectiveCloseCount.get();
+    }
+
     @Override
     public void close() {
-        for (PlateObservation observation : plateObservations) observation.recyclePreview();
+        resourceOwner.close();
     }
 }

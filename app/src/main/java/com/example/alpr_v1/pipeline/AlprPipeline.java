@@ -2181,7 +2181,11 @@ public final class AlprPipeline {
                 && continuityGenerationGate.evaluate(
                 sceneTransitionCoordinator.stamp(stamp.sourceTimestampNanos),
                 stamp
-        ) == ContinuityResultDisposition.ACCEPT_ALL;
+                ) == ContinuityResultDisposition.ACCEPT_ALL;
+    }
+
+    public ContinuityStamp currentContinuityStamp(long sourceTimestampNanos) {
+        return sceneTransitionCoordinator.stamp(Math.max(0L, sourceTimestampNanos));
     }
 
     private void recordVehicleTrackingEvents() {

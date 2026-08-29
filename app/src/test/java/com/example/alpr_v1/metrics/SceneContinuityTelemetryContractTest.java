@@ -15,6 +15,18 @@ public final class SceneContinuityTelemetryContractTest {
         assertNotNull(MetricsCollector.class.getDeclaredField("sceneContinuityProfile"));
         assertNotNull(MetricsCollector.class.getDeclaredField("frozenSceneHandlingMode"));
         assertNotNull(MetricsCollector.class.getDeclaredField(
+                "finalResultsDroppedAfterReturn"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "finalResultsDroppedBeforeUi"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "finalResultsDroppedBeforeCrop"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "finalResultDispatchAccepted"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
                 "frozenSceneContinuityProfile"
         ));
         assertNotNull(MetricsCollector.class.getMethod(

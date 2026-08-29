@@ -82,6 +82,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.AlprPipeline;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.pipeline.PipelineResult;
+import com.example.alpr_v1.pipeline.PipelineResultDispatchGate;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.pipeline.TargetSnapshot;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
@@ -2727,6 +2728,12 @@ public final class MainActivity extends AppCompatActivity {
                         return;
                     }
 
+                    if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
+                        recordStaleFinalResult("after_pipeline_return", result);
+                        result.close();
+                        return;
+                    }
+
 
                     /*
                      * Podczas MP/MT/MZ użytkownik mógł już skierować
@@ -2743,6 +2750,12 @@ public final class MainActivity extends AppCompatActivity {
 
                         result.close();
 
+                        return;
+                    }
+
+                    if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
+                        recordStaleFinalResult("before_recognition_telemetry", result);
+                        result.close();
                         return;
                     }
 
@@ -2764,29 +2777,33 @@ public final class MainActivity extends AppCompatActivity {
 
                         runOnUiThread(
                                 () -> {
-
-                                    /*
-                                     * Generacja mogła zmienić się również
-                                     * pomiędzy post() a wykonaniem callbacku UI.
-                                     */
-                                    if (!cameraStarted
-                                            || sceneGenerationAtStart
-                                            != uiSceneGeneration.get()
-                                            || transformGenerationAtStart
-                                            != uiCameraTransformGeneration.get()) {
-
-                                        result.close();
-
-                                        return;
-                                    }
-
-
                                     try {
-
-                                        presentResult(
+                                        /*
+                                         * Generacja mogła zmienić się również
+                                         * pomiędzy post() a wykonaniem callbacku UI.
+                                         */
+                                        if (!cameraStarted
+                                                || sceneGenerationAtStart
+                                                != uiSceneGeneration.get()
+                                                || transformGenerationAtStart
+                                                != uiCameraTransformGeneration.get()) {
+                                            return;
+                                        }
+                                        if (!PipelineResultDispatchGate.isCurrent(
+                                                pipeline, result
+                                        )) {
+                                            recordStaleFinalResult(
+                                                    "before_ui_present", result
+                                            );
+                                            return;
+                                        }
+                                        if (presentResultIfCurrent(
                                                 result,
                                                 observationNanos
-                                        );
+                                        )) {
+                                            metricsCollector
+                                                    .finalResultDispatchAccepted();
+                                        }
 
                                     } finally {
 
@@ -2802,28 +2819,31 @@ public final class MainActivity extends AppCompatActivity {
 
                         runOnUiThread(
                                 () -> {
-
-                                    /*
-                                     * Stara scena nie może również trafić
-                                     * do kolekcji cropów.
-                                     */
-                                    if (!cameraStarted
-                                            || sceneGenerationAtStart
-                                            != uiSceneGeneration.get()
-                                            || transformGenerationAtStart
-                                            != uiCameraTransformGeneration.get()) {
-
-                                        result.close();
-
-                                        return;
-                                    }
-
-
                                     try {
-
+                                        /*
+                                         * Stara scena nie może również trafić
+                                         * do kolekcji cropów.
+                                         */
+                                        if (!cameraStarted
+                                                || sceneGenerationAtStart
+                                                != uiSceneGeneration.get()
+                                                || transformGenerationAtStart
+                                                != uiCameraTransformGeneration.get()) {
+                                            return;
+                                        }
+                                        if (!PipelineResultDispatchGate.isCurrent(
+                                                pipeline, result
+                                        )) {
+                                            recordStaleFinalResult(
+                                                    "before_crop_collect", result
+                                            );
+                                            return;
+                                        }
                                         collectCrops(
                                                 result.plateObservations
                                         );
+                                        metricsCollector
+                                                .finalResultDispatchAccepted();
 
                                     } finally {
 
@@ -3210,7 +3230,19 @@ public final class MainActivity extends AppCompatActivity {
                 milliseconds / 1000.0
         );
     }
-    private void presentResult(PipelineResult result, long observationNanos) {
+    private boolean presentResultIfCurrent(
+            PipelineResult result,
+            long observationNanos
+    ) {
+        if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
+            recordStaleFinalResult("present_result_guard", result);
+            return false;
+        }
+        presentCurrentResult(result, observationNanos);
+        return true;
+    }
+
+    private void presentCurrentResult(PipelineResult result, long observationNanos) {
         if (result.sceneReset && !isAutoZoomHoldingMemory()) {
 
             clearAutoZoomRecognitionMemory();
@@ -3429,7 +3461,13 @@ public final class MainActivity extends AppCompatActivity {
             }
 
         }
-        if (collectionActive) collectCrops(result.plateObservations);
+        if (collectionActive) {
+            if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
+                recordStaleFinalResult("before_crop_collect", result);
+                return;
+            }
+            collectCrops(result.plateObservations);
+        }
         if ("models_missing".equals(result.status) || "pipeline_error".equals(result.status)) {
             livePresentation.showState(
                     LivePresentationController.State.ERROR,
@@ -5013,6 +5051,80 @@ public final class MainActivity extends AppCompatActivity {
             recordInfo("Wstrzymano sesję cropów " + collectionSessionId);
         }
         renderCapturedCrops();
+    }
+
+    private void recordStaleFinalResult(String phase, PipelineResult result) {
+        if (result == null) return;
+        String safePhase = phase == null || phase.trim().isEmpty()
+                ? "unknown" : phase.trim();
+        metricsCollector.finalResultDropped(safePhase);
+        try {
+            JSONObject details = new JSONObject();
+            ContinuityStamp resultStamp = result.continuityStamp();
+            AlprPipeline currentPipeline = pipeline;
+            ContinuityStamp currentStamp = currentPipeline == null
+                    ? null
+                    : currentPipeline.currentContinuityStamp(
+                            resultStamp.sourceTimestampNanos
+                    );
+            details.put("final_result_dispatch_status", "dropped");
+            details.put("final_result_drop_phase", safePhase);
+            details.put("drop_phase", safePhase);
+            details.put(
+                    "result_scene_generation", resultStamp.sceneGeneration
+            );
+            details.put("result_visual_epoch", resultStamp.visualEpoch);
+            details.put(
+                    "result_camera_transform_generation",
+                    resultStamp.cameraTransformGeneration
+            );
+            details.put(
+                    "current_scene_generation",
+                    currentStamp == null
+                            ? JSONObject.NULL : currentStamp.sceneGeneration
+            );
+            details.put(
+                    "current_visual_epoch",
+                    currentStamp == null
+                            ? JSONObject.NULL : currentStamp.visualEpoch
+            );
+            details.put(
+                    "current_camera_transform_generation",
+                    currentStamp == null
+                            ? JSONObject.NULL
+                            : currentStamp.cameraTransformGeneration
+            );
+            details.put(
+                    "source_timestamp_nanos", resultStamp.sourceTimestampNanos
+            );
+            metricsCollector.recordEvent(
+                    "final_pipeline_result_dropped", 0L, 0L, details
+            );
+            android.util.Log.d(
+                    "ALPR_FINAL_RESULT_GATE",
+                    "dropped phase=" + safePhase
+                            + " result_scene=" + resultStamp.sceneGeneration
+                            + " result_visual=" + resultStamp.visualEpoch
+                            + " result_transform="
+                            + resultStamp.cameraTransformGeneration
+                            + " current_scene="
+                            + (currentStamp == null
+                            ? "unavailable" : currentStamp.sceneGeneration)
+                            + " current_visual="
+                            + (currentStamp == null
+                            ? "unavailable" : currentStamp.visualEpoch)
+                            + " current_transform="
+                            + (currentStamp == null
+                            ? "unavailable"
+                            : currentStamp.cameraTransformGeneration)
+            );
+        } catch (Exception error) {
+            AppLog.warning(
+                    this,
+                    LOG_TAG,
+                    "Nie udało się zapisać odrzucenia starego wyniku końcowego"
+            );
+        }
     }
 
     private synchronized void recordRecognitionTelemetry(PipelineResult result) {

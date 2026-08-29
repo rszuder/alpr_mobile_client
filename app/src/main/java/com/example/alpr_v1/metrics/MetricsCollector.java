@@ -127,6 +127,10 @@ public final class MetricsCollector {
     private long framesSkippedHardSceneReset;
     private long framesSkippedContinuityHold;
     private long framesSkippedContinuityReacquire;
+    private long finalResultsDroppedAfterReturn;
+    private long finalResultsDroppedBeforeUi;
+    private long finalResultsDroppedBeforeCrop;
+    private long finalResultDispatchAccepted;
     private long estimatedUpstreamGaps;
     private long lastSourceTimestampNanos = -1L;
     private double expectedSourceIntervalNanos = Double.NaN;
@@ -185,6 +189,10 @@ public final class MetricsCollector {
         framesSkippedHardSceneReset = 0L;
         framesSkippedContinuityHold = 0L;
         framesSkippedContinuityReacquire = 0L;
+        finalResultsDroppedAfterReturn = 0L;
+        finalResultsDroppedBeforeUi = 0L;
+        finalResultsDroppedBeforeCrop = 0L;
+        finalResultDispatchAccepted = 0L;
         estimatedUpstreamGaps = 0L;
         lastSourceTimestampNanos = -1L;
         expectedSourceIntervalNanos = Double.NaN;
@@ -289,6 +297,23 @@ public final class MetricsCollector {
         droppedFrames++;
         framesSkippedContinuityReacquire++;
         currentFrameFlowBucket().framesSkippedContinuityReacquire++;
+    }
+
+    public synchronized void finalResultDropped(String phase) {
+        if (!measurementSessionActive) return;
+        String safePhase = phase == null ? "" : phase;
+        if ("before_ui_present".equals(safePhase)
+                || "present_result_guard".equals(safePhase)) {
+            finalResultsDroppedBeforeUi++;
+        } else if ("before_crop_collect".equals(safePhase)) {
+            finalResultsDroppedBeforeCrop++;
+        } else {
+            finalResultsDroppedAfterReturn++;
+        }
+    }
+
+    public synchronized void finalResultDispatchAccepted() {
+        if (measurementSessionActive) finalResultDispatchAccepted++;
     }
 
     /** Zachowany alias dla starszych wywołań; nowe miejsca powinny podawać przyczynę. */
@@ -1211,6 +1236,37 @@ public final class MetricsCollector {
         frameFlow.put("upstream_gaps_are_estimated", true);
         frameFlow.put("bucket_ms", 1_000);
         report.put("frame_flow", frameFlow);
+
+        JSONObject finalResultDispatch = new JSONObject();
+        finalResultDispatch.put(
+                "final_results_dropped_after_return",
+                finalResultsDroppedAfterReturn
+        );
+        finalResultDispatch.put(
+                "final_results_dropped_before_ui",
+                finalResultsDroppedBeforeUi
+        );
+        finalResultDispatch.put(
+                "final_results_dropped_before_crop",
+                finalResultsDroppedBeforeCrop
+        );
+        finalResultDispatch.put(
+                "final_result_dispatch_accepted",
+                finalResultDispatchAccepted
+        );
+        finalResultDispatch.put(
+                "final_result_stale_after_pipeline_return",
+                finalResultsDroppedAfterReturn
+        );
+        finalResultDispatch.put(
+                "final_result_stale_before_ui",
+                finalResultsDroppedBeforeUi
+        );
+        finalResultDispatch.put(
+                "final_result_stale_before_crop",
+                finalResultsDroppedBeforeCrop
+        );
+        report.put("final_result_dispatch", finalResultDispatch);
 
         report.put("thermal", thermalSummaryJson());
 
