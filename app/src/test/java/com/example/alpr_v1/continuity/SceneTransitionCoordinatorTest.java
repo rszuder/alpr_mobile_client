@@ -279,6 +279,27 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void noTargetRecoveredVehiclePoolReturnsToStable() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(unexplainedScene(1L), 1_000L);
+        long visualEpoch = coordinator.snapshot().visualEpoch;
+
+        coordinator.onSoftReacquireResult(
+                SoftReacquireResult.VEHICLE_POOL_RECOVERED,
+                2_000L
+        );
+
+        SceneContinuitySnapshot snapshot = coordinator.snapshot();
+        assertEquals(SceneContinuityState.STABLE, snapshot.state);
+        assertEquals(0L, snapshot.sceneGeneration);
+        assertEquals(visualEpoch, snapshot.visualEpoch);
+        assertFalse(snapshot.finalizationSuspended);
+        assertFalse(snapshot.heavyInferenceSuspended);
+    }
+
+    @Test
     public void structuralEventBypassesDynamicRecovery() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY

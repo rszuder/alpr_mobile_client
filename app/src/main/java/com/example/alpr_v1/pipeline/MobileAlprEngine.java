@@ -330,7 +330,7 @@ final class MobileAlprEngine implements AutoCloseable {
     SoftReacquireReport consumeSoftReacquireReport() {
         SoftReacquireReport report = pendingSoftReacquireReport;
         if (continuityReacquireActive
-                && !report.activeTargetLost
+                && !report.attempted
                 && continuityActiveEntityId > 0L) {
             VehicleEntity entity = vehicleTrackingCoordinator.repository().get(
                     continuityActiveEntityId
@@ -339,8 +339,10 @@ final class MobileAlprEngine implements AutoCloseable {
                     && entity.lastMtNanos() >= continuityReacquireStartedNanos
                     && entity.plateTrackId() != null;
             if (freshMt) {
-                report = new SoftReacquireReport(
-                        true, true, false, latestSoftReacquireVehicles
+                report = SoftReacquireReport.terminal(
+                        com.example.alpr_v1.continuity.SoftReacquireResult.TARGET_RECOVERED,
+                        latestSoftReacquireVehicles,
+                        "fresh_mp_mt_recovered_active_target"
                 );
                 continuityFreshMpRequired = false;
                 continuityReacquireActive = false;
@@ -1597,6 +1599,10 @@ final class MobileAlprEngine implements AutoCloseable {
                 nowNanos
         );
         latestSoftReacquireVehicles = pendingSoftReacquireReport.vehicles;
+        if (pendingSoftReacquireReport.attempted) {
+            continuityFreshMpRequired = false;
+            continuityReacquireActive = false;
+        }
     }
 
     private void recordSchedulerDecision(

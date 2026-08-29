@@ -118,6 +118,7 @@ public final class SceneTransitionCoordinator {
 
         switch (result) {
             case TARGET_RECOVERED:
+            case VEHICLE_POOL_RECOVERED:
                 resetRecoveryState();
                 enterState(SceneContinuityState.STABLE, nowNanos);
                 finalizationSuspended = false;

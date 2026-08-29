@@ -1265,12 +1265,10 @@ public final class AlprPipeline {
     private void handleSoftReacquireReport(SoftReacquireReport report) {
         if (report == null || !report.attempted) return;
         lastReacquireVehicleEvidence = report.vehicles;
-        if (report.targetRecovered) {
-            long nowNanos = System.nanoTime();
-            sceneTransitionCoordinator.onSoftReacquireResult(
-                    SoftReacquireResult.TARGET_RECOVERED,
-                    nowNanos
-            );
+        long nowNanos = System.nanoTime();
+        sceneTransitionCoordinator.onSoftReacquireResult(report.result, nowNanos);
+        if (report.result == SoftReacquireResult.TARGET_RECOVERED
+                || report.result == SoftReacquireResult.VEHICLE_POOL_RECOVERED) {
             JSONObject details = lastSceneDecision == null
                     ? new JSONObject()
                     : continuityEventDetails(
@@ -1287,11 +1285,6 @@ public final class AlprPipeline {
                             ? 0L : nowNanos - softReacquireStartedNanos
             ));
             softReacquireStartedNanos = -1L;
-        } else if (report.activeTargetLost) {
-            sceneTransitionCoordinator.onSoftReacquireResult(
-                    SoftReacquireResult.ACTIVE_TARGET_LOST,
-                    System.nanoTime()
-            );
         }
     }
 

@@ -1,5 +1,6 @@
 package com.example.alpr_v1.pipeline;
 
+import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvaluator;
 import com.example.alpr_v1.tracking.VehicleCandidate;
@@ -7,30 +8,51 @@ import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 
 import java.util.Set;
 
-/** One-shot engine report produced by the fresh MP/MT recovery path. */
+/** One-shot immutable terminal report produced by the fresh MP/MT recovery path. */
 final class SoftReacquireReport {
     final boolean attempted;
-    final boolean targetRecovered;
-    final boolean activeTargetLost;
+    final SoftReacquireResult result;
     final VehicleContinuityEvidence vehicles;
+    final String reason;
 
-    SoftReacquireReport(
+    private SoftReacquireReport(
             boolean attempted,
-            boolean targetRecovered,
-            boolean activeTargetLost,
-            VehicleContinuityEvidence vehicles
+            SoftReacquireResult result,
+            VehicleContinuityEvidence vehicles,
+            String reason
     ) {
+        if (attempted != (result != null)) {
+            throw new IllegalArgumentException(
+                    "attempted must describe exactly one terminal result"
+            );
+        }
         this.attempted = attempted;
-        this.targetRecovered = targetRecovered;
-        this.activeTargetLost = activeTargetLost;
+        this.result = result;
         this.vehicles = vehicles == null
                 ? VehicleContinuityEvidence.empty() : vehicles;
+        this.reason = reason == null ? "" : reason;
     }
 
     static SoftReacquireReport none() {
         return new SoftReacquireReport(
-                false, false, false, VehicleContinuityEvidence.empty()
+                false, null, VehicleContinuityEvidence.empty(), ""
         );
+    }
+
+    static SoftReacquireReport pending(
+            VehicleContinuityEvidence vehicles,
+            String reason
+    ) {
+        return new SoftReacquireReport(false, null, vehicles, reason);
+    }
+
+    static SoftReacquireReport terminal(
+            SoftReacquireResult result,
+            VehicleContinuityEvidence vehicles,
+            String reason
+    ) {
+        if (result == null) throw new IllegalArgumentException("result");
+        return new SoftReacquireReport(true, result, vehicles, reason);
     }
 
     static SoftReacquireReport fromFreshMp(
@@ -75,14 +97,33 @@ final class SoftReacquireReport {
                         : newestAgeNanos
         );
         float vehicleScore = new VehicleContinuityEvaluator().evaluate(vehicles);
-        boolean activeLost = activeEntityId > 0L
-                && !activeRecovered
-                && vehicleScore >= 0.50f;
-        return new SoftReacquireReport(
-                true,
-                false,
-                activeLost,
-                vehicles
+        boolean poolRecovered = before > 0 && reassociated > 0 && vehicleScore >= 0.50f;
+
+        if (activeEntityId <= 0L) {
+            return terminal(
+                    poolRecovered
+                            ? SoftReacquireResult.VEHICLE_POOL_RECOVERED
+                            : SoftReacquireResult.FAILED,
+                    vehicles,
+                    poolRecovered
+                            ? "fresh_mp_recovered_vehicle_pool"
+                            : "fresh_mp_did_not_recover_vehicle_pool"
+            );
+        }
+        if (activeRecovered) {
+            return pending(vehicles, "fresh_mp_recovered_active_vehicle_waiting_for_mt");
+        }
+        if (poolRecovered) {
+            return terminal(
+                    SoftReacquireResult.ACTIVE_TARGET_LOST,
+                    vehicles,
+                    "active_target_lost_vehicle_pool_recovered"
+            );
+        }
+        return terminal(
+                SoftReacquireResult.FAILED,
+                vehicles,
+                "fresh_mp_recovered_neither_target_nor_pool"
         );
     }
 }
