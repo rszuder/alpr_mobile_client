@@ -1238,14 +1238,10 @@ public final class AlprPipeline {
 
         int measured = 0;
         int predicted = 0;
-        float appearanceAgreement = 0f;
-        float trajectoryAgreement = 0f;
         long newestAgeNanos = Long.MAX_VALUE;
         for (VehicleCandidate candidate : frame.candidates) {
             if (candidate.predicted) predicted++;
             else measured++;
-            appearanceAgreement += candidate.effectiveConfidence;
-            trajectoryAgreement += 1f - candidate.exitUrgency;
             newestAgeNanos = Math.min(newestAgeNanos, candidate.predictionAgeNanos);
         }
         float reassociationRatio = measured / (float) entities;
@@ -1256,9 +1252,11 @@ public final class AlprPipeline {
                 predicted,
                 0,
                 reassociationRatio,
-                appearanceAgreement / entities,
-                trajectoryAgreement / entities,
-                newestAgeNanos == Long.MAX_VALUE ? 0L : newestAgeNanos
+                0f,
+                0f,
+                newestAgeNanos == Long.MAX_VALUE ? 0L : newestAgeNanos,
+                false,
+                false
         );
     }
 

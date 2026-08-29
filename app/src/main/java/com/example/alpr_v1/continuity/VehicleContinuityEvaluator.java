@@ -20,11 +20,17 @@ public final class VehicleContinuityEvaluator {
                 evidence.reassociationRatio + PREDICTION_CREDIT * predictedRatio
         );
 
-        return clampUnit(
-                REASSOCIATION_WEIGHT * identityRetention
-                        + APPEARANCE_WEIGHT * evidence.appearanceAgreement
-                        + TRAJECTORY_WEIGHT * evidence.trajectoryAgreement
-        );
+        float weighted = REASSOCIATION_WEIGHT * identityRetention;
+        float availableWeight = REASSOCIATION_WEIGHT;
+        if (evidence.appearanceAgreementAvailable) {
+            weighted += APPEARANCE_WEIGHT * evidence.appearanceAgreement;
+            availableWeight += APPEARANCE_WEIGHT;
+        }
+        if (evidence.trajectoryAgreementAvailable) {
+            weighted += TRAJECTORY_WEIGHT * evidence.trajectoryAgreement;
+            availableWeight += TRAJECTORY_WEIGHT;
+        }
+        return clampUnit(weighted / availableWeight);
     }
 
     private static float clampUnit(float value) {

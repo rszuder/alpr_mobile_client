@@ -10,6 +10,8 @@ public final class VehicleContinuityEvidence {
     public final float reassociationRatio;
     public final float appearanceAgreement;
     public final float trajectoryAgreement;
+    public final boolean appearanceAgreementAvailable;
+    public final boolean trajectoryAgreementAvailable;
     public final long newestMeasurementAgeNanos;
 
     public VehicleContinuityEvidence(
@@ -22,6 +24,34 @@ public final class VehicleContinuityEvidence {
             float appearanceAgreement,
             float trajectoryAgreement,
             long newestMeasurementAgeNanos
+    ) {
+        this(
+                entitiesBefore,
+                entitiesAfter,
+                entitiesReassociated,
+                entitiesStillPredicted,
+                newlyCreatedEntities,
+                reassociationRatio,
+                appearanceAgreement,
+                trajectoryAgreement,
+                newestMeasurementAgeNanos,
+                true,
+                true
+        );
+    }
+
+    public VehicleContinuityEvidence(
+            int entitiesBefore,
+            int entitiesAfter,
+            int entitiesReassociated,
+            int entitiesStillPredicted,
+            int newlyCreatedEntities,
+            float reassociationRatio,
+            float appearanceAgreement,
+            float trajectoryAgreement,
+            long newestMeasurementAgeNanos,
+            boolean appearanceAgreementAvailable,
+            boolean trajectoryAgreementAvailable
     ) {
         this.entitiesBefore = Contracts.nonNegative("entitiesBefore", entitiesBefore);
         this.entitiesAfter = Contracts.nonNegative("entitiesAfter", entitiesAfter);
@@ -46,12 +76,16 @@ public final class VehicleContinuityEvidence {
         this.trajectoryAgreement = Contracts.unit(
                 "trajectoryAgreement", trajectoryAgreement
         );
+        this.appearanceAgreementAvailable = appearanceAgreementAvailable;
+        this.trajectoryAgreementAvailable = trajectoryAgreementAvailable;
         this.newestMeasurementAgeNanos = Contracts.nonNegative(
                 "newestMeasurementAgeNanos", newestMeasurementAgeNanos
         );
     }
 
     public static VehicleContinuityEvidence empty() {
-        return new VehicleContinuityEvidence(0, 0, 0, 0, 0, 0f, 0f, 0f, 0L);
+        return new VehicleContinuityEvidence(
+                0, 0, 0, 0, 0, 0f, 0f, 0f, 0L, false, false
+        );
     }
 }

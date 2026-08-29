@@ -84,7 +84,75 @@ public final class SoftReacquireReportTest {
         assertEquals(SoftReacquireResult.FAILED, report.result);
     }
 
+    @Test
+    public void predictedEntityIsNotFreshReassociation() {
+        Set<Long> before = new HashSet<>(java.util.Collections.singletonList(15L));
+        VehicleTrackingFrame predicted = new VehicleTrackingFrame(
+                11L, 1_100L, 1_200L, 0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 701L, true, 1_100L)
+                )
+        );
+
+        SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
+                before, 0L, predicted, 1_000L, 1_200L
+        );
+
+        assertEquals(SoftReacquireResult.FAILED, report.result);
+        assertEquals(0, report.vehicles.entitiesReassociated);
+        assertEquals(1, report.vehicles.entitiesStillPredicted);
+        assertEquals(0f, report.vehicles.reassociationRatio, 0.0001f);
+    }
+
+    @Test
+    public void measuredEntityAfterRecoveryStartIsReassociated() {
+        Set<Long> before = new HashSet<>(java.util.Collections.singletonList(15L));
+        VehicleTrackingFrame measured = new VehicleTrackingFrame(
+                12L, 1_100L, 1_200L, 0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 702L, false, 1_100L)
+                )
+        );
+
+        SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
+                before, 0L, measured, 1_000L, 1_200L
+        );
+
+        assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, report.result);
+        assertEquals(1, report.vehicles.entitiesReassociated);
+        assertEquals(100L, report.vehicles.newestMeasurementAgeNanos);
+        assertFalse(report.vehicles.appearanceAgreementAvailable);
+        assertFalse(report.vehicles.trajectoryAgreementAvailable);
+    }
+
+    @Test
+    public void measurementBeforeRecoveryStartIsNotFresh() {
+        Set<Long> before = new HashSet<>(java.util.Collections.singletonList(15L));
+        VehicleTrackingFrame stale = new VehicleTrackingFrame(
+                13L, 900L, 1_200L, 0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 703L, false, 900L)
+                )
+        );
+
+        SoftReacquireReport report = SoftReacquireReport.fromFreshMp(
+                before, 0L, stale, 1_000L, 1_200L
+        );
+
+        assertEquals(SoftReacquireResult.FAILED, report.result);
+        assertEquals(0, report.vehicles.entitiesReassociated);
+    }
+
     private static VehicleCandidate candidate(long entityId, long vehicleTrackId) {
+        return candidate(entityId, vehicleTrackId, false, 1_000L);
+    }
+
+    private static VehicleCandidate candidate(
+            long entityId,
+            long vehicleTrackId,
+            boolean predicted,
+            long measurementNanos
+    ) {
         return new VehicleCandidate(
                 entityId,
                 vehicleTrackId,
@@ -92,10 +160,10 @@ public final class SoftReacquireReportTest {
                 0.90f,
                 0.90f,
                 0.10f,
-                false,
+                predicted,
                 0,
-                1_000L,
-                1_010L
+                measurementNanos,
+                Math.max(measurementNanos, 1_200L)
         );
     }
 }

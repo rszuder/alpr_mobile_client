@@ -65,18 +65,25 @@ final class SoftReacquireReport {
         int reassociated = 0;
         int predicted = 0;
         int newlyCreated = 0;
-        float appearanceAgreement = 0f;
-        float trajectoryAgreement = 0f;
         long newestAgeNanos = Long.MAX_VALUE;
         boolean activeRecovered = false;
         for (VehicleCandidate candidate : frame.candidates) {
-            if (entitiesBefore.contains(candidate.entityId)) reassociated++;
-            else newlyCreated++;
-            if (candidate.predicted) predicted++;
-            appearanceAgreement += candidate.effectiveConfidence;
-            trajectoryAgreement += 1f - candidate.exitUrgency;
-            newestAgeNanos = Math.min(newestAgeNanos, candidate.predictionAgeNanos);
-            if (candidate.entityId == activeEntityId && !candidate.predicted) {
+            boolean existedBefore = entitiesBefore.contains(candidate.entityId);
+            boolean freshMeasured = existedBefore
+                    && !candidate.predicted
+                    && candidate.lastMeasurementTimestampNanos >= recoveryStartedNanos;
+            if (freshMeasured) {
+                reassociated++;
+                newestAgeNanos = Math.min(
+                        newestAgeNanos,
+                        Math.max(0L, nowNanos - candidate.lastMeasurementTimestampNanos)
+                );
+            } else if (existedBefore && candidate.predicted) {
+                predicted++;
+            } else if (!existedBefore) {
+                newlyCreated++;
+            }
+            if (candidate.entityId == activeEntityId && freshMeasured) {
                 activeRecovered = true;
             }
         }
@@ -90,11 +97,13 @@ final class SoftReacquireReport {
                 predicted,
                 newlyCreated,
                 ratio,
-                after == 0 ? 0f : appearanceAgreement / after,
-                after == 0 ? 0f : trajectoryAgreement / after,
+                0f,
+                0f,
                 newestAgeNanos == Long.MAX_VALUE
                         ? Math.max(0L, nowNanos - recoveryStartedNanos)
-                        : newestAgeNanos
+                        : newestAgeNanos,
+                false,
+                false
         );
         float vehicleScore = new VehicleContinuityEvaluator().evaluate(vehicles);
         boolean poolRecovered = before > 0 && reassociated > 0 && vehicleScore >= 0.50f;
