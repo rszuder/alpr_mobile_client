@@ -4,6 +4,7 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.BuildConfig;
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
 import com.example.alpr_v1.capture.CapturedPlateItem;
 import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.model.InstalledAlprPackage;
@@ -145,6 +146,7 @@ public final class MetricsCollector {
     private final Map<Long, FrameFlowBucket> frameFlowBuckets = new LinkedHashMap<>();
     private final List<JSONObject> thermalSamples = new ArrayList<>();
     private final List<JSONObject> eventRecords = new ArrayList<>();
+    private ScanAcquisitionSnapshot scanAcquisitionSnapshot;
     private long eventSequence;
     private String experimentSessionId = "";
     private String recognitionProfile = "balanced";
@@ -188,6 +190,7 @@ public final class MetricsCollector {
         frameFlowBuckets.clear();
         thermalSamples.clear();
         eventRecords.clear();
+        scanAcquisitionSnapshot = null;
 
         droppedFrames = 0L;
         traceTotalSeen = 0L;
@@ -577,6 +580,12 @@ public final class MetricsCollector {
 
     public synchronized void setExperimentSessionId(String sessionId) {
         experimentSessionId = sessionId == null ? "" : sessionId;
+    }
+
+    public synchronized void updateScanAcquisition(
+            ScanAcquisitionSnapshot snapshot
+    ) {
+        scanAcquisitionSnapshot = snapshot;
     }
 
     public synchronized void recordThermalSample(ThermalMonitor.Snapshot snapshot) {
@@ -1291,6 +1300,49 @@ public final class MetricsCollector {
         frameFlow.put("upstream_gaps_are_estimated", true);
         frameFlow.put("bucket_ms", 1_000);
         report.put("frame_flow", frameFlow);
+
+        if (scanAcquisitionSnapshot != null) {
+            com.example.alpr_v1.acquisition.ScanAcquisitionStats scanStats =
+                    scanAcquisitionSnapshot.stats;
+            JSONObject scan = new JSONObject();
+            scan.put("scan_run_id", scanAcquisitionSnapshot.scanRunId);
+            scan.put("scan_run_state", scanAcquisitionSnapshot.runState.name());
+            scan.put("scan_profile", "phase3b_initial");
+            scan.put(
+                    "scan_run_active_duration_ms",
+                    scanAcquisitionSnapshot.runActiveDurationNanos / 1_000_000.0
+            );
+            scan.put(
+                    "scan_run_wall_duration_ms",
+                    scanAcquisitionSnapshot.runWallDurationNanos / 1_000_000.0
+            );
+            scan.put("acquisition_queue_size", scanAcquisitionSnapshot.queue.size());
+            scan.put("vehicles_seen", scanStats.vehiclesSeen);
+            scan.put("vehicles_queued", scanStats.vehiclesQueued);
+            scan.put("vehicles_selected", scanStats.vehiclesSelected);
+            scan.put("vehicles_deferred", scanStats.vehiclesDeferred);
+            scan.put("vehicles_lost", scanStats.vehiclesLost);
+            scan.put(
+                    "entities_ready_to_finalize",
+                    scanStats.entitiesReadyToFinalize
+            );
+            scan.put("mean_queue_wait_ms", scanStats.meanQueueWaitMillis);
+            scan.put("p95_queue_wait_ms", scanStats.p95QueueWaitMillis);
+            scan.put(
+                    "mean_active_session_ms",
+                    scanStats.meanActiveSessionMillis
+            );
+            scan.put(
+                    "p95_active_session_ms",
+                    scanStats.p95ActiveSessionMillis
+            );
+            scan.put("mt_attempts_per_entity", scanStats.mtAttemptsPerEntity);
+            scan.put(
+                    "fresh_mz_attempts_per_entity",
+                    scanStats.freshMzAttemptsPerEntity
+            );
+            report.put("scan_acquisition", scan);
+        }
 
         JSONObject finalResultDispatch = new JSONObject();
         finalResultDispatch.put(

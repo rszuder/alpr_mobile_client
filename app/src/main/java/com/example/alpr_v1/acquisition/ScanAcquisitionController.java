@@ -15,6 +15,12 @@ import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.ui.OverlayItem;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 /** Single owner of the Phase 3B queue, short session and attempt budgets. */
 public final class ScanAcquisitionController {
     private final ModeController modeController;
@@ -33,6 +39,16 @@ public final class ScanAcquisitionController {
     private PlateAnchor plateAnchor;
     private boolean continuityPaused;
     private boolean recoveryPaused;
+    private final Set<Long> vehiclesSeen = new HashSet<>();
+    private final Set<Long> vehiclesQueued = new HashSet<>();
+    private final List<Long> queueWaitNanos = new ArrayList<>();
+    private final List<Long> activeSessionNanos = new ArrayList<>();
+    private int vehiclesSelected;
+    private int vehiclesDeferred;
+    private int vehiclesLost;
+    private int entitiesReadyToFinalize;
+    private int totalMtAttempts;
+    private int totalFreshMzAttempts;
 
     public ScanAcquisitionController() {
         this(new ModeController(), ScanAcquisitionProfile.DEFAULT);
@@ -60,6 +76,7 @@ public final class ScanAcquisitionController {
         releasePending = false;
         continuityPaused = false;
         recoveryPaused = false;
+        resetStatistics();
         setDirective(
                 AcquisitionDirectiveAction.REQUEST_FRESH_MP,
                 0L, 0L,
@@ -135,7 +152,18 @@ public final class ScanAcquisitionController {
             setDirective(AcquisitionDirectiveAction.NONE, 0L, 0L, "release_applied");
         }
 
-        queue.update(frame, activeEntityId(), nowRuntimeNanos);
+        for (com.example.alpr_v1.tracking.VehicleCandidate candidate
+                : frame.candidates) {
+            vehiclesSeen.add(candidate.entityId);
+        }
+        AcquisitionQueueSnapshot updatedQueue = queue.update(
+                frame,
+                activeEntityId(),
+                nowRuntimeNanos
+        );
+        for (AcquisitionCandidate candidate : updatedQueue.candidates) {
+            vehiclesQueued.add(candidate.entityId);
+        }
         AcquisitionDirective timeout = enforceSessionBudgets(nowRuntimeNanos);
         if (timeout != null) return timeout;
         if (activeSession != null) return currentDirective();
@@ -153,6 +181,12 @@ public final class ScanAcquisitionController {
                 TargetPurpose.SCAN_ACQUISITION,
                 nowRuntimeNanos
         );
+        vehiclesSelected++;
+        queueWaitNanos.add(Math.max(
+                0L,
+                nowRuntimeNanos
+                        - selection.candidate.firstQueuedRuntimeNanos
+        ));
         plateAnchor = null;
         activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE,
                 nowRuntimeNanos);
@@ -161,6 +195,7 @@ public final class ScanAcquisitionController {
         activeSessionBudget.start(nowRuntimeNanos);
         noProgressBudget.start(nowRuntimeNanos);
         mtAttempts = 1;
+        totalMtAttempts++;
         freshMzAttempts = 0;
         queue.recordMtAttempt(selection.candidate.entityId, nowRuntimeNanos);
         return setDirective(
@@ -205,6 +240,7 @@ public final class ScanAcquisitionController {
             if (directive.requestsMt()) {
                 if (mtAttempts < profile.maximumMtAttempts) {
                     mtAttempts++;
+                    totalMtAttempts++;
                     queue.recordMtAttempt(activeSession.entityId(), nowRuntimeNanos);
                     AcquisitionDirective retry = setDirective(
                             AcquisitionDirectiveAction.REQUEST_EXPANDED_ENTITY_MT,
@@ -252,6 +288,7 @@ public final class ScanAcquisitionController {
         resetNoProgressBudget(nowRuntimeNanos);
         if (matching.freshMzAttempted) {
             freshMzAttempts++;
+            totalFreshMzAttempts++;
             queue.recordFreshMzAttempt(activeSession.entityId(), nowRuntimeNanos);
         }
         if (matching.confirmed
@@ -266,6 +303,8 @@ public final class ScanAcquisitionController {
             );
             activeSession = null;
             queue.complete(entityId);
+            recordActiveSessionDuration(nowRuntimeNanos);
+            entitiesReadyToFinalize++;
             resetSessionBudgets();
             plateAnchor = null;
             releasePending = true;
@@ -344,6 +383,8 @@ public final class ScanAcquisitionController {
             return;
         }
         if (decision.action == SceneTransitionAction.HARD_RESET) {
+            if (activeSession != null) vehiclesLost++;
+            recordActiveSessionDuration(nowRuntimeNanos);
             cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
             queue.hardReset(Math.max(0L,
                     decision.incrementSceneGeneration
@@ -476,7 +517,8 @@ public final class ScanAcquisitionController {
                         ? 0L : noProgressBudget.elapsedActiveNanos(nowRuntimeNanos),
                 directive,
                 false,
-                plateAnchor
+                plateAnchor,
+                statistics()
         );
     }
 
@@ -513,6 +555,11 @@ public final class ScanAcquisitionController {
         modeController.finishSession(sessionId, TargetSessionState.LOST,
                 nowRuntimeNanos);
         activeSession = null;
+        recordActiveSessionDuration(nowRuntimeNanos);
+        vehiclesDeferred++;
+        if (reason == AcquisitionDeferReason.CONTINUITY_TARGET_LOST) {
+            vehiclesLost++;
+        }
         queue.defer(
                 entityId,
                 nowRuntimeNanos,
@@ -629,6 +676,62 @@ public final class ScanAcquisitionController {
         noProgressBudget = null;
         mtAttempts = 0;
         freshMzAttempts = 0;
+    }
+
+    private void recordActiveSessionDuration(long nowRuntimeNanos) {
+        if (activeSessionBudget == null) return;
+        activeSessionNanos.add(
+                activeSessionBudget.elapsedActiveNanos(nowRuntimeNanos)
+        );
+    }
+
+    private void resetStatistics() {
+        vehiclesSeen.clear();
+        vehiclesQueued.clear();
+        queueWaitNanos.clear();
+        activeSessionNanos.clear();
+        vehiclesSelected = 0;
+        vehiclesDeferred = 0;
+        vehiclesLost = 0;
+        entitiesReadyToFinalize = 0;
+        totalMtAttempts = 0;
+        totalFreshMzAttempts = 0;
+    }
+
+    private ScanAcquisitionStats statistics() {
+        double divisor = Math.max(1, vehiclesSelected);
+        return new ScanAcquisitionStats(
+                vehiclesSeen.size(),
+                vehiclesQueued.size(),
+                vehiclesSelected,
+                vehiclesDeferred,
+                vehiclesLost,
+                entitiesReadyToFinalize,
+                meanMillis(queueWaitNanos),
+                p95Millis(queueWaitNanos),
+                meanMillis(activeSessionNanos),
+                p95Millis(activeSessionNanos),
+                totalMtAttempts / divisor,
+                totalFreshMzAttempts / divisor
+        );
+    }
+
+    private static double meanMillis(List<Long> values) {
+        if (values.isEmpty()) return 0.0;
+        double sum = 0.0;
+        for (Long value : values) sum += Math.max(0L, value);
+        return sum / values.size() / 1_000_000.0;
+    }
+
+    private static double p95Millis(List<Long> values) {
+        if (values.isEmpty()) return 0.0;
+        List<Long> sorted = new ArrayList<>(values);
+        Collections.sort(sorted);
+        int index = Math.max(
+                0,
+                (int) Math.ceil(sorted.size() * 0.95) - 1
+        );
+        return sorted.get(index) / 1_000_000.0;
     }
 
     private boolean running() {

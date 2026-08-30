@@ -19,6 +19,7 @@ public final class ScanAcquisitionSnapshot {
     public final AcquisitionDirective directive;
     public final boolean autoZoomAllowed;
     public final PlateAnchor plateAnchor;
+    public final ScanAcquisitionStats stats;
 
     public ScanAcquisitionSnapshot(
             long scanRunId,
@@ -35,7 +36,8 @@ public final class ScanAcquisitionSnapshot {
             long noProgressDurationNanos,
             AcquisitionDirective directive,
             boolean autoZoomAllowed,
-            PlateAnchor plateAnchor
+            PlateAnchor plateAnchor,
+            ScanAcquisitionStats stats
     ) {
         this.scanRunId = Math.max(0L, scanRunId);
         this.runState = runState == null ? ScanRunState.IDLE : runState;
@@ -53,5 +55,6 @@ public final class ScanAcquisitionSnapshot {
                 ? AcquisitionDirective.none(0L, this.scanRunId) : directive;
         this.autoZoomAllowed = autoZoomAllowed;
         this.plateAnchor = plateAnchor;
+        this.stats = stats == null ? ScanAcquisitionStats.empty() : stats;
     }
 }

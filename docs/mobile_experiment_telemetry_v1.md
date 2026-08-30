@@ -107,6 +107,24 @@ synchronicznie w klatce, która wytworzyła wynik. `ACTIVE_TARGET_LOST`,
 `VEHICLE_POOL_RECOVERED` i `FAILED` przerywają ją przed dalszym MT/MZ;
 `TARGET_RECOVERED` może kontynuować MZ tej samej, świeżo rewalidowanej encji.
 
+## SCAN_ACQUISITION — `report.json`, `traces.csv`, `events.jsonl`
+
+Raport `scan_acquisition` rozdziela czas ścienny runu od aktywnego czasu
+przetwarzania i zawiera: `vehicles_seen`, `vehicles_queued`,
+`vehicles_selected`, `vehicles_deferred`, `vehicles_lost`,
+`entities_ready_to_finalize`, średnie i p95 czasu oczekiwania oraz sesji,
+a także liczbę prób MT/MZ na wybraną encję. `READY_TO_FINALIZE` nie oznacza
+jeszcze trwałego, unikalnego rekordu akwizycji.
+
+Każda klatka zapisuje stan runu, rozmiar kolejki, aktywne `session_id` i
+`entity_id`, dyrektywę, budżety prób oraz czasy aktywne. Eventy kolejki i sesji
+używają typów `candidate_queued`, `candidate_updated`, `candidate_selected`,
+`candidate_deferred`, `candidate_expired`, `scan_session_started`,
+`scan_session_progress`, `scan_session_ready_to_finalize`,
+`scan_session_lost`, `scan_session_deferred` i `scan_target_released`.
+Ranking zawiera `priority`, `readability`, `waiting_age`, `exit_urgency`,
+`freshness` oraz `prediction_age_ms`.
+
 ## SECONDARY_SCENE_PREFLIGHT — `report.json`
 
 Pełnobitmapowy detektor obrazu po rotacji działa przed `MobileAlprEngine.run()`.

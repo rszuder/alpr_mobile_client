@@ -75,6 +75,11 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(TargetPurpose.SCAN_ACQUISITION,
                 modes.activeSession().purpose());
         assertFalse(modes.activeSession().persistent());
+        ScanAcquisitionStats stats = controller.snapshot(10L).stats;
+        assertEquals(1, stats.vehiclesSeen);
+        assertEquals(1, stats.vehiclesQueued);
+        assertEquals(1, stats.vehiclesSelected);
+        assertEquals(1.0, stats.mtAttemptsPerEntity, 0.0001);
     }
 
     @Test
@@ -170,6 +175,10 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
                 decision.nextDirective.action);
         assertEquals(0L, controller.snapshot(100L).activeSessionId);
+        assertEquals(
+                1,
+                controller.snapshot(100L).stats.entitiesReadyToFinalize
+        );
     }
 
     @Test

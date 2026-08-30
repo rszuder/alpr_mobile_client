@@ -50,7 +50,9 @@ import com.example.alpr_v1.vision.SceneChangeDetector;
 import java.nio.ByteBuffer;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import org.json.JSONObject;
 import org.json.JSONException;
@@ -142,6 +144,11 @@ public final class AlprPipeline {
             new VehicleTrackingCoordinator();
     private final ScanAcquisitionController scanAcquisitionController =
             new ScanAcquisitionController();
+    private long lastScanTelemetryRunId;
+    private ScanRunState lastScanTelemetryRunState = ScanRunState.IDLE;
+    private long lastScanTelemetryQueueRevision = -1L;
+    private long lastScanTelemetrySessionId;
+    private Set<Long> lastScanTelemetryQueuedEntities = new HashSet<>();
     private final AtomicLong frameIds = new AtomicLong();
     private final AtomicLong previewEvidenceIds = new AtomicLong();
     private final AtomicLong sceneGeneration = new AtomicLong();
@@ -537,6 +544,10 @@ public final class AlprPipeline {
                         engine,
                         SystemClock.elapsedRealtimeNanos()
                 );
+                appendScanTelemetry(
+                        trace,
+                        SystemClock.elapsedRealtimeNanos()
+                );
 
             } finally {
 
@@ -835,6 +846,10 @@ public final class AlprPipeline {
                 }
                 prepareScanAcquisition(
                         engine,
+                        SystemClock.elapsedRealtimeNanos()
+                );
+                appendScanTelemetry(
+                        trace,
                         SystemClock.elapsedRealtimeNanos()
                 );
             } finally {
@@ -1632,6 +1647,212 @@ public final class AlprPipeline {
                 != AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION) {
             frameGate.requestImmediateFrame();
         }
+        recordScanTelemetryEvents(
+                scanAcquisitionController.snapshot(nowRuntimeNanos),
+                decision
+        );
+    }
+
+    private void appendScanTelemetry(
+            InferenceTrace trace,
+            long nowRuntimeNanos
+    ) {
+        if (trace == null) return;
+        ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(
+                nowRuntimeNanos
+        );
+        metrics.updateScanAcquisition(scan);
+        trace.putAttribute("scan_run_state", scan.runState.name());
+        trace.putAttribute("scan_profile", "phase3b_initial");
+        trace.putAttribute(
+                "scan_directive_action",
+                scan.directive.action.name()
+        );
+        trace.putAttribute("scan_directive_reason", scan.directive.reason);
+        trace.putCount("scan_run_id", scan.scanRunId);
+        trace.putCount("acquisition_queue_size", scan.queue.size());
+        trace.putCount("scan_active_session_id", scan.activeSessionId);
+        trace.putCount("scan_active_entity_id", scan.activeEntityId);
+        trace.putCount("scan_mt_attempts", scan.mtAttempts);
+        trace.putCount("scan_fresh_mz_attempts", scan.freshMzAttempts);
+        trace.putCount("scan_auto_zoom_allowed", scan.autoZoomAllowed ? 1 : 0);
+        trace.putDurationNanos(
+                "scan_run_active",
+                scan.runActiveDurationNanos
+        );
+        trace.putDurationNanos(
+                "scan_run_wall",
+                scan.runWallDurationNanos
+        );
+        if (scan.activeSessionDurationNanos > 0L) {
+            trace.putDurationNanos(
+                    "scan_active_session",
+                    scan.activeSessionDurationNanos
+            );
+        }
+        recordScanTelemetryEvents(scan, null);
+    }
+
+    private void recordScanTelemetryEvents(
+            ScanAcquisitionSnapshot scan,
+            AcquisitionDecision decision
+    ) {
+        if (scan == null) return;
+        metrics.updateScanAcquisition(scan);
+        if (scan.scanRunId != lastScanTelemetryRunId
+                || scan.runState != lastScanTelemetryRunState) {
+            String event;
+            switch (scan.runState) {
+                case RUNNING:
+                    event = lastScanTelemetryRunState == ScanRunState.PAUSED
+                            ? "scan_run_resumed" : "scan_run_started";
+                    break;
+                case PAUSED:
+                    event = "scan_run_paused";
+                    break;
+                case STOPPED:
+                    event = "scan_run_stopped";
+                    break;
+                case IDLE:
+                default:
+                    event = null;
+                    break;
+            }
+            if (event != null) {
+                metrics.recordEvent(
+                        event,
+                        0L,
+                        scan.activeEntityId,
+                        scanEventDetails(scan, scan.activeEntityId)
+                );
+            }
+            lastScanTelemetryRunId = scan.scanRunId;
+            lastScanTelemetryRunState = scan.runState;
+        }
+
+        Set<Long> currentQueued = new HashSet<>();
+        for (com.example.alpr_v1.acquisition.AcquisitionCandidate candidate
+                : scan.queue.candidates) {
+            currentQueued.add(candidate.entityId);
+            String event = !lastScanTelemetryQueuedEntities.contains(candidate.entityId)
+                    ? "candidate_queued"
+                    : scan.queue.revision != lastScanTelemetryQueueRevision
+                    ? "candidate_updated" : null;
+            if (event != null) {
+                metrics.recordEvent(
+                        event,
+                        0L,
+                        candidate.entityId,
+                        scanEventDetails(scan, candidate.entityId)
+                );
+            }
+        }
+        for (Long previous : lastScanTelemetryQueuedEntities) {
+            if (!currentQueued.contains(previous)
+                    && previous != scan.activeEntityId
+                    && (decision == null || previous != decision.entityId)) {
+                metrics.recordEvent(
+                        "candidate_expired",
+                        0L,
+                        previous,
+                        scanEventDetails(scan, previous)
+                );
+            }
+        }
+        lastScanTelemetryQueuedEntities = currentQueued;
+        lastScanTelemetryQueueRevision = scan.queue.revision;
+
+        if (scan.activeSessionId > 0L
+                && scan.activeSessionId != lastScanTelemetrySessionId) {
+            JSONObject details = scanEventDetails(scan, scan.activeEntityId);
+            metrics.recordEvent(
+                    "candidate_selected", 0L, scan.activeEntityId, details
+            );
+            metrics.recordEvent(
+                    "scan_session_started", 0L, scan.activeEntityId, details
+            );
+        }
+        lastScanTelemetrySessionId = scan.activeSessionId;
+
+        if (decision != null) {
+            String event = null;
+            if (decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.READY_TO_FINALIZE) {
+                event = "scan_session_ready_to_finalize";
+            } else if (decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.PROGRESS) {
+                event = "scan_session_progress";
+            } else if (decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.DEFERRED
+                    || decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.TIMED_OUT) {
+                event = "scan_session_deferred";
+            } else if (decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.LOST) {
+                event = "scan_session_lost";
+            }
+            if (event != null) {
+                JSONObject details = scanEventDetails(scan, decision.entityId);
+                try {
+                    details.put("session_outcome", decision.outcome.name());
+                    details.put("defer_reason", decision.deferReason.name());
+                    details.put("reason", decision.reason);
+                } catch (JSONException ignored) {
+                    // Best-effort telemetry.
+                }
+                metrics.recordEvent(event, 0L, decision.entityId, details);
+                if (decision.outcome
+                        == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.DEFERRED
+                        || decision.outcome
+                        == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.TIMED_OUT) {
+                    metrics.recordEvent(
+                            "candidate_deferred", 0L, decision.entityId, details
+                    );
+                }
+                if (decision.nextDirective.action
+                        == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+                    metrics.recordEvent(
+                            "scan_target_released", 0L, decision.entityId, details
+                    );
+                }
+            }
+        }
+    }
+
+    private JSONObject scanEventDetails(
+            ScanAcquisitionSnapshot scan,
+            long entityId
+    ) {
+        JSONObject details = new JSONObject();
+        try {
+            details.put("scan_run_id", scan.scanRunId);
+            details.put("scan_run_state", scan.runState.name());
+            details.put("scan_profile", "phase3b_initial");
+            details.put("queue_size", scan.queue.size());
+            details.put("session_id", scan.activeSessionId);
+            details.put("entity_id", Math.max(0L, entityId));
+            details.put("directive_revision", scan.directive.revision);
+            details.put("directive_action", scan.directive.action.name());
+            com.example.alpr_v1.acquisition.AcquisitionCandidate candidate =
+                    scan.queue.find(entityId);
+            if (candidate != null) {
+                details.put("vehicle_track_id", candidate.vehicleTrackId);
+                details.put("readability", candidate.readabilityScore);
+                details.put("waiting_age", candidate.waitingAgeScore);
+                details.put("exit_urgency", candidate.exitUrgency);
+                details.put("freshness", candidate.freshnessScore);
+                details.put(
+                        "prediction_age_ms",
+                        candidate.predictionAgeNanos / 1_000_000.0
+                );
+                com.example.alpr_v1.acquisition.AcquisitionPriorityBreakdown priority =
+                        scan.queue.prioritiesByEntityId.get(entityId);
+                if (priority != null) details.put("priority", priority.total);
+            }
+        } catch (JSONException ignored) {
+            // Best-effort telemetry.
+        }
+        return details;
     }
 
     private static void applyScanDirectiveToEngine(
@@ -2448,15 +2669,27 @@ public final class AlprPipeline {
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
         scanAcquisitionController.startRun(scanRunId, nowRuntimeNanos);
+        recordScanTelemetryEvents(
+                scanAcquisitionController.snapshot(nowRuntimeNanos),
+                null
+        );
         frameGate.requestImmediateFrame();
     }
 
     public void pauseScanRun(long nowRuntimeNanos) {
         scanAcquisitionController.pauseRun(nowRuntimeNanos);
+        recordScanTelemetryEvents(
+                scanAcquisitionController.snapshot(nowRuntimeNanos),
+                null
+        );
     }
 
     public void resumeScanRun(long nowRuntimeNanos) {
         scanAcquisitionController.resumeRun(nowRuntimeNanos);
+        recordScanTelemetryEvents(
+                scanAcquisitionController.snapshot(nowRuntimeNanos),
+                null
+        );
         frameGate.requestImmediateFrame();
     }
 
@@ -2472,6 +2705,10 @@ public final class AlprPipeline {
             }
             activeEngine.setScanAcquisitionDirective(false, stopDirective);
         }
+        recordScanTelemetryEvents(
+                scanAcquisitionController.snapshot(nowRuntimeNanos),
+                null
+        );
     }
 
     public ScanAcquisitionSnapshot scanAcquisitionSnapshot() {
