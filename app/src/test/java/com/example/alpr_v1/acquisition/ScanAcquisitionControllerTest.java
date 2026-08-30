@@ -11,6 +11,9 @@ import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneContinuityState;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.SceneTransitionAction;
+import com.example.alpr_v1.continuity.SceneTransitionDecision;
+import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.continuity.VisualChangeClassification;
 import com.example.alpr_v1.domain.EntityAcquisitionState;
 import com.example.alpr_v1.domain.ModeController;
@@ -294,6 +297,148 @@ public final class ScanAcquisitionControllerTest {
     }
 
     @Test
+    public void continuityHoldPreservesSessionAndPausesActiveTime() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long sessionId = controller.snapshot(1L).activeSessionId;
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.SOFT_HOLD,
+                        SceneContinuityState.MOTION_HOLD,
+                        false
+                ),
+                SECOND
+        );
+
+        assertEquals(sessionId, controller.snapshot(101L * SECOND).activeSessionId);
+        assertEquals(SECOND - 1L,
+                controller.snapshot(101L * SECOND).activeSessionDurationNanos);
+
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.NONE,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                101L * SECOND
+        );
+        controller.onVehicleFrame(
+                frame(candidate(4L, 44L)), continuity(), 102L * SECOND
+        );
+        assertEquals(sessionId, controller.snapshot(102L * SECOND).activeSessionId);
+    }
+
+    @Test
+    public void targetRecoveredKeepsSameScanSessionId() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long sessionId = controller.snapshot(1L).activeSessionId;
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.SOFT_REACQUIRE,
+                        SceneContinuityState.REACQUIRING,
+                        false
+                ),
+                100L
+        );
+
+        controller.onTerminalRecovery(
+                SoftReacquireResult.TARGET_RECOVERED,
+                transition(
+                        SceneTransitionAction.NONE,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                200L
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(200L);
+        assertEquals(sessionId, snapshot.activeSessionId);
+        assertEquals(com.example.alpr_v1.domain.TargetSessionState.TRACKING,
+                snapshot.activeSessionState);
+        assertEquals(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                snapshot.directive.action);
+    }
+
+    @Test
+    public void activeTargetLostDefersOnlySessionAndKeepsQueuePool() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                1L
+        );
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.SOFT_REACQUIRE,
+                        SceneContinuityState.REACQUIRING,
+                        false
+                ),
+                100L
+        );
+
+        controller.onTerminalRecovery(
+                SoftReacquireResult.ACTIVE_TARGET_LOST,
+                transition(
+                        SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                200L
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(200L);
+        assertEquals(0L, snapshot.activeSessionId);
+        assertEquals(2, snapshot.queue.size());
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                snapshot.directive.action);
+    }
+
+    @Test
+    public void vehiclePoolRecoveryWithoutSessionResumesQueueRefresh() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+
+        controller.onTerminalRecovery(
+                SoftReacquireResult.VEHICLE_POOL_RECOVERED,
+                transition(
+                        SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                100L
+        );
+
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                controller.currentDirective().action);
+    }
+
+    @Test
+    public void hardResetDropsOldSceneQueueAndSession() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                1L
+        );
+
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.HARD_RESET,
+                        SceneContinuityState.HARD_RESETTING,
+                        true
+                ),
+                100L
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(100L);
+        assertEquals(0L, snapshot.activeSessionId);
+        assertEquals(0, snapshot.queue.size());
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                snapshot.directive.action);
+    }
+
+    @Test
     public void observationFromEntityADoesNotAdvanceActiveEntityB() {
         ScanAcquisitionController controller = startedWithCandidate(4L);
 
@@ -367,6 +512,34 @@ public final class ScanAcquisitionControllerTest {
                 1L, 1L, 0L, 0L,
                 false, false, 0L,
                 ContinuityAssessment.none()
+        );
+    }
+
+    private static SceneTransitionDecision transition(
+            SceneTransitionAction action,
+            SceneContinuityState state,
+            boolean hardReset
+    ) {
+        return new SceneTransitionDecision(
+                10L,
+                action,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                state,
+                ContinuityAssessment.none(),
+                !hardReset,
+                !hardReset,
+                !hardReset,
+                action != SceneTransitionAction.NONE,
+                state != SceneContinuityState.STABLE,
+                state != SceneContinuityState.STABLE,
+                action == SceneTransitionAction.SOFT_REACQUIRE,
+                action == SceneTransitionAction.SOFT_REACQUIRE,
+                action == SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                action == SceneTransitionAction.HARD_RESET,
+                action == SceneTransitionAction.HARD_RESET,
+                hardReset,
+                hardReset,
+                "test_transition"
         );
     }
 

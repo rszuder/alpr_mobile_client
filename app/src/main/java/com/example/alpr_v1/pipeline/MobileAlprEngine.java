@@ -414,7 +414,12 @@ final class MobileAlprEngine implements AutoCloseable {
         if (focusedEntityId > 0L
                 && vehicleTrackingCoordinator.repository().get(focusedEntityId)
                 != null) {
-            if (reason != null && (reason.startsWith("scan_deferred_")
+            boolean scanScopedDefer = scanAcquisitionActive
+                    && focusedEntityId == scanActiveEntityId
+                    && (reason == null
+                    || !reason.equals("scan_ready_to_finalize"));
+            if (scanScopedDefer || reason != null
+                    && (reason.startsWith("scan_deferred_")
                     || reason.equals("scan_run_stopped"))) {
                 vehicleTrackingCoordinator.repository().deferAcquisition(
                         focusedEntityId

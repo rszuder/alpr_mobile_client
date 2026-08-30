@@ -31,6 +31,8 @@ public final class ScanAcquisitionController {
     private boolean releasePending;
     private long lastRuntimeNanos;
     private PlateAnchor plateAnchor;
+    private boolean continuityPaused;
+    private boolean recoveryPaused;
 
     public ScanAcquisitionController() {
         this(new ModeController(), ScanAcquisitionProfile.DEFAULT);
@@ -56,6 +58,8 @@ public final class ScanAcquisitionController {
         queue.hardReset(0L);
         resetSessionBudgets();
         releasePending = false;
+        continuityPaused = false;
+        recoveryPaused = false;
         setDirective(
                 AcquisitionDirectiveAction.REQUEST_FRESH_MP,
                 0L, 0L,
@@ -310,6 +314,35 @@ public final class ScanAcquisitionController {
     ) {
         rememberRuntime(nowRuntimeNanos);
         if (decision == null || !running()) return;
+        if (decision.action == SceneTransitionAction.SOFT_HOLD) {
+            continuityPaused = true;
+            pauseSessionBudgets(nowRuntimeNanos);
+            setDirective(
+                    AcquisitionDirectiveAction.NONE,
+                    activeSessionId(),
+                    activeEntityId(),
+                    "scan_continuity_hold"
+            );
+            return;
+        }
+        if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
+            recoveryPaused = true;
+            pauseSessionBudgets(nowRuntimeNanos);
+            if (activeSession != null
+                    && activeSession.state() != TargetSessionState.RECOVERING) {
+                activeSession.transitionTo(
+                        TargetSessionState.RECOVERING,
+                        nowRuntimeNanos
+                );
+            }
+            setDirective(
+                    AcquisitionDirectiveAction.NONE,
+                    activeSessionId(),
+                    activeEntityId(),
+                    "scan_continuity_reacquire"
+            );
+            return;
+        }
         if (decision.action == SceneTransitionAction.HARD_RESET) {
             cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
             queue.hardReset(Math.max(0L,
@@ -317,12 +350,29 @@ public final class ScanAcquisitionController {
                             ? queue.snapshot(nowRuntimeNanos).sceneGeneration + 1L
                             : queue.snapshot(nowRuntimeNanos).sceneGeneration));
             resetSessionBudgets();
+            continuityPaused = false;
+            recoveryPaused = false;
             releasePending = false;
             setDirective(
                     AcquisitionDirectiveAction.REQUEST_FRESH_MP,
                     0L, 0L,
                     "scan_scene_hard_reset"
             );
+            return;
+        }
+        if (decision.nextState
+                == com.example.alpr_v1.continuity.SceneContinuityState.STABLE
+                && continuityPaused && !recoveryPaused) {
+            continuityPaused = false;
+            resumeSessionBudgets(nowRuntimeNanos);
+            if (activeSession != null) {
+                setDirective(
+                        AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                        activeSession.sessionId(),
+                        activeSession.entityId(),
+                        "scan_continuity_hold_finished"
+                );
+            }
         }
     }
 
@@ -332,7 +382,70 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         rememberRuntime(nowRuntimeNanos);
-        // Full recovery/session policy is integrated in the dedicated continuity commit.
+        if (result == null || !running()) return;
+        switch (result) {
+            case TARGET_RECOVERED:
+                recoveryPaused = false;
+                continuityPaused = false;
+                if (activeSession != null) {
+                    if (activeSession.state() == TargetSessionState.RECOVERING) {
+                        activeSession.transitionTo(
+                                TargetSessionState.TRACKING,
+                                nowRuntimeNanos
+                        );
+                    }
+                    resumeSessionBudgets(nowRuntimeNanos);
+                    setDirective(
+                            AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                            activeSession.sessionId(),
+                            activeSession.entityId(),
+                            "scan_continuity_target_recovered"
+                    );
+                }
+                break;
+            case VEHICLE_POOL_RECOVERED:
+                recoveryPaused = false;
+                continuityPaused = false;
+                if (activeSession != null) {
+                    deferActive(
+                            AcquisitionDeferReason.CONTINUITY_TARGET_LOST,
+                            nowRuntimeNanos
+                    );
+                } else {
+                    setDirective(
+                            AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                            0L, 0L,
+                            "scan_vehicle_pool_recovered"
+                    );
+                }
+                break;
+            case ACTIVE_TARGET_LOST:
+                recoveryPaused = false;
+                continuityPaused = false;
+                if (activeSession != null) {
+                    deferActive(
+                            AcquisitionDeferReason.CONTINUITY_TARGET_LOST,
+                            nowRuntimeNanos
+                    );
+                }
+                break;
+            case FAILED:
+                recoveryPaused = false;
+                continuityPaused = false;
+                if (appliedDecision != null
+                        && appliedDecision.action
+                        == SceneTransitionAction.HARD_RESET) {
+                    // The applied HARD_RESET has already cleared this controller.
+                } else if (activeSession != null) {
+                    deferActive(
+                            AcquisitionDeferReason.CONTINUITY_TARGET_LOST,
+                            nowRuntimeNanos
+                    );
+                }
+                break;
+            default:
+                throw new AssertionError("Unhandled recovery result " + result);
+        }
     }
 
     public synchronized AcquisitionDirective currentDirective() {

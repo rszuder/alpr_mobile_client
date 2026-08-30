@@ -1492,6 +1492,20 @@ public final class AlprPipeline {
                 );
         lastSceneDecision = decision;
         applySceneTransition(decision);
+        scanAcquisitionController.onTerminalRecovery(
+                report.result,
+                decision,
+                nowNanos
+        );
+        AcquisitionDirective scanDirective =
+                scanAcquisitionController.currentDirective();
+        if (engine != null) {
+            applyScanDirectiveToEngine(
+                    engine,
+                    scanAcquisitionController.snapshot(nowNanos).runState.active(),
+                    scanDirective
+            );
+        }
         if (shouldRebaseSceneReference(report.result)) {
             sourceSceneDetector.reset();
             rotatedSceneDetector.reset();
@@ -1753,6 +1767,10 @@ public final class AlprPipeline {
                 && engine != null) {
             engine.endSoftHold(snapshot.visualEpoch, decision.reason);
         }
+        scanAcquisitionController.onContinuityDecision(
+                decision,
+                SystemClock.elapsedRealtimeNanos()
+        );
         recordContinuityEvents(decision, snapshot, lastSceneEvidence);
     }
 
