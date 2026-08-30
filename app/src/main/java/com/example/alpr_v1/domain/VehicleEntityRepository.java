@@ -140,6 +140,19 @@ public final class VehicleEntityRepository {
             AppearanceDescriptor appearance,
             long nowNanos
     ) {
+        return attachPlate(
+                entityId, plateTrackId, quad, appearance, 0L, nowNanos
+        );
+    }
+
+    public synchronized PlateTrackAttachmentStatus attachPlate(
+            long entityId,
+            long plateTrackId,
+            NormalizedQuad quad,
+            AppearanceDescriptor appearance,
+            long sourceSequence,
+            long sourceTimestampNanos
+    ) {
         if (plateTrackId <= 0L) {
             throw new IllegalArgumentException("plateTrackId must be positive");
         }
@@ -153,7 +166,13 @@ public final class VehicleEntityRepository {
             entityIdByPlateTrack.remove(previousTrackId);
             entity.detachPlateTrack(previousTrackId);
         }
-        entity.attachPlate(plateTrackId, quad, appearance, nowNanos);
+        entity.attachPlate(
+                plateTrackId,
+                quad,
+                appearance,
+                sourceSequence,
+                sourceTimestampNanos
+        );
         entityIdByPlateTrack.put(plateTrackId, entityId);
         return owner == null
                 ? PlateTrackAttachmentStatus.ATTACHED

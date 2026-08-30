@@ -26,6 +26,8 @@ import androidx.lifecycle.LifecycleOwner;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
+import com.example.alpr_v1.continuity.SourceFrameStamp;
+
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -33,7 +35,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class CameraController implements AutoCloseable {
     public interface FrameHandler {
-        void onFrame(@NonNull ImageProxy image);
+        void onFrame(@NonNull ImageProxy image, @NonNull SourceFrameStamp sourceFrameStamp);
     }
 
     public interface LumaFrameHandler {
@@ -55,6 +57,7 @@ public final class CameraController implements AutoCloseable {
     private final LifecycleOwner lifecycleOwner;
     private final PreviewView previewView;
     private final ExecutorService analyzerExecutor = Executors.newSingleThreadExecutor();
+    private final CameraSourceTimeline sourceTimeline = new CameraSourceTimeline();
     private ProcessCameraProvider cameraProvider;
     private Camera camera;
     private final Handler cameraControlHandler = new Handler(Looper.getMainLooper());
@@ -213,14 +216,23 @@ public final class CameraController implements AutoCloseable {
                 image -> {
 
                     try {
+                        SourceFrameStamp sourceFrameStamp =
+                                sourceTimeline.observeCameraFrame(
+                                        image.getImageInfo().getTimestamp()
+                                );
                         if (lumaFrameHandler != null) {
-                            LumaFrame lumaFrame = LumaFrame.copyFrom(image, 240);
+                            LumaFrame lumaFrame = LumaFrame.copyFrom(
+                                    image,
+                                    240,
+                                    sourceFrameStamp
+                            );
                             if (lumaFrame != null) {
                                 lumaFrameHandler.onLumaFrame(lumaFrame);
                             }
                         }
                         frameHandler.onFrame(
-                                image
+                                image,
+                                sourceFrameStamp
                         );
 
                     } finally {
@@ -368,6 +380,10 @@ public final class CameraController implements AutoCloseable {
                 ? null
                 : boundCamera.getCameraInfo().getZoomState().getValue();
         return zoomState == null ? 1f : zoomState.getMaxZoomRatio();
+    }
+
+    public CameraSourceTimeline sourceTimeline() {
+        return sourceTimeline;
     }
 
     private static float clampZoomRatio(Camera camera, float requested) {

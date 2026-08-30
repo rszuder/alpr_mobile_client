@@ -1,5 +1,7 @@
 package com.example.alpr_v1.pipeline;
 
+import android.os.SystemClock;
+
 import com.example.alpr_v1.tracking.PreviewTrackingFrame;
 import com.example.alpr_v1.tracking.TrackedPlate;
 import com.example.alpr_v1.ui.OverlayItem;
@@ -98,7 +100,7 @@ public final class TargetStateMachine {
         );
         if (selected == null) return snapshot;
 
-        long now = System.nanoTime();
+        long now = SystemClock.elapsedRealtimeNanos();
         boolean targetChanged = snapshot.trackId != selected.trackId;
         if (targetChanged && !reassociated) beginAcquisition(selected.trackId, now);
         float[] freshAppearance = appearanceByTrack == null
@@ -179,7 +181,7 @@ public final class TargetStateMachine {
         if (selected == null) return onTrackingLost("tracking_candidate_missing");
 
         long now = selected.updatedAtNanos > 0L
-                ? selected.updatedAtNanos : System.nanoTime();
+                ? selected.updatedAtNanos : SystemClock.elapsedRealtimeNanos();
         boolean targetChanged = snapshot.trackId != selected.trackId;
         if (targetChanged) beginAcquisition(selected.trackId, now);
         acquisitionFrames++;
@@ -292,7 +294,7 @@ public final class TargetStateMachine {
                 snapshot.ageFrames,
                 snapshot.framesSinceMtAnchor + 1,
                 reason,
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         return snapshot;
     }
@@ -310,7 +312,7 @@ public final class TargetStateMachine {
                 snapshot.ageFrames,
                 snapshot.framesSinceMtAnchor + 1,
                 reason,
-                System.nanoTime()
+                SystemClock.elapsedRealtimeNanos()
         );
         return snapshot;
     }

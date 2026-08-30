@@ -26,6 +26,7 @@ public final class VehicleEntity {
     private final long firstSeenNanos;
     private long lastSeenNanos;
     private long lastMpNanos;
+    private long lastMtSourceSequence;
     private long lastMtSourceTimestampNanos;
     private long lastFreshMzNanos;
     private long lastConsensusUpdateNanos;
@@ -77,6 +78,9 @@ public final class VehicleEntity {
     public synchronized long lastMtSourceTimestampNanos() {
         return lastMtSourceTimestampNanos;
     }
+    public synchronized long lastMtSourceSequence() {
+        return lastMtSourceSequence;
+    }
     /** Historical accessor retained for callers that mean the last real MZ attempt. */
     public synchronized long lastMzNanos() { return lastFreshMzNanos; }
     public synchronized long lastFreshMzNanos() { return lastFreshMzNanos; }
@@ -110,14 +114,27 @@ public final class VehicleEntity {
             AppearanceDescriptor appearance,
             long nowNanos
     ) {
+        attachPlate(trackId, quad, appearance, 0L, nowNanos);
+    }
+
+    synchronized void attachPlate(
+            long trackId,
+            NormalizedQuad quad,
+            AppearanceDescriptor appearance,
+            long sourceSequence,
+            long sourceTimestampNanos
+    ) {
         plateTrackId = trackId > 0L ? trackId : null;
         if (quad != null) plateQuad = quad;
         if (appearance != null && appearance.available()) plateAppearance = appearance;
         mtAttempts++;
-        lastMtSourceTimestampNanos = Math.max(
-                lastMtSourceTimestampNanos, nowNanos
+        lastMtSourceSequence = Math.max(
+                lastMtSourceSequence, sourceSequence
         );
-        lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
+        lastMtSourceTimestampNanos = Math.max(
+                lastMtSourceTimestampNanos, sourceTimestampNanos
+        );
+        lastSeenNanos = Math.max(lastSeenNanos, sourceTimestampNanos);
         acquisitionState = EntityAcquisitionState.advance(
                 acquisitionState,
                 EntityAcquisitionState.PLATE_LOCALIZED

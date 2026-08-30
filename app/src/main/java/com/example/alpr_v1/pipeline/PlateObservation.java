@@ -3,6 +3,7 @@ package com.example.alpr_v1.pipeline;
 import android.graphics.Bitmap;
 
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,7 +24,9 @@ public final class PlateObservation {
     public final long sceneGeneration;
     public final long visualEpoch;
     public final long cameraTransformGeneration;
+    public final long sourceSequence;
     public final long sourceTimestampNanos;
+    public final SourceTimestampDomain sourceTimestampDomain;
     public final Bitmap previewBitmap;
     public final String text;
     public final double plateConfidence;
@@ -104,7 +107,7 @@ public final class PlateObservation {
                 rowCounts,
                 predictionBefore,
                 predictionAfter,
-                ContinuityStamp.initial(capturedElapsedNanos)
+                ContinuityStamp.initial(0L)
         );
     }
 
@@ -141,7 +144,7 @@ public final class PlateObservation {
         PlateVehicleAssociation safeAssociation = association == null
                 ? PlateVehicleAssociation.unassigned("missing_association") : association;
         ContinuityStamp safeStamp = continuityStamp == null
-                ? ContinuityStamp.initial(capturedElapsedNanos) : continuityStamp;
+                ? ContinuityStamp.initial(0L) : continuityStamp;
         this.entityId = safeAssociation.entityId;
         this.vehicleTrackId = safeAssociation.vehicleTrackId;
         this.plateTrackId = trackId;
@@ -155,7 +158,9 @@ public final class PlateObservation {
         this.sceneGeneration = safeStamp.sceneGeneration;
         this.visualEpoch = safeStamp.visualEpoch;
         this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceSequence = safeStamp.sourceSequence;
         this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
+        this.sourceTimestampDomain = safeStamp.sourceTimestampDomain;
         this.previewBitmap = previewBitmap;
         this.text = text == null ? "" : text;
         this.plateConfidence = plateConfidence;
@@ -188,7 +193,9 @@ public final class PlateObservation {
                 sceneGeneration,
                 visualEpoch,
                 cameraTransformGeneration,
-                sourceTimestampNanos
+                sourceSequence,
+                sourceTimestampNanos,
+                sourceTimestampDomain
         );
     }
 

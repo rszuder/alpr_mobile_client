@@ -2,8 +2,10 @@ package com.example.alpr_v1.pipeline;
 
 import android.graphics.RectF;
 import android.graphics.PointF;
+import android.os.SystemClock;
 
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.ArrayList;
@@ -25,7 +27,7 @@ public final class TargetSnapshot {
     public final int ageFrames;
     public final int framesSinceMtAnchor;
     public final int stableUpdates;
-    public final long updatedAtNanos;
+    public final long updatedAtRuntimeNanos;
     public final float[] appearanceDescriptor;
     public final float localAppearanceSimilarity;
     public final boolean localAppearanceValidated;
@@ -40,7 +42,9 @@ public final class TargetSnapshot {
     public final long sceneGeneration;
     public final long visualEpoch;
     public final long cameraTransformGeneration;
+    public final long sourceSequence;
     public final long sourceTimestampNanos;
+    public final SourceTimestampDomain sourceTimestampDomain;
 
     TargetSnapshot(
             State state,
@@ -54,7 +58,7 @@ public final class TargetSnapshot {
             int ageFrames,
             int framesSinceMtAnchor,
             int stableUpdates,
-            long updatedAtNanos,
+            long updatedAtRuntimeNanos,
             float[] appearanceDescriptor,
             long lockedTrackId,
             String transitionReason,
@@ -68,10 +72,10 @@ public final class TargetSnapshot {
         this(
                 state, trackId, overlayItem, trackingQuality, driftScore, supportRatio,
                 trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
-                stableUpdates, updatedAtNanos, appearanceDescriptor, lockedTrackId,
+                stableUpdates, updatedAtRuntimeNanos, appearanceDescriptor, lockedTrackId,
                 transitionReason, lockSwitches, lockLosses, framesToLock,
                 timeToLockMillis, lockRevision, lockReassociations,
-                ContinuityStamp.initial(updatedAtNanos)
+                ContinuityStamp.initial(0L)
         );
     }
 
@@ -87,7 +91,7 @@ public final class TargetSnapshot {
             int ageFrames,
             int framesSinceMtAnchor,
             int stableUpdates,
-            long updatedAtNanos,
+            long updatedAtRuntimeNanos,
             float[] appearanceDescriptor,
             long lockedTrackId,
             String transitionReason,
@@ -102,7 +106,7 @@ public final class TargetSnapshot {
         this(
                 state, trackId, overlayItem, trackingQuality, driftScore, supportRatio,
                 trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
-                stableUpdates, updatedAtNanos, appearanceDescriptor, lockedTrackId,
+                stableUpdates, updatedAtRuntimeNanos, appearanceDescriptor, lockedTrackId,
                 transitionReason, lockSwitches, lockLosses, framesToLock,
                 timeToLockMillis, lockRevision, lockReassociations, continuityStamp,
                 0f, false
@@ -121,7 +125,7 @@ public final class TargetSnapshot {
             int ageFrames,
             int framesSinceMtAnchor,
             int stableUpdates,
-            long updatedAtNanos,
+            long updatedAtRuntimeNanos,
             float[] appearanceDescriptor,
             long lockedTrackId,
             String transitionReason,
@@ -136,7 +140,7 @@ public final class TargetSnapshot {
             boolean localAppearanceValidated
     ) {
         ContinuityStamp safeStamp = continuityStamp == null
-                ? ContinuityStamp.initial(updatedAtNanos) : continuityStamp;
+                ? ContinuityStamp.initial(0L) : continuityStamp;
         this.state = state == null ? State.SEARCHING : state;
         this.trackId = trackId;
         this.overlayItem = copyOverlay(overlayItem);
@@ -151,7 +155,7 @@ public final class TargetSnapshot {
         this.ageFrames = Math.max(0, ageFrames);
         this.framesSinceMtAnchor = Math.max(0, framesSinceMtAnchor);
         this.stableUpdates = Math.max(0, stableUpdates);
-        this.updatedAtNanos = Math.max(0L, updatedAtNanos);
+        this.updatedAtRuntimeNanos = Math.max(0L, updatedAtRuntimeNanos);
         this.appearanceDescriptor = appearanceDescriptor == null
                 ? null : appearanceDescriptor.clone();
         this.localAppearanceSimilarity = clamp01(localAppearanceSimilarity);
@@ -167,14 +171,17 @@ public final class TargetSnapshot {
         this.sceneGeneration = safeStamp.sceneGeneration;
         this.visualEpoch = safeStamp.visualEpoch;
         this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceSequence = safeStamp.sourceSequence;
         this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
+        this.sourceTimestampDomain = safeStamp.sourceTimestampDomain;
     }
 
     public static TargetSnapshot searching() {
         return new TargetSnapshot(
                 State.SEARCHING, 0L, null, 0f, 1f, 0f, 0,
-                0, 0, 0, 0, System.nanoTime(), null, 0L, "reset",
-                0, 0, 0, 0L, 0L, 0
+                0, 0, 0, 0, runtimeNowNanos(), null,
+                0L, "reset", 0, 0, 0, 0L, 0L, 0,
+                ContinuityStamp.initial(0L)
         );
     }
 
@@ -193,10 +200,10 @@ public final class TargetSnapshot {
         return new TargetSnapshot(
                 nextState, trackId, overlayItem, trackingQuality, driftScore,
                 supportRatio, trackerInliers, consecutiveFailures, ageFrames, framesSinceMtAnchor,
-                stableUpdates, System.nanoTime(), appearanceDescriptor,
+                stableUpdates, runtimeNowNanos(), appearanceDescriptor,
                 lockedTrackId, transitionReason, lockSwitches, lockLosses,
                 framesToLock, timeToLockMillis, lockRevision, lockReassociations,
-                continuityStamp().withSourceTimestamp(System.nanoTime()),
+                continuityStamp(),
                 localAppearanceSimilarity, localAppearanceValidated
         );
     }
@@ -206,7 +213,7 @@ public final class TargetSnapshot {
         return new TargetSnapshot(
                 state, trackId, overlayItem, trackingQuality, driftScore,
                 supportRatio, trackerInliers, consecutiveFailures, ageFrames,
-                framesSinceMtAnchor, stableUpdates, updatedAtNanos,
+                framesSinceMtAnchor, stableUpdates, updatedAtRuntimeNanos,
                 appearanceDescriptor, lockedTrackId, transitionReason,
                 lockSwitches, lockLosses, framesToLock, timeToLockMillis,
                 lockRevision, lockReassociations, stamp,
@@ -218,7 +225,7 @@ public final class TargetSnapshot {
         return new TargetSnapshot(
                 state, trackId, overlayItem, trackingQuality, driftScore,
                 supportRatio, trackerInliers, consecutiveFailures, ageFrames,
-                framesSinceMtAnchor, stableUpdates, updatedAtNanos,
+                framesSinceMtAnchor, stableUpdates, updatedAtRuntimeNanos,
                 appearanceDescriptor, lockedTrackId, transitionReason,
                 lockSwitches, lockLosses, framesToLock, timeToLockMillis,
                 lockRevision, lockReassociations, continuityStamp(),
@@ -231,12 +238,22 @@ public final class TargetSnapshot {
                 sceneGeneration,
                 visualEpoch,
                 cameraTransformGeneration,
-                sourceTimestampNanos
+                sourceSequence,
+                sourceTimestampNanos,
+                sourceTimestampDomain
         );
     }
 
     private static float clamp01(float value) {
         return Math.max(0f, Math.min(1f, value));
+    }
+
+    private static long runtimeNowNanos() {
+        try {
+            return SystemClock.elapsedRealtimeNanos();
+        } catch (RuntimeException unavailableInLocalJvmTest) {
+            return System.nanoTime();
+        }
     }
 
     private static OverlayItem copyOverlay(OverlayItem source) {

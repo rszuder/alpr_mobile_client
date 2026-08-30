@@ -12,7 +12,9 @@ public final class ReacquireTelemetry {
     public final boolean vehiclePoolRecovered;
     public final boolean deadlineReached;
     public final long startedRuntimeNanos;
+    public final long triggerSourceSequence;
     public final long triggerSourceTimestampNanos;
+    public final SourceTimestampDomain triggerSourceTimestampDomain;
 
     private ReacquireTelemetry(
             boolean available,
@@ -25,7 +27,9 @@ public final class ReacquireTelemetry {
             boolean vehiclePoolRecovered,
             boolean deadlineReached,
             long startedRuntimeNanos,
-            long triggerSourceTimestampNanos
+            long triggerSourceSequence,
+            long triggerSourceTimestampNanos,
+            SourceTimestampDomain triggerSourceTimestampDomain
     ) {
         this.available = available;
         this.active = active;
@@ -37,15 +41,19 @@ public final class ReacquireTelemetry {
         this.vehiclePoolRecovered = vehiclePoolRecovered;
         this.deadlineReached = deadlineReached;
         this.startedRuntimeNanos = Math.max(0L, startedRuntimeNanos);
+        this.triggerSourceSequence = Math.max(0L, triggerSourceSequence);
         this.triggerSourceTimestampNanos = Math.max(
                 0L, triggerSourceTimestampNanos
         );
+        this.triggerSourceTimestampDomain = triggerSourceTimestampDomain == null
+                ? SourceTimestampDomain.UNKNOWN : triggerSourceTimestampDomain;
     }
 
     static ReacquireTelemetry none() {
         return new ReacquireTelemetry(
                 false, false, "", null,
-                0f, 0f, false, false, false, 0L, 0L
+                0f, 0f, false, false, false,
+                0L, 0L, 0L, SourceTimestampDomain.UNKNOWN
         );
     }
 
@@ -68,7 +76,9 @@ public final class ReacquireTelemetry {
                 vehiclePoolRecovered,
                 deadlineReached,
                 context.startedRuntimeNanos,
-                context.triggerSourceTimestampNanos
+                context.triggerSourceSequence,
+                context.triggerSourceTimestampNanos,
+                context.triggerSourceTimestampDomain
         );
     }
 }

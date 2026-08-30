@@ -15,4 +15,30 @@ public final class RecoveryFrameGate {
                 && sourceTimestampNanos
                 < recovery.triggerSourceTimestampNanos;
     }
+
+    public static boolean shouldSkip(
+            ReacquireTelemetry recovery,
+            long sourceSequence,
+            long sourceTimestampNanos,
+            SourceTimestampDomain sourceTimestampDomain
+    ) {
+        if (recovery == null || !recovery.available || !recovery.active) {
+            return false;
+        }
+        if (recovery.triggerSourceSequence > 0L) {
+            return sourceSequence <= recovery.triggerSourceSequence;
+        }
+        if (sourceSequence > 0L) return false;
+        if (recovery.triggerSourceTimestampNanos <= 0L
+                || sourceTimestampNanos <= 0L) {
+            return true;
+        }
+        SourceTimestampDomain currentDomain = sourceTimestampDomain == null
+                ? SourceTimestampDomain.UNKNOWN : sourceTimestampDomain;
+        if (!recovery.triggerSourceTimestampDomain
+                .freshnessComparableWith(currentDomain)) {
+            return true;
+        }
+        return sourceTimestampNanos <= recovery.triggerSourceTimestampNanos;
+    }
 }

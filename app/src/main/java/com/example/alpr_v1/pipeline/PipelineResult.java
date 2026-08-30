@@ -1,6 +1,7 @@
 package com.example.alpr_v1.pipeline;
 
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.ArrayList;
@@ -43,7 +44,9 @@ public final class PipelineResult implements AutoCloseable {
     public final long sceneGeneration;
     public final long visualEpoch;
     public final long cameraTransformGeneration;
+    public final long sourceSequence;
     public final long sourceTimestampNanos;
+    public final SourceTimestampDomain sourceTimestampDomain;
 
     public final boolean sceneReset;
 
@@ -140,7 +143,9 @@ public final class PipelineResult implements AutoCloseable {
         this.sceneGeneration = safeStamp.sceneGeneration;
         this.visualEpoch = safeStamp.visualEpoch;
         this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceSequence = safeStamp.sourceSequence;
         this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
+        this.sourceTimestampDomain = safeStamp.sourceTimestampDomain;
     }
 
     public PipelineResult(
@@ -279,7 +284,9 @@ public final class PipelineResult implements AutoCloseable {
         this.sceneGeneration = safeStamp.sceneGeneration;
         this.visualEpoch = safeStamp.visualEpoch;
         this.cameraTransformGeneration = safeStamp.cameraTransformGeneration;
+        this.sourceSequence = safeStamp.sourceSequence;
         this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
+        this.sourceTimestampDomain = safeStamp.sourceTimestampDomain;
     }
 
     public ContinuityStamp continuityStamp() {
@@ -287,7 +294,9 @@ public final class PipelineResult implements AutoCloseable {
                 sceneGeneration,
                 visualEpoch,
                 cameraTransformGeneration,
-                sourceTimestampNanos
+                sourceSequence,
+                sourceTimestampNanos,
+                sourceTimestampDomain
         );
     }
 
@@ -303,6 +312,23 @@ public final class PipelineResult implements AutoCloseable {
 
     public static PipelineResult waitingForModels(ContinuityStamp stamp) {
         return waitingForModels().withContinuityStamp(stamp);
+    }
+
+    public static PipelineResult pipelineError(
+            String message,
+            ContinuityStamp stamp
+    ) {
+        return new PipelineResult(
+                "pipeline_error",
+                message == null ? "Błąd pipeline'u" : message,
+                "",
+                0.0,
+                Collections.emptyList(),
+                0,
+                0,
+                false,
+                stamp
+        );
     }
 
     public PipelineResult withContinuityStamp(ContinuityStamp stamp) {

@@ -24,6 +24,8 @@ import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.continuity.SoftReacquireResult;
+import com.example.alpr_v1.continuity.SourceFrameStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.continuity.VisualChangeClassification;
@@ -278,6 +280,12 @@ public final class AlprPipeline {
             SceneChangeCallback sceneChangeCallback
     ) {
         long sourceTimestampNanos = image.getImageInfo().getTimestamp();
+        SourceFrameStamp sourceFrameStamp = new SourceFrameStamp(
+                0L,
+                Math.max(0L, sourceTimestampNanos),
+                SourceTimestampDomain.CAMERAX_SENSOR,
+                0L, 0L, 0L
+        );
         metrics.observeSourceFrame(
                 image.getWidth(),
                 image.getHeight(),
@@ -287,7 +295,7 @@ public final class AlprPipeline {
             metrics.frameSkippedByCameraTransform();
             return null;
         }
-        if (isPreRecoveryFrame(sourceTimestampNanos)) {
+        if (isPreRecoveryFrame(sourceFrameStamp)) {
             metrics.frameSkippedByContinuityReacquire();
             frameGate.requestImmediateFrame();
             return null;
@@ -300,7 +308,7 @@ public final class AlprPipeline {
         );
         SceneTransitionDecision sceneDecision = observeSourceScene(
                 frameId,
-                sourceTimestampNanos,
+                sourceFrameStamp,
                 sourceScene
         );
         applySceneTransition(sceneDecision);
@@ -320,11 +328,16 @@ public final class AlprPipeline {
             return null;
         }
         ContinuityStamp processingStamp = sceneTransitionCoordinator.stamp(
-                sourceTimestampNanos
+                sourceFrameStamp
         );
         InferenceTrace trace = new InferenceTrace(frameId, processingStamp);
         appendContinuityTelemetry(trace, sceneDecision, lastSceneEvidence);
         trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
+        trace.putAttribute("source_sequence", String.valueOf(processingStamp.sourceSequence));
+        trace.putAttribute(
+                "source_timestamp_domain",
+                processingStamp.sourceTimestampDomain.name()
+        );
         trace.putAttribute(
                 "processing_started_nanos",
                 String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -622,12 +635,9 @@ public final class AlprPipeline {
             trace.finish("pipeline_error", "");
             trace.captureMemoryAfterMeasurement();
             metrics.add(trace);
-            return new PipelineResult(
-                    "pipeline_error",
+            return PipelineResult.pipelineError(
                     "Błąd pipeline'u: " + e.getMessage(),
-                    "",
-                    0,
-                    Collections.emptyList()
+                    processingStamp
             );
         } finally {
             if (frame != null) frame.recycle();
@@ -648,13 +658,42 @@ public final class AlprPipeline {
             PlateDetectionCallback plateDetectionCallback,
             SceneChangeCallback sceneChangeCallback
     ) {
+        return processBitmap(
+                frame,
+                new SourceFrameStamp(
+                        0L,
+                        Math.max(0L, sourceTimestampNanos),
+                        SourceTimestampDomain.UNKNOWN,
+                        0L, 0L, 0L
+                ),
+                cameraToBitmapNanos,
+                cameraRotationNanos,
+                cameraRotationDegrees,
+                plateDetectionCallback,
+                sceneChangeCallback
+        );
+    }
+
+    public synchronized PipelineResult processBitmap(
+            Bitmap frame,
+            SourceFrameStamp sourceFrameStamp,
+            long cameraToBitmapNanos,
+            long cameraRotationNanos,
+            int cameraRotationDegrees,
+            PlateDetectionCallback plateDetectionCallback,
+            SceneChangeCallback sceneChangeCallback
+    ) {
         if (frame == null || frame.isRecycled()) return null;
+        SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(0L, 0L, 0L)
+                : sourceFrameStamp;
+        long sourceTimestampNanos = safeSourceFrame.sourceTimestampNanos;
         metrics.observeSourceFrame(frame.getWidth(), frame.getHeight(), sourceTimestampNanos);
         if (cameraTransformInProgress) {
             metrics.frameSkippedByCameraTransform();
             return null;
         }
-        if (isPreRecoveryFrame(sourceTimestampNanos)) {
+        if (isPreRecoveryFrame(safeSourceFrame)) {
             metrics.frameSkippedByContinuityReacquire();
             frameGate.requestImmediateFrame();
             return null;
@@ -663,7 +702,7 @@ public final class AlprPipeline {
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
         SceneTransitionDecision sceneDecision = observeSourceScene(
                 frameId,
-                sourceTimestampNanos,
+                safeSourceFrame,
                 sourceScene
         );
         applySceneTransition(sceneDecision);
@@ -681,11 +720,16 @@ public final class AlprPipeline {
         }
 
         ContinuityStamp processingStamp = sceneTransitionCoordinator.stamp(
-                sourceTimestampNanos
+                safeSourceFrame
         );
         InferenceTrace trace = new InferenceTrace(frameId, processingStamp);
         appendContinuityTelemetry(trace, sceneDecision, lastSceneEvidence);
         trace.putAttribute("source_timestamp_nanos", String.valueOf(sourceTimestampNanos));
+        trace.putAttribute("source_sequence", String.valueOf(processingStamp.sourceSequence));
+        trace.putAttribute(
+                "source_timestamp_domain",
+                processingStamp.sourceTimestampDomain.name()
+        );
         trace.putAttribute(
                 "processing_started_nanos",
                 String.valueOf(SystemClock.elapsedRealtimeNanos())
@@ -840,12 +884,9 @@ public final class AlprPipeline {
             trace.finish("pipeline_error", "");
             trace.captureMemoryAfterMeasurement();
             metrics.add(trace);
-            return new PipelineResult(
-                    "pipeline_error",
+            return PipelineResult.pipelineError(
                     "Błąd pipeline'u: " + error.getMessage(),
-                    "",
-                    0,
-                    Collections.emptyList()
+                    processingStamp
             );
         }
     }
@@ -1155,16 +1196,21 @@ public final class AlprPipeline {
 
     private SceneTransitionDecision observeSourceScene(
             long frameId,
-            long sourceTimestampNanos,
+            SourceFrameStamp sourceFrameStamp,
             SceneChangeDetector.Result sourceScene
     ) {
+        SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(0L, 0L, 0L)
+                : sourceFrameStamp;
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
-                sourceTimestampNanos
+                safeSourceFrame.sourceTimestampNanos
         );
         VehicleContinuityEvidence vehicleEvidence = currentVehicleEvidence();
         SceneEvidence evidence = new SceneEvidence(
                         frameId,
-                        sourceTimestampNanos,
+                        safeSourceFrame.sourceSequence,
+                        safeSourceFrame.sourceTimestampNanos,
+                        safeSourceFrame.domain,
                         sourceScene.sceneChanged,
                         clamp01(sourceScene.score),
                         clamp01(sourceScene.changedFraction),
@@ -1188,6 +1234,8 @@ public final class AlprPipeline {
                         false,
                         false,
                         false,
+                        false,
+                        false,
                         false
                 );
         SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
@@ -1205,7 +1253,7 @@ public final class AlprPipeline {
     ) {
         if (internal == null || !internal.detected || sourceStamp == null) return null;
         return onPreviewSceneEvidence(
-                sourceStamp.sourceTimestampNanos,
+                sourceStamp.sourceFrameStamp(),
                 true,
                 internal.score,
                 internal.changedFraction,
@@ -1276,7 +1324,10 @@ public final class AlprPipeline {
                         0f, 0, 0f, target.consecutiveFailures,
                         0f, 0f, 0f, 0f, 0f, 0f,
                         false, false, false,
-                        Math.max(0L, nowNanos - target.updatedAtNanos)
+                        target.sourceTimestampNanos > 0L
+                                && nowNanos >= target.sourceTimestampNanos
+                                ? nowNanos - target.sourceTimestampNanos
+                                : Long.MAX_VALUE
                 );
             }
             return TargetContinuityEvidence.noTarget();
@@ -1303,18 +1354,21 @@ public final class AlprPipeline {
             level = com.example.alpr_v1.continuity.TargetContinuityLevel.PLATE_ONLY;
         }
 
-        long latestMeasurementNanos = target.sourceTimestampNanos > 0L
-                ? target.sourceTimestampNanos : target.updatedAtNanos;
+        long latestMeasurementNanos = target.sourceTimestampNanos;
         boolean freshVehicle = false;
         float registrationConsistency = 0f;
         if (entity != null) {
-            freshVehicle = nowNanos >= entity.lastMpNanos()
+            freshVehicle = nowNanos > 0L
+                    && entity.lastMpNanos() > 0L
+                    && nowNanos >= entity.lastMpNanos()
                     && nowNanos - entity.lastMpNanos()
                     <= SceneContinuityProfile.INITIAL.reacquireTimeoutNanos;
         }
-        long focusedEvidenceAgeNanos = nowNanos >= latestMeasurementNanos
-                ? nowNanos - latestMeasurementNanos : 0L;
-        boolean freshPlate = target.framesSinceMtAnchor <= 1
+        long focusedEvidenceAgeNanos = latestMeasurementNanos > 0L
+                && nowNanos >= latestMeasurementNanos
+                ? nowNanos - latestMeasurementNanos : Long.MAX_VALUE;
+        boolean freshPlate = latestMeasurementNanos > 0L
+                && target.framesSinceMtAnchor <= 1
                 && focusedEvidenceAgeNanos <= 350_000_000L;
         if (entity != null && freshPlate) {
             registrationConsistency = entity.registration().confidence;
@@ -1435,23 +1489,45 @@ public final class AlprPipeline {
                 || sceneTransitionCoordinator.snapshot().heavyInferenceSuspended;
     }
 
-    private boolean isPreRecoveryFrame(long sourceTimestampNanos) {
+    private boolean isPreRecoveryFrame(SourceFrameStamp sourceFrameStamp) {
+        SourceFrameStamp safe = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(0L, 0L, 0L)
+                : sourceFrameStamp;
         return RecoveryFrameGate.shouldSkip(
                 sceneTransitionCoordinator.reacquireTelemetry(),
-                sourceTimestampNanos
+                safe.sourceSequence,
+                safe.sourceTimestampNanos,
+                safe.domain
         );
     }
 
-    private long latestContinuitySourceTimestampNanos() {
+    private SourceFrameStamp latestContinuitySourceFrame() {
+        SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         SceneEvidence evidence = lastSceneEvidence;
-        if (evidence != null && evidence.sourceTimestampNanos > 0L) {
-            return evidence.sourceTimestampNanos;
+        if (evidence != null) {
+            return new SourceFrameStamp(
+                    evidence.sourceSequence,
+                    evidence.sourceTimestampNanos,
+                    evidence.sourceTimestampDomain,
+                    snapshot.sceneGeneration,
+                    snapshot.visualEpoch,
+                    snapshot.cameraTransformGeneration
+            );
         }
         TargetSnapshot target = targetSnapshot;
-        if (target != null && target.sourceTimestampNanos > 0L) {
-            return target.sourceTimestampNanos;
+        if (target != null) {
+            return target.continuityStamp().sourceFrameStamp()
+                    .withGenerations(
+                            snapshot.sceneGeneration,
+                            snapshot.visualEpoch,
+                            snapshot.cameraTransformGeneration
+                    );
         }
-        return 0L;
+        return SourceFrameStamp.unknown(
+                snapshot.sceneGeneration,
+                snapshot.visualEpoch,
+                snapshot.cameraTransformGeneration
+        );
     }
 
     private void recordContinuityFrameSkip(SceneTransitionDecision decision) {
@@ -1472,10 +1548,16 @@ public final class AlprPipeline {
         if (decision == null) return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
-        long sourceTimestampNanos = recovery.active
-                && recovery.triggerSourceTimestampNanos > 0L
-                ? recovery.triggerSourceTimestampNanos
-                : latestContinuitySourceTimestampNanos();
+        SourceFrameStamp transitionSourceFrame = recovery.active
+                ? new SourceFrameStamp(
+                        recovery.triggerSourceSequence,
+                        recovery.triggerSourceTimestampNanos,
+                        recovery.triggerSourceTimestampDomain,
+                        snapshot.sceneGeneration,
+                        snapshot.visualEpoch,
+                        snapshot.cameraTransformGeneration
+                )
+                : latestContinuitySourceFrame();
         sceneGeneration.set(snapshot.sceneGeneration);
         visualEpoch.set(snapshot.visualEpoch);
         if (decision.incrementSceneGeneration) {
@@ -1490,7 +1572,7 @@ public final class AlprPipeline {
             trackingResetRequested = true;
             rotatedSceneDetector.reset();
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
-                    sceneTransitionCoordinator.stamp(sourceTimestampNanos)
+                    sceneTransitionCoordinator.stamp(transitionSourceFrame)
             );
             frameGate.requestImmediateFrame();
         } else if (decision.action == SceneTransitionAction.SOFT_HOLD) {
@@ -1500,13 +1582,14 @@ public final class AlprPipeline {
         } else if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
             targetSnapshot = targetSnapshot.withState(TargetSnapshot.State.DEGRADED)
                     .withContinuityStamp(
-                            sceneTransitionCoordinator.stamp(sourceTimestampNanos)
+                            sceneTransitionCoordinator.stamp(transitionSourceFrame)
                     );
             if (engine != null) {
                 engine.beginSoftReacquire(
                         snapshot.visualEpoch,
                         decision.reason,
                         recovery.startedRuntimeNanos,
+                        recovery.triggerSourceSequence,
                         recovery.triggerSourceTimestampNanos
                 );
             }
@@ -1515,7 +1598,7 @@ public final class AlprPipeline {
             lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             if (engine != null) engine.releaseFocusedTarget(decision.reason);
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
-                    sceneTransitionCoordinator.stamp(sourceTimestampNanos)
+                    sceneTransitionCoordinator.stamp(transitionSourceFrame)
             );
         } else if (decision.action == SceneTransitionAction.NONE
                 && snapshot.state
@@ -1675,11 +1758,16 @@ public final class AlprPipeline {
                     String.valueOf(recovery.startedRuntimeNanos)
             );
             trace.putAttribute(
+                    "reacquire_trigger_source_sequence",
+                    String.valueOf(recovery.triggerSourceSequence)
+            );
+            trace.putAttribute(
                     "reacquire_trigger_source_timestamp_nanos",
                     String.valueOf(recovery.triggerSourceTimestampNanos)
             );
             trace.putAttribute(
-                    "source_timestamp_domain", "source_monotonic_nanos"
+                    "reacquire_trigger_source_timestamp_domain",
+                    recovery.triggerSourceTimestampDomain.name()
             );
             trace.putAttribute(
                     "runtime_timestamp_domain", "elapsed_realtime_nanos"
@@ -1788,17 +1876,27 @@ public final class AlprPipeline {
                         recovery.startedRuntimeNanos
                 );
                 details.put(
+                        "reacquire_trigger_source_sequence",
+                        recovery.triggerSourceSequence
+                );
+                details.put(
                         "reacquire_trigger_source_timestamp_nanos",
                         recovery.triggerSourceTimestampNanos
                 );
                 details.put(
-                        "source_timestamp_domain", "source_monotonic_nanos"
+                        "reacquire_trigger_source_timestamp_domain",
+                        recovery.triggerSourceTimestampDomain.name()
                 );
                 details.put(
                         "runtime_timestamp_domain", "elapsed_realtime_nanos"
                 );
             }
             if (evidence != null) {
+                details.put("source_sequence", evidence.sourceSequence);
+                details.put(
+                        "source_timestamp_domain",
+                        evidence.sourceTimestampDomain.name()
+                );
                 details.put("raw_visual_change_score", evidence.rawVisualChangeScore);
                 details.put("target_continuity_level", evidence.target.level.name());
                 details.put("target_geometry_validated", evidence.target.geometryValidated);
@@ -2054,13 +2152,12 @@ public final class AlprPipeline {
     public synchronized void setTargetSnapshot(TargetSnapshot snapshot) {
         TargetSnapshot safeSnapshot = snapshot == null
                 ? TargetSnapshot.searching() : snapshot;
-        long sourceTimestampNanos = safeSnapshot.sourceTimestampNanos > 0L
-                ? safeSnapshot.sourceTimestampNanos
-                : safeSnapshot.updatedAtNanos;
         targetSnapshot = safeSnapshot.withContinuityStamp(
-                sceneTransitionCoordinator.stamp(sourceTimestampNanos)
+                sceneTransitionCoordinator.stamp(
+                        safeSnapshot.continuityStamp().sourceFrameStamp()
+                )
         );
-        long now = System.nanoTime();
+        long now = SystemClock.elapsedRealtimeNanos();
         long previous = lastPreviewTrackingNanos.getAndSet(now);
         if (previous > 0L && now > previous) {
             double instantFps = Math.min(120.0, 1_000_000_000.0 / (now - previous));
@@ -2082,11 +2179,11 @@ public final class AlprPipeline {
     }
 
     public synchronized void requestImmediateTargetRecovery() {
-        long triggerSourceTimestampNanos = latestContinuitySourceTimestampNanos();
+        SourceFrameStamp triggerSourceFrame = latestContinuitySourceFrame();
         SceneTransitionDecision decision = sceneTransitionCoordinator.requestSoftReacquire(
                 "immediate_target_recovery",
                 SystemClock.elapsedRealtimeNanos(),
-                triggerSourceTimestampNanos
+                triggerSourceFrame
         );
         lastSceneDecision = decision;
         lastSceneEvidence = null;
@@ -2178,7 +2275,9 @@ public final class AlprPipeline {
     public VehicleTrackingFrame latestVehicleTrackingFrame() {
         VehicleTrackingFrame frame = vehicleTrackingCoordinator.latestFrame();
         return frame.withContinuityStamp(
-                sceneTransitionCoordinator.stamp(frame.sourceTimestampNanos)
+                sceneTransitionCoordinator.stamp(
+                        frame.continuityStamp().sourceFrameStamp()
+                )
         );
     }
 
@@ -2200,7 +2299,12 @@ public final class AlprPipeline {
             float anchorChangedFraction
     ) {
         return onPreviewSceneEvidence(
-                sourceTimestampNanos,
+                new SourceFrameStamp(
+                        0L,
+                        Math.max(0L, sourceTimestampNanos),
+                        SourceTimestampDomain.UNKNOWN,
+                        0L, 0L, 0L
+                ),
                 rawVisualChange,
                 rawVisualChangeScore,
                 changedFraction,
@@ -2223,12 +2327,46 @@ public final class AlprPipeline {
             boolean focusedTrackingLost,
             boolean focusedTrackingDegraded
     ) {
+        return onPreviewSceneEvidence(
+                new SourceFrameStamp(
+                        0L,
+                        Math.max(0L, sourceTimestampNanos),
+                        SourceTimestampDomain.UNKNOWN,
+                        0L, 0L, 0L
+                ),
+                rawVisualChange,
+                rawVisualChangeScore,
+                changedFraction,
+                brightnessDelta,
+                anchorDriftScore,
+                anchorChangedFraction,
+                focusedTrackingLost,
+                focusedTrackingDegraded
+        );
+    }
+
+    public synchronized SceneTransitionDecision onPreviewSceneEvidence(
+            SourceFrameStamp sourceFrameStamp,
+            boolean rawVisualChange,
+            float rawVisualChangeScore,
+            float changedFraction,
+            float brightnessDelta,
+            float anchorDriftScore,
+            float anchorChangedFraction,
+            boolean focusedTrackingLost,
+            boolean focusedTrackingDegraded
+    ) {
+        SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(0L, 0L, 0L)
+                : sourceFrameStamp;
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
-                Math.max(0L, sourceTimestampNanos)
+                safeSourceFrame.sourceTimestampNanos
         );
         SceneEvidence evidence = new SceneEvidence(
                         previewEvidenceIds.incrementAndGet(),
-                        Math.max(0L, sourceTimestampNanos),
+                        safeSourceFrame.sourceSequence,
+                        safeSourceFrame.sourceTimestampNanos,
+                        safeSourceFrame.domain,
                         rawVisualChange,
                         clamp01(rawVisualChangeScore),
                         clamp01(changedFraction),
@@ -2297,13 +2435,19 @@ public final class AlprPipeline {
     public boolean isCurrentContinuityStamp(ContinuityStamp stamp) {
         return stamp != null
                 && continuityGenerationGate.evaluate(
-                sceneTransitionCoordinator.stamp(stamp.sourceTimestampNanos),
+                sceneTransitionCoordinator.stamp(stamp.sourceFrameStamp()),
                 stamp
                 ) == ContinuityResultDisposition.ACCEPT_ALL;
     }
 
     public ContinuityStamp currentContinuityStamp(long sourceTimestampNanos) {
         return sceneTransitionCoordinator.stamp(Math.max(0L, sourceTimestampNanos));
+    }
+
+    public ContinuityStamp currentContinuityStamp(
+            SourceFrameStamp sourceFrameStamp
+    ) {
+        return sceneTransitionCoordinator.stamp(sourceFrameStamp);
     }
 
     private void recordVehicleTrackingEvents() {

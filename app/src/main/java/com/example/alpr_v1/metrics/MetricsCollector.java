@@ -162,6 +162,7 @@ public final class MetricsCollector {
     private boolean motionSensorAvailable;
     private String sceneHandlingMode = "dynamic_continuity";
     private String sceneContinuityProfile = "initial_v2";
+    private String cameraTimestampSource = "UNKNOWN";
     private String frozenRecognitionProfile = "balanced";
     private boolean frozenVehicleCascadeEnabled;
     private String frozenRoiBudgetPolicy = "r0_full_frame";
@@ -174,6 +175,7 @@ public final class MetricsCollector {
     private boolean frozenMotionSensorAvailable;
     private String frozenSceneHandlingMode = "dynamic_continuity";
     private String frozenSceneContinuityProfile = "initial_v2";
+    private String frozenCameraTimestampSource = "UNKNOWN";
     private long firstPreliminaryResultNanos = -1L;
     private long firstConfirmedResultNanos = -1L;
     private String cropSessionId = "";
@@ -226,6 +228,7 @@ public final class MetricsCollector {
         frozenMotionSensorAvailable = motionSensorAvailable;
         frozenSceneHandlingMode = sceneHandlingMode;
         frozenSceneContinuityProfile = sceneContinuityProfile;
+        frozenCameraTimestampSource = cameraTimestampSource;
 
         firstPreliminaryResultNanos = -1L;
         firstConfirmedResultNanos = -1L;
@@ -497,6 +500,11 @@ public final class MetricsCollector {
                 ? "dynamic_continuity" : mode.trim();
         sceneContinuityProfile = profile == null || profile.trim().isEmpty()
                 ? "initial_v2" : profile.trim();
+    }
+
+    public synchronized void setCameraTimestampSource(String source) {
+        cameraTimestampSource = source == null || source.trim().isEmpty()
+                ? "UNAVAILABLE" : source.trim();
     }
 
     public synchronized void setCaptureConfiguration(
@@ -826,6 +834,7 @@ public final class MetricsCollector {
         report.put("roi_budget_policy", frozenRoiBudgetPolicy);
         report.put("scene_handling_mode", frozenSceneHandlingMode);
         report.put("scene_continuity_profile", frozenSceneContinuityProfile);
+        report.put("camera_timestamp_source", frozenCameraTimestampSource);
 
         JSONObject normalConfiguration = new JSONObject();
         normalConfiguration.put(

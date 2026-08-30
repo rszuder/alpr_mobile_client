@@ -3,7 +3,9 @@ package com.example.alpr_v1.continuity;
 /** One immutable observation submitted to the future central scene coordinator. */
 public final class SceneEvidence {
     public final long sourceFrameId;
+    public final long sourceSequence;
     public final long sourceTimestampNanos;
+    public final SourceTimestampDomain sourceTimestampDomain;
     public final boolean rawVisualChange;
     public final float rawVisualChangeScore;
     public final float changedFraction;
@@ -38,7 +40,8 @@ public final class SceneEvidence {
             boolean orientationChanged
     ) {
         this(
-                sourceFrameId, sourceTimestampNanos, rawVisualChange,
+                sourceFrameId, 0L, sourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN, rawVisualChange,
                 rawVisualChangeScore, changedFraction, brightnessDelta,
                 anchorDriftScore, anchorChangedFraction, target, vehicles, motion,
                 false, false,
@@ -65,10 +68,47 @@ public final class SceneEvidence {
             boolean lensChanged,
             boolean orientationChanged
     ) {
+        this(
+                sourceFrameId, 0L, sourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN, rawVisualChange,
+                rawVisualChangeScore, changedFraction, brightnessDelta,
+                anchorDriftScore, anchorChangedFraction, target, vehicles, motion,
+                focusedTrackingLost, focusedTrackingDegraded,
+                sourceDimensionsChanged, cameraRestarted, lensChanged,
+                orientationChanged
+        );
+    }
+
+    public SceneEvidence(
+            long sourceFrameId,
+            long sourceSequence,
+            long sourceTimestampNanos,
+            SourceTimestampDomain sourceTimestampDomain,
+            boolean rawVisualChange,
+            float rawVisualChangeScore,
+            float changedFraction,
+            float brightnessDelta,
+            float anchorDriftScore,
+            float anchorChangedFraction,
+            TargetContinuityEvidence target,
+            VehicleContinuityEvidence vehicles,
+            MotionExplanationEvidence motion,
+            boolean focusedTrackingLost,
+            boolean focusedTrackingDegraded,
+            boolean sourceDimensionsChanged,
+            boolean cameraRestarted,
+            boolean lensChanged,
+            boolean orientationChanged
+    ) {
         this.sourceFrameId = Contracts.nonNegative("sourceFrameId", sourceFrameId);
+        this.sourceSequence = Contracts.nonNegative(
+                "sourceSequence", sourceSequence
+        );
         this.sourceTimestampNanos = Contracts.nonNegative(
                 "sourceTimestampNanos", sourceTimestampNanos
         );
+        this.sourceTimestampDomain = sourceTimestampDomain == null
+                ? SourceTimestampDomain.UNKNOWN : sourceTimestampDomain;
         this.rawVisualChange = rawVisualChange;
         this.rawVisualChangeScore = Contracts.unit(
                 "rawVisualChangeScore", rawVisualChangeScore

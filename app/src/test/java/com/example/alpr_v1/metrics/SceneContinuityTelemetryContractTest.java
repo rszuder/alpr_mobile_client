@@ -47,9 +47,19 @@ public final class SceneContinuityTelemetryContractTest {
         assertNotNull(MetricsCollector.class.getDeclaredField(
                 "frozenSceneContinuityProfile"
         ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "cameraTimestampSource"
+        ));
+        assertNotNull(MetricsCollector.class.getDeclaredField(
+                "frozenCameraTimestampSource"
+        ));
         assertNotNull(MetricsCollector.class.getMethod(
                 "setSceneContinuityConfiguration",
                 String.class,
+                String.class
+        ));
+        assertNotNull(MetricsCollector.class.getMethod(
+                "setCameraTimestampSource",
                 String.class
         ));
     }

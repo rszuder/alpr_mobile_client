@@ -4,21 +4,55 @@ import java.nio.ByteBuffer;
 
 import androidx.camera.core.ImageProxy;
 
+import com.example.alpr_v1.continuity.SourceFrameStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
+
 /** Własnościowa, mała kopia płaszczyzny Y, bez zależności od lifecycle ImageProxy. */
 public final class LumaFrame {
     public final byte[] gray;
     public final int width;
     public final int height;
+    public final long sourceSequence;
     public final long timestampNanos;
+    public final SourceTimestampDomain timestampDomain;
 
-    private LumaFrame(byte[] gray, int width, int height, long timestampNanos) {
+    private LumaFrame(
+            byte[] gray,
+            int width,
+            int height,
+            long sourceSequence,
+            long timestampNanos,
+            SourceTimestampDomain timestampDomain
+    ) {
         this.gray = gray;
         this.width = width;
         this.height = height;
+        this.sourceSequence = Math.max(0L, sourceSequence);
         this.timestampNanos = timestampNanos;
+        this.timestampDomain = timestampDomain == null
+                ? SourceTimestampDomain.UNKNOWN : timestampDomain;
     }
 
     static LumaFrame copyFrom(ImageProxy image, int maximumWidth) {
+        long timestampNanos = image == null
+                ? 0L : image.getImageInfo().getTimestamp();
+        return copyFrom(
+                image,
+                maximumWidth,
+                new SourceFrameStamp(
+                        0L,
+                        Math.max(0L, timestampNanos),
+                        SourceTimestampDomain.UNKNOWN,
+                        0L, 0L, 0L
+                )
+        );
+    }
+
+    static LumaFrame copyFrom(
+            ImageProxy image,
+            int maximumWidth,
+            SourceFrameStamp sourceFrameStamp
+    ) {
         if (image == null || image.getPlanes().length == 0) return null;
         ImageProxy.PlaneProxy plane = image.getPlanes()[0];
         android.graphics.Rect crop = image.getCropRect();
@@ -51,7 +85,11 @@ public final class LumaFrame {
                 gray,
                 targetWidth,
                 targetHeight,
-                image.getImageInfo().getTimestamp()
+                sourceFrameStamp == null ? 0L : sourceFrameStamp.sourceSequence,
+                sourceFrameStamp == null
+                        ? 0L : sourceFrameStamp.sourceTimestampNanos,
+                sourceFrameStamp == null
+                        ? SourceTimestampDomain.UNKNOWN : sourceFrameStamp.domain
         );
     }
 

@@ -61,8 +61,32 @@ final class SoftReacquireReport {
             VehicleTrackingFrame frame,
             long triggerSourceTimestampNanos
     ) {
+        return fromFreshMp(
+                entitiesBefore,
+                activeEntityId,
+                frame,
+                0L,
+                triggerSourceTimestampNanos
+        );
+    }
+
+    static SoftReacquireReport fromFreshMp(
+            Set<Long> entitiesBefore,
+            long activeEntityId,
+            VehicleTrackingFrame frame,
+            long triggerSourceSequence,
+            long triggerSourceTimestampNanos
+    ) {
+        if (triggerSourceSequence > 0L
+                && frame.sourceSequence <= triggerSourceSequence) {
+            return pending(
+                    VehicleContinuityEvidence.empty(),
+                    "mp_source_sequence_not_after_recovery"
+            );
+        }
         if (triggerSourceTimestampNanos > 0L
-                && frame.sourceTimestampNanos < triggerSourceTimestampNanos) {
+                && triggerSourceSequence <= 0L
+                && frame.sourceTimestampNanos <= triggerSourceTimestampNanos) {
             return pending(
                     VehicleContinuityEvidence.empty(),
                     "mp_source_frame_predates_recovery"
@@ -78,11 +102,13 @@ final class SoftReacquireReport {
             boolean existedBefore = entitiesBefore.contains(candidate.entityId);
             boolean freshMeasured = existedBefore
                     && !candidate.predicted
-                    && candidate.lastMeasurementTimestampNanos
-                    >= triggerSourceTimestampNanos;
+                    && (triggerSourceSequence > 0L
+                    || candidate.lastMeasurementTimestampNanos
+                    > triggerSourceTimestampNanos);
             boolean anyFreshMeasurement = !candidate.predicted
-                    && candidate.lastMeasurementTimestampNanos
-                    >= triggerSourceTimestampNanos;
+                    && (triggerSourceSequence > 0L
+                    || candidate.lastMeasurementTimestampNanos
+                    > triggerSourceTimestampNanos);
             if (anyFreshMeasurement) freshMeasuredEntities++;
             if (freshMeasured) {
                 reassociated++;

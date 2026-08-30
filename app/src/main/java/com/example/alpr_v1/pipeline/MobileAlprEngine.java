@@ -7,6 +7,7 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
 import com.example.alpr_v1.domain.NormalizedBounds;
@@ -116,6 +117,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private volatile String continuityReason = "";
     private boolean continuityFreshMpRequired;
     private long continuityReacquireStartedRuntimeNanos;
+    private long continuityReacquireTriggerSourceSequence;
     private long continuityReacquireTriggerSourceTimestampNanos;
     private long continuityActiveEntityId;
     private boolean continuityReacquireActive;
@@ -292,6 +294,22 @@ final class MobileAlprEngine implements AutoCloseable {
             long startedRuntimeNanos,
             long triggerSourceTimestampNanos
     ) {
+        beginSoftReacquire(
+                visualEpoch,
+                reason,
+                startedRuntimeNanos,
+                0L,
+                triggerSourceTimestampNanos
+        );
+    }
+
+    void beginSoftReacquire(
+            long visualEpoch,
+            String reason,
+            long startedRuntimeNanos,
+            long triggerSourceSequence,
+            long triggerSourceTimestampNanos
+    ) {
         continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
         continuitySoftHold = false;
         continuityReason = reason == null ? "" : reason;
@@ -302,6 +320,9 @@ final class MobileAlprEngine implements AutoCloseable {
         continuityReacquireActive = true;
         continuityReacquireStartedRuntimeNanos = Math.max(
                 0L, startedRuntimeNanos
+        );
+        continuityReacquireTriggerSourceSequence = Math.max(
+                0L, triggerSourceSequence
         );
         continuityReacquireTriggerSourceTimestampNanos = Math.max(
                 0L, triggerSourceTimestampNanos
@@ -348,8 +369,10 @@ final class MobileAlprEngine implements AutoCloseable {
                     continuityActiveEntityId
             );
             boolean freshMt = entity != null
-                    && entity.lastMtSourceTimestampNanos()
-                    >= continuityReacquireTriggerSourceTimestampNanos
+                    && isFreshRecoveryObservation(
+                            entity.lastMtSourceSequence(),
+                            entity.lastMtSourceTimestampNanos()
+                    )
                     && entity.plateTrackId() != null;
             if (freshMt) {
                 report = SoftReacquireReport.terminal(
@@ -437,7 +460,10 @@ final class MobileAlprEngine implements AutoCloseable {
         return run(
                 frame,
                 trace,
-                ContinuityStamp.initial(nowNanos),
+                new ContinuityStamp(
+                        0L, 0L, 0L, 0L, nowNanos,
+                        SourceTimestampDomain.RUNTIME_UPTIME
+                ),
                 plateDetectionCallback,
                 () -> false
         );
@@ -583,7 +609,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
             if (refreshVehicles) {
                 VehicleDetectionResult vehicleResult =
-                        detectVehicleRegions(frame, trace, sourceTimestampNanos);
+                        detectVehicleRegions(frame, trace, sourceStamp);
                 if (continuityFreshMpRequired) {
                     recordFreshMpReassociation(
                             vehicleTrackingCoordinator.latestFrame()
@@ -1041,6 +1067,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         decision.trackId,
                         normalizedQuad(plateCandidate.corners, frame),
                         new AppearanceDescriptor(appearance),
+                        sourceStamp.sourceSequence,
                         sourceTimestampNanos
                 );
                 if (attachmentStatus.accepted()) {
@@ -1572,6 +1599,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 continuityEntitiesBefore,
                 continuityActiveEntityId,
                 frame,
+                continuityReacquireTriggerSourceSequence,
                 continuityReacquireTriggerSourceTimestampNanos
         );
         latestSoftReacquireVehicles = pendingSoftReacquireReport.vehicles;
@@ -1598,8 +1626,10 @@ final class MobileAlprEngine implements AutoCloseable {
                 continuityActiveEntityId
         );
         boolean freshMt = entity != null
-                && entity.lastMtSourceTimestampNanos()
-                >= continuityReacquireTriggerSourceTimestampNanos
+                && isFreshRecoveryObservation(
+                        entity.lastMtSourceSequence(),
+                        entity.lastMtSourceTimestampNanos()
+                )
                 && entity.plateTrackId() != null;
         if (!freshMt) return;
         pendingSoftReacquireReport = SoftReacquireReport.terminal(
@@ -1617,6 +1647,18 @@ final class MobileAlprEngine implements AutoCloseable {
         if (!report.attempted || softReacquireResultListener == null) return;
         pendingSoftReacquireReport = SoftReacquireReport.none();
         softReacquireResultListener.onResult(report);
+    }
+
+    private boolean isFreshRecoveryObservation(
+            long sourceSequence,
+            long sourceTimestampNanos
+    ) {
+        if (continuityReacquireTriggerSourceSequence > 0L) {
+            return sourceSequence > continuityReacquireTriggerSourceSequence;
+        }
+        return continuityReacquireTriggerSourceTimestampNanos > 0L
+                && sourceTimestampNanos
+                > continuityReacquireTriggerSourceTimestampNanos;
     }
 
     private void recordSchedulerDecision(
@@ -1839,8 +1881,9 @@ final class MobileAlprEngine implements AutoCloseable {
     private VehicleDetectionResult detectVehicleRegions(
             Bitmap frame,
             InferenceTrace trace,
-            long sourceTimestampNanos
+            ContinuityStamp sourceStamp
     ) {
+        long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
         trace.start("vehicle_preprocess");
         PreparedInput input = BitmapTensorPreprocessor.prepare(
                 frame, vehicleInputSpec, vehicleBackend.inputInfo()
@@ -2003,7 +2046,7 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.updateFromMp(
                 trace.frameId(),
-                sourceTimestampNanos,
+                sourceStamp.sourceFrameStamp(),
                 resultAvailableSourceTimestampNanos,
                 vehicleObservations,
                 continuityFreshMpRequired
@@ -2297,6 +2340,7 @@ final class MobileAlprEngine implements AutoCloseable {
             InferenceTrace trace,
             long runtimeTimestampNanos
     ) {
+        if (sourceTimestampNanos <= 0L) return 0L;
         long runtimeStartNanos = trace == null
                 ? runtimeTimestampNanos : trace.elapsedRealtimeNanos();
         long elapsedNanos = Math.max(

@@ -83,13 +83,21 @@ Recovery zapisuje dwie niezależne osie czasu:
 | Pole | Domena | Zastosowanie |
 | --- | --- | --- |
 | `reacquire_started_runtime_nanos` | `elapsed_realtime_nanos` | deadline, duration i cooldown |
-| `reacquire_trigger_source_timestamp_nanos` | `source_monotonic_nanos` | kolejność klatek oraz fresh MP/MT |
+| `reacquire_trigger_source_sequence` | monotoniczna sekwencja CameraX | podstawowa kolejność klatek oraz fresh MP/MT |
+| `reacquire_trigger_source_timestamp_nanos` | domena wskazana przez `source_timestamp_domain` | dodatkowy dowód czasu klatki |
 | `runtime_timestamp_domain` | string | jawna nazwa domeny runtime |
 | `source_timestamp_domain` | string | jawna nazwa domeny źródłowej |
 
-Wartości z tych domen nie są porównywane bezpośrednio. Czas projekcji
+`CAMERAX_SENSOR` i `PREVIEW_INHERITED_CAMERA` należą do tej samej osi kamery;
+`RUNTIME_UPTIME` i `UNKNOWN` nie są z nią porównywane dla freshness. Czas projekcji
 `VehicleTrackingFrame.snapshotTimestampNanos` pozostaje w domenie źródłowej;
 czas eventu trackingu jest przekazywany oddzielnie w domenie runtime.
+
+Każdy rzeczywisty `ImageProxy` otrzymuje monotoniczne `source_sequence` przed
+rozgałęzieniem na direct-luma i ciężki pipeline. Preview oraz autozoom dziedziczą
+ostatni CameraX stamp jako `PREVIEW_INHERITED_CAMERA`; nie tworzą source time z
+zegara runtime. `camera_timestamp_source` zapisuje `REALTIME`, `UNKNOWN` albo
+`UNAVAILABLE`. Przy `UNKNOWN` freshness nadal opiera się na `source_sequence`.
 
 ## SECONDARY_SCENE_PREFLIGHT — `report.json`
 

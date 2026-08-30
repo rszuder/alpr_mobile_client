@@ -92,6 +92,8 @@ import com.example.alpr_v1.continuity.ReacquireTelemetry;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
+import com.example.alpr_v1.continuity.SourceFrameStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
@@ -252,7 +254,8 @@ public final class MainActivity extends AppCompatActivity {
                                 final long transformGeneration =
                                         uiCameraTransformGeneration.get();
                                 final ContinuityStamp continuityStamp =
-                                        currentContinuityStamp(System.nanoTime());
+                                        currentPreviewSourceFrameStamp()
+                                                .continuityStamp();
                                 previewBitmap = null;
                                 previewTrackingExecutor.execute(() ->
                                         processPreviewTrackingFrame(
@@ -438,7 +441,7 @@ public final class MainActivity extends AppCompatActivity {
             SceneTransitionDecision continuityDecision = pipeline == null
                     ? null
                     : pipeline.onPreviewSceneEvidence(
-                    continuityStamp.sourceTimestampNanos,
+                    continuityStamp.sourceFrameStamp(),
                     changed,
                     evidenceScore,
                     evidenceFraction,
@@ -529,14 +532,41 @@ public final class MainActivity extends AppCompatActivity {
         if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
     }
 
-    private ContinuityStamp currentContinuityStamp(long sourceTimestampNanos) {
-        if (pipeline == null) return ContinuityStamp.initial(sourceTimestampNanos);
-        SceneContinuitySnapshot snapshot = pipeline.sceneContinuitySnapshot();
-        return new ContinuityStamp(
-                snapshot.sceneGeneration,
-                snapshot.visualEpoch,
-                snapshot.cameraTransformGeneration,
-                sourceTimestampNanos
+    private SourceFrameStamp currentPreviewSourceFrameStamp() {
+        SceneContinuitySnapshot snapshot = pipeline == null
+                ? null : pipeline.sceneContinuitySnapshot();
+        long sceneGeneration = snapshot == null ? 0L : snapshot.sceneGeneration;
+        long visualEpoch = snapshot == null ? 0L : snapshot.visualEpoch;
+        long transformGeneration = snapshot == null
+                ? 0L : snapshot.cameraTransformGeneration;
+        if (cameraController == null) {
+            return SourceFrameStamp.unknown(
+                    sceneGeneration,
+                    visualEpoch,
+                    transformGeneration
+            );
+        }
+        return cameraController.sourceTimeline().current(
+                sceneGeneration,
+                visualEpoch,
+                transformGeneration
+        );
+    }
+
+    private SourceFrameStamp cameraSourceFrameStamp(
+            long sourceSequence,
+            long sourceTimestampNanos,
+            SourceTimestampDomain sourceTimestampDomain
+    ) {
+        SceneContinuitySnapshot snapshot = pipeline == null
+                ? null : pipeline.sceneContinuitySnapshot();
+        return new SourceFrameStamp(
+                sourceSequence,
+                Math.max(0L, sourceTimestampNanos),
+                sourceTimestampDomain,
+                snapshot == null ? 0L : snapshot.sceneGeneration,
+                snapshot == null ? 0L : snapshot.visualEpoch,
+                snapshot == null ? 0L : snapshot.cameraTransformGeneration
         );
     }
 
@@ -556,9 +586,12 @@ public final class MainActivity extends AppCompatActivity {
                 || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending) return;
         final long sceneGeneration = uiSceneGeneration.get();
         final long transformGeneration = uiCameraTransformGeneration.get();
-        final ContinuityStamp continuityStamp = currentContinuityStamp(
-                frame.timestampNanos
+        final SourceFrameStamp lumaSourceFrame = cameraSourceFrameStamp(
+                frame.sourceSequence,
+                frame.timestampNanos,
+                frame.timestampDomain
         );
+        final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
         lastDirectLumaFrameNanos = System.nanoTime();
         long trackingStartedNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
@@ -619,7 +652,7 @@ public final class MainActivity extends AppCompatActivity {
         SceneTransitionDecision lumaContinuityDecision = pipeline == null
                 ? null
                 : pipeline.onPreviewSceneEvidence(
-                frame.timestampNanos,
+                lumaSourceFrame,
                 false,
                 0f,
                 0f,
@@ -969,6 +1002,9 @@ public final class MainActivity extends AppCompatActivity {
         deviceProfile = DeviceProfile.capture(this);
         pipeline = new AlprPipeline(this, modelRegistry, metricsCollector, autoTuneManager);
         cameraController = new CameraController(this, this, previewView);
+        metricsCollector.setCameraTimestampSource(
+                cameraController.sourceTimeline().cameraTimestampSource().name()
+        );
         cameraMotionMonitor = new CameraMotionMonitor(this);
         metricsCollector.setMotionSensorAvailable(cameraMotionMonitor.isAvailable());
         recordInfo("Uruchomiono aplikację");
@@ -2658,7 +2694,7 @@ public final class MainActivity extends AppCompatActivity {
         lastDirectLumaFrameNanos = 0L;
         directLumaTrackingUnavailable = false;
         cameraController.start(
-                image -> {
+                (image, cameraFrameStamp) -> {
 
                     /*
                      * Zapamiętujemy scenę, do której należała klatka
@@ -2672,8 +2708,14 @@ public final class MainActivity extends AppCompatActivity {
                     if (!pipelineFrameInFlight.compareAndSet(false, true)) {
                         return;
                     }
+                    final SourceFrameStamp sourceFrameStamp =
+                            cameraSourceFrameStamp(
+                                    cameraFrameStamp.sourceSequence,
+                                    cameraFrameStamp.sourceTimestampNanos,
+                                    cameraFrameStamp.domain
+                            );
                     final long sourceTimestampNanos =
-                            image.getImageInfo().getTimestamp();
+                            sourceFrameStamp.sourceTimestampNanos;
                     final CameraImageConverter.Result conversion;
                     try {
                         conversion = CameraImageConverter.convert(image);
@@ -2703,7 +2745,7 @@ public final class MainActivity extends AppCompatActivity {
                     PipelineResult result =
                             pipeline.processBitmap(
                                     pipelineBitmap,
-                                    sourceTimestampNanos,
+                                    sourceFrameStamp,
                                     conversion.toBitmapNanos,
                                     conversion.rotationNanos,
                                     conversion.rotationDegrees,
@@ -4227,7 +4269,7 @@ public final class MainActivity extends AppCompatActivity {
         if (pipeline != null) {
             refreshPipelineCameraMotionEvidence();
             SceneTransitionDecision decision = pipeline.onPreviewSceneEvidence(
-                    System.nanoTime(),
+                    currentPreviewSourceFrameStamp(),
                     false,
                     0f,
                     0f,
@@ -4569,7 +4611,7 @@ public final class MainActivity extends AppCompatActivity {
             recordInfo("Auto zoom: po powrocie wykryto inną scenę");
             if (pipeline == null) return;
             SceneTransitionDecision decision = pipeline.onPreviewSceneEvidence(
-                    System.nanoTime(),
+                    currentPreviewSourceFrameStamp(),
                     true,
                     returned.score,
                     returned.changedFraction,
@@ -4599,7 +4641,8 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorPending = false;
 
         if (autoZoomMemoryVisible) {
-            ContinuityStamp sourceStamp = currentContinuityStamp(System.nanoTime());
+            ContinuityStamp sourceStamp = currentPreviewSourceFrameStamp()
+                    .continuityStamp();
             List<OverlayItem> returnedOverlay = transformOverlayItems(
                     autoZoomBaseMemoryOverlayItems,
                     1f,
@@ -5148,7 +5191,7 @@ public final class MainActivity extends AppCompatActivity {
             ContinuityStamp currentStamp = currentPipeline == null
                     ? null
                     : currentPipeline.currentContinuityStamp(
-                            resultStamp.sourceTimestampNanos
+                            resultStamp.sourceFrameStamp()
                     );
             details.put("final_result_dispatch_status", "dropped");
             details.put("final_result_drop_phase", safePhase);
@@ -5179,6 +5222,16 @@ public final class MainActivity extends AppCompatActivity {
             );
             details.put(
                     "source_timestamp_nanos", resultStamp.sourceTimestampNanos
+            );
+            details.put("source_sequence", resultStamp.sourceSequence);
+            details.put(
+                    "source_timestamp_domain",
+                    resultStamp.sourceTimestampDomain.name()
+            );
+            details.put(
+                    "current_source_sequence",
+                    currentStamp == null
+                            ? JSONObject.NULL : currentStamp.sourceSequence
             );
             metricsCollector.recordEvent(
                     "final_pipeline_result_dropped", 0L, 0L, details

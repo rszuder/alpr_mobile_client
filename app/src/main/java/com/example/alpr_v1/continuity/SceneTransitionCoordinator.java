@@ -26,7 +26,10 @@ public final class SceneTransitionCoordinator {
     private long unexplainedSinceNanos = -1L;
     private long reacquireStartedRuntimeNanos = -1L;
     private long lastSourceFrameId = -1L;
+    private long lastSourceSequence = -1L;
     private long lastSourceTimestampNanos = -1L;
+    private SourceTimestampDomain lastSourceTimestampDomain =
+            SourceTimestampDomain.UNKNOWN;
     private boolean finalizationSuspended;
     private boolean heavyInferenceSuspended;
     private boolean reacquireFailed;
@@ -208,6 +211,24 @@ public final class SceneTransitionCoordinator {
         );
     }
 
+    public synchronized ContinuityStamp stamp(SourceFrameStamp sourceFrameStamp) {
+        SourceFrameStamp safe = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(
+                        sceneGeneration,
+                        visualEpoch,
+                        cameraTransformGeneration
+                )
+                : sourceFrameStamp;
+        return new ContinuityStamp(
+                sceneGeneration,
+                visualEpoch,
+                cameraTransformGeneration,
+                safe.sourceSequence,
+                safe.sourceTimestampNanos,
+                safe.domain
+        );
+    }
+
     public synchronized ReacquireTelemetry reacquireTelemetry() {
         ReacquireContext context = reacquireContext != null
                 ? reacquireContext : lastReacquireContext;
@@ -249,7 +270,14 @@ public final class SceneTransitionCoordinator {
         return requestSoftReacquire(
                 reason,
                 nowNanos,
-                Math.max(0L, lastSourceTimestampNanos)
+                new SourceFrameStamp(
+                        Math.max(0L, lastSourceSequence),
+                        Math.max(0L, lastSourceTimestampNanos),
+                        lastSourceTimestampDomain,
+                        sceneGeneration,
+                        visualEpoch,
+                        cameraTransformGeneration
+                )
         );
     }
 
@@ -258,16 +286,40 @@ public final class SceneTransitionCoordinator {
             long nowNanos,
             long triggerSourceTimestampNanos
     ) {
-        Contracts.nonNegative("nowNanos", nowNanos);
-        Contracts.nonNegative(
-                "triggerSourceTimestampNanos", triggerSourceTimestampNanos
+        return requestSoftReacquire(
+                reason,
+                nowNanos,
+                new SourceFrameStamp(
+                        0L,
+                        triggerSourceTimestampNanos,
+                        SourceTimestampDomain.UNKNOWN,
+                        sceneGeneration,
+                        visualEpoch,
+                        cameraTransformGeneration
+                )
         );
+    }
+
+    public synchronized SceneTransitionDecision requestSoftReacquire(
+            String reason,
+            long nowNanos,
+            SourceFrameStamp triggerSourceFrame
+    ) {
+        Contracts.nonNegative("nowNanos", nowNanos);
+        SourceFrameStamp safeTrigger = triggerSourceFrame == null
+                ? SourceFrameStamp.unknown(
+                        sceneGeneration,
+                        visualEpoch,
+                        cameraTransformGeneration
+                ) : triggerSourceFrame;
         if (currentState == SceneContinuityState.HARD_RESETTING) {
             enterState(SceneContinuityState.STABLE, nowNanos);
         }
         return beginSoftReacquire(
                 nowNanos,
-                triggerSourceTimestampNanos,
+                safeTrigger.sourceSequence,
+                safeTrigger.sourceTimestampNanos,
+                safeTrigger.domain,
                 Contracts.reason(reason).isEmpty() ? "soft_reacquire_requested" : reason
         );
     }
@@ -359,7 +411,9 @@ public final class SceneTransitionCoordinator {
                 || evidence.focusedTrackingDegraded)) {
             return beginSoftReacquire(
                     nowNanos,
+                    evidence.sourceSequence,
                     evidence.sourceTimestampNanos,
+                    evidence.sourceTimestampDomain,
                     evidence.focusedTrackingLost
                             ? "strict_focused_tracking_lost"
                             : "strict_focused_tracking_degraded"
@@ -395,7 +449,9 @@ public final class SceneTransitionCoordinator {
             }
             return beginSoftReacquire(
                     nowNanos,
+                    evidence.sourceSequence,
                     evidence.sourceTimestampNanos,
+                    evidence.sourceTimestampDomain,
                     evidence.focusedTrackingLost
                             ? "focused_tracking_lost_without_global_change"
                             : "focused_tracking_degraded_without_global_change"
@@ -431,7 +487,9 @@ public final class SceneTransitionCoordinator {
         }
         return beginSoftReacquire(
                 nowNanos,
+                evidence.sourceSequence,
                 evidence.sourceTimestampNanos,
+                evidence.sourceTimestampDomain,
                 "stationary_visual_change_requires_reacquire"
         );
     }
@@ -456,7 +514,9 @@ public final class SceneTransitionCoordinator {
             if (motionSettled || holdDuration >= profile.maximumSoftHoldNanos) {
                 return beginSoftReacquire(
                         nowNanos,
+                        evidence.sourceSequence,
                         evidence.sourceTimestampNanos,
+                        evidence.sourceTimestampDomain,
                         "motion_settled_force_fresh_reacquire"
                 );
             }
@@ -543,7 +603,9 @@ public final class SceneTransitionCoordinator {
 
     private SceneTransitionDecision beginSoftReacquire(
             long nowNanos,
+            long triggerSourceSequence,
             long triggerSourceTimestampNanos,
+            SourceTimestampDomain triggerSourceTimestampDomain,
             String reason
     ) {
         if (currentState == SceneContinuityState.REACQUIRING) {
@@ -556,7 +618,9 @@ public final class SceneTransitionCoordinator {
         reacquireContext = ReacquireContext.begin(
                 assessment,
                 nowNanos,
+                triggerSourceSequence,
                 triggerSourceTimestampNanos,
+                triggerSourceTimestampDomain,
                 lastActiveTargetPresent
         );
         lastReacquireContext = null;
@@ -732,17 +796,22 @@ public final class SceneTransitionCoordinator {
 
     private boolean isDuplicate(SceneEvidence evidence) {
         return evidence.sourceFrameId == lastSourceFrameId
+                && evidence.sourceSequence == lastSourceSequence
                 && evidence.sourceTimestampNanos == lastSourceTimestampNanos;
     }
 
     private void rememberEvidence(SceneEvidence evidence) {
         lastSourceFrameId = evidence.sourceFrameId;
+        lastSourceSequence = evidence.sourceSequence;
         lastSourceTimestampNanos = evidence.sourceTimestampNanos;
+        lastSourceTimestampDomain = evidence.sourceTimestampDomain;
     }
 
     private void clearEvidenceDeduplication() {
         lastSourceFrameId = -1L;
+        lastSourceSequence = -1L;
         lastSourceTimestampNanos = -1L;
+        lastSourceTimestampDomain = SourceTimestampDomain.UNKNOWN;
     }
 
     private static long elapsedSince(long startNanos, long nowNanos) {

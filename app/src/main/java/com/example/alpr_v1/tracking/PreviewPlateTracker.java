@@ -3,6 +3,7 @@ package com.example.alpr_v1.tracking;
 import android.graphics.Bitmap;
 import android.graphics.PointF;
 import android.graphics.RectF;
+import android.os.SystemClock;
 
 import com.example.alpr_v1.ui.OverlayItem;
 
@@ -360,7 +361,7 @@ public final class PreviewPlateTracker {
         List<TrackedPlate> technicalResults =
                 new ArrayList<>();
 
-        long updatedAtNanos = System.nanoTime();
+        long updatedAtNanos = SystemClock.elapsedRealtimeNanos();
 
 
         for (TrackState track :

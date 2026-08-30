@@ -44,6 +44,27 @@ public final class PlateEntityBinder {
         );
     }
 
+    public PlateTrackAttachmentStatus attachPlate(
+            PlateVehicleAssociation association,
+            long plateTrackId,
+            NormalizedQuad quad,
+            AppearanceDescriptor appearance,
+            long sourceSequence,
+            long sourceTimestampNanos
+    ) {
+        if (association == null || !association.assigned() || plateTrackId <= 0L) {
+            return PlateTrackAttachmentStatus.CONFLICT_REJECTED;
+        }
+        return repository.attachPlate(
+                association.entityId,
+                plateTrackId,
+                quad,
+                appearance,
+                sourceSequence,
+                sourceTimestampNanos
+        );
+    }
+
     public boolean updateRegistration(
             PlateVehicleAssociation association,
             PlateTextConsensus consensus,

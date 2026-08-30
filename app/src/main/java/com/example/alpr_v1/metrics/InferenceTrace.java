@@ -4,6 +4,7 @@ import android.os.SystemClock;
 import android.os.Debug;
 
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -31,7 +32,14 @@ public final class InferenceTrace {
     private final boolean memorySampled;
 
     public InferenceTrace(long frameId) {
-        this(frameId, ContinuityStamp.initial(SystemClock.elapsedRealtimeNanos()));
+        this(
+                frameId,
+                new ContinuityStamp(
+                        0L, 0L, 0L, 0L,
+                        SystemClock.elapsedRealtimeNanos(),
+                        SourceTimestampDomain.RUNTIME_UPTIME
+                )
+        );
     }
 
     public InferenceTrace(long frameId, ContinuityStamp continuityStamp) {
@@ -124,6 +132,11 @@ public final class InferenceTrace {
         json.put("visual_epoch", continuityStamp.visualEpoch);
         json.put("camera_transform_generation", continuityStamp.cameraTransformGeneration);
         json.put("source_timestamp_ns", continuityStamp.sourceTimestampNanos);
+        json.put("source_sequence", continuityStamp.sourceSequence);
+        json.put(
+                "source_timestamp_domain",
+                continuityStamp.sourceTimestampDomain.name()
+        );
         json.put("status", status);
         json.put("text", recognizedText);
         JSONObject stages = new JSONObject();

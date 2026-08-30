@@ -1,5 +1,8 @@
 package com.example.alpr_v1.tracking;
 
+import com.example.alpr_v1.continuity.SourceFrameStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
+
 import com.example.alpr_v1.domain.VehicleEntityRepository;
 
 import java.util.ArrayList;
@@ -51,7 +54,9 @@ public final class VehicleTrackingCoordinator {
     ) {
         return updateFromMp(
                 sourceFrameId,
+                0L,
                 sourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN,
                 snapshotTimestampNanos,
                 observations,
                 Collections.emptySet(),
@@ -68,7 +73,9 @@ public final class VehicleTrackingCoordinator {
     ) {
         return updateFromMp(
                 sourceFrameId,
+                0L,
                 sourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN,
                 snapshotTimestampNanos,
                 observations,
                 protectedReassociationEntityIds,
@@ -79,6 +86,51 @@ public final class VehicleTrackingCoordinator {
     public synchronized VehicleTrackingFrame updateFromMp(
             long sourceFrameId,
             long sourceTimestampNanos,
+            long snapshotTimestampNanos,
+            List<VehicleTrackManager.Observation> observations,
+            Set<Long> protectedReassociationEntityIds,
+            long eventRuntimeNanos
+    ) {
+        return updateFromMp(
+                sourceFrameId,
+                0L,
+                sourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN,
+                snapshotTimestampNanos,
+                observations,
+                protectedReassociationEntityIds,
+                eventRuntimeNanos
+        );
+    }
+
+    public synchronized VehicleTrackingFrame updateFromMp(
+            long sourceFrameId,
+            SourceFrameStamp sourceFrameStamp,
+            long snapshotTimestampNanos,
+            List<VehicleTrackManager.Observation> observations,
+            Set<Long> protectedReassociationEntityIds,
+            long eventRuntimeNanos
+    ) {
+        SourceFrameStamp safe = sourceFrameStamp == null
+                ? SourceFrameStamp.unknown(sceneGeneration, 0L, 0L)
+                : sourceFrameStamp;
+        return updateFromMp(
+                sourceFrameId,
+                safe.sourceSequence,
+                safe.sourceTimestampNanos,
+                safe.domain,
+                snapshotTimestampNanos,
+                observations,
+                protectedReassociationEntityIds,
+                eventRuntimeNanos
+        );
+    }
+
+    private VehicleTrackingFrame updateFromMp(
+            long sourceFrameId,
+            long sourceSequence,
+            long sourceTimestampNanos,
+            SourceTimestampDomain sourceTimestampDomain,
             long snapshotTimestampNanos,
             List<VehicleTrackManager.Observation> observations,
             Set<Long> protectedReassociationEntityIds,
@@ -106,7 +158,9 @@ public final class VehicleTrackingCoordinator {
                 ? tracker.projectAfterMeasurement(snapshotTimestampNanos) : measured;
         latestFrame = frame(
                 sourceFrameId,
+                sourceSequence,
                 sourceTimestampNanos,
+                sourceTimestampDomain,
                 snapshotTimestampNanos,
                 snapshots
         );
@@ -337,6 +391,24 @@ public final class VehicleTrackingCoordinator {
             long snapshotTimestampNanos,
             List<VehicleTrackManager.Snapshot> snapshots
     ) {
+        return frame(
+                sourceFrameId,
+                latestFrame.sourceSequence,
+                sourceTimestampNanos,
+                latestFrame.sourceTimestampDomain,
+                snapshotTimestampNanos,
+                snapshots
+        );
+    }
+
+    private VehicleTrackingFrame frame(
+            long sourceFrameId,
+            long sourceSequence,
+            long sourceTimestampNanos,
+            SourceTimestampDomain sourceTimestampDomain,
+            long snapshotTimestampNanos,
+            List<VehicleTrackManager.Snapshot> snapshots
+    ) {
         List<VehicleCandidate> candidates = new ArrayList<>(snapshots.size());
         for (VehicleTrackManager.Snapshot snapshot : snapshots) {
             float effectiveConfidence = effectiveConfidence(snapshot, snapshotTimestampNanos);
@@ -360,9 +432,13 @@ public final class VehicleTrackingCoordinator {
         }
         return new VehicleTrackingFrame(
                 sourceFrameId,
+                sourceSequence,
                 sourceTimestampNanos,
+                sourceTimestampDomain,
                 snapshotTimestampNanos,
                 sceneGeneration,
+                0L,
+                0L,
                 candidates
         );
     }
@@ -401,9 +477,13 @@ public final class VehicleTrackingCoordinator {
         if (!changed) return source;
         return new VehicleTrackingFrame(
                 source.sourceFrameId,
+                source.sourceSequence,
                 source.sourceTimestampNanos,
+                source.sourceTimestampDomain,
                 source.snapshotTimestampNanos,
                 source.sceneGeneration,
+                source.visualEpoch,
+                source.cameraTransformGeneration,
                 refreshed
         );
     }

@@ -9,7 +9,9 @@ public final class ReacquireContext {
     public final float triggerMotionExplanationScore;
     public final float maximumCutEvidenceDuringRecovery;
     public final long startedRuntimeNanos;
+    public final long triggerSourceSequence;
     public final long triggerSourceTimestampNanos;
+    public final SourceTimestampDomain triggerSourceTimestampDomain;
     public final boolean activeTargetPresent;
 
     private ReacquireContext(
@@ -20,7 +22,9 @@ public final class ReacquireContext {
             float triggerMotionExplanationScore,
             float maximumCutEvidenceDuringRecovery,
             long startedRuntimeNanos,
+            long triggerSourceSequence,
             long triggerSourceTimestampNanos,
+            SourceTimestampDomain triggerSourceTimestampDomain,
             boolean activeTargetPresent
     ) {
         this.triggerClassification = Contracts.required(
@@ -44,9 +48,14 @@ public final class ReacquireContext {
         this.startedRuntimeNanos = Contracts.nonNegative(
                 "startedRuntimeNanos", startedRuntimeNanos
         );
+        this.triggerSourceSequence = Contracts.nonNegative(
+                "triggerSourceSequence", triggerSourceSequence
+        );
         this.triggerSourceTimestampNanos = Contracts.nonNegative(
                 "triggerSourceTimestampNanos", triggerSourceTimestampNanos
         );
+        this.triggerSourceTimestampDomain = triggerSourceTimestampDomain == null
+                ? SourceTimestampDomain.UNKNOWN : triggerSourceTimestampDomain;
         this.activeTargetPresent = activeTargetPresent;
     }
 
@@ -54,6 +63,24 @@ public final class ReacquireContext {
             ContinuityAssessment trigger,
             long startedRuntimeNanos,
             long triggerSourceTimestampNanos,
+            boolean activeTargetPresent
+    ) {
+        return begin(
+                trigger,
+                startedRuntimeNanos,
+                0L,
+                triggerSourceTimestampNanos,
+                SourceTimestampDomain.UNKNOWN,
+                activeTargetPresent
+        );
+    }
+
+    static ReacquireContext begin(
+            ContinuityAssessment trigger,
+            long startedRuntimeNanos,
+            long triggerSourceSequence,
+            long triggerSourceTimestampNanos,
+            SourceTimestampDomain triggerSourceTimestampDomain,
             boolean activeTargetPresent
     ) {
         Contracts.required("trigger", trigger);
@@ -65,7 +92,9 @@ public final class ReacquireContext {
                 trigger.motionExplanationScore,
                 trigger.cutEvidenceScore,
                 startedRuntimeNanos,
+                triggerSourceSequence,
                 triggerSourceTimestampNanos,
+                triggerSourceTimestampDomain,
                 activeTargetPresent
         );
     }
@@ -85,7 +114,9 @@ public final class ReacquireContext {
                 triggerMotionExplanationScore,
                 maximum,
                 startedRuntimeNanos,
+                triggerSourceSequence,
                 triggerSourceTimestampNanos,
+                triggerSourceTimestampDomain,
                 activeTargetPresent
         );
     }

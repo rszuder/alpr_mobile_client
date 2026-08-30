@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.continuity.SoftReacquireResult;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 
@@ -169,6 +170,46 @@ public final class SoftReacquireReportTest {
         assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, report.result);
         assertEquals(1, report.vehicles.freshMeasuredEntities);
         assertEquals(1_000_000L, report.vehicles.newestMeasurementAgeNanos);
+    }
+
+    @Test
+    public void freshMpRequiresSequenceAfterRecoveryTrigger() {
+        Set<Long> before = new HashSet<>(
+                java.util.Collections.singletonList(15L)
+        );
+        VehicleTrackingFrame sameSourceFrame = new VehicleTrackingFrame(
+                15L,
+                50L,
+                99_000_000_000L,
+                SourceTimestampDomain.CAMERAX_SENSOR,
+                99_000_000_100L,
+                0L, 0L, 0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 705L, false, 99_000_000_000L)
+                )
+        );
+        VehicleTrackingFrame nextSourceFrame = new VehicleTrackingFrame(
+                16L,
+                51L,
+                1L,
+                SourceTimestampDomain.CAMERAX_SENSOR,
+                2L,
+                0L, 0L, 0L,
+                java.util.Collections.singletonList(
+                        candidate(15L, 706L, false, 1L)
+                )
+        );
+
+        SoftReacquireReport stale = SoftReacquireReport.fromFreshMp(
+                before, 0L, sameSourceFrame, 50L, 8_000_000_000L
+        );
+        SoftReacquireReport fresh = SoftReacquireReport.fromFreshMp(
+                before, 0L, nextSourceFrame, 50L, 8_000_000_000L
+        );
+
+        assertFalse(stale.attempted);
+        assertEquals("mp_source_sequence_not_after_recovery", stale.reason);
+        assertEquals(SoftReacquireResult.VEHICLE_POOL_RECOVERED, fresh.result);
     }
 
     private static VehicleCandidate candidate(long entityId, long vehicleTrackId) {
