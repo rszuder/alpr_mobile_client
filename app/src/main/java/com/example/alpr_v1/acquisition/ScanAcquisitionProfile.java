@@ -4,7 +4,7 @@ package com.example.alpr_v1.acquisition;
 public final class ScanAcquisitionProfile {
     public static final ScanAcquisitionProfile DEFAULT = new ScanAcquisitionProfile(
             32,
-            0.30f,
+            0.20f,
             500_000_000L,
             4_000_000_000L,
             1_250_000_000L,

@@ -6,7 +6,9 @@ import java.util.List;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Rational;
 import android.util.Size;
+import android.view.Surface;
 
 import androidx.annotation.NonNull;
 import androidx.camera.core.Camera;
@@ -16,6 +18,8 @@ import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.Preview;
+import androidx.camera.core.UseCaseGroup;
+import androidx.camera.core.ViewPort;
 import androidx.camera.core.ZoomState;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import androidx.camera.core.resolutionselector.ResolutionStrategy;
@@ -67,6 +71,7 @@ public final class CameraController implements AutoCloseable {
         this.context = context.getApplicationContext();
         this.lifecycleOwner = lifecycleOwner;
         this.previewView = previewView;
+        this.previewView.setScaleType(PreviewView.ScaleType.FIT_CENTER);
     }
 
     public void start(FrameHandler frameHandler, ErrorHandler errorHandler, Size analysisSize,  boolean allowHighResolution) {
@@ -243,11 +248,25 @@ public final class CameraController implements AutoCloseable {
 
         cameraProvider.unbindAll();
 
+        int displayRotation = previewView.getDisplay() == null
+                ? Surface.ROTATION_0 : previewView.getDisplay().getRotation();
+        ViewPort viewPort = new ViewPort.Builder(
+                new Rational(
+                        Math.max(1, analysisSize.getWidth()),
+                        Math.max(1, analysisSize.getHeight())
+                ),
+                displayRotation
+        ).setScaleType(ViewPort.FIT).build();
+        UseCaseGroup useCaseGroup = new UseCaseGroup.Builder()
+                .setViewPort(viewPort)
+                .addUseCase(preview)
+                .addUseCase(analysis)
+                .build();
+
         camera = cameraProvider.bindToLifecycle(
                 lifecycleOwner,
                 CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                analysis
+                useCaseGroup
         );
     }
 

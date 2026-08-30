@@ -2,6 +2,7 @@ package com.example.alpr_v1.vision;
 
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
+import android.graphics.Rect;
 import android.os.SystemClock;
 
 import androidx.camera.core.ImageProxy;
@@ -61,6 +62,31 @@ public final class CameraImageConverter {
 
         Bitmap bitmap =
                 image.toBitmap();
+
+        Rect crop = image.getCropRect();
+        if (crop != null
+                && (crop.left != 0
+                || crop.top != 0
+                || crop.width() != bitmap.getWidth()
+                || crop.height() != bitmap.getHeight())) {
+            Rect safeCrop = new Rect(
+                    Math.max(0, crop.left),
+                    Math.max(0, crop.top),
+                    Math.min(bitmap.getWidth(), crop.right),
+                    Math.min(bitmap.getHeight(), crop.bottom)
+            );
+            if (safeCrop.width() > 0 && safeCrop.height() > 0) {
+                Bitmap cropped = Bitmap.createBitmap(
+                        bitmap,
+                        safeCrop.left,
+                        safeCrop.top,
+                        safeCrop.width(),
+                        safeCrop.height()
+                );
+                if (cropped != bitmap) bitmap.recycle();
+                bitmap = cropped;
+            }
+        }
 
 
         long toBitmapNanos =

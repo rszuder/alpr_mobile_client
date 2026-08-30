@@ -16,6 +16,7 @@ import java.util.Set;
 
 /** Fair, bounded and deterministic entity-keyed Scan acquisition queue. */
 public final class AcquisitionQueue {
+    private static final long MAX_UNOBSERVED_QUEUE_NANOS = 60_000_000_000L;
     public static final class Selection {
         public final AcquisitionCandidate candidate;
         public final AcquisitionPriorityBreakdown priority;
@@ -34,9 +35,23 @@ public final class AcquisitionQueue {
 
     private static final class QueueEntry {
         AcquisitionCandidate candidate;
+        long lastObservedRuntimeNanos;
+        long predictionAgeAtLastObservationNanos;
 
-        QueueEntry(AcquisitionCandidate candidate) {
+        QueueEntry(
+                AcquisitionCandidate candidate,
+                long lastObservedRuntimeNanos,
+                long predictionAgeAtLastObservationNanos
+        ) {
             this.candidate = candidate;
+            this.lastObservedRuntimeNanos = lastObservedRuntimeNanos;
+            this.predictionAgeAtLastObservationNanos =
+                    Math.max(0L, predictionAgeAtLastObservationNanos);
+        }
+
+        void observed(VehicleCandidate source, long now) {
+            lastObservedRuntimeNanos = now;
+            predictionAgeAtLastObservationNanos = source.predictionAgeNanos;
         }
     }
 
@@ -80,7 +95,7 @@ public final class AcquisitionQueue {
             observed.add(source.entityId);
             if (source.entityId == this.activeEntityId) {
                 QueueEntry active = entries.get(source.entityId);
-                if (active != null && eligibleGeometryAndMeasurement(source)) {
+                if (active != null && validGeometryAndConfidence(source)) {
                     AcquisitionCandidate previous = active.candidate;
                     AcquisitionCandidate refreshed = updateFromSource(
                             previous,
@@ -95,6 +110,7 @@ public final class AcquisitionQueue {
                     );
                     changed |= differs(previous, refreshed);
                     active.candidate = refreshed;
+                    active.observed(source, now);
                 }
                 continue;
             }
@@ -103,7 +119,7 @@ public final class AcquisitionQueue {
                 changed |= entries.remove(source.entityId) != null;
                 continue;
             }
-            if (!eligibleGeometryAndMeasurement(source)) {
+            if (!validGeometryAndConfidence(source)) {
                 changed |= entries.remove(source.entityId) != null;
                 continue;
             }
@@ -114,7 +130,11 @@ public final class AcquisitionQueue {
             }
             QueueEntry entry = entries.get(source.entityId);
             if (entry == null) {
-                entry = new QueueEntry(fromSource(source, now));
+                entry = new QueueEntry(
+                        fromSource(source, now),
+                        now,
+                        source.predictionAgeNanos
+                );
                 entries.put(source.entityId, entry);
                 changed = true;
             } else {
@@ -125,6 +145,7 @@ public final class AcquisitionQueue {
                 );
                 changed |= differs(entry.candidate, updated);
                 entry.candidate = updated;
+                entry.observed(source, now);
             }
         }
 
@@ -132,8 +153,36 @@ public final class AcquisitionQueue {
         while (iterator.hasNext()) {
             Map.Entry<Long, QueueEntry> entry = iterator.next();
             if (!observed.contains(entry.getKey())) {
-                iterator.remove();
-                changed = true;
+                QueueEntry missing = entry.getValue();
+                long absentNanos = Math.max(
+                        0L,
+                        now - missing.lastObservedRuntimeNanos
+                );
+                if (absentNanos > MAX_UNOBSERVED_QUEUE_NANOS) {
+                    iterator.remove();
+                    changed = true;
+                } else {
+                    AcquisitionCandidate previous = missing.candidate;
+                    long predictionAge = saturatedAdd(
+                            missing.predictionAgeAtLastObservationNanos,
+                            absentNanos
+                    );
+                    AcquisitionCandidate predicted = previous.withDynamicScores(
+                            waitingAge(previous, now),
+                            freshness(true, predictionAge),
+                            previous.vehicleTrackId,
+                            previous.bounds,
+                            previous.state,
+                            previous.effectiveConfidence,
+                            previous.exitUrgency,
+                            previous.readabilityScore,
+                            novelty(previous),
+                            true,
+                            predictionAge
+                    );
+                    changed |= differs(previous, predicted);
+                    missing.candidate = predicted;
+                }
             }
         }
         if (trimToLimit(now)) changed = true;
@@ -146,6 +195,19 @@ public final class AcquisitionQueue {
         List<Ranked> ranked = ranked(now, true);
         if (ranked.isEmpty()) return null;
         Ranked selected = ranked.get(0);
+        /*
+         * Bariera pierwszego przejścia: większy i centralny pojazd nie może
+         * rozpoczynać kolejnych retry, dopóki inna kwalifikująca się encja nie
+         * dostała ani jednej próby. W obrębie tej grupy nadal obowiązuje pełny
+         * ranking Phase 3B i deterministyczny tie-break.
+         */
+        for (Ranked candidate : ranked) {
+            if (candidate.candidate.mtAttempts == 0
+                    && candidate.candidate.freshMzAttempts == 0) {
+                selected = candidate;
+                break;
+            }
+        }
         activeEntityId = selected.candidate.entityId;
         revision++;
         return new Selection(selected.candidate, selected.priority, revision);
@@ -194,10 +256,8 @@ public final class AcquisitionQueue {
                 nonNegative(nowRuntimeNanos),
                 Math.max(0L, cooldownNanos)
         );
-        entry.candidate = current.withAttemptState(
+        entry.candidate = current.requeuedAfterAttempt(
                 EntityAcquisitionState.QUEUED,
-                current.mtAttempts,
-                current.freshMzAttempts,
                 nowRuntimeNanos,
                 until
         );
@@ -374,11 +434,11 @@ public final class AcquisitionQueue {
         );
     }
 
-    private boolean eligibleGeometryAndMeasurement(VehicleCandidate candidate) {
+    private boolean validGeometryAndConfidence(VehicleCandidate candidate) {
         return candidate.bounds != null
                 && candidate.bounds.valid()
-                && candidate.effectiveConfidence >= profile.minimumEffectiveConfidence
-                && candidate.predictionAgeNanos <= profile.maximumPredictionAgeNanos;
+                && (candidate.predicted
+                || candidate.effectiveConfidence >= profile.minimumEffectiveConfidence);
     }
 
     private boolean eligibleForSelection(AcquisitionCandidate candidate, long now) {
@@ -387,7 +447,9 @@ public final class AcquisitionQueue {
                 && (candidate.state == EntityAcquisitionState.NEW
                 || candidate.state == EntityAcquisitionState.QUEUED)
                 && candidate.effectiveConfidence >= profile.minimumEffectiveConfidence
-                && candidate.predictionAgeNanos <= profile.maximumPredictionAgeNanos
+                && (!candidate.predicted
+                || candidate.predictionAgeNanos
+                <= profile.maximumPredictionAgeNanos)
                 && now >= candidate.cooldownUntilRuntimeNanos
                 && candidate.bounds.valid();
     }

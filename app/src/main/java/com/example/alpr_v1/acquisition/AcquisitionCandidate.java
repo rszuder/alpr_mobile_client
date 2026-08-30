@@ -115,6 +115,21 @@ public final class AcquisitionCandidate {
         );
     }
 
+    public AcquisitionCandidate requeuedAfterAttempt(
+            EntityAcquisitionState state,
+            long requeuedRuntimeNanos,
+            long cooldownUntilRuntimeNanos
+    ) {
+        return new AcquisitionCandidate(
+                entityId, vehicleTrackId, bounds, state,
+                effectiveConfidence, exitUrgency, readabilityScore,
+                0f, freshnessScore, noveltyScore,
+                predicted, predictionAgeNanos, mtAttempts, freshMzAttempts,
+                requeuedRuntimeNanos, lastAttemptRuntimeNanos,
+                cooldownUntilRuntimeNanos
+        );
+    }
+
     private static float clamp01(float value) {
         if (!Float.isFinite(value)) return 0f;
         return Math.max(0f, Math.min(1f, value));

@@ -1631,6 +1631,52 @@ public final class AlprPipeline {
                     nowRuntimeNanos
             );
         }
+        ScanAcquisitionSnapshot scanAfter = scanAcquisitionController.snapshot(
+                nowRuntimeNanos
+        );
+        StringBuilder scanPool = new StringBuilder();
+        for (com.example.alpr_v1.tracking.VehicleCandidate candidate
+                : latestVehicleTrackingFrame().candidates) {
+            if (scanPool.length() > 0) scanPool.append(';');
+            scanPool.append(candidate.entityId)
+                    .append('/')
+                    .append(candidate.vehicleTrackId)
+                    .append(candidate.predicted ? "/P/" : "/M/")
+                    .append(String.format(
+                            java.util.Locale.ROOT,
+                            "%.2f@%.2f,%.2f",
+                            candidate.effectiveConfidence,
+                            candidate.bounds.centerX(),
+                            candidate.bounds.centerY()
+                    ));
+        }
+        StringBuilder scanQueue = new StringBuilder();
+        for (com.example.alpr_v1.acquisition.AcquisitionCandidate candidate
+                : scanAfter.queue.candidates) {
+            if (scanQueue.length() > 0) scanQueue.append(';');
+            scanQueue.append(candidate.entityId)
+                    .append('/')
+                    .append(candidate.state)
+                    .append("/mt")
+                    .append(candidate.mtAttempts)
+                    .append("/mz")
+                    .append(candidate.freshMzAttempts)
+                    .append(candidate.predicted ? "/P" : "/M");
+        }
+        android.util.Log.d(
+                "ALPR_SCAN",
+                "result=" + result.status
+                        + " queue=" + scanAfter.queue.size()
+                        + " session=" + scanAfter.activeSessionId
+                        + " entity=" + scanAfter.activeEntityId
+                        + " directive=" + next.action
+                        + " reason=" + next.reason
+                        + " continuity="
+                        + sceneTransitionCoordinator.snapshot().state
+                        + " pool=[" + scanPool + "]"
+                        + " queued=[" + scanQueue + "]"
+                        + " revision=" + next.revision
+        );
         if (engine != null) {
             applyScanDirectiveToEngine(engine, true, next);
             if (next.action == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {

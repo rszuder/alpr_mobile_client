@@ -659,6 +659,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         overlays,
                         cachedVehicleDetections,
                         cachedVehicleRois,
+                        vehicleTrackingCoordinator.latestFrame().candidates,
                         frame,
                         roiBudgetPolicy
                 );
@@ -727,6 +728,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     overlays,
                     cachedVehicleDetections,
                     cachedVehicleRois,
+                    vehicleTrackingCoordinator.latestFrame().candidates,
                     frame,
                     roiBudgetPolicy
             );
@@ -748,6 +750,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     overlays,
                     cachedVehicleDetections,
                     cachedVehicleRois,
+                    vehicleTrackingCoordinator.latestFrame().candidates,
                     frame,
                     roiBudgetPolicy
             );
@@ -951,6 +954,12 @@ final class MobileAlprEngine implements AutoCloseable {
                                 scheduledVehicleRoi,
                                 trace.frameId(),
                                 mtDecision.reason
+                        );
+                        upsertScheduledVehicleRoiOverlay(
+                                overlays,
+                                scheduledVehicleRoi,
+                                frame,
+                                mtDecision.targetMargin > 0f
                         );
                     }
                     trace.putCount("mt_staggered_roi_runs", vehicleRois.size() > 1 ? 1 : 0);
@@ -1947,6 +1956,7 @@ final class MobileAlprEngine implements AutoCloseable {
             List<OverlayItem> overlays,
             List<Detection> vehicles,
             List<VehicleRoi> selectedRois,
+            List<VehicleCandidate> candidates,
             Bitmap frame,
             RoiBudgetPolicy policy
     ) {
@@ -1962,30 +1972,60 @@ final class MobileAlprEngine implements AutoCloseable {
                     Collections.emptyList(),
                     String.format(
                             Locale.ROOT,
-                            "MP pojazd %.0f%%",
+                            "Pojazd %.0f%%",
                             vehicle.confidence * 100f
                     ),
-                    0L,
+                    stableVehicleOverlayId(
+                            vehicle,
+                            candidates,
+                            frame.getWidth(),
+                            frame.getHeight()
+                    ),
                     false
             ));
         }
 
         int selectedCount = selectedRois.size();
-        String profile = policy == RoiBudgetPolicy.TWO_ROI
-                ? "R2" : policy == RoiBudgetPolicy.ONE_ROI ? "R1" : "R0";
         for (int index = 0; index < selectedCount; index++) {
             overlays.add(roiOverlay(
                     selectedRois.get(index),
                     frame,
                     String.format(
                             Locale.ROOT,
-                            "%s ROI %d/%d",
-                            profile,
+                            "Obszar %d/%d",
                             index + 1,
                             selectedCount
                     )
             ));
         }
+    }
+
+    static long stableVehicleOverlayId(
+            Detection vehicle,
+            List<VehicleCandidate> candidates,
+            int frameWidth,
+            int frameHeight
+    ) {
+        if (vehicle == null || candidates == null || candidates.isEmpty()
+                || frameWidth <= 0 || frameHeight <= 0) return 0L;
+
+        NormalizedBounds bounds = new NormalizedBounds(
+                vehicle.left / frameWidth,
+                vehicle.top / frameHeight,
+                vehicle.right / frameWidth,
+                vehicle.bottom / frameHeight
+        );
+        VehicleCandidate best = null;
+        float bestOverlap = 0f;
+        for (VehicleCandidate candidate : candidates) {
+            if (candidate == null) continue;
+            float overlap = bounds.iou(candidate.bounds);
+            if (overlap > bestOverlap) {
+                bestOverlap = overlap;
+                best = candidate;
+            }
+        }
+        return best != null && bestOverlap >= 0.15f ? best.entityId : 0L;
     }
 
     private static OverlayItem roiOverlay(
@@ -2003,7 +2043,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 ),
                 Collections.emptyList(),
                 label,
-                0L,
+                roi.entityId > 0L ? roi.entityId : roi.vehicleTrackId,
                 false
         );
     }
@@ -2043,6 +2083,26 @@ final class MobileAlprEngine implements AutoCloseable {
                 0L,
                 false
         );
+    }
+
+    private static void upsertScheduledVehicleRoiOverlay(
+            List<OverlayItem> overlays,
+            VehicleRoi roi,
+            Bitmap frame,
+            boolean expanded
+    ) {
+        if (roi == null) return;
+        long stableId = roi.entityId > 0L ? roi.entityId : roi.vehicleTrackId;
+        overlays.removeIf(item -> item.kind == OverlayItem.Kind.VEHICLE_ROI
+                && stableId > 0L
+                && item.trackId == stableId);
+        overlays.add(roiOverlay(
+                roi,
+                frame,
+                expanded
+                        ? "Wybrany pojazd · szerszy obszar"
+                        : "Wybrany pojazd"
+        ));
     }
 
     private static OverlayItem carriedTargetOverlay(OverlayItem source) {

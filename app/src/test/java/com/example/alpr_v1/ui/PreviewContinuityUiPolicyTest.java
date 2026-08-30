@@ -122,6 +122,46 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
+    public void directLumaWaitsUntilPreviewConsumesRecoveryRebase() {
+        assertTrue(PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
+                9L,
+                8L
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
+                9L,
+                9L
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
+                8L,
+                9L
+        ));
+    }
+
+    @Test
+    public void dynamicOverlayInvalidatesBeforeFullSceneBoundaryDecision() {
+        assertTrue(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                false,
+                0.32f
+        ));
+        assertTrue(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                true,
+                0.01f
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                false,
+                0.11f
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY,
+                true,
+                1f
+        ));
+    }
+
+    @Test
     public void poolOnlyRecoveryClearsGhostFocusedTarget() {
         assertTrue(PreviewContinuityUiPolicy
                 .shouldClearFocusedTargetAfterRecovery(

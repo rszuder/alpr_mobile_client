@@ -21,7 +21,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        app:scaleType="fillCenter" />
+        app:scaleType="fitCenter" />
 
 
     <com.example.alpr_v1.ui.DetectionOverlayView
@@ -97,6 +97,17 @@
             android:textSize="10sp"
             android:visibility="gone"
             tools:text="" />
+
+        <ImageButton
+            android:id="@+id/live_scene_mode_toggle"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="4dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/scene_mode_dynamic_action"
+            android:padding="5dp"
+            android:src="@drawable/ic_scene_dynamic_24"
+            app:tint="@color/alpr_accent" />
 
         <ImageButton
             android:id="@+id/live_diagnostics_toggle"

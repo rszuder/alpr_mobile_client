@@ -163,7 +163,9 @@ public class VehicleTrackingCoordinatorTest {
         );
         coordinator.drainEvents();
 
-        coordinator.predict(2L, 17_000_000_001L, 17_000_000_001L);
+        long afterEntityTtl = 1_000_000_000L
+                + VehicleTrackManager.DEFAULT_ENTITY_TTL_NANOS + 1L;
+        coordinator.predict(2L, afterEntityTtl, afterEntityTtl);
         List<VehicleTrackingEvent> predictedExpiration = coordinator.drainEvents();
 
         assertEquals(1, eventCount(predictedExpiration, "vehicle_track_expired"));
@@ -172,8 +174,8 @@ public class VehicleTrackingCoordinatorTest {
 
         coordinator.updateFromMp(
                 3L,
-                17_100_000_000L,
-                17_100_000_000L,
+                afterEntityTtl + 100_000_000L,
+                afterEntityTtl + 100_000_000L,
                 Collections.emptyList()
         );
         List<VehicleTrackingEvent> measuredExpiration = coordinator.drainEvents();
@@ -182,7 +184,11 @@ public class VehicleTrackingCoordinatorTest {
         assertEquals(1, eventCount(measuredExpiration, "vehicle_entity_expired"));
         assertEquals(0, coordinator.repository().size());
 
-        coordinator.predict(4L, 18_000_000_000L, 18_000_000_000L);
+        coordinator.predict(
+                4L,
+                afterEntityTtl + 1_000_000_000L,
+                afterEntityTtl + 1_000_000_000L
+        );
         assertEquals(0, coordinator.drainEvents().size());
     }
 
@@ -237,6 +243,31 @@ public class VehicleTrackingCoordinatorTest {
                 coordinator.currentTrackTtlNanos()
         );
         assertFalse(second.candidates.get(0).predicted);
+        assertEquals(1, coordinator.repository().size());
+    }
+
+    @Test
+    public void longScanGapKeepsCurrentSceneEntityIdentity() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame first = coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_250_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+
+        VehicleTrackingFrame afterLongAcquisition = coordinator.updateFromMp(
+                2L,
+                121_000_000_000L,
+                121_250_000_000L,
+                Collections.singletonList(observation(0.2f))
+        );
+
+        assertEquals(
+                first.candidates.get(0).entityId,
+                afterLongAcquisition.candidates.get(0).entityId
+        );
+        assertFalse(afterLongAcquisition.candidates.get(0).predicted);
         assertEquals(1, coordinator.repository().size());
     }
 

@@ -356,6 +356,12 @@
     <string name="settings_scene_mode_experiment_locked">Eksperyment R0/R1/R2 wymusza tryb strict, aby próbki pozostały rozdzielone.</string>
     <string name="settings_scene_mode_dynamic">Dynamiczny</string>
     <string name="settings_scene_mode_strict">Strict</string>
+    <string name="scene_mode_dynamic_action">Ruch kamery dozwolony. Dotknij, aby przełączyć na nieruchomy kadr.</string>
+    <string name="scene_mode_static_action">Nieruchomy kadr. Dotknij, aby zezwolić na ruch kamery.</string>
+    <string name="scene_mode_experiment_action">Nieruchomy kadr jest wymagany podczas eksperymentu.</string>
+    <string name="scene_mode_changed_dynamic">Ruch kamery dozwolony: aplikacja zachowuje śledzony cel</string>
+    <string name="scene_mode_changed_static">Nieruchomy kadr: zmiana widoku rozpoczyna nową scenę</string>
+    <string name="scene_mode_experiment_locked_hud">Podczas eksperymentu wymagany jest nieruchomy kadr</string>
     <string name="scan_status_searching">Szukam pojazdów</string>
     <string name="scan_hint_searching">Utrzymuj pojazdy w kadrze — analiza wybierze je kolejno</string>
     <string name="scan_status_selecting">Wybieram kolejny pojazd</string>

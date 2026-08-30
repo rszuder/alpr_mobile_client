@@ -128,6 +128,52 @@ public final class DetectionOverlayView extends View {
         setItems(newItems, 0, 0);
     }
 
+    /**
+     * Szybki tracker Preview jest wlascicielem wyłącznie geometrii PLATE.
+     * Diagnostyczne VEHICLE i VEHICLE_ROI pochodza z MP i nie moga byc
+     * ponownie skladane ani animowane przy kazdej lekkiej klatce kamery.
+     */
+    public void setTrackedPlateItems(List<OverlayItem> trackedPlates) {
+        if (trackedPlates == null || trackedPlates.isEmpty()) return;
+
+        if (overlayAnimator != null) {
+            overlayAnimator.cancel();
+            overlayAnimator = null;
+        }
+
+        List<OverlayItem> updated = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item.kind != OverlayItem.Kind.PLATE) updated.add(item);
+        }
+        if (trackedPlates != null) {
+            for (OverlayItem item : trackedPlates) {
+                if (item != null && item.kind == OverlayItem.Kind.PLATE) {
+                    updated.add(item);
+                }
+            }
+        }
+        items = Collections.unmodifiableList(updated);
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    /** Bezanimacyjna klatka Preview zawierajaca juz komplet warstw. */
+    public void setPreviewItems(List<OverlayItem> previewItems) {
+        if (overlayAnimator != null) {
+            overlayAnimator.cancel();
+            overlayAnimator = null;
+        }
+        items = Collections.unmodifiableList(new ArrayList<>(
+                previewItems == null ? Collections.emptyList() : previewItems
+        ));
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    List<OverlayItem> snapshotItemsForTesting() {
+        return Collections.unmodifiableList(new ArrayList<>(items));
+    }
+
     public void setItems(
             List<OverlayItem> newItems,
             int sourceWidth,
@@ -312,7 +358,7 @@ public final class DetectionOverlayView extends View {
 
     /**
      * Mapuje punkt ze znormalizowanych współrzędnych obrazu źródłowego do
-     * lokalnych współrzędnych widoku dokładnie tą samą transformacją fillCenter,
+     * lokalnych współrzędnych widoku dokładnie tą samą transformacją fitCenter,
      * której używają ramki. Celownik i overlay nie mogą stosować dwóch różnych
      * układów współrzędnych.
      */
@@ -325,7 +371,7 @@ public final class DetectionOverlayView extends View {
 
         float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
         float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
         float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
         float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
 
@@ -336,9 +382,9 @@ public final class DetectionOverlayView extends View {
     }
 
     /**
-     * Fragment obrazu źródłowego faktycznie widoczny po zastosowaniu fillCenter.
-     * Przy różnych proporcjach PreviewView i analizy część obrazu jest odcinana,
-     * więc bez tych granic bezpieczny zoom mógłby wypchnąć cel poza ekran.
+     * Fragment obrazu źródłowego faktycznie widoczny po zastosowaniu fitCenter.
+     * Cały kadr analizy pozostaje widoczny; metoda nadal jest wspólnym
+     * kontraktem dla bezpiecznego zoomu i punktu ostrości.
      */
     public RectF normalizedVisibleBounds() {
         float viewWidth = getWidth();
@@ -349,7 +395,7 @@ public final class DetectionOverlayView extends View {
 
         float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
         float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
         float scaledWidth = imageWidth * scale;
         float scaledHeight = imageHeight * scale;
         float offsetX = (viewWidth - scaledWidth) * 0.5f;
@@ -391,6 +437,17 @@ public final class DetectionOverlayView extends View {
 
         for (OverlayItem target :
                 targetItems) {
+
+            /*
+             * Animacja sluzy wyłącznie lagodnej korekcie ramki tablicy.
+             * VEHICLE i VEHICLE_ROI pochodza z innej fazy inferencji; ich
+             * morphowanie przy pojawieniu sie PLATE dawalo falszywy impuls
+             * zmiany wysokosci wszystkich ramek pojazdow.
+             */
+            if (!shouldInterpolateGeometry(target.kind)) {
+                result.add(target);
+                continue;
+            }
 
             int previousIndex =
                     findPreviousMatch(
@@ -441,6 +498,10 @@ public final class DetectionOverlayView extends View {
         );
     }
 
+    static boolean shouldInterpolateGeometry(OverlayItem.Kind kind) {
+        return kind == OverlayItem.Kind.PLATE;
+    }
+
     private static int findPreviousMatch(
             OverlayItem target,
             List<OverlayItem> previousItems,
@@ -448,12 +509,11 @@ public final class DetectionOverlayView extends View {
     ) {
 
         /*
-         * PLATE ma prawdziwy trackId.
-         * To jest najlepszy możliwy klucz.
+         * PLATE oraz exact-entity VEHICLE_ROI mają stabilny identyfikator.
+         * To jest najlepszy możliwy klucz i zapobiega przeskakiwaniu ROI
+         * pomiędzy pojazdami przy zmianie kolejności rankingu.
          */
-        if (target.kind
-                == OverlayItem.Kind.PLATE
-                && target.trackId > 0L) {
+        if (target.trackId > 0L) {
 
             for (int index = 0;
                  index < previousItems.size();
@@ -470,8 +530,7 @@ public final class DetectionOverlayView extends View {
                         );
 
 
-                if (previous.kind
-                        == OverlayItem.Kind.PLATE
+                if (previous.kind == target.kind
                         && previous.trackId
                         == target.trackId) {
 
@@ -482,8 +541,7 @@ public final class DetectionOverlayView extends View {
 
 
         /*
-         * VEHICLE i VEHICLE_ROI nie mają obecnie
-         * stabilnego trackId.
+         * Surowe VEHICLE i starsze ROI mogą nie mieć stabilnego trackId.
          *
          * Dopasowujemy więc geometrycznie:
          * ten sam rodzaj + możliwie największe IoU.
@@ -935,16 +993,16 @@ public final class DetectionOverlayView extends View {
         }
     }
     private Paint paintFor(OverlayItem item) {
+        if (item.carriedPrediction) {
+            return predictionPaint;
+        }
+
         if (item.kind == OverlayItem.Kind.VEHICLE) {
             return vehiclePaint;
         }
 
         if (item.kind == OverlayItem.Kind.VEHICLE_ROI) {
             return vehicleRoiPaint;
-        }
-
-        if (item.carriedPrediction) {
-            return predictionPaint;
         }
 
         return boxPaint;
@@ -984,7 +1042,7 @@ public final class DetectionOverlayView extends View {
         }
         float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
         float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
         float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
         float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
         List<RenderItem> prepared = new ArrayList<>(items.size());

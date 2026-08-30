@@ -1,12 +1,14 @@
 package com.example.alpr_v1.ui;
 
 import com.example.alpr_v1.continuity.SceneContinuityState;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.pipeline.TargetSnapshot;
 
 /** Pure authority rule for preview presentation after continuity evaluation. */
 public final class PreviewContinuityUiPolicy {
+    private static final float DYNAMIC_OVERLAY_INVALIDATION_FRACTION = 0.12f;
     public enum Authority { COORDINATOR, LEGACY_FALLBACK }
 
     public static final class Outcome {
@@ -79,6 +81,31 @@ public final class PreviewContinuityUiPolicy {
     ) {
         return requestedRevision > appliedRevision
                 && coordinatorState == SceneContinuityState.STABLE;
+    }
+
+    /**
+     * Direct-luma nie ma bitmapy potrzebnej do przestawienia referencji sceny.
+     * Po zleceniu recovery musi ustapic monitorowi Preview do chwili, w ktorej
+     * ten zakotwiczy nowa referencje; inaczej stara referencja natychmiast
+     * uruchamia kolejne SOFT_REACQUIRE.
+     */
+    public static boolean shouldSuspendDirectLumaEvidence(
+            long requestedRevision,
+            long appliedRevision
+    ) {
+        return requestedRevision > appliedRevision;
+    }
+
+    /** UI safety gate independent from the stricter scene-boundary decision. */
+    public static boolean shouldInvalidateDynamicOverlay(
+            SceneHandlingMode mode,
+            boolean sceneChanged,
+            float changedFraction
+    ) {
+        return mode == SceneHandlingMode.DYNAMIC_CONTINUITY
+                && (sceneChanged
+                || (Float.isFinite(changedFraction)
+                && changedFraction >= DYNAMIC_OVERLAY_INVALIDATION_FRACTION));
     }
 
     public static boolean shouldClearFocusedTargetAfterRecovery(

@@ -71,6 +71,107 @@ public final class AcquisitionQueueTest {
     }
 
     @Test
+    public void stalePredictionStaysQueuedButCannotStartNewSession() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        long olderThanPredictionLimit =
+                ScanAcquisitionProfile.DEFAULT.maximumPredictionAgeNanos + 1L;
+        queue.update(frame(
+                1L,
+                candidate(
+                        1L, 11L, 0.8f, 0f,
+                        false, olderThanPredictionLimit
+                ),
+                candidate(
+                        2L, 12L, 0.8f, 0f,
+                        true, olderThanPredictionLimit
+                )
+        ), 0L, 100L);
+
+        AcquisitionQueueSnapshot snapshot = queue.snapshot(100L);
+        assertNotNull(snapshot.find(1L));
+        assertNotNull(snapshot.find(2L));
+        assertEquals(1L, queue.selectNext(100L).candidate.entityId);
+
+        queue.complete(1L);
+        assertEquals(1, queue.snapshot(101L).size());
+        assertNull(queue.selectNext(101L));
+    }
+
+    @Test
+    public void stalePredictionDoesNotResetWaitingAge() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.72f, 0f, false, 0L),
+                candidate(2L, 12L, 0.78f, 0f, false, 0L)
+        ), 0L, 100L);
+
+        long staleAge = ScanAcquisitionProfile.DEFAULT.maximumPredictionAgeNanos + 1L;
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.72f, 0f, true, staleAge),
+                candidate(2L, 12L, 0.78f, 0f, true, staleAge)
+        ), 0L, 2_000_000_000L);
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.72f, 0f, false, 0L),
+                candidate(2L, 12L, 0.78f, 0f, false, 0L)
+        ), 0L, ScanAcquisitionProfile.DEFAULT.waitingAgeSaturationNanos);
+
+        AcquisitionQueueSnapshot snapshot = queue.snapshot(
+                ScanAcquisitionProfile.DEFAULT.waitingAgeSaturationNanos
+        );
+        assertEquals(100L, snapshot.find(1L).firstQueuedRuntimeNanos);
+        assertEquals(100L, snapshot.find(2L).firstQueuedRuntimeNanos);
+    }
+
+    @Test
+    public void temporarilyMissingCandidateKeepsQueueAgeButIsNotSelectable() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1L, candidate(1L, 11L)), 0L, 100L);
+
+        long missingAt = ScanAcquisitionProfile.DEFAULT.maximumPredictionAgeNanos
+                + 1_000L;
+        queue.update(frame(1L), 0L, missingAt);
+
+        AcquisitionQueueSnapshot missing = queue.snapshot(missingAt);
+        assertNotNull(missing.find(1L));
+        assertTrue(missing.find(1L).predicted);
+        assertNull(queue.selectNext(missingAt));
+
+        queue.update(frame(1L, candidate(1L, 99L)), 0L, missingAt + 1_000L);
+        AcquisitionCandidate returned = queue.snapshot(missingAt + 1_000L).find(1L);
+        assertNotNull(returned);
+        assertEquals(100L, returned.firstQueuedRuntimeNanos);
+        assertEquals(99L, returned.vehicleTrackId);
+    }
+
+    @Test
+    public void lowConfidencePredictionRetainsAttemptsUntilFreshMp() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1L, candidate(1L, 11L)), 0L, 100L);
+        queue.selectNext(100L);
+        queue.recordMtAttempt(1L, 100L);
+        queue.defer(1L, 100L, 0L);
+
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.05f, 0f, true, 600_000_000L)
+        ), 0L, 200L);
+
+        AcquisitionCandidate predicted = queue.snapshot(200L).find(1L);
+        assertNotNull(predicted);
+        assertEquals(1, predicted.mtAttempts);
+        assertNull(queue.selectNext(200L));
+
+        queue.update(frame(1L, candidate(1L, 99L)), 0L, 300L);
+        AcquisitionCandidate measured = queue.snapshot(300L).find(1L);
+        assertNotNull(measured);
+        assertEquals(1, measured.mtAttempts);
+        assertEquals(99L, measured.vehicleTrackId);
+    }
+
+    @Test
     public void exitUrgencyRaisesPriority() {
         AcquisitionQueue queue = new AcquisitionQueue();
         queue.update(frame(
@@ -114,8 +215,52 @@ public final class AcquisitionQueueTest {
         queue.selectNext(100L);
         queue.defer(1L, 100L, 50L);
 
+        assertEquals(100L, queue.snapshot(100L).find(1L).firstQueuedRuntimeNanos);
         assertNull(queue.selectNext(149L));
         assertEquals(1L, queue.selectNext(150L).candidate.entityId);
+    }
+
+    @Test
+    public void deferredReadableCandidateMovesBehindNeverAttemptedPeer() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        long saturated = ScanAcquisitionProfile.DEFAULT.waitingAgeSaturationNanos;
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.82f, 0f, false, 0L),
+                candidate(2L, 12L, 0.80f, 0f, false, 0L)
+        ), 0L, 100L);
+
+        assertEquals(1L, queue.selectNext(saturated).candidate.entityId);
+        queue.defer(1L, saturated, 0L);
+
+        AcquisitionQueue.Selection next = queue.selectNext(saturated + 1L);
+        assertNotNull(next);
+        assertEquals(2L, next.candidate.entityId);
+        assertEquals(saturated, queue.snapshot(saturated + 1L)
+                .find(1L).firstQueuedRuntimeNanos);
+    }
+
+    @Test
+    public void firstPassBarrierVisitsSmallVehicleBeforeReadableRetry() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.95f, 0f, false, 0L),
+                candidate(2L, 12L, 0.70f, 0f, false, 0L),
+                candidate(3L, 13L, 0.25f, 0f, false, 0L)
+        ), 0L, 100L);
+
+        long first = queue.selectNext(100L).candidate.entityId;
+        assertEquals(1L, first);
+        queue.recordMtAttempt(first, 100L);
+        queue.defer(first, 100L, 0L);
+
+        long second = queue.selectNext(101L).candidate.entityId;
+        assertEquals(2L, second);
+        queue.recordMtAttempt(second, 101L);
+        queue.defer(second, 101L, 0L);
+
+        assertEquals(3L, queue.selectNext(102L).candidate.entityId);
     }
 
     @Test

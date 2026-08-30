@@ -21,7 +21,13 @@ import java.util.Set;
 public final class VehicleTrackManager {
     public static final int DEFAULT_MAX_TRACKED_VEHICLES = 16;
     public static final long DEFAULT_TRACK_TTL_NANOS = 1_800_000_000L;
-    public static final long DEFAULT_ENTITY_TTL_NANOS = 15_000_000_000L;
+    /**
+     * Encja jest tożsamością sceny, nie pojedynczego przebiegu MP. Na wolnym
+     * urządzeniu obsłużenie kilku pojazdów może trwać minuty, dlatego jej TTL
+     * obejmuje pełne dziesięciominutowe okno testu Scan. Liczba encji nadal jest
+     * ograniczona przez MAX_ACTIVE_ENTITIES i resetowana na granicy sceny.
+     */
+    public static final long DEFAULT_ENTITY_TTL_NANOS = 600_000_000_000L;
     public static final float MIN_ACTIVE_ASSOCIATION_SCORE = 0.36f;
     public static final float MIN_REASSOCIATION_SCORE = 0.50f;
     public static final float MIN_ASSOCIATION_MARGIN = 0.035f;
