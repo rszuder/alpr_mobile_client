@@ -1,0 +1,382 @@
+package com.example.alpr_v1.acquisition;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+import com.example.alpr_v1.continuity.ContinuityAssessment;
+import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
+import com.example.alpr_v1.continuity.SceneContinuityState;
+import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.VisualChangeClassification;
+import com.example.alpr_v1.domain.EntityAcquisitionState;
+import com.example.alpr_v1.domain.ModeController;
+import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.TargetPurpose;
+import com.example.alpr_v1.pipeline.MtReason;
+import com.example.alpr_v1.pipeline.MtWorkKind;
+import com.example.alpr_v1.pipeline.PipelineResult;
+import com.example.alpr_v1.pipeline.PlateGeometry;
+import com.example.alpr_v1.pipeline.PlateObservation;
+import com.example.alpr_v1.pipeline.PlateRecognition;
+import com.example.alpr_v1.pipeline.PlateVehicleAssociation;
+import com.example.alpr_v1.pipeline.TemporalCharacterAggregator;
+import com.example.alpr_v1.tracking.VehicleCandidate;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+
+import org.junit.Test;
+
+import java.util.Collections;
+
+public final class ScanAcquisitionControllerTest {
+    private static final long SECOND = 1_000_000_000L;
+
+    @Test
+    public void runSupportsStartPauseResumeAndStop() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(7L, 100L);
+        controller.pauseRun(200L);
+        assertEquals(ScanRunState.PAUSED, controller.snapshot(500L).runState);
+        assertEquals(100L, controller.snapshot(500L).runActiveDurationNanos);
+
+        controller.resumeRun(600L);
+        controller.stopRun(800L);
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(1_000L);
+        assertEquals(ScanRunState.STOPPED, snapshot.runState);
+        assertEquals(300L, snapshot.runActiveDurationNanos);
+        assertEquals(700L, snapshot.runWallDurationNanos);
+    }
+
+    @Test
+    public void firstSelectionStartsShortScanSessionAndMtAttemptOne() {
+        ModeController modes = new ModeController();
+        ScanAcquisitionController controller = new ScanAcquisitionController(
+                modes,
+                ScanAcquisitionProfile.DEFAULT
+        );
+        controller.startRun(1L, 0L);
+
+        AcquisitionDirective directive = controller.onVehicleFrame(
+                frame(candidate(2L, 22L)), continuity(), 10L
+        );
+
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,
+                directive.action);
+        assertEquals(2L, directive.entityId);
+        assertEquals(1, controller.snapshot(10L).mtAttempts);
+        assertNotNull(modes.activeSession());
+        assertEquals(TargetPurpose.SCAN_ACQUISITION,
+                modes.activeSession().purpose());
+        assertFalse(modes.activeSession().persistent());
+    }
+
+    @Test
+    public void missingFirstMtSchedulesExpandedRetryForSameEntity() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(), continuity(), 100L
+        );
+
+        assertTrue(decision.accepted);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXPANDED_ENTITY_MT,
+                decision.nextDirective.action);
+        assertEquals(4L, decision.nextDirective.entityId);
+        assertEquals(2, controller.snapshot(100L).mtAttempts);
+    }
+
+    @Test
+    public void twoMissingMtAttemptsDeferAndReleaseTarget() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onPipelineResult(result(), continuity(), 100L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(), continuity(), 200L
+        );
+
+        assertEquals(AcquisitionSessionOutcome.DEFERRED, decision.outcome);
+        assertEquals(AcquisitionDeferReason.MT_ATTEMPTS_EXHAUSTED,
+                decision.deferReason);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                decision.nextDirective.action);
+        assertEquals(0L, controller.snapshot(200L).activeEntityId);
+    }
+
+    @Test
+    public void matchingFreshMzAdvancesRegistrationState() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "WX")),
+                continuity(),
+                100L
+        );
+
+        assertTrue(decision.accepted);
+        assertEquals(EntityAcquisitionState.READING_REGISTRATION,
+                decision.entityState);
+        assertEquals(1, controller.snapshot(100L).freshMzAttempts);
+        assertEquals(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                decision.nextDirective.action);
+    }
+
+    @Test
+    public void stableMatchingConsensusBecomesReadyAndScopedRelease() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(4L, 44L, true, true, "WX1234")),
+                continuity(),
+                100L
+        );
+
+        assertEquals(AcquisitionSessionOutcome.READY_TO_FINALIZE,
+                decision.outcome);
+        assertEquals(EntityAcquisitionState.READY_TO_FINALIZE,
+                decision.entityState);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                decision.nextDirective.action);
+        assertEquals(0L, controller.snapshot(100L).activeSessionId);
+    }
+
+    @Test
+    public void twoUnconfirmedFreshMzAttemptsDeferSession() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "WX")),
+                continuity(),
+                100L
+        );
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "WY")),
+                continuity(),
+                200L
+        );
+
+        assertEquals(AcquisitionSessionOutcome.DEFERRED, decision.outcome);
+        assertEquals(AcquisitionDeferReason.MZ_ATTEMPTS_EXHAUSTED,
+                decision.deferReason);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                decision.nextDirective.action);
+    }
+
+    @Test
+    public void readyEntityReleasesAndNextFrameSelectsAnotherEntity() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                10L
+        );
+        long first = controller.snapshot(10L).activeEntityId;
+        controller.onPipelineResult(
+                result(observation(first, first + 10L, true, true, "WX1234")),
+                continuity(),
+                100L
+        );
+
+        AcquisitionDirective next = controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                200L
+        );
+
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,
+                next.action);
+        assertTrue(next.entityId != first);
+    }
+
+    @Test
+    public void noProgressTimeoutUsesActiveProcessingTime() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDirective directive = controller.onVehicleFrame(
+                frame(candidate(4L, 44L)),
+                continuity(),
+                ScanAcquisitionProfile.DEFAULT.noProgressTimeoutNanos + 1L
+        );
+
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                directive.action);
+        assertTrue(directive.reason.contains("no_progress_timeout"));
+    }
+
+    @Test
+    public void sessionActiveTimeoutRemainsIndependentFromProgressClock() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onPipelineResult(
+                result(observation(4L, 44L, false, false, "")),
+                continuity(),
+                2_900_000_000L
+        );
+
+        AcquisitionDirective directive = controller.onVehicleFrame(
+                frame(candidate(4L, 44L)),
+                continuity(),
+                ScanAcquisitionProfile.DEFAULT.maximumActiveSessionNanos + 1L
+        );
+
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                directive.action);
+        assertTrue(directive.reason.contains("active_session_timeout"));
+    }
+
+    @Test
+    public void pausedRunDoesNotConsumeSessionActiveBudget() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.pauseRun(1L * SECOND);
+        controller.resumeRun(101L * SECOND);
+
+        AcquisitionDirective directive = controller.onVehicleFrame(
+                frame(candidate(4L, 44L)),
+                continuity(),
+                102L * SECOND
+        );
+
+        assertEquals(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                directive.action);
+        assertEquals(2L * SECOND - 1L,
+                controller.snapshot(102L * SECOND).activeSessionDurationNanos);
+    }
+
+    @Test
+    public void userStopCancelsSessionAndRequestsScopedRelease() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        controller.stopRun(100L);
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(100L);
+        assertEquals(ScanRunState.STOPPED, snapshot.runState);
+        assertEquals(0L, snapshot.activeSessionId);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                snapshot.directive.action);
+    }
+
+    @Test
+    public void scanNeverAllowsAutoZoom() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+
+        assertFalse(controller.autoZoomAllowed());
+        assertFalse(controller.snapshot(0L).autoZoomAllowed);
+    }
+
+    @Test
+    public void observationFromEntityADoesNotAdvanceActiveEntityB() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(8L, 88L, true, true, "BAD")),
+                continuity(),
+                100L
+        );
+
+        assertFalse(decision.accepted);
+        assertEquals("pipeline_result_belongs_to_another_entity", decision.reason);
+        assertEquals(4L, controller.snapshot(100L).activeEntityId);
+        assertEquals(0, controller.snapshot(100L).freshMzAttempts);
+    }
+
+    private static ScanAcquisitionController startedWithCandidate(long entityId) {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(entityId, entityId + 40L)),
+                continuity(),
+                1L
+        );
+        return controller;
+    }
+
+    private static SceneContinuitySnapshot continuity() {
+        return new SceneContinuitySnapshot(
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneContinuityState.STABLE,
+                VisualChangeClassification.NONE,
+                1L, 1L, 0L, 0L,
+                false, false, 0L,
+                ContinuityAssessment.none()
+        );
+    }
+
+    private static VehicleTrackingFrame frame(VehicleCandidate... candidates) {
+        return new VehicleTrackingFrame(
+                1L, 1L, 1L, 1L,
+                java.util.Arrays.asList(candidates)
+        );
+    }
+
+    private static VehicleCandidate candidate(long entityId, long vehicleTrackId) {
+        return new VehicleCandidate(
+                entityId,
+                vehicleTrackId,
+                new NormalizedBounds(0.2f, 0.2f, 0.8f, 0.8f),
+                0.9f, 0.9f, 0.1f,
+                false, 0,
+                1L, 1L, 0,
+                EntityAcquisitionState.NEW
+        );
+    }
+
+    private static PipelineResult result(PlateObservation... observations) {
+        return new PipelineResult(
+                "ok",
+                "",
+                Collections.<PlateRecognition>emptyList(),
+                Collections.emptyList(),
+                100, 100,
+                java.util.Arrays.asList(observations),
+                false,
+                new ContinuityStamp(1L, 0L, 0L, 1L)
+        );
+    }
+
+    private static PlateObservation observation(
+            long entityId,
+            long vehicleTrackId,
+            boolean confirmed,
+            boolean freshMzAttempted,
+            String text
+    ) {
+        return new PlateObservation(
+                entityId + 100L,
+                PlateVehicleAssociation.direct(
+                        entityId,
+                        vehicleTrackId,
+                        "scan_test"
+                ),
+                MtWorkKind.VEHICLE_ROI,
+                MtReason.SCAN_NEXT_CANDIDATE,
+                1L,
+                null,
+                text,
+                0.9,
+                confirmed ? 0.9 : 0.4,
+                confirmed,
+                confirmed ? 3 : 1,
+                Collections.emptyList(),
+                0L,
+                10L,
+                0.8f,
+                null,
+                null,
+                PlateGeometry.unavailable(),
+                freshMzAttempted,
+                freshMzAttempted && !text.isEmpty(),
+                text,
+                confirmed,
+                freshMzAttempted ? 1 : 0,
+                TemporalCharacterAggregator.LAYOUT_SINGLE_ROW,
+                Collections.emptyList(),
+                "",
+                text,
+                new ContinuityStamp(1L, 0L, 0L, 1L)
+        );
+    }
+}
