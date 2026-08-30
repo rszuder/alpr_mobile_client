@@ -9,8 +9,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import com.example.alpr_v1.continuity.ContinuityAssessment;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
+import com.example.alpr_v1.continuity.SceneContinuityState;
+import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.continuity.VisualChangeClassification;
+import com.example.alpr_v1.pipeline.TargetSnapshot;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -61,6 +64,59 @@ public final class PreviewCoordinatorAuthorityInstrumentedTest {
         assertFalse(outcome.legacyTrackingLossInvalidation);
         assertEquals(2, visibleOverlay.size());
         assertEquals(7L, uiSceneGeneration.get());
+    }
+
+    @Test
+    public void recoveredPoolConsumesPreviewReferenceRebaseOnce() {
+        SceneTransitionDecision reacquiring = new SceneTransitionDecision(
+                2L,
+                SceneTransitionAction.SOFT_REACQUIRE,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneContinuityState.REACQUIRING,
+                ContinuityAssessment.none(),
+                true, true, true,
+                true, true, true,
+                true, true,
+                false, false, true,
+                true, false,
+                "pool_reacquire"
+        );
+        long requestedRevision = PreviewContinuityUiPolicy
+                .requestsRecoveryRebase(reacquiring)
+                ? reacquiring.revision : 0L;
+
+        assertEquals(true,
+                PreviewContinuityUiPolicy.shouldApplyRecoveredSceneRebase(
+                        requestedRevision,
+                        0L,
+                        SceneContinuityState.STABLE
+                ));
+        assertFalse(
+                PreviewContinuityUiPolicy.shouldApplyRecoveredSceneRebase(
+                        requestedRevision,
+                        requestedRevision,
+                        SceneContinuityState.STABLE
+                )
+        );
+        assertEquals(
+                true,
+                PreviewContinuityUiPolicy
+                        .shouldClearFocusedTargetAfterRecovery(
+                                true,
+                                "VEHICLE_POOL_RECOVERED"
+                        )
+        );
+        assertFalse(PreviewContinuityUiPolicy.isEstablishedFocusedTarget(
+                TargetSnapshot.State.ACQUIRED,
+                0L
+        ));
+        assertEquals(
+                true,
+                PreviewContinuityUiPolicy.isEstablishedFocusedTarget(
+                        TargetSnapshot.State.TRACKING,
+                        0L
+                )
+        );
     }
 
     private static OverlayItem vehicle(long trackId, float left) {

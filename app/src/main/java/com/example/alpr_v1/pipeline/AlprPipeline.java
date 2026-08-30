@@ -2186,6 +2186,10 @@ public final class AlprPipeline {
         return sceneTransitionCoordinator.snapshot();
     }
 
+    public ReacquireTelemetry reacquireTelemetry() {
+        return sceneTransitionCoordinator.reacquireTelemetry();
+    }
+
     public synchronized SceneTransitionDecision onPreviewSceneEvidence(
             long sourceTimestampNanos,
             boolean rawVisualChange,

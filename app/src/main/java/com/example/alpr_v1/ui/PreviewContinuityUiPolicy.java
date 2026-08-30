@@ -3,6 +3,7 @@ package com.example.alpr_v1.ui;
 import com.example.alpr_v1.continuity.SceneContinuityState;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
+import com.example.alpr_v1.pipeline.TargetSnapshot;
 
 /** Pure authority rule for preview presentation after continuity evaluation. */
 public final class PreviewContinuityUiPolicy {
@@ -61,5 +62,39 @@ public final class PreviewContinuityUiPolicy {
                 rawPreviewChanged,
                 !rawPreviewChanged && !trackedOverlayAvailable
         );
+    }
+
+    /** Signals that Preview owns a reference captured before coordinator recovery. */
+    public static boolean requestsRecoveryRebase(
+            SceneTransitionDecision decision
+    ) {
+        return decision != null
+                && decision.nextState == SceneContinuityState.REACQUIRING;
+    }
+
+    public static boolean shouldApplyRecoveredSceneRebase(
+            long requestedRevision,
+            long appliedRevision,
+            SceneContinuityState coordinatorState
+    ) {
+        return requestedRevision > appliedRevision
+                && coordinatorState == SceneContinuityState.STABLE;
+    }
+
+    public static boolean shouldClearFocusedTargetAfterRecovery(
+            boolean vehiclePoolRecovered,
+            String recoveryResult
+    ) {
+        return vehiclePoolRecovered
+                && "VEHICLE_POOL_RECOVERED".equals(recoveryResult);
+    }
+
+    public static boolean isEstablishedFocusedTarget(
+            TargetSnapshot.State previousState,
+            long previousLockedTrackId
+    ) {
+        return previousLockedTrackId > 0L
+                || previousState == TargetSnapshot.State.TRACKING
+                || previousState == TargetSnapshot.State.LOCKED;
     }
 }

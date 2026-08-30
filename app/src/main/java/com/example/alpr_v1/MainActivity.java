@@ -88,6 +88,7 @@ import com.example.alpr_v1.pipeline.TargetSnapshot;
 import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneAnchorRefreshPolicy;
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.ReacquireTelemetry;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
@@ -192,8 +193,11 @@ public final class MainActivity extends AppCompatActivity {
      * PreviewView stanie się referencją dla trackera.
      */
     private volatile boolean previewSceneAnchorPending;
+    private final AtomicLong previewSceneRecoveryRebaseRevision =
+            new AtomicLong();
+    private volatile long previewSceneRecoveryRebaseAppliedRevision;
     private long previewSceneAnchorLockRevision = -1L;
-    private com.example.alpr_v1.continuity.SceneContinuityState
+    private volatile com.example.alpr_v1.continuity.SceneContinuityState
             lastRenderedContinuityState =
             com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
 
@@ -341,6 +345,44 @@ public final class MainActivity extends AppCompatActivity {
                 previewSceneAnchorPending = false;
             }
 
+            SceneContinuitySnapshot runtimeContinuity = pipeline == null
+                    ? null : pipeline.sceneContinuitySnapshot();
+            long requestedRecoveryRebaseRevision =
+                    previewSceneRecoveryRebaseRevision.get();
+            if (runtimeContinuity != null
+                    && PreviewContinuityUiPolicy
+                    .shouldApplyRecoveredSceneRebase(
+                            requestedRecoveryRebaseRevision,
+                            previewSceneRecoveryRebaseAppliedRevision,
+                            runtimeContinuity.state
+                    )) {
+                previewSceneDetector.reset();
+                previewSceneDetector.update(previewBitmap);
+                previewSceneAnchorGuard.anchor(previewBitmap);
+                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                previewSceneRecoveryRebaseAppliedRevision =
+                        requestedRecoveryRebaseRevision;
+                ReacquireTelemetry recovery = pipeline.reacquireTelemetry();
+                if (PreviewContinuityUiPolicy
+                        .shouldClearFocusedTargetAfterRecovery(
+                                recovery.vehiclePoolRecovered,
+                                recovery.result
+                        )) {
+                    previewPlateTracker.reset();
+                    TargetSnapshot searchingTarget = targetStateMachine.reset();
+                    pipeline.setTargetSnapshotIfCurrent(
+                            searchingTarget,
+                            continuityStamp
+                    );
+                }
+                android.util.Log.d(
+                        "ALPR_PREVIEW_REFERENCE",
+                        "rebase=coordinator_recovery revision="
+                                + runtimeContinuity.decisionRevision
+                                + " result=" + recovery.result
+                );
+            }
+
             SceneAnchorGuard.Result anchorResult =
                     previewSceneAnchorGuard.evaluate(previewBitmap);
             SceneChangeDetector.Result scene =
@@ -353,9 +395,14 @@ public final class MainActivity extends AppCompatActivity {
             List<OverlayItem> trackedItems = trackingFrame == null
                     ? null : trackingFrame.overlayItems;
 
+            TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
+            TargetSnapshot targetAfterTracking = targetBeforeTracking;
             if (trackingFrame != null && pipeline != null) {
+                targetAfterTracking = targetStateMachine.onTrackingFrame(
+                        trackingFrame
+                );
                 pipeline.setTargetSnapshotIfCurrent(
-                        targetStateMachine.onTrackingFrame(trackingFrame),
+                        targetAfterTracking,
                         continuityStamp
                 );
             }
@@ -365,10 +412,17 @@ public final class MainActivity extends AppCompatActivity {
             boolean changed = scene.sceneChanged
                     || anchorResult.changed
                     || (zoomedRetry && zoomedAnchorResult.changed);
-            boolean trackingLost = trackingFrame != null && trackedItems.isEmpty();
+            boolean establishedFocusedTarget = PreviewContinuityUiPolicy
+                    .isEstablishedFocusedTarget(
+                            targetBeforeTracking.state,
+                            targetBeforeTracking.lockedTrackId
+                    );
+            boolean trackingLost = trackingFrame != null
+                    && establishedFocusedTarget
+                    && trackedItems.isEmpty();
             boolean trackingDegraded = trackingFrame != null
-                    && targetStateMachine.snapshot().state
-                    == TargetSnapshot.State.DEGRADED;
+                    && establishedFocusedTarget
+                    && targetAfterTracking.state == TargetSnapshot.State.DEGRADED;
             float evidenceScore = Math.max(
                     scene.score,
                     Math.max(anchorResult.score, zoomedAnchorResult.score)
@@ -397,6 +451,14 @@ public final class MainActivity extends AppCompatActivity {
                     trackingLost,
                     trackingDegraded
             );
+            if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
+                    continuityDecision
+            )) {
+                previewSceneRecoveryRebaseRevision.accumulateAndGet(
+                        continuityDecision.revision,
+                        Math::max
+                );
+            }
 
             bitmapHandedToUi = true;
             runOnUiThread(() -> {
@@ -532,16 +594,27 @@ public final class MainActivity extends AppCompatActivity {
                         maximumInliers
                 )
         );
+        TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
+        TargetSnapshot targetAfterTracking = targetBeforeTracking;
         if (pipeline != null) {
+            targetAfterTracking = targetStateMachine.onTrackingFrame(
+                    trackingFrame
+            );
             pipeline.setTargetSnapshotIfCurrent(
-                    targetStateMachine.onTrackingFrame(trackingFrame),
+                    targetAfterTracking,
                     continuityStamp
             );
         }
         List<OverlayItem> trackedItems = trackingFrame.overlayItems;
-        boolean trackingLost = trackedItems.isEmpty();
-        boolean trackingDegraded = targetStateMachine.snapshot().state
-                == TargetSnapshot.State.DEGRADED;
+        boolean establishedFocusedTarget = PreviewContinuityUiPolicy
+                .isEstablishedFocusedTarget(
+                        targetBeforeTracking.state,
+                        targetBeforeTracking.lockedTrackId
+                );
+        boolean trackingLost = establishedFocusedTarget
+                && trackedItems.isEmpty();
+        boolean trackingDegraded = establishedFocusedTarget
+                && targetAfterTracking.state == TargetSnapshot.State.DEGRADED;
         refreshPipelineCameraMotionEvidence();
         SceneTransitionDecision lumaContinuityDecision = pipeline == null
                 ? null
@@ -556,6 +629,14 @@ public final class MainActivity extends AppCompatActivity {
                 trackingLost,
                 trackingDegraded
         );
+        if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
+                lumaContinuityDecision
+        )) {
+            previewSceneRecoveryRebaseRevision.accumulateAndGet(
+                    lumaContinuityDecision.revision,
+                    Math::max
+            );
+        }
         runOnUiThread(() -> {
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
@@ -2092,6 +2173,8 @@ public final class MainActivity extends AppCompatActivity {
         );
 
         previewSceneDetector.reset();
+        previewSceneRecoveryRebaseRevision.set(0L);
+        previewSceneRecoveryRebaseAppliedRevision = 0L;
 
         previewSceneMonitorRunning =
                 true;
@@ -2103,6 +2186,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean needsPreviewSceneSampling() {
         return previewSceneAnchorPending
+                || previewSceneRecoveryRebaseRevision.get()
+                > previewSceneRecoveryRebaseAppliedRevision
                 || lastRenderedContinuityState
                 != com.example.alpr_v1.continuity.SceneContinuityState.STABLE
                 || !latestPipelinePlateItems.isEmpty()
@@ -2125,6 +2210,8 @@ public final class MainActivity extends AppCompatActivity {
         );
 
         previewSceneDetector.reset();
+        previewSceneRecoveryRebaseRevision.set(0L);
+        previewSceneRecoveryRebaseAppliedRevision = 0L;
     }
 
 
