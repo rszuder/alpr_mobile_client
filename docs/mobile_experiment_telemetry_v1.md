@@ -99,6 +99,14 @@ ostatni CameraX stamp jako `PREVIEW_INHERITED_CAMERA`; nie tworzą source time z
 zegara runtime. `camera_timestamp_source` zapisuje `REALTIME`, `UNKNOWN` albo
 `UNAVAILABLE`. Przy `UNKNOWN` freshness nadal opiera się na `source_sequence`.
 
+Terminalny wynik recovery jest zapisywany dokładnie raz jako event
+`terminal_recovery_applied`. Event zawiera `terminal_recovery_result`,
+`terminal_recovery_reason`, zastosowaną akcję koordynatora oraz flagi
+`abort_current_frame` i `request_immediate_frame`. Decyzja jest stosowana
+synchronicznie w klatce, która wytworzyła wynik. `ACTIVE_TARGET_LOST`,
+`VEHICLE_POOL_RECOVERED` i `FAILED` przerywają ją przed dalszym MT/MZ;
+`TARGET_RECOVERED` może kontynuować MZ tej samej, świeżo rewalidowanej encji.
+
 ## SECONDARY_SCENE_PREFLIGHT — `report.json`
 
 Pełnobitmapowy detektor obrazu po rotacji działa przed `MobileAlprEngine.run()`.

@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.example.alpr_v1.continuity.SoftReacquireResult;
+import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 
 import org.junit.Test;
@@ -27,6 +28,11 @@ public final class MobileAlprEngineContinuityApiTest {
         ));
         assertNotNull(MobileAlprEngine.class.getDeclaredMethod(
                 "releaseFocusedTarget", String.class
+        ));
+        assertNotNull(SceneTransitionCoordinator.class.getDeclaredMethod(
+                "completeSoftReacquire",
+                SoftReacquireResult.class,
+                long.class
         ));
     }
 

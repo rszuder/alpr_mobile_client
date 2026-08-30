@@ -64,7 +64,7 @@ import java.util.function.BooleanSupplier;
 
 final class MobileAlprEngine implements AutoCloseable {
     interface SoftReacquireResultListener {
-        void onResult(SoftReacquireReport report);
+        TerminalRecoveryDirective onResult(SoftReacquireReport report);
     }
 
     static final class ProcessingCancelledException extends RuntimeException {
@@ -126,6 +126,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private VehicleContinuityEvidence latestSoftReacquireVehicles =
             VehicleContinuityEvidence.empty();
     private SoftReacquireResultListener softReacquireResultListener;
+    private TerminalRecoveryDirective pendingTerminalRecoveryDirective;
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -273,6 +274,8 @@ final class MobileAlprEngine implements AutoCloseable {
         resetSceneDependentState();
         continuitySoftHold = false;
         continuityReacquireActive = false;
+        pendingSoftReacquireReport = SoftReacquireReport.none();
+        pendingTerminalRecoveryDirective = null;
         continuityReason = reason == null ? "" : reason;
     }
 
@@ -338,6 +341,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 .findByPlateTrackId(targetSnapshot.trackId);
         continuityActiveEntityId = focused == null ? 0L : focused.entityId();
         pendingSoftReacquireReport = SoftReacquireReport.none();
+        pendingTerminalRecoveryDirective = null;
         latestSoftReacquireVehicles = VehicleContinuityEvidence.empty();
         trackCoordinator.reset();
         mtInferenceScheduler.reset();
@@ -357,6 +361,7 @@ final class MobileAlprEngine implements AutoCloseable {
         autoZoomTargetLock.clear();
         continuityActiveEntityId = 0L;
         continuityReacquireActive = false;
+        pendingSoftReacquireReport = SoftReacquireReport.none();
         continuityReason = reason == null ? "" : reason;
     }
 
@@ -614,6 +619,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     recordFreshMpReassociation(
                             vehicleTrackingCoordinator.latestFrame()
                     );
+                    abortIfTerminalRecoveryRequested();
                 }
                 cachedVehicleRois.clear();
                 cachedVehicleRois.addAll(vehicleResult.selectedRois);
@@ -1646,7 +1652,24 @@ final class MobileAlprEngine implements AutoCloseable {
         SoftReacquireReport report = pendingSoftReacquireReport;
         if (!report.attempted || softReacquireResultListener == null) return;
         pendingSoftReacquireReport = SoftReacquireReport.none();
-        softReacquireResultListener.onResult(report);
+        TerminalRecoveryDirective directive = softReacquireResultListener.onResult(
+                report
+        );
+        if (directive != null && directive.abortCurrentFrame) {
+            pendingTerminalRecoveryDirective = directive;
+        }
+    }
+
+    private void abortIfTerminalRecoveryRequested() {
+        TerminalRecoveryDirective directive = pendingTerminalRecoveryDirective;
+        pendingTerminalRecoveryDirective = null;
+        if (shouldAbortAfterFreshMp(directive)) {
+            throw new ProcessingCancelledException();
+        }
+    }
+
+    static boolean shouldAbortAfterFreshMp(TerminalRecoveryDirective directive) {
+        return directive != null && directive.abortCurrentFrame;
     }
 
     private boolean isFreshRecoveryObservation(
@@ -2873,6 +2896,8 @@ final class MobileAlprEngine implements AutoCloseable {
 
     @Override
     public void close() {
+        pendingSoftReacquireReport = SoftReacquireReport.none();
+        pendingTerminalRecoveryDirective = null;
         characterBackend.close();
         plateBackend.close();
         closeQuietly(vehicleBackend);

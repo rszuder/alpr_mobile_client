@@ -32,8 +32,6 @@ public final class SceneTransitionCoordinator {
             SourceTimestampDomain.UNKNOWN;
     private boolean finalizationSuspended;
     private boolean heavyInferenceSuspended;
-    private boolean reacquireFailed;
-    private boolean pendingActiveTargetRelease;
     private boolean lastActiveTargetPresent;
     private ReacquireContext reacquireContext;
     private ReacquireContext lastReacquireContext;
@@ -83,7 +81,7 @@ public final class SceneTransitionCoordinator {
         Contracts.required("evidence", evidence);
         Contracts.nonNegative("nowNanos", nowNanos);
 
-        if (isDuplicate(evidence) && !pendingActiveTargetRelease && !reacquireFailed) {
+        if (isDuplicate(evidence)) {
             return idleDecision("duplicate_evidence");
         }
         rememberEvidence(evidence);
@@ -115,20 +113,8 @@ public final class SceneTransitionCoordinator {
             return observeStrict(evidence, nowNanos);
         }
         if (currentState == SceneContinuityState.REACQUIRING
-                && !pendingActiveTargetRelease
-                && (reacquireFailed || reacquireDeadlineReached(nowNanos))) {
+                && reacquireDeadlineReached(nowNanos)) {
             return finishUnsuccessfulReacquire(nowNanos);
-        }
-        if (pendingActiveTargetRelease) {
-            pendingActiveTargetRelease = false;
-            resetRecoveryState();
-            enterState(SceneContinuityState.STABLE, nowNanos);
-            finalizationSuspended = false;
-            heavyInferenceSuspended = false;
-            return emitReleaseActiveTarget(
-                    nowNanos,
-                    "active_target_lost_pool_preserved"
-            );
         }
         if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
             return observeStrict(evidence, nowNanos);
@@ -149,39 +135,84 @@ public final class SceneTransitionCoordinator {
         clearEvidenceDeduplication();
     }
 
-    public synchronized void onSoftReacquireResult(
+    public synchronized SceneTransitionDecision completeSoftReacquire(
             SoftReacquireResult result,
             long nowNanos
     ) {
         Contracts.required("result", result);
         Contracts.nonNegative("nowNanos", nowNanos);
-        if (currentState != SceneContinuityState.REACQUIRING) return;
+        if (currentState != SceneContinuityState.REACQUIRING) {
+            return idleDecision("terminal_recovery_outside_reacquiring");
+        }
 
         switch (result) {
-            case TARGET_RECOVERED:
-            case VEHICLE_POOL_RECOVERED:
+            case TARGET_RECOVERED: {
                 recordReacquireOutcome(
                         result.name(),
-                        result == SoftReacquireResult.VEHICLE_POOL_RECOVERED,
+                        false,
                         false
                 );
                 resetRecoveryState();
                 enterState(SceneContinuityState.STABLE, nowNanos);
                 finalizationSuspended = false;
                 heavyInferenceSuspended = false;
-                break;
-            case ACTIVE_TARGET_LOST:
+                return emitNone(nowNanos, "target_recovered_terminal");
+            }
+            case VEHICLE_POOL_RECOVERED: {
                 recordReacquireOutcome(result.name(), true, false);
-                pendingActiveTargetRelease = true;
-                reacquireFailed = true;
-                break;
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = false;
+                heavyInferenceSuspended = false;
+                return emitReleaseActiveTarget(
+                        nowNanos,
+                        "vehicle_pool_recovered_release_focused_target"
+                );
+            }
+            case ACTIVE_TARGET_LOST: {
+                recordReacquireOutcome(result.name(), true, false);
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = false;
+                heavyInferenceSuspended = false;
+                return emitReleaseActiveTarget(
+                        nowNanos,
+                        "active_target_lost_pool_preserved"
+                );
+            }
             case FAILED:
-                recordReacquireOutcome(result.name(), false, false);
-                reacquireFailed = true;
-                break;
+                return completeFailedSoftReacquire(nowNanos);
             default:
                 throw new AssertionError("Unhandled reacquire result: " + result);
         }
+    }
+
+    private SceneTransitionDecision completeFailedSoftReacquire(long nowNanos) {
+        ReacquireContext context = reacquireContext;
+        recordReacquireOutcome("FAILED", false, false);
+        boolean confirmedBreak = context != null
+                && context.maximumCutEvidenceDuringRecovery
+                >= profile.continuityBreakThreshold;
+        if (confirmedBreak) {
+            assessment = withClassification(
+                    assessment,
+                    VisualChangeClassification.CONTINUITY_BREAK,
+                    "reacquire_failed_trigger_evidence_confirms_break"
+            );
+            return hardReset(assessment.reason, nowNanos);
+        }
+        boolean releaseTarget = context != null && context.activeTargetPresent;
+        resetRecoveryState();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        finalizationSuspended = false;
+        heavyInferenceSuspended = false;
+        if (releaseTarget) {
+            return emitReleaseActiveTarget(
+                    nowNanos,
+                    "reacquire_failed_without_break_release_active_target"
+            );
+        }
+        return emitNone(nowNanos, "reacquire_failed_without_break_return_stable");
     }
 
     public synchronized SceneContinuitySnapshot snapshot() {
@@ -627,7 +658,6 @@ public final class SceneTransitionCoordinator {
         lastReacquireResult = "";
         lastReacquireVehiclePoolRecovered = false;
         lastReacquireDeadlineReached = false;
-        reacquireFailed = false;
         finalizationSuspended = true;
         heavyInferenceSuspended = false;
         return emit(
@@ -778,8 +808,6 @@ public final class SceneTransitionCoordinator {
     private void resetRecoveryState() {
         unexplainedSinceNanos = -1L;
         reacquireStartedRuntimeNanos = -1L;
-        reacquireFailed = false;
-        pendingActiveTargetRelease = false;
         reacquireContext = null;
     }
 

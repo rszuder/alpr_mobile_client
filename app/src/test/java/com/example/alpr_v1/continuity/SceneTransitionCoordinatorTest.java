@@ -270,11 +270,9 @@ public final class SceneTransitionCoordinatorTest {
                 SceneHandlingMode.DYNAMIC_CONTINUITY
         );
         coordinator.observe(unexplainedScene(1L), 1_000L);
-        coordinator.onSoftReacquireResult(SoftReacquireResult.FAILED, 2_000L);
-
-        SceneTransitionDecision decision = coordinator.observe(
-                unexplainedScene(2L),
-                1_000L + PROFILE.strongCutPersistenceNanos
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
+                SoftReacquireResult.FAILED,
+                2_000L
         );
 
         assertEquals(SceneTransitionAction.HARD_RESET, decision.action);
@@ -427,14 +425,9 @@ public final class SceneTransitionCoordinatorTest {
                 SceneHandlingMode.DYNAMIC_CONTINUITY
         );
         coordinator.observe(unexplainedScene(1L), 1_000L);
-        coordinator.onSoftReacquireResult(
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
                 SoftReacquireResult.ACTIVE_TARGET_LOST,
                 2_000L
-        );
-
-        SceneTransitionDecision decision = coordinator.observe(
-                vehiclePoolScene(2L),
-                2_010L
         );
 
         assertEquals(SceneTransitionAction.RELEASE_ACTIVE_TARGET, decision.action);
@@ -450,11 +443,12 @@ public final class SceneTransitionCoordinatorTest {
         );
         coordinator.observe(unexplainedScene(1L), 1_000L);
 
-        coordinator.onSoftReacquireResult(
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
                 SoftReacquireResult.TARGET_RECOVERED,
                 2_000L
         );
 
+        assertEquals(SceneTransitionAction.NONE, decision.action);
         SceneContinuitySnapshot snapshot = coordinator.snapshot();
         assertEquals(SceneContinuityState.STABLE, snapshot.state);
         assertEquals(0L, snapshot.sceneGeneration);
@@ -469,11 +463,14 @@ public final class SceneTransitionCoordinatorTest {
         coordinator.observe(unexplainedScene(1L), 1_000L);
         long visualEpoch = coordinator.snapshot().visualEpoch;
 
-        coordinator.onSoftReacquireResult(
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
                 SoftReacquireResult.VEHICLE_POOL_RECOVERED,
                 2_000L
         );
 
+        assertEquals(SceneTransitionAction.RELEASE_ACTIVE_TARGET, decision.action);
+        assertTrue(decision.releaseOnlyActiveTarget);
+        assertTrue(decision.preserveVehicleEntities);
         SceneContinuitySnapshot snapshot = coordinator.snapshot();
         assertEquals(SceneContinuityState.STABLE, snapshot.state);
         assertEquals(0L, snapshot.sceneGeneration);
@@ -483,6 +480,64 @@ public final class SceneTransitionCoordinatorTest {
         ReacquireTelemetry telemetry = coordinator.reacquireTelemetry();
         assertEquals("VEHICLE_POOL_RECOVERED", telemetry.result);
         assertTrue(telemetry.vehiclePoolRecovered);
+    }
+
+    @Test
+    public void failedReacquireWithoutConfirmedBreakReleasesActiveTargetImmediately() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(explainedTargetScene(1L, false, false), 1_000L);
+        coordinator.requestSoftReacquire("controlled_refresh", 1_100L, 10L);
+
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
+                SoftReacquireResult.FAILED,
+                2_000L
+        );
+
+        assertEquals(SceneTransitionAction.RELEASE_ACTIVE_TARGET, decision.action);
+        assertEquals(SceneContinuityState.STABLE, decision.nextState);
+        assertTrue(decision.releaseOnlyActiveTarget);
+        assertFalse(decision.incrementSceneGeneration);
+    }
+
+    @Test
+    public void failedReacquireWithoutBreakOrTargetReturnsStableImmediately() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.requestSoftReacquire("controlled_refresh", 1_000L, 10L);
+
+        SceneTransitionDecision decision = coordinator.completeSoftReacquire(
+                SoftReacquireResult.FAILED,
+                2_000L
+        );
+
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertEquals(SceneContinuityState.STABLE, decision.nextState);
+        assertFalse(coordinator.snapshot().finalizationSuspended);
+        assertFalse(coordinator.snapshot().heavyInferenceSuspended);
+    }
+
+    @Test
+    public void terminalOutcomeEmitsExactlyOneTransitionDecision() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(unexplainedScene(1L), 1_000L);
+
+        SceneTransitionDecision terminal = coordinator.completeSoftReacquire(
+                SoftReacquireResult.ACTIVE_TARGET_LOST,
+                2_000L
+        );
+        SceneTransitionDecision duplicate = coordinator.completeSoftReacquire(
+                SoftReacquireResult.ACTIVE_TARGET_LOST,
+                2_001L
+        );
+
+        assertEquals(SceneTransitionAction.RELEASE_ACTIVE_TARGET, terminal.action);
+        assertEquals(SceneTransitionAction.NONE, duplicate.action);
+        assertEquals(terminal.revision, duplicate.revision);
     }
 
     @Test

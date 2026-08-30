@@ -565,7 +565,11 @@ public final class AlprPipeline {
             }
             SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
             if (isCurrentContinuityStamp(processingStamp)) {
-                handleSoftReacquireReport(softReport);
+                TerminalRecoveryDirective terminalDirective =
+                        handleSoftReacquireReport(softReport);
+                if (MobileAlprEngine.shouldAbortAfterFreshMp(terminalDirective)) {
+                    throw new MobileAlprEngine.ProcessingCancelledException();
+                }
             }
             trace.putAttribute(
                     "result_available_nanos",
@@ -836,7 +840,11 @@ public final class AlprPipeline {
             }
             SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
             if (isCurrentContinuityStamp(processingStamp)) {
-                handleSoftReacquireReport(softReport);
+                TerminalRecoveryDirective terminalDirective =
+                        handleSoftReacquireReport(softReport);
+                if (MobileAlprEngine.shouldAbortAfterFreshMp(terminalDirective)) {
+                    throw new MobileAlprEngine.ProcessingCancelledException();
+                }
             }
             trace.putAttribute(
                     "result_available_nanos",
@@ -1436,8 +1444,10 @@ public final class AlprPipeline {
         );
     }
 
-    private void handleSoftReacquireReport(SoftReacquireReport report) {
-        if (report == null || !report.attempted) return;
+    private TerminalRecoveryDirective handleSoftReacquireReport(
+            SoftReacquireReport report
+    ) {
+        if (report == null || !report.attempted) return null;
         android.util.Log.d(
                 "ALPR_REACQUIRE_RESULT",
                 "result=" + report.result
@@ -1451,20 +1461,41 @@ public final class AlprPipeline {
         );
         lastReacquireVehicleEvidence = report.vehicles;
         long nowNanos = SystemClock.elapsedRealtimeNanos();
-        sceneTransitionCoordinator.onSoftReacquireResult(report.result, nowNanos);
+        SceneTransitionDecision decision =
+                sceneTransitionCoordinator.completeSoftReacquire(
+                        report.result,
+                        nowNanos
+                );
+        lastSceneDecision = decision;
+        applySceneTransition(decision);
         if (shouldRebaseSceneReference(report.result)) {
             sourceSceneDetector.reset();
             rotatedSceneDetector.reset();
         }
+        TerminalRecoveryDirective directive =
+                TerminalRecoveryDirective.forTerminalResult(
+                        report.result,
+                        decision
+                );
+        if (directive.requestImmediateFrame) {
+            frameGate.requestImmediateFrame();
+        }
+        JSONObject details = continuityEventDetails(
+                decision,
+                sceneTransitionCoordinator.snapshot(),
+                lastSceneEvidence
+        );
+        try {
+            details.put("terminal_recovery_result", report.result.name());
+            details.put("terminal_recovery_reason", report.reason);
+            details.put("abort_current_frame", directive.abortCurrentFrame);
+            details.put("request_immediate_frame", directive.requestImmediateFrame);
+        } catch (JSONException ignored) {
+            // Best-effort telemetry only.
+        }
+        metrics.recordEvent("terminal_recovery_applied", 0L, 0L, details);
         if (report.result == SoftReacquireResult.TARGET_RECOVERED
                 || report.result == SoftReacquireResult.VEHICLE_POOL_RECOVERED) {
-            JSONObject details = lastSceneDecision == null
-                    ? new JSONObject()
-                    : continuityEventDetails(
-                    lastSceneDecision,
-                    sceneTransitionCoordinator.snapshot(),
-                    lastSceneEvidence
-            );
             putDuration(details, "scene_reacquire", softReacquireStartedNanos, nowNanos);
             metrics.recordEvent("scene_soft_reacquire_succeeded", 0L, 0L, details);
             pendingReacquireSucceededEvents.incrementAndGet();
@@ -1474,7 +1505,22 @@ public final class AlprPipeline {
                             ? 0L : nowNanos - softReacquireStartedNanos
             ));
             softReacquireStartedNanos = -1L;
+        } else {
+            putDuration(details, "scene_reacquire", softReacquireStartedNanos, nowNanos);
+            if (decision.action != SceneTransitionAction.HARD_RESET) {
+                metrics.recordEvent(
+                        "scene_soft_reacquire_failed", 0L, 0L, details
+                );
+                pendingReacquireFailedEvents.incrementAndGet();
+                pendingReacquireDurationNanos.set(Math.max(
+                        0L,
+                        softReacquireStartedNanos < 0L
+                                ? 0L : nowNanos - softReacquireStartedNanos
+                ));
+            }
+            softReacquireStartedNanos = -1L;
         }
+        return directive;
     }
 
     static boolean shouldRebaseSceneReference(SoftReacquireResult result) {
