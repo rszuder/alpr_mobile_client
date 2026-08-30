@@ -2669,6 +2669,19 @@ public final class AlprPipeline {
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
         scanAcquisitionController.startRun(scanRunId, nowRuntimeNanos);
+        JSONObject autoZoomDetails = new JSONObject();
+        try {
+            autoZoomDetails.put("scan_run_id", scanRunId);
+            autoZoomDetails.put("reason", "scan_phase3b_disabled");
+        } catch (JSONException ignored) {
+            // Best-effort telemetry.
+        }
+        metrics.recordEvent(
+                "auto_zoom_skipped",
+                0L,
+                0L,
+                autoZoomDetails
+        );
         recordScanTelemetryEvents(
                 scanAcquisitionController.snapshot(nowRuntimeNanos),
                 null

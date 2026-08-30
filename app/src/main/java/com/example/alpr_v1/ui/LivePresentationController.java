@@ -140,6 +140,18 @@ public final class LivePresentationController {
         }, EVENT_HOLD_MS);
     }
 
+    public void showUserStatus(
+            State next,
+            CharSequence primary,
+            CharSequence hint
+    ) {
+        showState(next, "");
+        String primaryText = primary == null ? "" : primary.toString().trim();
+        String hintText = hint == null ? "" : hint.toString().trim();
+        if (!primaryText.isEmpty()) statusPrimary.setText(primaryText);
+        if (!hintText.isEmpty()) calmHint.setText(hintText);
+    }
+
     public void showResult(
             long trackId,
             String text,

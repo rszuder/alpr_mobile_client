@@ -356,4 +356,14 @@
     <string name="settings_scene_mode_experiment_locked">Eksperyment R0/R1/R2 wymusza tryb strict, aby próbki pozostały rozdzielone.</string>
     <string name="settings_scene_mode_dynamic">Dynamiczny</string>
     <string name="settings_scene_mode_strict">Strict</string>
+    <string name="scan_status_searching">Szukam pojazdów</string>
+    <string name="scan_hint_searching">Utrzymuj pojazdy w kadrze — analiza wybierze je kolejno</string>
+    <string name="scan_status_selecting">Wybieram kolejny pojazd</string>
+    <string name="scan_hint_selecting">Kolejka jest obsługiwana automatycznie</string>
+    <string name="scan_status_reading">Odczytuję wybrany pojazd</string>
+    <string name="scan_hint_reading">Pozostałe pojazdy spokojnie czekają w kolejce</string>
+    <string name="scan_status_recovering">Odzyskuję wybrany pojazd</string>
+    <string name="scan_hint_recovering">Nie zmieniaj gwałtownie kadru</string>
+    <string name="scan_diagnostics">SCAN · kolejka %1$d · MT %2$d/2 · MZ %3$d/2</string>
+    <string name="scan_auto_zoom_disabled">Auto zoom pominięty podczas skanowania</string>
 </resources>

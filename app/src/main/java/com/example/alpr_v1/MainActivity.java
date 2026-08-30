@@ -1879,6 +1879,11 @@ public final class MainActivity extends AppCompatActivity {
          * również nie może pozostać aktywny.
          */
         pauseCropCollectionForStoppedAnalysis();
+        if (pipeline != null) {
+            pipeline.stopScanRun(
+                    android.os.SystemClock.elapsedRealtimeNanos()
+            );
+        }
         /*
          * Od tej chwili żaden kolejny trace nie należy
          * już do zakończonego przebiegu.
@@ -2626,6 +2631,14 @@ public final class MainActivity extends AppCompatActivity {
          * bez stanu trackingowego poprzedniego przebiegu.
          */
         pipeline.resetTracking();
+        if (beginNewMeasurement) {
+            long scanStartedRuntimeNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos();
+            pipeline.startScanRun(
+                    Math.max(1L, scanStartedRuntimeNanos),
+                    scanStartedRuntimeNanos
+            );
+        }
         targetStateMachine.reset();
 
         overlayTracker.reset();
@@ -3264,8 +3277,24 @@ public final class MainActivity extends AppCompatActivity {
                 .append(secondDiagnosticsLine)
                 .append('\n')
                 .append(resolution);
-        if (autoZoomController.enabled()) {
+        ScanAcquisitionSnapshot scan = pipeline == null
+                ? null : pipeline.scanAcquisitionSnapshot();
+        boolean scanActive = scan != null && scan.runState.active();
+        if (autoZoomController.enabled() && !scanActive) {
             hudText.append('\n').append(autoZoomHudLabel());
+        }
+        if (scanActive) {
+            hudText.append('\n').append(getString(
+                    R.string.scan_diagnostics,
+                    scan.queue.size(),
+                    scan.mtAttempts,
+                    scan.freshMzAttempts
+            ));
+            if (autoZoomController.enabled()) {
+                hudText.append('\n').append(
+                        getString(R.string.scan_auto_zoom_disabled)
+                );
+            }
         }
         TargetSnapshot target = targetStateMachine.snapshot();
         if (target.trackId > 0L) {
@@ -3294,9 +3323,42 @@ public final class MainActivity extends AppCompatActivity {
                 presentationState = LivePresentationController.State.SEARCHING;
                 break;
         }
-        livePresentation.showState(presentationState, "");
+        if (scanActive) {
+            showScanUserStatus(scan);
+        } else {
+            livePresentation.showState(presentationState, "");
+        }
         livePresentation.updateDiagnostics(hudText);
         updateAutoZoomButton();
+    }
+
+    private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
+        if (scan.activeSessionState
+                == com.example.alpr_v1.domain.TargetSessionState.RECOVERING) {
+            livePresentation.showUserStatus(
+                    LivePresentationController.State.RECOVERING,
+                    getString(R.string.scan_status_recovering),
+                    getString(R.string.scan_hint_recovering)
+            );
+        } else if (scan.activeEntityId > 0L) {
+            livePresentation.showUserStatus(
+                    LivePresentationController.State.RECOGNIZING,
+                    getString(R.string.scan_status_reading),
+                    getString(R.string.scan_hint_reading)
+            );
+        } else if (scan.queue.size() > 0) {
+            livePresentation.showUserStatus(
+                    LivePresentationController.State.SEARCHING,
+                    getString(R.string.scan_status_selecting),
+                    getString(R.string.scan_hint_selecting)
+            );
+        } else {
+            livePresentation.showUserStatus(
+                    LivePresentationController.State.SEARCHING,
+                    getString(R.string.scan_status_searching),
+                    getString(R.string.scan_hint_searching)
+            );
+        }
     }
     private String hudPipelineLabel() {
         if (experimentModeEnabled) {
@@ -3812,6 +3874,10 @@ public final class MainActivity extends AppCompatActivity {
 
     private void handleAutoZoomResult(PipelineResult result) {
         if (!cameraStarted || !autoZoomController.enabled()) return;
+        if (pipeline != null
+                && pipeline.scanAcquisitionSnapshot().runState.active()) {
+            return;
+        }
         if (autoZoomController.state() == AutoZoomController.State.READY) {
             TargetSnapshot target = targetStateMachine.snapshot();
             if (target.state != TargetSnapshot.State.TRACKING
