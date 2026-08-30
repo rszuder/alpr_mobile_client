@@ -13,6 +13,7 @@ import com.example.alpr_v1.domain.TargetSessionState;
 import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.ui.OverlayItem;
 
 /** Single owner of the Phase 3B queue, short session and attempt budgets. */
 public final class ScanAcquisitionController {
@@ -29,6 +30,7 @@ public final class ScanAcquisitionController {
     private int freshMzAttempts;
     private boolean releasePending;
     private long lastRuntimeNanos;
+    private PlateAnchor plateAnchor;
 
     public ScanAcquisitionController() {
         this(new ModeController(), ScanAcquisitionProfile.DEFAULT);
@@ -147,6 +149,7 @@ public final class ScanAcquisitionController {
                 TargetPurpose.SCAN_ACQUISITION,
                 nowRuntimeNanos
         );
+        plateAnchor = null;
         activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE,
                 nowRuntimeNanos);
         activeSessionBudget = new ActiveTimeBudget(profile.maximumActiveSessionNanos);
@@ -221,6 +224,11 @@ public final class ScanAcquisitionController {
             }
             return ignored("no_scan_entity_observation");
         }
+        if (matching.acquisitionDirectiveRevision > 0L
+                && (!directive.requestsMt()
+                || matching.acquisitionDirectiveRevision != directive.revision)) {
+            return ignored("stale_scan_mt_directive_revision");
+        }
 
         if (activeSession.state() == TargetSessionState.ACQUIRING_PLATE) {
             activeSession.transitionTo(
@@ -228,6 +236,15 @@ public final class ScanAcquisitionController {
                     nowRuntimeNanos
             );
         }
+        plateAnchor = new PlateAnchor(
+                matching.entityId,
+                matching.vehicleTrackId,
+                matching.plateTrackId,
+                findPlateOverlay(result, matching.plateTrackId),
+                matching.appearanceDescriptor,
+                matching.continuityStamp(),
+                matching.acquisitionDirectiveRevision
+        );
         resetNoProgressBudget(nowRuntimeNanos);
         if (matching.freshMzAttempted) {
             freshMzAttempts++;
@@ -246,6 +263,7 @@ public final class ScanAcquisitionController {
             activeSession = null;
             queue.complete(entityId);
             resetSessionBudgets();
+            plateAnchor = null;
             releasePending = true;
             AcquisitionDirective release = setDirective(
                     AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
@@ -344,7 +362,8 @@ public final class ScanAcquisitionController {
                 noProgressBudget == null
                         ? 0L : noProgressBudget.elapsedActiveNanos(nowRuntimeNanos),
                 directive,
-                false
+                false,
+                plateAnchor
         );
     }
 
@@ -387,6 +406,7 @@ public final class ScanAcquisitionController {
                 profile.defaultCooldownNanos
         );
         resetSessionBudgets();
+        plateAnchor = null;
         releasePending = true;
         AcquisitionDirective release = setDirective(
                 AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
@@ -474,6 +494,7 @@ public final class ScanAcquisitionController {
                 nowRuntimeNanos
         );
         activeSession = null;
+        plateAnchor = null;
     }
 
     private void pauseSessionBudgets(long nowRuntimeNanos) {
@@ -550,6 +571,17 @@ public final class ScanAcquisitionController {
             }
         }
         return false;
+    }
+
+    private static OverlayItem findPlateOverlay(
+            PipelineResult result,
+            long plateTrackId
+    ) {
+        for (OverlayItem item : result.overlayItems) {
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && item.trackId == plateTrackId) return item;
+        }
+        return null;
     }
 
     private static EntityAcquisitionState entityStateFor(TargetSessionState state) {

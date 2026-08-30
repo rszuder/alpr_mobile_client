@@ -309,6 +309,45 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(0, controller.snapshot(100L).freshMzAttempts);
     }
 
+    @Test
+    public void matchingCurrentDirectiveCreatesEntityBoundPlateAnchor() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long revision = controller.currentDirective().revision;
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "WX", revision)),
+                continuity(),
+                100L
+        );
+
+        assertTrue(decision.accepted);
+        PlateAnchor anchor = controller.snapshot(100L).plateAnchor;
+        assertNotNull(anchor);
+        assertEquals(4L, anchor.entityId);
+        assertEquals(44L, anchor.vehicleTrackId);
+        assertEquals(104L, anchor.plateTrackId);
+        assertEquals(revision, anchor.acquisitionDirectiveRevision);
+    }
+
+    @Test
+    public void delayedMtRevisionCannotAnchorCurrentScanSession() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long currentRevision = controller.currentDirective().revision;
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(
+                        4L, 44L, true, true, "STALE", currentRevision + 1L
+                )),
+                continuity(),
+                100L
+        );
+
+        assertFalse(decision.accepted);
+        assertEquals("stale_scan_mt_directive_revision", decision.reason);
+        assertNull(controller.snapshot(100L).plateAnchor);
+        assertEquals(4L, controller.snapshot(100L).activeEntityId);
+    }
+
     private static ScanAcquisitionController startedWithCandidate(long entityId) {
         ScanAcquisitionController controller = new ScanAcquisitionController();
         controller.startRun(1L, 0L);
@@ -370,6 +409,24 @@ public final class ScanAcquisitionControllerTest {
             boolean freshMzAttempted,
             String text
     ) {
+        return observation(
+                entityId,
+                vehicleTrackId,
+                confirmed,
+                freshMzAttempted,
+                text,
+                0L
+        );
+    }
+
+    private static PlateObservation observation(
+            long entityId,
+            long vehicleTrackId,
+            boolean confirmed,
+            boolean freshMzAttempted,
+            String text,
+            long acquisitionDirectiveRevision
+    ) {
         return new PlateObservation(
                 entityId + 100L,
                 PlateVehicleAssociation.direct(
@@ -402,7 +459,8 @@ public final class ScanAcquisitionControllerTest {
                 Collections.emptyList(),
                 "",
                 text,
-                new ContinuityStamp(1L, 0L, 0L, 1L)
+                new ContinuityStamp(1L, 0L, 0L, 1L),
+                acquisitionDirectiveRevision
         );
     }
 }

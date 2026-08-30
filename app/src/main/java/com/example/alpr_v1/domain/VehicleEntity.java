@@ -231,6 +231,17 @@ public final class VehicleEntity {
         if (activeTarget) queued = false;
     }
 
+    synchronized void deferAcquisition() {
+        activeTarget = false;
+        if (acquisitionState == EntityAcquisitionState.ACQUIRED
+                || acquisitionState == EntityAcquisitionState.EXPIRED
+                || acquisitionState == EntityAcquisitionState.READY_TO_FINALIZE) {
+            return;
+        }
+        queued = true;
+        acquisitionState = EntityAcquisitionState.QUEUED;
+    }
+
     synchronized void markAcquired() {
         acquisitionCompleted = true;
         queued = false;

@@ -132,6 +132,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private boolean scanAcquisitionActive;
     private AcquisitionDirectiveAction scanDirectiveAction =
             AcquisitionDirectiveAction.NONE;
+    private long scanActiveEntityId;
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -273,6 +274,16 @@ final class MobileAlprEngine implements AutoCloseable {
         scanAcquisitionActive = active;
         scanDirectiveAction = directive == null
                 ? AcquisitionDirectiveAction.NONE : directive.action;
+        if (active && directive != null && directive.entityId > 0L) {
+            scanActiveEntityId = directive.entityId;
+            if (vehicleTrackingCoordinator.repository().get(scanActiveEntityId)
+                    != null) {
+                vehicleTrackingCoordinator.repository().markActiveTarget(
+                        scanActiveEntityId,
+                        true
+                );
+            }
+        }
         if (!active || scanDirectiveAction
                 == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
             mtInferenceScheduler.clearVehicleEntityRequest();
@@ -301,6 +312,7 @@ final class MobileAlprEngine implements AutoCloseable {
         autoZoomTargetLock.clear();
         mtInferenceScheduler.reset();
         targetSnapshot = TargetSnapshot.searching();
+        scanActiveEntityId = 0L;
         appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
         reportedTargetLockSwitches = 0;
         reportedTargetLockLosses = 0;
@@ -392,17 +404,32 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void releaseFocusedTarget(String reason) {
-        if (continuityActiveEntityId > 0L
-                && vehicleTrackingCoordinator.repository().get(continuityActiveEntityId)
+        long focusedEntityId = continuityActiveEntityId > 0L
+                ? continuityActiveEntityId : scanActiveEntityId;
+        if (focusedEntityId <= 0L && targetSnapshot != null) {
+            VehicleEntity focused = vehicleTrackingCoordinator.repository()
+                    .findByPlateTrackId(targetSnapshot.trackId);
+            focusedEntityId = focused == null ? 0L : focused.entityId();
+        }
+        if (focusedEntityId > 0L
+                && vehicleTrackingCoordinator.repository().get(focusedEntityId)
                 != null) {
-            vehicleTrackingCoordinator.repository().markActiveTarget(
-                    continuityActiveEntityId,
-                    false
-            );
+            if (reason != null && (reason.startsWith("scan_deferred_")
+                    || reason.equals("scan_run_stopped"))) {
+                vehicleTrackingCoordinator.repository().deferAcquisition(
+                        focusedEntityId
+                );
+            } else {
+                vehicleTrackingCoordinator.repository().markActiveTarget(
+                        focusedEntityId,
+                        false
+                );
+            }
         }
         targetSnapshot = TargetSnapshot.searching();
         autoZoomTargetLock.clear();
         continuityActiveEntityId = 0L;
+        scanActiveEntityId = 0L;
         continuityReacquireActive = false;
         pendingSoftReacquireReport = SoftReacquireReport.none();
         continuityReason = reason == null ? "" : reason;
@@ -1505,7 +1532,10 @@ final class MobileAlprEngine implements AutoCloseable {
                             ? decision.expectedRowCounts
                             : trackResult.rowCounts,
                     predictionBefore,
-                    visibleText
+                    visibleText,
+                    ContinuityStamp.initial(0L),
+                    mtDecision == null
+                            ? 0L : mtDecision.acquisitionDirectiveRevision
             ));
             String overlayText;
 

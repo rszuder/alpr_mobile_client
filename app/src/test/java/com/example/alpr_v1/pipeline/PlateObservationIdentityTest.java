@@ -47,7 +47,8 @@ public class PlateObservationIdentityTest {
                 Collections.singletonList(7),
                 "WE911G",
                 "WE911GT",
-                new ContinuityStamp(2L, 7L, 4L, 200L)
+                new ContinuityStamp(2L, 7L, 4L, 200L),
+                9L
         );
 
         assertEquals(21L, observation.entityId);
@@ -59,5 +60,12 @@ public class PlateObservationIdentityTest {
         assertEquals(7L, observation.visualEpoch);
         assertEquals(4L, observation.cameraTransformGeneration);
         assertEquals(200L, observation.sourceTimestampNanos);
+        assertEquals(9L, observation.acquisitionDirectiveRevision);
+        assertEquals(
+                9L,
+                observation.withContinuityStamp(
+                        new ContinuityStamp(3L, 8L, 5L, 300L)
+                ).acquisitionDirectiveRevision
+        );
     }
 }

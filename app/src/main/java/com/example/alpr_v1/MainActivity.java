@@ -80,6 +80,9 @@ import com.example.alpr_v1.metrics.ImageDifficultyMetrics;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.AlprPipeline;
+import com.example.alpr_v1.acquisition.PlateAnchor;
+import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
+import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.PipelineResultDispatchGate;
@@ -198,6 +201,7 @@ public final class MainActivity extends AppCompatActivity {
     private final AtomicLong previewSceneRecoveryRebaseRevision =
             new AtomicLong();
     private volatile long previewSceneRecoveryRebaseAppliedRevision;
+    private long appliedScanTargetReleaseRevision;
     private long previewSceneAnchorLockRevision = -1L;
     private volatile com.example.alpr_v1.continuity.SceneContinuityState
             lastRenderedContinuityState =
@@ -3402,6 +3406,8 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
 
+        applyScanTargetReleaseIfNeeded();
+
         if (autoZoomController.state()
                 == AutoZoomController.State.ZOOMED_RETRY) {
             repositionAutoZoomTarget(result);
@@ -3544,9 +3550,12 @@ public final class MainActivity extends AppCompatActivity {
          * nie zwrócił, tracker zachowa poprzednią kotwicę
          * przez krótki czas.
          */
+        List<OverlayItem> targetAnchorItems = scanTargetAnchorItems(
+                visibleOverlayItems
+        );
         boolean previewTrackerAnchored =
                 previewPlateTracker.anchor(
-                        visibleOverlayItems,
+                        targetAnchorItems,
                         result.sourceWidth,
                         result.sourceHeight
                 );
@@ -3566,7 +3575,7 @@ public final class MainActivity extends AppCompatActivity {
 
             TargetSnapshot anchoredTarget =
                     targetStateMachine.onMtAnchor(
-                            visibleOverlayItems,
+                            targetAnchorItems,
                             appearanceByTrack
                     );
             if (pipeline != null) {
@@ -4294,6 +4303,20 @@ public final class MainActivity extends AppCompatActivity {
         recordInfo("Auto zoom przerwany: telefon zmienił kadr podczas zbliżenia");
     }
 
+    private void applyScanTargetReleaseIfNeeded() {
+        if (pipeline == null) return;
+        ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
+        if (scan.directive.action
+                != AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET
+                || scan.directive.revision <= appliedScanTargetReleaseRevision) {
+            return;
+        }
+        appliedScanTargetReleaseRevision = scan.directive.revision;
+        previewPlateTracker.reset();
+        targetStateMachine.reset();
+        overlayView.setFocusedTrackId(0L);
+    }
+
     private void refreshPipelineCameraMotionEvidence() {
         AlprPipeline activePipeline = pipeline;
         CameraMotionMonitor activeMonitor = cameraMotionMonitor;
@@ -4523,6 +4546,27 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         return transformed;
+    }
+
+    private List<OverlayItem> scanTargetAnchorItems(
+            List<OverlayItem> items
+    ) {
+        if (pipeline == null) return items;
+        ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
+        if (!scan.runState.active()) return items;
+        PlateAnchor anchor = scan.plateAnchor;
+        if (scan.activeEntityId <= 0L || anchor == null
+                || anchor.entityId != scan.activeEntityId) {
+            return java.util.Collections.emptyList();
+        }
+        List<OverlayItem> focused = new ArrayList<>();
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE
+                    && item.trackId == anchor.plateTrackId) {
+                focused.add(item);
+            }
+        }
+        return focused;
     }
 
     private static boolean containsPlate(List<OverlayItem> items) {

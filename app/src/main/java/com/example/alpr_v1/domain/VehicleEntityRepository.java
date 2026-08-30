@@ -254,6 +254,10 @@ public final class VehicleEntityRepository {
         if (active) required(entityId).setAcquisitionState(EntityAcquisitionState.ACQUIRING);
     }
 
+    public synchronized void deferAcquisition(long entityId) {
+        required(entityId).deferAcquisition();
+    }
+
     public synchronized void updateSearchMatch(long entityId, SearchMatchState state) {
         required(entityId).setSearchMatchState(state);
     }

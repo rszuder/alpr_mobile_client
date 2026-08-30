@@ -27,6 +27,7 @@ public final class PlateObservation {
     public final long sourceSequence;
     public final long sourceTimestampNanos;
     public final SourceTimestampDomain sourceTimestampDomain;
+    public final long acquisitionDirectiveRevision;
     public final Bitmap previewBitmap;
     public final String text;
     public final double plateConfidence;
@@ -141,6 +142,48 @@ public final class PlateObservation {
             String predictionAfter,
             ContinuityStamp continuityStamp
     ) {
+        this(
+                trackId, association, sourceRoiKind, sourceMtReason, frameId,
+                previewBitmap, text, plateConfidence, recognitionConfidence,
+                confirmed, observations, characters, capturedAtMillis,
+                capturedElapsedNanos, sharpness, appearanceDescriptor, timing,
+                geometry, freshMzAttempted, freshMzSuccessful, freshPrediction,
+                cropSupportsConsensus, mzAttemptIndex, layout, rowCounts,
+                predictionBefore, predictionAfter, continuityStamp, 0L
+        );
+    }
+
+    public PlateObservation(
+            long trackId,
+            PlateVehicleAssociation association,
+            MtWorkKind sourceRoiKind,
+            MtReason sourceMtReason,
+            long frameId,
+            Bitmap previewBitmap,
+            String text,
+            double plateConfidence,
+            double recognitionConfidence,
+            boolean confirmed,
+            int observations,
+            List<PlateCharacter> characters,
+            long capturedAtMillis,
+            long capturedElapsedNanos,
+            float sharpness,
+            float[] appearanceDescriptor,
+            CropInferenceTiming timing,
+            PlateGeometry geometry,
+            boolean freshMzAttempted,
+            boolean freshMzSuccessful,
+            String freshPrediction,
+            boolean cropSupportsConsensus,
+            int mzAttemptIndex,
+            String layout,
+            List<Integer> rowCounts,
+            String predictionBefore,
+            String predictionAfter,
+            ContinuityStamp continuityStamp,
+            long acquisitionDirectiveRevision
+    ) {
         PlateVehicleAssociation safeAssociation = association == null
                 ? PlateVehicleAssociation.unassigned("missing_association") : association;
         ContinuityStamp safeStamp = continuityStamp == null
@@ -161,6 +204,9 @@ public final class PlateObservation {
         this.sourceSequence = safeStamp.sourceSequence;
         this.sourceTimestampNanos = safeStamp.sourceTimestampNanos;
         this.sourceTimestampDomain = safeStamp.sourceTimestampDomain;
+        this.acquisitionDirectiveRevision = Math.max(
+                0L, acquisitionDirectiveRevision
+        );
         this.previewBitmap = previewBitmap;
         this.text = text == null ? "" : text;
         this.plateConfidence = plateConfidence;
@@ -240,7 +286,8 @@ public final class PlateObservation {
                 rowCounts,
                 predictionBefore,
                 predictionAfter,
-                stamp
+                stamp,
+                acquisitionDirectiveRevision
         );
     }
 

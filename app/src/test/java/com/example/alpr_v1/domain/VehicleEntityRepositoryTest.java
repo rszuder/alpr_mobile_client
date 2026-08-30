@@ -278,6 +278,31 @@ public class VehicleEntityRepositoryTest {
         assertEquals(1, entity.mzAttempts());
     }
 
+    @Test
+    public void scopedDeferRequeuesOnlyFocusedEntityAndPreservesPool() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity focused = repository.create(1L, VEHICLE, null, 10L);
+        VehicleEntity neighbor = repository.create(
+                2L,
+                new NormalizedBounds(0.2f, 0.2f, 0.8f, 0.8f),
+                null,
+                10L
+        );
+        repository.markQueued(focused.entityId());
+        repository.markQueued(neighbor.entityId());
+        repository.markActiveTarget(focused.entityId(), true);
+
+        repository.deferAcquisition(focused.entityId());
+
+        assertEquals(2, repository.size());
+        assertEquals(EntityAcquisitionState.QUEUED,
+                focused.acquisitionState());
+        assertFalse(focused.activeTarget());
+        assertEquals(EntityAcquisitionState.QUEUED,
+                neighbor.acquisitionState());
+        assertFalse(neighbor.activeTarget());
+    }
+
     private static AppearanceDescriptor descriptor(float value) {
         return new AppearanceDescriptor(new float[]{value});
     }
