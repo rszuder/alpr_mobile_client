@@ -1,0 +1,17 @@
+package com.example.alpr_v1.acquisition;
+
+public enum AcquisitionDeferReason {
+    NONE,
+    CANDIDATE_MISSING,
+    PREDICTION_TOO_OLD,
+    BELOW_CONFIDENCE,
+    MT_NOT_FOUND,
+    MT_ATTEMPTS_EXHAUSTED,
+    MZ_ATTEMPTS_EXHAUSTED,
+    NO_PROGRESS_TIMEOUT,
+    ACTIVE_SESSION_TIMEOUT,
+    CONTINUITY_TARGET_LOST,
+    USER_PAUSED,
+    USER_STOPPED,
+    SCENE_RESET
+}
