@@ -2,6 +2,9 @@ package com.example.alpr_v1.pipeline;
 
 public enum MtReason {
     SCAN_NEXT_CANDIDATE,
+    SCAN_RETRY_ENTITY,
+    SCAN_EXPANDED_ENTITY_ROI,
+    SCAN_CONTINUITY_REACQUIRE,
     SEARCH_POSSIBLE_MATCH,
     SEARCH_CONFIRMATION,
     USER_PICK_ACQUIRE,

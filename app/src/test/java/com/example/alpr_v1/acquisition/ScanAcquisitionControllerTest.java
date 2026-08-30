@@ -107,6 +107,32 @@ public final class ScanAcquisitionControllerTest {
     }
 
     @Test
+    public void missingExactEntityRoiDefersWithoutBindingNeighbor() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        PipelineResult missing = new PipelineResult(
+                "candidate_missing",
+                "",
+                "",
+                0.0,
+                Collections.emptyList(),
+                100, 100,
+                false,
+                new ContinuityStamp(1L, 0L, 0L, 1L)
+        );
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                missing,
+                continuity(),
+                100L
+        );
+
+        assertEquals(AcquisitionDeferReason.CANDIDATE_MISSING,
+                decision.deferReason);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                decision.nextDirective.action);
+    }
+
+    @Test
     public void matchingFreshMzAdvancesRegistrationState() {
         ScanAcquisitionController controller = startedWithCandidate(4L);
 

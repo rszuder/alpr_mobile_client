@@ -52,19 +52,30 @@ public final class MtInferenceScheduler {
         public final int vehicleRegionIndex;
         public final int recoveryLevel;
         public final float targetMargin;
+        public final long vehicleEntityId;
+        public final long acquisitionDirectiveRevision;
+        public final MtReason mtReason;
 
         private Decision(
                 Kind kind,
                 String reason,
                 int vehicleRegionIndex,
                 int recoveryLevel,
-                float targetMargin
+                float targetMargin,
+                long vehicleEntityId,
+                long acquisitionDirectiveRevision,
+                MtReason mtReason
         ) {
             this.kind = kind;
             this.reason = reason;
             this.vehicleRegionIndex = vehicleRegionIndex;
             this.recoveryLevel = recoveryLevel;
             this.targetMargin = Math.max(0f, targetMargin);
+            this.vehicleEntityId = Math.max(0L, vehicleEntityId);
+            this.acquisitionDirectiveRevision = Math.max(
+                    0L, acquisitionDirectiveRevision
+            );
+            this.mtReason = mtReason == null ? MtReason.UNKNOWN : mtReason;
         }
 
         public boolean runsMt() {
@@ -77,6 +88,10 @@ public final class MtInferenceScheduler {
     private int nextVehicleRegion;
     private int pendingRecoveryLevel;
     private String forcedReason;
+    private long requestedVehicleEntityId;
+    private long requestedDirectiveRevision;
+    private MtReason requestedMtReason = MtReason.UNKNOWN;
+    private long lastAcquisitionDirectiveRevision;
 
     public MtInferenceScheduler() {
         this(DEFAULT_REFRESH_FRAMES);
@@ -89,6 +104,20 @@ public final class MtInferenceScheduler {
     public synchronized Decision plan(Input input) {
         if (input == null) {
             return fullFrame("missing_scheduler_input", 3);
+        }
+
+        if (requestedVehicleEntityId > 0L) {
+            long entityId = requestedVehicleEntityId;
+            long directiveRevision = requestedDirectiveRevision;
+            MtReason mtReason = requestedMtReason;
+            requestedVehicleEntityId = 0L;
+            requestedDirectiveRevision = 0L;
+            requestedMtReason = MtReason.UNKNOWN;
+            return exactVehicle(
+                    entityId,
+                    mtReason,
+                    directiveRevision
+            );
         }
 
         if (input.sceneChanged) {
@@ -136,7 +165,10 @@ public final class MtInferenceScheduler {
                     || input.frameId - lastMtFrame >= refreshFrames) {
                 return target("periodic_refresh", 1, margin(input.trackingQuality));
             }
-            return new Decision(Kind.SKIP, "healthy_tracker", -1, 0, 0f);
+            return new Decision(
+                    Kind.SKIP, "healthy_tracker", -1, 0, 0f,
+                    0L, 0L, MtReason.UNKNOWN
+            );
         }
 
         if (pendingRecoveryLevel == 3) {
@@ -152,6 +184,10 @@ public final class MtInferenceScheduler {
     ) {
         if (decision == null || !decision.runsMt()) return;
         lastMtFrame = frameId;
+        if (decision.vehicleEntityId > 0L) {
+            pendingRecoveryLevel = 0;
+            return;
+        }
         if (plateFound) {
             pendingRecoveryLevel = 0;
             return;
@@ -178,11 +214,37 @@ public final class MtInferenceScheduler {
         nextVehicleRegion = 0;
         pendingRecoveryLevel = 0;
         forcedReason = null;
+        requestedVehicleEntityId = 0L;
+        requestedDirectiveRevision = 0L;
+        requestedMtReason = MtReason.UNKNOWN;
+        lastAcquisitionDirectiveRevision = 0L;
     }
 
     public synchronized void forceRefresh(String reason) {
         forcedReason = reason == null || reason.trim().isEmpty()
                 ? "forced_refresh" : reason.trim();
+    }
+
+    public synchronized void requestVehicleEntity(
+            long entityId,
+            MtReason reason,
+            long directiveRevision
+    ) {
+        if (entityId <= 0L) throw new IllegalArgumentException("entityId");
+        if (directiveRevision <= 0L) {
+            throw new IllegalArgumentException("directiveRevision");
+        }
+        if (directiveRevision <= lastAcquisitionDirectiveRevision) return;
+        lastAcquisitionDirectiveRevision = directiveRevision;
+        requestedVehicleEntityId = entityId;
+        requestedDirectiveRevision = directiveRevision;
+        requestedMtReason = reason == null ? MtReason.SCAN_NEXT_CANDIDATE : reason;
+    }
+
+    public synchronized void clearVehicleEntityRequest() {
+        requestedVehicleEntityId = 0L;
+        requestedDirectiveRevision = 0L;
+        requestedMtReason = MtReason.UNKNOWN;
     }
 
     public synchronized boolean requiresVehicleRecovery() {
@@ -199,15 +261,45 @@ public final class MtInferenceScheduler {
     private Decision vehicle(int regionCount, String reason, int recoveryLevel) {
         int index = Math.floorMod(nextVehicleRegion, Math.max(1, regionCount));
         nextVehicleRegion = (index + 1) % Math.max(1, regionCount);
-        return new Decision(Kind.VEHICLE_ROI, reason, index, recoveryLevel, 0f);
+        return new Decision(
+                Kind.VEHICLE_ROI, reason, index, recoveryLevel, 0f,
+                0L, 0L, MtReason.UNKNOWN
+        );
+    }
+
+    private static Decision exactVehicle(
+            long entityId,
+            MtReason reason,
+            long directiveRevision
+    ) {
+        MtReason safeReason = reason == null
+                ? MtReason.SCAN_NEXT_CANDIDATE : reason;
+        float margin = safeReason == MtReason.SCAN_EXPANDED_ENTITY_ROI
+                ? 0.18f : 0f;
+        return new Decision(
+                Kind.VEHICLE_ROI,
+                safeReason.name().toLowerCase(java.util.Locale.ROOT),
+                -1,
+                0,
+                margin,
+                entityId,
+                directiveRevision,
+                safeReason
+        );
     }
 
     private static Decision target(String reason, int recoveryLevel, float margin) {
-        return new Decision(Kind.TARGET_ROI, reason, -1, recoveryLevel, margin);
+        return new Decision(
+                Kind.TARGET_ROI, reason, -1, recoveryLevel, margin,
+                0L, 0L, MtReason.UNKNOWN
+        );
     }
 
     private static Decision fullFrame(String reason, int recoveryLevel) {
-        return new Decision(Kind.FULL_FRAME, reason, -1, recoveryLevel, 0f);
+        return new Decision(
+                Kind.FULL_FRAME, reason, -1, recoveryLevel, 0f,
+                0L, 0L, MtReason.UNKNOWN
+        );
     }
 
     private static float margin(float quality) {

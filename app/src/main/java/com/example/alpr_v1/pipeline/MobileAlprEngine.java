@@ -6,6 +6,8 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.acquisition.AcquisitionDirective;
+import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
@@ -127,6 +129,9 @@ final class MobileAlprEngine implements AutoCloseable {
             VehicleContinuityEvidence.empty();
     private SoftReacquireResultListener softReacquireResultListener;
     private TerminalRecoveryDirective pendingTerminalRecoveryDirective;
+    private boolean scanAcquisitionActive;
+    private AcquisitionDirectiveAction scanDirectiveAction =
+            AcquisitionDirectiveAction.NONE;
 
     private static final class VehicleDetectionResult {
         final List<Detection> vehicles;
@@ -247,6 +252,44 @@ final class MobileAlprEngine implements AutoCloseable {
 
     void setRecognitionProfile(RecognitionProfile profile) {
         trackCoordinator.setProfile(profile);
+    }
+
+    void requestVehicleEntity(
+            long entityId,
+            MtReason reason,
+            long directiveRevision
+    ) {
+        mtInferenceScheduler.requestVehicleEntity(
+                entityId,
+                reason,
+                directiveRevision
+        );
+    }
+
+    void setScanAcquisitionDirective(
+            boolean active,
+            AcquisitionDirective directive
+    ) {
+        scanAcquisitionActive = active;
+        scanDirectiveAction = directive == null
+                ? AcquisitionDirectiveAction.NONE : directive.action;
+        if (!active || scanDirectiveAction
+                == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+            mtInferenceScheduler.clearVehicleEntityRequest();
+        }
+        if (active && directive != null && directive.requestsMt()) {
+            requestVehicleEntity(
+                    directive.entityId,
+                    directive.expandedRoi()
+                            ? MtReason.SCAN_EXPANDED_ENTITY_ROI
+                            : directive.reason.contains("continuity")
+                            ? MtReason.SCAN_CONTINUITY_REACQUIRE
+                            : directive.reason.contains("retry")
+                            ? MtReason.SCAN_RETRY_ENTITY
+                            : MtReason.SCAN_NEXT_CANDIDATE,
+                    directive.revision
+            );
+        }
     }
 
     private void resetSceneDependentState() {
@@ -604,11 +647,18 @@ final class MobileAlprEngine implements AutoCloseable {
             }
         }
 
-        boolean useVehicleRegions = (!anyTargetGeometry || vehicleRecoveryRequested)
+        boolean scanFreshMpRequested = scanAcquisitionActive
+                && scanDirectiveAction
+                == AcquisitionDirectiveAction.REQUEST_FRESH_MP;
+        boolean useVehicleRegions = (!anyTargetGeometry
+                || vehicleRecoveryRequested
+                || scanFreshMpRequested)
                 && roiBudgetPolicy.usesVehicleCascade()
                 && vehicleBackend != null;
         if (useVehicleRegions) {
             boolean refreshVehicles = continuityFreshMpRequired
+                    || scanDirectiveAction
+                    == AcquisitionDirectiveAction.REQUEST_FRESH_MP
                     || cachedVehicleRois.isEmpty()
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
@@ -671,6 +721,25 @@ final class MobileAlprEngine implements AutoCloseable {
             );
         }
         cancelIfRequested(cancellationRequested);
+
+        if (scanAcquisitionActive
+                && (scanDirectiveAction == AcquisitionDirectiveAction.REQUEST_FRESH_MP
+                || scanDirectiveAction == AcquisitionDirectiveAction.NONE)
+                && !continuityReacquireActive) {
+            trace.putAttribute("scan_acquisition_gate", "queue_before_mt");
+            trace.putCount("scan_frames_stopped_after_mp", 1);
+            trace.finish("scan_queue_updated", "");
+            return new PipelineResult(
+                    "scan_queue_updated",
+                    "Aktualizacja kolejki pojazdów",
+                    "",
+                    0.0,
+                    overlays,
+                    frame.getWidth(),
+                    frame.getHeight(),
+                    false
+            );
+        }
 
         android.util.Log.d(
                 "ALPR_MT_CALLBACK_GATE",
@@ -785,17 +854,67 @@ final class MobileAlprEngine implements AutoCloseable {
                             ? MtWorkKind.TARGET_ROI_EXPANDED : MtWorkKind.TARGET_ROI;
                     break;
                 case VEHICLE_ROI:
+                    if (mtDecision.vehicleEntityId > 0L) {
+                        scheduledVehicleRoi = ExactEntityRoiResolver.findByEntityId(
+                                vehicleRois,
+                                mtDecision.vehicleEntityId
+                        );
+                        if (scheduledVehicleRoi == null) {
+                            scheduledVehicleRoi =
+                                    ExactEntityRoiResolver.buildFromTrackedEntity(
+                                            vehicleTrackingCoordinator.latestFrame().candidates,
+                                            frame.getWidth(),
+                                            frame.getHeight(),
+                                            mtDecision.vehicleEntityId,
+                                            rapidCameraMotion
+                                                    ? 0.28f : VEHICLE_REGION_MARGIN
+                                    );
+                        }
+                    }
                     int regionIndex = Math.min(
                             Math.max(0, mtDecision.vehicleRegionIndex),
                             Math.max(0, vehicleRois.size() - 1)
                     );
-                    if (vehicleRois.isEmpty()) {
+                    if (mtDecision.vehicleEntityId > 0L
+                            && scheduledVehicleRoi == null) {
+                        trace.putAttribute("mt_scheduler_reason", "candidate_missing");
+                        trace.putAttribute(
+                                "scan_requested_entity_id",
+                                String.valueOf(mtDecision.vehicleEntityId)
+                        );
+                        trace.putCount("scan_exact_entity_missing", 1);
+                        mtInferenceScheduler.onMtResult(
+                                mtDecision,
+                                trace.frameId(),
+                                false
+                        );
+                        trace.finish("candidate_missing", "");
+                        return new PipelineResult(
+                                "candidate_missing",
+                                "Wybrany pojazd nie ma aktualnego ROI",
+                                "",
+                                0.0,
+                                overlays,
+                                frame.getWidth(),
+                                frame.getHeight(),
+                                false
+                        );
+                    } else if (vehicleRois.isEmpty()) {
                         scheduledRegion = fullFrameRegion(frame);
                         scheduledWorkKind = MtWorkKind.FULL_FRAME;
                     } else {
-                        scheduledVehicleRoi = vehicleRois.get(regionIndex);
-                        scheduledRegion = VehicleRoiSelector.region(scheduledVehicleRoi);
-                        scheduledWorkKind = MtWorkKind.VEHICLE_ROI;
+                        if (scheduledVehicleRoi == null) {
+                            scheduledVehicleRoi = vehicleRois.get(regionIndex);
+                        }
+                        scheduledRegion = mtDecision.targetMargin > 0f
+                                ? expandedVehicleRegion(
+                                scheduledVehicleRoi,
+                                frame,
+                                mtDecision.targetMargin
+                        ) : VehicleRoiSelector.region(scheduledVehicleRoi);
+                        scheduledWorkKind = mtDecision.targetMargin > 0f
+                                ? MtWorkKind.VEHICLE_ROI_EXPANDED
+                                : MtWorkKind.VEHICLE_ROI;
                         recordVehicleRoiScheduled(
                                 scheduledVehicleRoi,
                                 trace.frameId(),
@@ -823,7 +942,8 @@ final class MobileAlprEngine implements AutoCloseable {
                     detected,
                     scheduledVehicleRoi,
                     scheduledWorkKind,
-                    mtReason(mtDecision.reason),
+                    mtDecision.mtReason != MtReason.UNKNOWN
+                            ? mtDecision.mtReason : mtReason(mtDecision.reason),
                     vehicleRoiByPlate,
                     workKindByPlate,
                     workReasonByPlate
@@ -1696,6 +1816,16 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         trace.putCount("mt_scheduler_queue_size", decision.runsMt() ? 1 : 0);
         trace.putCount("target_recovery_level", decision.recoveryLevel);
+        if (decision.vehicleEntityId > 0L) {
+            trace.putAttribute(
+                    "scan_requested_entity_id",
+                    String.valueOf(decision.vehicleEntityId)
+            );
+            trace.putAttribute(
+                    "scan_acquisition_directive_revision",
+                    String.valueOf(decision.acquisitionDirectiveRevision)
+            );
+        }
         if (target != null) {
             trace.putAttribute("target_transition_reason", target.transitionReason);
             trace.putConfidence("tracker_quality", target.trackingQuality);
@@ -1840,6 +1970,23 @@ final class MobileAlprEngine implements AutoCloseable {
                 label,
                 0L,
                 false
+        );
+    }
+
+    private static VehicleRoiSelector.Region expandedVehicleRegion(
+            VehicleRoi roi,
+            Bitmap frame,
+            float marginFraction
+    ) {
+        float marginX = roi.width() * Math.max(0f, marginFraction);
+        float marginY = roi.height() * Math.max(0f, marginFraction);
+        return VehicleRoiSelector.normalizedRegion(
+                frame.getWidth(),
+                frame.getHeight(),
+                (roi.left - marginX) / frame.getWidth(),
+                (roi.top - marginY) / frame.getHeight(),
+                (roi.right + marginX) / frame.getWidth(),
+                (roi.bottom + marginY) / frame.getHeight()
         );
     }
 

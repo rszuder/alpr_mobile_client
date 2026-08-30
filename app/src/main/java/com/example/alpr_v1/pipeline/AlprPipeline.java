@@ -9,6 +9,12 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AdaptiveFrameGate;
+import com.example.alpr_v1.acquisition.AcquisitionDecision;
+import com.example.alpr_v1.acquisition.AcquisitionDirective;
+import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
+import com.example.alpr_v1.acquisition.ScanAcquisitionController;
+import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
+import com.example.alpr_v1.acquisition.ScanRunState;
 import com.example.alpr_v1.continuity.ContinuityGenerationGate;
 import com.example.alpr_v1.continuity.ContinuityResultDisposition;
 import com.example.alpr_v1.continuity.ContinuityStamp;
@@ -134,6 +140,8 @@ public final class AlprPipeline {
             new ContinuityGenerationGate();
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator =
             new VehicleTrackingCoordinator();
+    private final ScanAcquisitionController scanAcquisitionController =
+            new ScanAcquisitionController();
     private final AtomicLong frameIds = new AtomicLong();
     private final AtomicLong previewEvidenceIds = new AtomicLong();
     private final AtomicLong sceneGeneration = new AtomicLong();
@@ -525,6 +533,10 @@ public final class AlprPipeline {
                     }
                     engine.setCameraTransformInProgress(false);
                 }
+                prepareScanAcquisition(
+                        engine,
+                        SystemClock.elapsedRealtimeNanos()
+                );
 
             } finally {
 
@@ -580,6 +592,10 @@ public final class AlprPipeline {
                 finishStaleResultTrace(trace);
                 return null;
             }
+            handleScanPipelineResult(
+                    result,
+                    SystemClock.elapsedRealtimeNanos()
+            );
             recordVehicleTrackingEvents();
             trace.start(
                     "pipeline_finalize"
@@ -817,6 +833,10 @@ public final class AlprPipeline {
                     }
                     engine.setCameraTransformInProgress(false);
                 }
+                prepareScanAcquisition(
+                        engine,
+                        SystemClock.elapsedRealtimeNanos()
+                );
             } finally {
                 trace.stop("engine_setup");
             }
@@ -855,6 +875,10 @@ public final class AlprPipeline {
                 finishStaleResultTrace(trace);
                 return null;
             }
+            handleScanPipelineResult(
+                    result,
+                    SystemClock.elapsedRealtimeNanos()
+            );
             recordVehicleTrackingEvents();
             trace.start("pipeline_finalize");
             try {
@@ -1526,6 +1550,83 @@ public final class AlprPipeline {
     static boolean shouldRebaseSceneReference(SoftReacquireResult result) {
         return result == SoftReacquireResult.TARGET_RECOVERED
                 || result == SoftReacquireResult.VEHICLE_POOL_RECOVERED;
+    }
+
+    private void prepareScanAcquisition(
+            MobileAlprEngine activeEngine,
+            long nowRuntimeNanos
+    ) {
+        ScanAcquisitionSnapshot before = scanAcquisitionController.snapshot(
+                nowRuntimeNanos
+        );
+        boolean scanActive = before.runState.active();
+        AcquisitionDirective directive = before.directive;
+        if (before.runState == ScanRunState.RUNNING) {
+            directive = scanAcquisitionController.onVehicleFrame(
+                    latestVehicleTrackingFrame(),
+                    sceneTransitionCoordinator.snapshot(),
+                    nowRuntimeNanos
+            );
+        }
+        if (scanActive) {
+            activeEngine.setAutoZoomTargetLock(
+                    false, directive.revision, 0L,
+                    0f, 0f, 0f, 0f
+            );
+        }
+        applyScanDirectiveToEngine(
+                activeEngine,
+                scanActive,
+                directive
+        );
+    }
+
+    private void handleScanPipelineResult(
+            PipelineResult result,
+            long nowRuntimeNanos
+    ) {
+        ScanAcquisitionSnapshot before = scanAcquisitionController.snapshot(
+                nowRuntimeNanos
+        );
+        if (before.runState != ScanRunState.RUNNING) return;
+        AcquisitionDecision decision = scanAcquisitionController.onPipelineResult(
+                result,
+                sceneTransitionCoordinator.snapshot(),
+                nowRuntimeNanos
+        );
+        AcquisitionDirective next = decision.nextDirective;
+        if ("scan_queue_updated".equals(result.status)) {
+            next = scanAcquisitionController.onVehicleFrame(
+                    latestVehicleTrackingFrame(),
+                    sceneTransitionCoordinator.snapshot(),
+                    nowRuntimeNanos
+            );
+        }
+        if (engine != null) {
+            applyScanDirectiveToEngine(engine, true, next);
+            if (next.action == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+                engine.releaseFocusedTarget(next.reason);
+                targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
+                        sceneTransitionCoordinator.stamp(
+                                latestContinuitySourceFrame()
+                        )
+                );
+            }
+        }
+        if (next.action != AcquisitionDirectiveAction.NONE
+                && next.action
+                != AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION) {
+            frameGate.requestImmediateFrame();
+        }
+    }
+
+    private static void applyScanDirectiveToEngine(
+            MobileAlprEngine activeEngine,
+            boolean scanActive,
+            AcquisitionDirective directive
+    ) {
+        if (activeEngine == null) return;
+        activeEngine.setScanAcquisitionDirective(scanActive, directive);
     }
 
     private boolean shouldSkipHeavyInference(SceneTransitionDecision decision) {
@@ -2324,6 +2425,40 @@ public final class AlprPipeline {
                 sceneTransitionCoordinator.stamp(
                         frame.continuityStamp().sourceFrameStamp()
                 )
+        );
+    }
+
+    public void startScanRun(long scanRunId, long nowRuntimeNanos) {
+        scanAcquisitionController.startRun(scanRunId, nowRuntimeNanos);
+        frameGate.requestImmediateFrame();
+    }
+
+    public void pauseScanRun(long nowRuntimeNanos) {
+        scanAcquisitionController.pauseRun(nowRuntimeNanos);
+    }
+
+    public void resumeScanRun(long nowRuntimeNanos) {
+        scanAcquisitionController.resumeRun(nowRuntimeNanos);
+        frameGate.requestImmediateFrame();
+    }
+
+    public void stopScanRun(long nowRuntimeNanos) {
+        scanAcquisitionController.stopRun(nowRuntimeNanos);
+        AcquisitionDirective stopDirective =
+                scanAcquisitionController.currentDirective();
+        MobileAlprEngine activeEngine = engine;
+        if (activeEngine != null) {
+            if (stopDirective.action
+                    == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+                activeEngine.releaseFocusedTarget(stopDirective.reason);
+            }
+            activeEngine.setScanAcquisitionDirective(false, stopDirective);
+        }
+    }
+
+    public ScanAcquisitionSnapshot scanAcquisitionSnapshot() {
+        return scanAcquisitionController.snapshot(
+                SystemClock.elapsedRealtimeNanos()
         );
     }
 

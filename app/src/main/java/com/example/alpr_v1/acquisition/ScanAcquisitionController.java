@@ -180,6 +180,12 @@ public final class ScanAcquisitionController {
                 != continuity.cameraTransformGeneration) {
             return ignored("stale_scan_pipeline_result");
         }
+        if ("candidate_missing".equals(result.status)) {
+            return deferActive(
+                    AcquisitionDeferReason.CANDIDATE_MISSING,
+                    nowRuntimeNanos
+            );
+        }
 
         PlateObservation matching = bestMatchingObservation(
                 result,
