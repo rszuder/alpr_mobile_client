@@ -2713,6 +2713,10 @@ public final class AlprPipeline {
         );
     }
 
+    public long lastMpObservationGapNanos() {
+        return vehicleTrackingCoordinator.lastMpObservationGapNanos();
+    }
+
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
         scanAcquisitionController.startRun(scanRunId, nowRuntimeNanos);
         JSONObject autoZoomDetails = new JSONObject();

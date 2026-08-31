@@ -24,6 +24,24 @@ public final class EntityOverlayMotionProjector {
             long focusedPlateTrackId,
             VehicleTrackingFrame vehicleFrame
     ) {
+        return project(
+                diagnostics,
+                trackedPlates,
+                focusedEntityId,
+                focusedPlateTrackId,
+                vehicleFrame,
+                500_000_000L
+        );
+    }
+
+    public List<OverlayItem> project(
+            List<OverlayItem> diagnostics,
+            List<OverlayItem> trackedPlates,
+            long focusedEntityId,
+            long focusedPlateTrackId,
+            VehicleTrackingFrame vehicleFrame,
+            long maximumVehicleAgeNanos
+    ) {
         List<OverlayItem> base = diagnostics == null
                 ? Collections.emptyList() : diagnostics;
         List<OverlayItem> plates = trackedPlates == null
@@ -43,6 +61,15 @@ public final class EntityOverlayMotionProjector {
         for (OverlayItem item : base) {
             if (item == null || item.kind == OverlayItem.Kind.PLATE) continue;
 
+            VehicleCandidate candidate = candidates.get(item.trackId);
+            if (vehicleFrame != null
+                    && item.trackId > 0L
+                    && (candidate == null
+                    || candidate.predictionAgeNanos
+                    > Math.max(0L, maximumVehicleAgeNanos))) {
+                continue;
+            }
+
             if (focusedEntityId > 0L
                     && item.trackId == focusedEntityId
                     && focusedDelta.valid) {
@@ -50,7 +77,6 @@ public final class EntityOverlayMotionProjector {
                 continue;
             }
 
-            VehicleCandidate candidate = candidates.get(item.trackId);
             if (candidate == null) {
                 projected.add(item);
                 continue;

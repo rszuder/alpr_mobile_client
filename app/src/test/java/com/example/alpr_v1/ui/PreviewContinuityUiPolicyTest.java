@@ -138,27 +138,96 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
-    public void dynamicOverlayInvalidatesBeforeFullSceneBoundaryDecision() {
-        assertTrue(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+    public void dynamicMotionKeepsBoundedVehiclesUntilHardReset() {
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition
+                        .KEEP_PREDICTED_VEHICLES,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,
+                null,
                 false,
                 0.32f
         ));
-        assertTrue(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition
+                        .KEEP_PREDICTED_VEHICLES,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,
+                null,
                 true,
                 0.01f
         ));
-        assertFalse(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition.KEEP,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,
+                null,
                 false,
                 0.11f
         ));
-        assertFalse(PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition.KEEP,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                 SceneHandlingMode.STRICT_SCENE_BOUNDARY,
+                null,
                 true,
                 1f
         ));
+    }
+
+    @Test
+    public void vehicleOverlayAgeIsBoundedAroundMeasuredMpInterval() {
+        assertEquals(
+                500_000_000L,
+                PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(0L)
+        );
+        assertEquals(
+                800_000_000L,
+                PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
+                        400_000_000L
+                )
+        );
+        assertEquals(
+                1_500_000_000L,
+                PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
+                        2_000_000_000L
+                )
+        );
+    }
+
+    @Test
+    public void hardResetIsTheDynamicClearBoundary() {
+        SceneTransitionDecision hardReset = new SceneTransitionDecision(
+                9L,
+                SceneTransitionAction.HARD_RESET,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneContinuityState.STABLE,
+                ContinuityAssessment.none(),
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+                true,
+                true,
+                true,
+                "hard_reset"
+        );
+
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition.CLEAR,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
+                        SceneHandlingMode.DYNAMIC_CONTINUITY,
+                        hardReset,
+                        true,
+                        1f
+                )
+        );
     }
 
     @Test

@@ -488,16 +488,17 @@ public final class MainActivity extends AppCompatActivity {
                             != uiCameraTransformGeneration.get()) {
                         return;
                     }
-                    if (PreviewContinuityUiPolicy.shouldInvalidateDynamicOverlay(
+                    PreviewContinuityUiPolicy.DynamicOverlayDisposition disposition =
+                            PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                             effectiveSceneHandlingMode(),
+                            continuityDecision,
                             changed,
                             evidenceFraction
-                    )) {
-                        overlayView.setPreviewItems(
-                                trackedItems == null || trackedItems.isEmpty()
-                                        ? java.util.Collections.emptyList()
-                                        : dynamicCameraMotionOverlayItems(trackedItems)
-                        );
+                    );
+                    if (disposition
+                            != PreviewContinuityUiPolicy.DynamicOverlayDisposition.KEEP
+                            || isDynamicCameraMotion()) {
+                        applyDynamicOverlayDisposition(disposition, trackedItems);
                     }
                     PreviewContinuityUiPolicy.Outcome uiOutcome =
                             PreviewContinuityUiPolicy.decide(
@@ -707,7 +708,9 @@ public final class MainActivity extends AppCompatActivity {
                     || transformGeneration != uiCameraTransformGeneration.get()
                     || cameraTransformInProgress) return;
             if (isDynamicCameraMotion() && trackedItems.isEmpty()) {
-                overlayView.setPreviewItems(java.util.Collections.emptyList());
+                overlayView.setPreviewItems(
+                        dynamicCameraMotionOverlayItems(trackedItems)
+                );
             }
             PreviewContinuityUiPolicy.Outcome uiOutcome =
                     PreviewContinuityUiPolicy.decide(
@@ -5144,11 +5147,9 @@ public final class MainActivity extends AppCompatActivity {
         if (displayableTrackedItems.isEmpty()) {
             expireStalePlateOverlayIfNeeded();
             if (dynamicCameraMotion) {
-                /*
-                 * Bez kotwicy nie znamy transformacji kadru. Stara ramka MP
-                 * jest wtedy bardziej mylaca niz jej chwilowy brak.
-                 */
-                overlayView.setPreviewItems(java.util.Collections.emptyList());
+                overlayView.setPreviewItems(
+                        dynamicCameraMotionOverlayItems(displayableTrackedItems)
+                );
             }
             return;
         }
@@ -5192,6 +5193,10 @@ public final class MainActivity extends AppCompatActivity {
         long focusedPlateTrackId = focusedTarget.trackId;
         VehicleTrackingFrame vehicleFrame = pipeline == null
                 ? null : pipeline.latestVehicleTrackingFrame();
+        long maximumVehicleAgeNanos = PreviewContinuityUiPolicy
+                .vehicleOverlayMaximumAgeNanos(
+                        pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
+                );
         if (pipeline != null) {
             ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
             if (scan.runState.active() && scan.activeEntityId > 0L) {
@@ -5207,8 +5212,39 @@ public final class MainActivity extends AppCompatActivity {
                 plateOnlyOverlayItems(displayableTrackedPlates),
                 focusedEntityId,
                 focusedPlateTrackId,
-                vehicleFrame
+                vehicleFrame,
+                maximumVehicleAgeNanos
         );
+    }
+
+    private void applyDynamicOverlayDisposition(
+            PreviewContinuityUiPolicy.DynamicOverlayDisposition disposition,
+            List<OverlayItem> trackedItems
+    ) {
+        PreviewContinuityUiPolicy.DynamicOverlayDisposition safe = disposition == null
+                ? PreviewContinuityUiPolicy.DynamicOverlayDisposition.KEEP
+                : disposition;
+        switch (safe) {
+            case CLEAR:
+                overlayView.setPreviewItems(java.util.Collections.emptyList());
+                break;
+            case PLATE_ONLY:
+                overlayView.setPreviewItems(plateOnlyOverlayItems(trackedItems));
+                break;
+            case KEEP_PREDICTED_VEHICLES:
+                overlayView.setPreviewItems(
+                        dynamicCameraMotionOverlayItems(trackedItems)
+                );
+                break;
+            case KEEP:
+            default:
+                if (isDynamicCameraMotion()) {
+                    overlayView.setPreviewItems(
+                            dynamicCameraMotionOverlayItems(trackedItems)
+                    );
+                }
+                break;
+        }
     }
 
     private void expireStalePlateOverlayIfNeeded() {

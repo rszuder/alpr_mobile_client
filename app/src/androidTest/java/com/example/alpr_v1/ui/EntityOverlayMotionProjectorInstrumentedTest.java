@@ -70,6 +70,34 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
         assertEquals(0.25f, result.get(2).normalizedBounds.left, EPSILON);
     }
 
+    @Test
+    public void vehiclePredictionDisappearsAfterOverlayDeadline() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 4L, 0.10f, 0.30f);
+        VehicleCandidate stale = new VehicleCandidate(
+                4L,
+                104L,
+                new NormalizedBounds(0.12f, 0.10f, 0.32f, 0.50f),
+                0.9f,
+                0.9f,
+                0f,
+                true,
+                3,
+                1L,
+                700_000_001L
+        );
+
+        List<OverlayItem> result = projector.project(
+                Collections.singletonList(vehicle),
+                Collections.emptyList(),
+                0L,
+                0L,
+                frame(stale),
+                500_000_000L
+        );
+
+        assertEquals(0, result.size());
+    }
+
     private static VehicleTrackingFrame frame(VehicleCandidate... candidates) {
         return new VehicleTrackingFrame(
                 1L,

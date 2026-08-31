@@ -9,7 +9,15 @@ import com.example.alpr_v1.pipeline.TargetSnapshot;
 /** Pure authority rule for preview presentation after continuity evaluation. */
 public final class PreviewContinuityUiPolicy {
     private static final float DYNAMIC_OVERLAY_INVALIDATION_FRACTION = 0.12f;
+    private static final long MINIMUM_VEHICLE_OVERLAY_AGE_NANOS = 500_000_000L;
+    private static final long MAXIMUM_VEHICLE_OVERLAY_AGE_NANOS = 1_500_000_000L;
     public enum Authority { COORDINATOR, LEGACY_FALLBACK }
+    public enum DynamicOverlayDisposition {
+        KEEP,
+        KEEP_PREDICTED_VEHICLES,
+        PLATE_ONLY,
+        CLEAR
+    }
 
     public static final class Outcome {
         public final Authority authority;
@@ -96,16 +104,41 @@ public final class PreviewContinuityUiPolicy {
         return requestedRevision > appliedRevision;
     }
 
-    /** UI safety gate independent from the stricter scene-boundary decision. */
-    public static boolean shouldInvalidateDynamicOverlay(
+    /** Jawna decyzja warstwy UI, niezależna od życia encji domenowej. */
+    public static DynamicOverlayDisposition dynamicOverlayDisposition(
             SceneHandlingMode mode,
+            SceneTransitionDecision decision,
             boolean sceneChanged,
             float changedFraction
     ) {
-        return mode == SceneHandlingMode.DYNAMIC_CONTINUITY
-                && (sceneChanged
+        if (mode != SceneHandlingMode.DYNAMIC_CONTINUITY) {
+            return DynamicOverlayDisposition.KEEP;
+        }
+        if (decision != null
+                && decision.action == SceneTransitionAction.HARD_RESET) {
+            return DynamicOverlayDisposition.CLEAR;
+        }
+        if (sceneChanged
                 || (Float.isFinite(changedFraction)
-                && changedFraction >= DYNAMIC_OVERLAY_INVALIDATION_FRACTION));
+                && changedFraction >= DYNAMIC_OVERLAY_INVALIDATION_FRACTION)) {
+            return DynamicOverlayDisposition.KEEP_PREDICTED_VEHICLES;
+        }
+        return DynamicOverlayDisposition.KEEP;
+    }
+
+    public static long vehicleOverlayMaximumAgeNanos(long measuredMpIntervalNanos) {
+        long doubled;
+        if (measuredMpIntervalNanos <= 0L) {
+            doubled = 0L;
+        } else if (measuredMpIntervalNanos > Long.MAX_VALUE / 2L) {
+            doubled = Long.MAX_VALUE;
+        } else {
+            doubled = measuredMpIntervalNanos * 2L;
+        }
+        return Math.min(
+                MAXIMUM_VEHICLE_OVERLAY_AGE_NANOS,
+                Math.max(MINIMUM_VEHICLE_OVERLAY_AGE_NANOS, doubled)
+        );
     }
 
     public static boolean shouldClearFocusedTargetAfterRecovery(
