@@ -90,14 +90,23 @@ public final class EntityOverlayMotionProjector {
             VehicleCandidate candidate = candidates.get(item.trackId);
             boolean focusedEntityGeometry = focusedEntityId > 0L
                     && item.trackId == focusedEntityId;
-            if (vehicleFrame != null
-                    && !vehicleFrame.candidates.isEmpty()
-                    && item.trackId > 0L
-                    && !focusedEntityGeometry
-                    && (candidate == null
-                    || candidate.predictionAgeNanos
-                    > Math.max(0L, maximumVehicleAgeNanos))) {
-                continue;
+            if (vehicleFrame != null && item.trackId > 0L) {
+                if (candidate != null
+                        && candidate.predictionAgeNanos
+                        > Math.max(0L, maximumVehicleAgeNanos)) {
+                    continue;
+                }
+                if (candidate == null) {
+                    if (focusedEntityGeometry && focusedDelta.valid) {
+                        projected.add(translated(
+                                item,
+                                focusedDelta.dx,
+                                focusedDelta.dy,
+                                true
+                        ));
+                    }
+                    continue;
+                }
             }
 
             // Ruch całego kadru jest wspólnym, bieżącym dowodem dla każdej
@@ -108,8 +117,7 @@ public final class EntityOverlayMotionProjector {
                 continue;
             }
 
-            if (focusedEntityGeometry
-                    && focusedDelta.valid) {
+            if (focusedEntityGeometry && focusedDelta.valid) {
                 projected.add(translated(item, focusedDelta.dx, focusedDelta.dy, true));
                 continue;
             }

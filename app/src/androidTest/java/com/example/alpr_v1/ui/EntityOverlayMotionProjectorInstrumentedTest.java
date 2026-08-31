@@ -1,7 +1,6 @@
 package com.example.alpr_v1.ui;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
 
 import android.graphics.RectF;
 
@@ -52,7 +51,7 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     }
 
     @Test
-    public void trackedPlateWithoutFocusedIdentityCannotMoveVehiclesGlobally() {
+    public void missingVehicleCandidatesDropDiagnosticsWithoutFocusedProof() {
         OverlayItem vehicleA = item(OverlayItem.Kind.VEHICLE, 1L, 0.10f, 0.30f);
         OverlayItem vehicleB = item(OverlayItem.Kind.VEHICLE, 2L, 0.50f, 0.70f);
         OverlayItem basePlate = item(OverlayItem.Kind.PLATE, 101L, 0.15f, 0.22f);
@@ -66,9 +65,9 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
                 VehicleTrackingFrame.empty(1L)
         );
 
-        assertSame(vehicleA, result.get(0));
-        assertSame(vehicleB, result.get(1));
-        assertEquals(0.25f, result.get(2).normalizedBounds.left, EPSILON);
+        assertEquals(1, result.size());
+        assertEquals(OverlayItem.Kind.PLATE, result.get(0).kind);
+        assertEquals(0.25f, result.get(0).normalizedBounds.left, EPSILON);
     }
 
     @Test
@@ -109,7 +108,7 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
                 Collections.emptyList(),
                 1L,
                 0L,
-                VehicleTrackingFrame.empty(1L),
+                frame(candidate(1L, 0.10f, 0.30f, false)),
                 500_000_000L,
                 FrameMotionTransform.translation(0.06f, -0.04f)
         );
@@ -138,7 +137,7 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     }
 
     @Test
-    public void focusedVehicleSurvivesMissingCandidateAndFollowsGlobalMotion() {
+    public void focusedVehicleWithoutCandidateCannotSurviveOnGlobalMotionAlone() {
         OverlayItem focusedVehicle = item(
                 OverlayItem.Kind.VEHICLE, 7L, 0.30f, 0.60f
         );
@@ -153,9 +152,7 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
                 FrameMotionTransform.translation(0.12f, 0f)
         );
 
-        assertEquals(1, result.size());
-        assertEquals(7L, result.get(0).trackId);
-        assertEquals(0.42f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(0, result.size());
     }
 
     @Test
@@ -175,12 +172,41 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
                 Collections.singletonList(locallyTrackedPlate),
                 7L,
                 70L,
-                VehicleTrackingFrame.empty(1L),
+                frame(candidate(7L, 0.30f, 0.60f, false)),
                 500_000_000L,
                 FrameMotionTransform.translation(0.14f, 0f)
         );
 
         assertEquals(0.44f, result.get(0).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
+    public void staleEntityIsDroppedEvenWithValidGlobalMotion() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 4L, 0.10f, 0.30f);
+        VehicleCandidate stale = new VehicleCandidate(
+                4L,
+                104L,
+                new NormalizedBounds(0.12f, 0.10f, 0.32f, 0.50f),
+                0.9f,
+                0.9f,
+                0f,
+                true,
+                3,
+                1L,
+                700_000_001L
+        );
+
+        List<OverlayItem> result = projector.project(
+                Collections.singletonList(vehicle),
+                Collections.emptyList(),
+                4L,
+                0L,
+                frame(stale),
+                500_000_000L,
+                FrameMotionTransform.translation(0.12f, 0f)
+        );
+
+        assertEquals(0, result.size());
     }
 
     private static VehicleTrackingFrame frame(VehicleCandidate... candidates) {

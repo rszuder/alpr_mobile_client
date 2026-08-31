@@ -491,6 +491,33 @@ public final class DetectionOverlayViewInstrumentedTest {
                 0.01f);
     }
 
+    @Test
+    public void activeVehicleMarkerExpiresWithGeometryDeadline() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<PointF> freshTip = new AtomicReference<>();
+        AtomicReference<PointF> expiredTip = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setActiveVehicleGeometryMaximumAgeNanos(1_000_000L);
+            view.setItems(Collections.singletonList(item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                    7L
+            )), 1920, 1080);
+            view.setActiveVehicleEntityId(7L);
+            freshTip.set(view.activeVehicleMarkerTipForTesting(1f));
+
+            android.os.SystemClock.sleep(5L);
+            expiredTip.set(view.activeVehicleMarkerTipForTesting(1f));
+        });
+
+        org.junit.Assert.assertNotNull(freshTip.get());
+        org.junit.Assert.assertNull(expiredTip.get());
+    }
+
     private static OverlayItem item(
             OverlayItem.Kind kind,
             RectF bounds,

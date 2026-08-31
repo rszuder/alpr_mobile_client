@@ -77,6 +77,8 @@ public final class DetectionOverlayView extends View {
     private long focusedTrackId;
     private long activeVehicleEntityId;
     private RectF activeVehicleNormalizedBounds;
+    private long activeVehicleBoundsFreshAtNanos;
+    private long activeVehicleGeometryMaximumAgeNanos = 500_000_000L;
     private float activeVehicleMarkerProgress;
     private boolean analysisViewportEnabled;
 
@@ -516,8 +518,9 @@ public final class DetectionOverlayView extends View {
         if (activeVehicleEntityId != safeEntityId) {
             activeVehicleEntityId = safeEntityId;
             activeVehicleNormalizedBounds = null;
+            activeVehicleBoundsFreshAtNanos = 0L;
+            refreshActiveVehicleBounds();
         }
-        refreshActiveVehicleBounds();
         if (activeVehicleEntityId > 0L) {
             ensureActiveVehicleMarkerAnimator();
         } else {
@@ -526,9 +529,15 @@ public final class DetectionOverlayView extends View {
         postInvalidateOnAnimation();
     }
 
+    public void setActiveVehicleGeometryMaximumAgeNanos(long maximumAgeNanos) {
+        activeVehicleGeometryMaximumAgeNanos = Math.max(0L, maximumAgeNanos);
+        postInvalidateOnAnimation();
+    }
+
     private void refreshActiveVehicleBounds() {
         if (activeVehicleEntityId <= 0L) {
             activeVehicleNormalizedBounds = null;
+            activeVehicleBoundsFreshAtNanos = 0L;
             return;
         }
         OverlayItem roiFallback = null;
@@ -536,12 +545,16 @@ public final class DetectionOverlayView extends View {
             if (item == null || item.trackId != activeVehicleEntityId) continue;
             if (item.kind == OverlayItem.Kind.VEHICLE) {
                 activeVehicleNormalizedBounds = new RectF(item.normalizedBounds);
+                activeVehicleBoundsFreshAtNanos =
+                        android.os.SystemClock.elapsedRealtimeNanos();
                 return;
             }
             if (item.kind == OverlayItem.Kind.VEHICLE_ROI) roiFallback = item;
         }
         if (roiFallback != null) {
             activeVehicleNormalizedBounds = new RectF(roiFallback.normalizedBounds);
+            activeVehicleBoundsFreshAtNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos();
         }
         // Brak geometrii w bieżącej klatce nie usuwa ostatniej pozycji celu.
     }
@@ -1274,6 +1287,7 @@ public final class DetectionOverlayView extends View {
     private PointF activeVehicleMarkerTip(float progress) {
         if (activeVehicleEntityId <= 0L
                 || activeVehicleNormalizedBounds == null
+                || !activeVehicleGeometryFresh()
                 || getWidth() <= 0
                 || getHeight() <= 0) {
             return null;
@@ -1298,6 +1312,16 @@ public final class DetectionOverlayView extends View {
         float tipY = bounds.top - awayDistance * (1f - safeProgress);
         tipY = Math.max(height, Math.min(getHeight(), tipY));
         return new PointF(centerX, tipY);
+    }
+
+    private boolean activeVehicleGeometryFresh() {
+        long freshAt = activeVehicleBoundsFreshAtNanos;
+        if (freshAt <= 0L) return false;
+        long age = Math.max(
+                0L,
+                android.os.SystemClock.elapsedRealtimeNanos() - freshAt
+        );
+        return age <= activeVehicleGeometryMaximumAgeNanos;
     }
 
     private void drawGeometryCalibration(Canvas canvas) {
@@ -1558,6 +1582,7 @@ public final class DetectionOverlayView extends View {
 
     RectF snapshotActiveVehicleBoundsForTesting() {
         return activeVehicleNormalizedBounds == null
+                || !activeVehicleGeometryFresh()
                 ? null
                 : new RectF(activeVehicleNormalizedBounds);
     }

@@ -3682,6 +3682,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
+        overlayView.setActiveVehicleGeometryMaximumAgeNanos(
+                PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
+                        pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
+                )
+        );
         overlayView.setActiveVehicleEntityId(scan.activeEntityId);
         if (scan.activeSessionState
                 == com.example.alpr_v1.domain.TargetSessionState.RECOVERING) {
