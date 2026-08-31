@@ -4750,7 +4750,9 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
-        if (!scan.runState.active()) {
+        boolean releaseBarrier = scan.directive.action
+                == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET;
+        if (!scan.runState.active() && !releaseBarrier) {
             setScanOverlayPresentationEntity(0L);
             return result.overlayItems;
         }
@@ -4766,10 +4768,27 @@ public final class MainActivity extends AppCompatActivity {
                 scan.plateAnchor,
                 result.plateObservations
         );
-        List<OverlayItem> scoped = new ArrayList<>(result.overlayItems.size());
-        for (OverlayItem item : result.overlayItems) {
-            if (item.kind != OverlayItem.Kind.PLATE
-                    || allowedPlateTrackIds.contains(item.trackId)) {
+        return filterScanOverlayItems(
+                result.overlayItems,
+                allowedPlateTrackIds
+        );
+    }
+
+    static List<OverlayItem> filterScanOverlayItems(
+            List<OverlayItem> items,
+            Set<Long> allowedPlateTrackIds
+    ) {
+        if (items == null || items.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        Set<Long> allowed = allowedPlateTrackIds == null
+                ? java.util.Collections.emptySet()
+                : allowedPlateTrackIds;
+        List<OverlayItem> scoped = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item != null
+                    && (item.kind != OverlayItem.Kind.PLATE
+                    || allowed.contains(item.trackId))) {
                 scoped.add(item);
             }
         }
@@ -4793,6 +4812,16 @@ public final class MainActivity extends AppCompatActivity {
             List<PlateObservation> observations
     ) {
         if (scan == null) return 0L;
+        /*
+         * RELEASE jest twarda bariera wizualna. Ten sam PipelineResult może
+         * nadal zawierać prawidłowy tekst/crop zakończonej sesji, ale żadna
+         * historyczna PlateObservation nie może już odtworzyć jej pływającej
+         * ramki na obrazie.
+         */
+        if (scan.directive.action
+                == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+            return 0L;
+        }
 
         long newestEntityId = 0L;
         long newestRevision = 0L;
