@@ -140,6 +140,43 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     }
 
     @Test
+    public void freshLocalVehicleGeometryOverridesStaleMpPrediction() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 4L, 0.10f, 0.30f);
+        OverlayItem roi = item(OverlayItem.Kind.VEHICLE_ROI, 4L, 0.08f, 0.32f);
+        OverlayItem localVehicle = item(
+                OverlayItem.Kind.VEHICLE, 4L, 0.25f, 0.45f
+        );
+        VehicleCandidate stale = new VehicleCandidate(
+                4L,
+                104L,
+                new NormalizedBounds(0.12f, 0.10f, 0.32f, 0.50f),
+                0.9f,
+                0.9f,
+                0f,
+                true,
+                3,
+                1L,
+                700_000_001L
+        );
+
+        List<OverlayItem> result = projector.project(
+                Arrays.asList(vehicle, roi),
+                Collections.emptyList(),
+                Collections.singletonList(localVehicle),
+                4L,
+                0L,
+                frame(stale),
+                500_000_000L,
+                FrameMotionTransform.translation(0.40f, 0f),
+                FrameMotionTransform.translation(0.40f, 0f)
+        );
+
+        assertEquals(2, result.size());
+        assertEquals(0.25f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(0.23f, result.get(1).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
     public void accumulatedMotionCompensatesDelayedInferenceIncludingNewPlate() {
         OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 1L, 0.40f, 0.70f);
         OverlayItem plate = item(OverlayItem.Kind.PLATE, 101L, 0.50f, 0.58f);

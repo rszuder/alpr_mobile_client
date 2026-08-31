@@ -86,6 +86,30 @@ public final class EntityOverlayMotionProjector {
             FrameMotionTransform diagnosticMotion,
             FrameMotionTransform candidateMotion
     ) {
+        return project(
+                diagnostics,
+                trackedPlates,
+                Collections.emptyList(),
+                focusedEntityId,
+                focusedPlateTrackId,
+                vehicleFrame,
+                maximumVehicleAgeNanos,
+                diagnosticMotion,
+                candidateMotion
+        );
+    }
+
+    public List<OverlayItem> project(
+            List<OverlayItem> diagnostics,
+            List<OverlayItem> trackedPlates,
+            List<OverlayItem> trackedVehicles,
+            long focusedEntityId,
+            long focusedPlateTrackId,
+            VehicleTrackingFrame vehicleFrame,
+            long maximumVehicleAgeNanos,
+            FrameMotionTransform diagnosticMotion,
+            FrameMotionTransform candidateMotion
+    ) {
         List<OverlayItem> base = diagnostics == null
                 ? Collections.emptyList() : diagnostics;
         List<OverlayItem> plates = trackedPlates == null
@@ -100,6 +124,7 @@ public final class EntityOverlayMotionProjector {
 
         Map<Long, VehicleCandidate> candidates = candidatesByEntity(vehicleFrame);
         Map<Long, OverlayItem> measuredVehicles = vehiclesByEntity(base);
+        Map<Long, OverlayItem> localVehicles = vehiclesByEntity(trackedVehicles);
         List<OverlayItem> projected = new ArrayList<>(base.size() + plates.size());
 
         for (OverlayItem item : base) {
@@ -111,15 +136,18 @@ public final class EntityOverlayMotionProjector {
                     : item;
 
             VehicleCandidate candidate = candidates.get(item.trackId);
+            OverlayItem localVehicle = localVehicles.get(item.trackId);
+            boolean freshLocalGeometry = localVehicle != null;
             boolean focusedEntityGeometry = focusedEntityId > 0L
                     && item.trackId == focusedEntityId;
             if (vehicleFrame != null && item.trackId > 0L) {
                 if (candidate != null
                         && candidate.predictionAgeNanos
-                        > Math.max(0L, maximumVehicleAgeNanos)) {
+                        > Math.max(0L, maximumVehicleAgeNanos)
+                        && !freshLocalGeometry) {
                     continue;
                 }
-                if (candidate == null) {
+                if (candidate == null && !freshLocalGeometry) {
                     if (focusedEntityGeometry && focusedDelta.valid) {
                         projected.add(translated(
                                 item,
@@ -130,6 +158,26 @@ public final class EntityOverlayMotionProjector {
                     }
                     continue;
                 }
+            }
+
+            if (freshLocalGeometry) {
+                if (item.kind == OverlayItem.Kind.VEHICLE) {
+                    projected.add(withBounds(
+                            item,
+                            localVehicle.normalizedBounds,
+                            false
+                    ));
+                } else {
+                    OverlayItem measuredVehicle = measuredVehicles.get(item.trackId);
+                    projected.add(measuredVehicle == null
+                            ? item
+                            : remapRelativeToVehicle(
+                                    item,
+                                    measuredVehicle.normalizedBounds,
+                                    localVehicle.normalizedBounds
+                            ));
+                }
+                continue;
             }
 
             // Ruch całego kadru jest wspólnym, bieżącym dowodem dla każdej
@@ -272,6 +320,7 @@ public final class EntityOverlayMotionProjector {
     }
 
     private static Map<Long, OverlayItem> vehiclesByEntity(List<OverlayItem> items) {
+        if (items == null || items.isEmpty()) return Collections.emptyMap();
         Map<Long, OverlayItem> result = new HashMap<>();
         for (OverlayItem item : items) {
             if (item != null
@@ -307,6 +356,58 @@ public final class EntityOverlayMotionProjector {
                 source.label,
                 source.trackId,
                 candidate.predicted
+        );
+    }
+
+    private static OverlayItem withBounds(
+            OverlayItem source,
+            RectF bounds,
+            boolean predicted
+    ) {
+        return new OverlayItem(
+                source.kind,
+                new RectF(bounds),
+                source.normalizedKeypoints,
+                source.label,
+                source.trackId,
+                predicted || source.carriedPrediction
+        );
+    }
+
+    private static OverlayItem remapRelativeToVehicle(
+            OverlayItem source,
+            RectF fromVehicle,
+            RectF toVehicle
+    ) {
+        float fromWidth = Math.max(0.001f, fromVehicle.width());
+        float fromHeight = Math.max(0.001f, fromVehicle.height());
+        RectF bounds = source.normalizedBounds;
+        RectF mapped = new RectF(
+                toVehicle.left + (bounds.left - fromVehicle.left)
+                        * toVehicle.width() / fromWidth,
+                toVehicle.top + (bounds.top - fromVehicle.top)
+                        * toVehicle.height() / fromHeight,
+                toVehicle.left + (bounds.right - fromVehicle.left)
+                        * toVehicle.width() / fromWidth,
+                toVehicle.top + (bounds.bottom - fromVehicle.top)
+                        * toVehicle.height() / fromHeight
+        );
+        List<PointF> points = new ArrayList<>(source.normalizedKeypoints.size());
+        for (PointF point : source.normalizedKeypoints) {
+            points.add(new PointF(
+                    toVehicle.left + (point.x - fromVehicle.left)
+                            * toVehicle.width() / fromWidth,
+                    toVehicle.top + (point.y - fromVehicle.top)
+                            * toVehicle.height() / fromHeight
+            ));
+        }
+        return new OverlayItem(
+                source.kind,
+                mapped,
+                points,
+                source.label,
+                source.trackId,
+                false
         );
     }
 

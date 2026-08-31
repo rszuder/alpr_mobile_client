@@ -860,6 +860,7 @@ public final class MainActivity extends AppCompatActivity {
         pendingPreviewCoordination.set(null);
         resetGlobalPreviewMotionState();
         previewPlateTracker.reset();
+        previewVehicleTracker.reset();
         android.util.Log.d(
                 "ALPR_PRESENTATION_BARRIER",
                 String.format(
@@ -921,6 +922,7 @@ public final class MainActivity extends AppCompatActivity {
                 || !previewPresentationBarrier.permits(presentationGeneration)) {
             resetGlobalPreviewMotionState();
             previewPlateTracker.reset();
+            previewVehicleTracker.reset();
             return;
         }
         AlprPipeline motionPipeline = pipeline;
@@ -995,24 +997,32 @@ public final class MainActivity extends AppCompatActivity {
                 frame.width,
                 frame.height
         );
+        PreviewTrackingFrame vehicleTrackingFrame =
+                previewVehicleTracker.updateLuma(
+                        frame.gray,
+                        frame.width,
+                        frame.height
+                );
         long trackingElapsedNanos = Math.max(
                 0L,
                 android.os.SystemClock.elapsedRealtimeNanos()
                         - trackingStartedNanos
         );
-        if (trackingFrame == null) return;
         if (!isCurrentPreviewStamp(continuityStamp)
                 || !previewPresentationBarrier.permits(presentationGeneration)) {
             resetGlobalPreviewMotionState();
             previewPlateTracker.reset();
+            previewVehicleTracker.reset();
             return;
         }
         float maximumQuality = 0f;
         int maximumInliers = 0;
-        for (com.example.alpr_v1.tracking.TrackedPlate plate
-                : trackingFrame.trackedPlates) {
-            maximumQuality = Math.max(maximumQuality, plate.trackingQuality);
-            maximumInliers = Math.max(maximumInliers, plate.trackerInliers);
+        if (trackingFrame != null) {
+            for (com.example.alpr_v1.tracking.TrackedPlate plate
+                    : trackingFrame.trackedPlates) {
+                maximumQuality = Math.max(maximumQuality, plate.trackingQuality);
+                maximumInliers = Math.max(maximumInliers, plate.trackerInliers);
+            }
         }
         android.util.Log.d(
                 "ALPR_TRACK_TIMING",
@@ -1021,31 +1031,38 @@ public final class MainActivity extends AppCompatActivity {
                         "timestamp_ns=%d update_ms=%.3f tracks=%d quality=%.3f inliers=%d",
                         frame.timestampNanos,
                         trackingElapsedNanos / 1_000_000.0,
-                        trackingFrame.trackedPlates.size(),
+                        trackingFrame == null ? 0 : trackingFrame.trackedPlates.size(),
                         maximumQuality,
                         maximumInliers
                 )
         );
         TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
-        TargetSnapshot targetAfterTracking = targetStateMachine.onTrackingFrame(
-                trackingFrame
-        );
+        TargetSnapshot targetAfterTracking = trackingFrame == null
+                ? targetBeforeTracking
+                : targetStateMachine.onTrackingFrame(trackingFrame);
         if (!isCurrentPreviewStamp(continuityStamp)
                 || !previewPresentationBarrier.permits(presentationGeneration)) {
             targetStateMachine.reset();
             previewPlateTracker.reset();
+            previewVehicleTracker.reset();
             resetGlobalPreviewMotionState();
             return;
         }
-        List<OverlayItem> trackedItems = trackingFrame.overlayItems;
+        List<OverlayItem> trackedItems = trackingFrame == null
+                ? java.util.Collections.emptyList()
+                : trackingFrame.overlayItems;
+        List<OverlayItem> locallyTrackedVehicles =
+                trackedVehicleOverlayItems(vehicleTrackingFrame);
         boolean establishedFocusedTarget = PreviewContinuityUiPolicy
                 .isEstablishedFocusedTarget(
                         targetBeforeTracking.state,
                         targetBeforeTracking.lockedTrackId
                 );
-        boolean trackingLost = establishedFocusedTarget
+        boolean trackingLost = trackingFrame != null
+                && establishedFocusedTarget
                 && trackedItems.isEmpty();
-        boolean trackingDegraded = establishedFocusedTarget
+        boolean trackingDegraded = trackingFrame != null
+                && establishedFocusedTarget
                 && targetAfterTracking.state == TargetSnapshot.State.DEGRADED;
 
         CameraMotionMonitor motionMonitor = cameraMotionMonitor;
@@ -1079,11 +1096,19 @@ public final class MainActivity extends AppCompatActivity {
                     || !previewPresentationBarrier.permits(presentationGeneration)
                     || !isCurrentPreviewStamp(continuityStamp)) return;
             if (!trackedItems.isEmpty()) {
-                presentTrackedPreviewOverlay(trackedItems, frameMotion);
+                presentTrackedPreviewOverlay(
+                        trackedItems,
+                        locallyTrackedVehicles,
+                        frameMotion
+                );
             } else if (isDynamicCameraMotion()
                     || frameMotion.significant()) {
                 overlayView.setPreviewItems(
-                        dynamicCameraMotionOverlayItems(trackedItems, frameMotion)
+                        dynamicCameraMotionOverlayItems(
+                                trackedItems,
+                                locallyTrackedVehicles,
+                                frameMotion
+                        )
                 );
             }
         });
@@ -1268,6 +1293,8 @@ public final class MainActivity extends AppCompatActivity {
      * pomiędzy kolejnymi wywołaniami MT.
      */
     private final PreviewPlateTracker previewPlateTracker =
+            new PreviewPlateTracker();
+    private final PreviewPlateTracker previewVehicleTracker =
             new PreviewPlateTracker();
     private final TargetStateMachine targetStateMachine =
             new TargetStateMachine();
@@ -2498,6 +2525,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        previewVehicleTracker.reset();
         resetGlobalPreviewMotionState();
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
@@ -3049,6 +3077,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        previewVehicleTracker.reset();
         resetGlobalPreviewMotionState();
 
         previewSceneAnchorGuard.reset();
@@ -3254,6 +3283,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        previewVehicleTracker.reset();
         resetGlobalPreviewMotionState();
 
         latestDiagnosticOverlayItems =
@@ -4096,6 +4126,7 @@ public final class MainActivity extends AppCompatActivity {
              */
             overlayTracker.reset();
             previewPlateTracker.reset();
+            previewVehicleTracker.reset();
             resetGlobalPreviewMotionState();
             targetStateMachine.reset();
             plateOverlayFreshness.reset();
@@ -4264,6 +4295,11 @@ public final class MainActivity extends AppCompatActivity {
         latestDiagnosticOverlayAnchorTimestampNanos = Math.max(
                 result.sourceTimestampNanos,
                 lastDirectLumaSourceTimestampNanos
+        );
+        anchorPreviewVehicleTracker(
+                latestDiagnosticOverlayItems,
+                result.sourceWidth,
+                result.sourceHeight
         );
 
 
@@ -5888,8 +5924,53 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private void anchorPreviewVehicleTracker(
+            List<OverlayItem> diagnostics,
+            int sourceWidth,
+            int sourceHeight
+    ) {
+        if (diagnostics == null || diagnostics.isEmpty()) return;
+        List<OverlayItem> anchors = new ArrayList<>();
+        for (OverlayItem item : diagnostics) {
+            if (item == null
+                    || item.kind != OverlayItem.Kind.VEHICLE
+                    || item.carriedPrediction
+                    || item.trackId <= 0L) continue;
+            RectF bounds = item.normalizedBounds;
+            List<android.graphics.PointF> corners = java.util.Arrays.asList(
+                    new android.graphics.PointF(bounds.left, bounds.top),
+                    new android.graphics.PointF(bounds.right, bounds.top),
+                    new android.graphics.PointF(bounds.right, bounds.bottom),
+                    new android.graphics.PointF(bounds.left, bounds.bottom)
+            );
+            anchors.add(new OverlayItem(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(bounds),
+                    corners,
+                    item.label,
+                    item.trackId,
+                    false
+            ));
+        }
+        if (!anchors.isEmpty()) {
+            previewVehicleTracker.anchor(anchors, sourceWidth, sourceHeight);
+        }
+    }
+
     private void presentTrackedPreviewOverlay(
             List<OverlayItem> trackedItems,
+            FrameMotionTransform frameMotion
+    ) {
+        presentTrackedPreviewOverlay(
+                trackedItems,
+                java.util.Collections.emptyList(),
+                frameMotion
+        );
+    }
+
+    private void presentTrackedPreviewOverlay(
+            List<OverlayItem> trackedItems,
+            List<OverlayItem> locallyTrackedVehicles,
             FrameMotionTransform frameMotion
     ) {
         overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
@@ -5909,6 +5990,7 @@ public final class MainActivity extends AppCompatActivity {
                 overlayView.setPreviewItems(
                         dynamicCameraMotionOverlayItems(
                                 displayableTrackedItems,
+                                locallyTrackedVehicles,
                                 frameMotion
                         )
                 );
@@ -5920,6 +6002,7 @@ public final class MainActivity extends AppCompatActivity {
             overlayView.setPreviewItems(
                     dynamicCameraMotionOverlayItems(
                             displayableTrackedItems,
+                            locallyTrackedVehicles,
                             frameMotion
                     )
             );
@@ -5950,6 +6033,18 @@ public final class MainActivity extends AppCompatActivity {
 
     private List<OverlayItem> dynamicCameraMotionOverlayItems(
             List<OverlayItem> trackedPlates,
+            FrameMotionTransform frameMotion
+    ) {
+        return dynamicCameraMotionOverlayItems(
+                trackedPlates,
+                java.util.Collections.emptyList(),
+                frameMotion
+        );
+    }
+
+    private List<OverlayItem> dynamicCameraMotionOverlayItems(
+            List<OverlayItem> trackedPlates,
+            List<OverlayItem> locallyTrackedVehicles,
             FrameMotionTransform frameMotion
     ) {
         long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
@@ -6012,6 +6107,7 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> projected = entityOverlayMotionProjector.project(
                 projectionBase,
                 plateOnlyOverlayItems(displayableTrackedPlates),
+                locallyTrackedVehicles,
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame,
@@ -6040,6 +6136,8 @@ public final class MainActivity extends AppCompatActivity {
                         countKind(projected, OverlayItem.Kind.VEHICLE));
                 details.put("plate_overlay_count",
                         countKind(projected, OverlayItem.Kind.PLATE));
+                details.put("local_vehicle_overlay_count",
+                        countKind(locallyTrackedVehicles, OverlayItem.Kind.VEHICLE));
                 details.put(
                         "diagnostic_anchor_timestamp_ns",
                         latestDiagnosticOverlayAnchorTimestampNanos
@@ -6075,6 +6173,27 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
         return projected;
+    }
+
+    private static List<OverlayItem> trackedVehicleOverlayItems(
+            PreviewTrackingFrame frame
+    ) {
+        if (frame == null || frame.overlayItems.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        List<OverlayItem> vehicles = new ArrayList<>(frame.overlayItems.size());
+        for (OverlayItem item : frame.overlayItems) {
+            if (item == null || item.trackId <= 0L) continue;
+            vehicles.add(new OverlayItem(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(item.normalizedBounds),
+                    item.normalizedKeypoints,
+                    item.label,
+                    item.trackId,
+                    false
+            ));
+        }
+        return java.util.Collections.unmodifiableList(vehicles);
     }
 
     private void applyDynamicOverlayDisposition(
