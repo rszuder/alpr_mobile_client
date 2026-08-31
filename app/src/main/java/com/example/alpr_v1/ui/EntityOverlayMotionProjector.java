@@ -64,6 +64,28 @@ public final class EntityOverlayMotionProjector {
             long maximumVehicleAgeNanos,
             FrameMotionTransform frameMotion
     ) {
+        return project(
+                diagnostics,
+                trackedPlates,
+                focusedEntityId,
+                focusedPlateTrackId,
+                vehicleFrame,
+                maximumVehicleAgeNanos,
+                frameMotion,
+                frameMotion
+        );
+    }
+
+    public List<OverlayItem> project(
+            List<OverlayItem> diagnostics,
+            List<OverlayItem> trackedPlates,
+            long focusedEntityId,
+            long focusedPlateTrackId,
+            VehicleTrackingFrame vehicleFrame,
+            long maximumVehicleAgeNanos,
+            FrameMotionTransform diagnosticMotion,
+            FrameMotionTransform candidateMotion
+    ) {
         List<OverlayItem> base = diagnostics == null
                 ? Collections.emptyList() : diagnostics;
         List<OverlayItem> plates = trackedPlates == null
@@ -83,8 +105,9 @@ public final class EntityOverlayMotionProjector {
         for (OverlayItem item : base) {
             if (item == null || item.kind == OverlayItem.Kind.PLATE) continue;
 
-            OverlayItem globallyMoved = frameMotion != null && frameMotion.valid
-                    ? transformed(item, frameMotion)
+            OverlayItem globallyMoved = diagnosticMotion != null
+                    && diagnosticMotion.valid
+                    ? transformed(item, diagnosticMotion)
                     : item;
 
             VehicleCandidate candidate = candidates.get(item.trackId);
@@ -112,8 +135,18 @@ public final class EntityOverlayMotionProjector {
             // Ruch całego kadru jest wspólnym, bieżącym dowodem dla każdej
             // warstwy. Nie może zostać zastąpiony przez lokalny delta PLATE,
             // który przy chwilowo błędnej kotwicy zamroziłby aktywne ROI.
-            if (frameMotion != null && frameMotion.valid) {
-                projected.add(globallyMoved);
+            if (diagnosticMotion != null && diagnosticMotion.valid) {
+                if (item.kind == OverlayItem.Kind.VEHICLE
+                        && candidate != null
+                        && candidateMotion != null
+                        && candidateMotion.valid) {
+                    projected.add(transformed(
+                            withCandidateBounds(item, candidate),
+                            candidateMotion
+                    ));
+                } else {
+                    projected.add(globallyMoved);
+                }
                 continue;
             }
 

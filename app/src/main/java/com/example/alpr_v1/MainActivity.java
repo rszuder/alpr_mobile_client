@@ -333,6 +333,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private List<OverlayItem> latestDiagnosticOverlayItems =
             java.util.Collections.emptyList();
+    private long latestDiagnosticOverlayAnchorTimestampNanos;
 
     /*
      * Pozycje tablic pochodzące z ostatniego
@@ -355,6 +356,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private volatile boolean previewSceneMonitorRunning;
     private volatile long lastDirectLumaFrameNanos;
+    private volatile long lastDirectLumaSourceTimestampNanos;
     private volatile boolean directLumaTrackingUnavailable;
 
 
@@ -869,6 +871,7 @@ public final class MainActivity extends AppCompatActivity {
             overlayTracker.reset();
             plateOverlayFreshness.reset();
             latestDiagnosticOverlayItems = java.util.Collections.emptyList();
+            latestDiagnosticOverlayAnchorTimestampNanos = 0L;
             latestPipelinePlateItems = java.util.Collections.emptyList();
             latestPreviewMotionItems = java.util.Collections.emptyList();
             latestPipelinePlateEntityId = 0L;
@@ -903,6 +906,7 @@ public final class MainActivity extends AppCompatActivity {
         final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
         if (!isCurrentPreviewStamp(continuityStamp)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
+        lastDirectLumaSourceTimestampNanos = frame.timestampNanos;
         PreviewFrameMotionSample motionSample = updatePreviewFrameMotion(
                 frame,
                 continuityStamp
@@ -4216,6 +4220,10 @@ public final class MainActivity extends AppCompatActivity {
                 java.util.Collections.unmodifiableList(
                         diagnosticItems
                 );
+        latestDiagnosticOverlayAnchorTimestampNanos = Math.max(
+                result.sourceTimestampNanos,
+                lastDirectLumaSourceTimestampNanos
+        );
 
 
         long freshPlateEntityId = plateEntityId(result, pipelinePlateItems);
@@ -5933,18 +5941,42 @@ public final class MainActivity extends AppCompatActivity {
                 }
             }
         }
+        FrameMotionTransform diagnosticMotion = frameMotion == null
+                ? FrameMotionTransform.invalid() : frameMotion;
+        FrameMotionTransform candidateMotion = diagnosticMotion;
+        List<OverlayItem> projectionBase = latestPreviewMotionItems.isEmpty()
+                ? currentOverlayItems() : latestPreviewMotionItems;
+        if (!latestDiagnosticOverlayItems.isEmpty()
+                && latestDiagnosticOverlayAnchorTimestampNanos > 0L) {
+            diagnosticMotion = frameMotionHistory.transformAfter(
+                    latestDiagnosticOverlayAnchorTimestampNanos
+            );
+            List<OverlayItem> anchored = new ArrayList<>(
+                    latestDiagnosticOverlayItems.size()
+                            + latestPipelinePlateItems.size()
+            );
+            anchored.addAll(latestDiagnosticOverlayItems);
+            anchored.addAll(latestPipelinePlateItems);
+            projectionBase = java.util.Collections.unmodifiableList(anchored);
+            if (vehicleFrame != null
+                    && vehicleFrame.sourceTimestampDomain.cameraDerived()
+                    && vehicleFrame.snapshotTimestampNanos > 0L) {
+                candidateMotion = frameMotionHistory.transformAfter(
+                        vehicleFrame.snapshotTimestampNanos
+                );
+            } else {
+                candidateMotion = diagnosticMotion;
+            }
+        }
         List<OverlayItem> projected = entityOverlayMotionProjector.project(
-                latestPreviewMotionItems.isEmpty()
-                        ? currentOverlayItems()
-                        : latestPreviewMotionItems,
+                projectionBase,
                 plateOnlyOverlayItems(displayableTrackedPlates),
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame,
                 maximumVehicleAgeNanos,
-                frameMotion == null
-                        ? FrameMotionTransform.invalid()
-                        : frameMotion
+                diagnosticMotion,
+                candidateMotion
         );
         latestPreviewMotionItems = projected;
         String projectionEvent = focusedEntityId > 0L
@@ -5967,6 +5999,18 @@ public final class MainActivity extends AppCompatActivity {
                         countKind(projected, OverlayItem.Kind.VEHICLE));
                 details.put("plate_overlay_count",
                         countKind(projected, OverlayItem.Kind.PLATE));
+                details.put(
+                        "diagnostic_anchor_timestamp_ns",
+                        latestDiagnosticOverlayAnchorTimestampNanos
+                );
+                details.put(
+                        "diagnostic_motion_dx",
+                        diagnosticMotion.mapX(0.5f, 0.5f) - 0.5f
+                );
+                details.put(
+                        "candidate_motion_dx",
+                        candidateMotion.mapX(0.5f, 0.5f) - 0.5f
+                );
             } catch (Exception ignored) {
                 // Best-effort acceptance telemetry.
             }
@@ -5975,6 +6019,18 @@ public final class MainActivity extends AppCompatActivity {
                     vehicleFrame == null ? 0L : vehicleFrame.sourceFrameId,
                     focusedPlateTrackId,
                     details
+            );
+            android.util.Log.d(
+                    "ALPR_OVERLAY_MOTION",
+                    String.format(
+                            Locale.ROOT,
+                            "anchor_ns=%d diagnostic_dx=%.5f candidate_dx=%.5f "
+                                    + "vehicles=%d",
+                            latestDiagnosticOverlayAnchorTimestampNanos,
+                            diagnosticMotion.mapX(0.5f, 0.5f) - 0.5f,
+                            candidateMotion.mapX(0.5f, 0.5f) - 0.5f,
+                            countKind(projected, OverlayItem.Kind.VEHICLE)
+                    )
             );
         }
         return projected;

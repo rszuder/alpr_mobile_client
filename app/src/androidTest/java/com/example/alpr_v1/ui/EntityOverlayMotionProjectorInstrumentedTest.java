@@ -120,6 +120,26 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     }
 
     @Test
+    public void cumulativeMotionUsesFreshCandidateAsVehicleAnchor() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 1L, 0.10f, 0.30f);
+        OverlayItem roi = item(OverlayItem.Kind.VEHICLE_ROI, 1L, 0.08f, 0.32f);
+
+        List<OverlayItem> result = projector.project(
+                Arrays.asList(vehicle, roi),
+                Collections.emptyList(),
+                1L,
+                0L,
+                frame(candidate(1L, 0.20f, 0.40f, false)),
+                500_000_000L,
+                FrameMotionTransform.translation(0.10f, 0f),
+                FrameMotionTransform.translation(0.05f, 0f)
+        );
+
+        assertEquals(0.25f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(0.18f, result.get(1).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
     public void accumulatedMotionCompensatesDelayedInferenceIncludingNewPlate() {
         OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 1L, 0.40f, 0.70f);
         OverlayItem plate = item(OverlayItem.Kind.PLATE, 101L, 0.50f, 0.58f);
