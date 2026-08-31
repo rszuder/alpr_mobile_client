@@ -49,6 +49,12 @@ public final class PlateOverlayFreshness {
         freshAtNanos.clear();
     }
 
+    public synchronized double ageMillis(long trackId, long nowNanos) {
+        Long freshAt = freshAtNanos.get(trackId);
+        if (freshAt == null || nowNanos < freshAt) return -1.0;
+        return (nowNanos - freshAt) / 1_000_000.0;
+    }
+
     private boolean isFresh(long trackId, long nowNanos) {
         Long freshAt = freshAtNanos.get(trackId);
         return freshAt != null

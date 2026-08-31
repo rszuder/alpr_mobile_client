@@ -180,6 +180,8 @@ public final class MainActivity extends AppCompatActivity {
      */
     private final AtomicLong uiCameraTransformGeneration =
             new AtomicLong();
+    private final AtomicLong overlayPresentationRevision =
+            new AtomicLong();
     private final EntityOverlayMotionProjector entityOverlayMotionProjector =
             new EntityOverlayMotionProjector();
     private final PlateOverlayFreshness plateOverlayFreshness =
@@ -944,6 +946,9 @@ public final class MainActivity extends AppCompatActivity {
     private SharedPreferences uiPreferences;
     private int knownSettingsRevision;
     private boolean geometryCalibrationEnabled;
+    private boolean geometryCalibrationEventRecorded;
+    private long lastOverlayTelemetryNanos;
+    private long lastDynamicProjectionEventNanos;
     private CaptureGalleryViewModel captureGalleryState;
 
 
@@ -3701,6 +3706,13 @@ public final class MainActivity extends AppCompatActivity {
                 result.sourceWidth,
                 result.sourceHeight
         );
+        recordOverlaySnapshot(
+                containsPlate(presentedOverlayItems) ? "MT" : "MP",
+                presentedOverlayItems,
+                firstObservationFrameId(result.plateObservations),
+                result.sourceSequence,
+                android.os.SystemClock.elapsedRealtimeNanos()
+        );
 
 
         /*
@@ -4481,6 +4493,21 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         appliedScanTargetReleaseRevision = scan.directive.revision;
+        JSONObject releaseDetails = new JSONObject();
+        try {
+            releaseDetails.put("scan_release_barrier_active", true);
+            releaseDetails.put("scan_presentation_entity_id", 0L);
+            releaseDetails.put("directive_revision", scan.directive.revision);
+            releaseDetails.put("reason", scan.directive.reason);
+        } catch (Exception ignored) {
+            // Best-effort acceptance telemetry.
+        }
+        metricsCollector.recordEvent(
+                "overlay_release_barrier",
+                0L,
+                0L,
+                releaseDetails
+        );
         previewPlateTracker.reset();
         targetStateMachine.reset();
         overlayTracker.reset();
@@ -4803,10 +4830,28 @@ public final class MainActivity extends AppCompatActivity {
                 scan.plateAnchor,
                 result.plateObservations
         );
-        return filterScanOverlayItems(
+        List<OverlayItem> filtered = filterScanOverlayItems(
                 result.overlayItems,
                 allowedPlateTrackIds
         );
+        if (countKind(result.overlayItems, OverlayItem.Kind.PLATE)
+                > countKind(filtered, OverlayItem.Kind.PLATE)) {
+            JSONObject details = new JSONObject();
+            try {
+                details.put("focused_entity_id", scan.activeEntityId);
+                details.put("scan_presentation_entity_id", presentationEntityId);
+                details.put("directive_revision", scan.directive.revision);
+            } catch (Exception ignored) {
+                // Best-effort acceptance telemetry.
+            }
+            metricsCollector.recordEvent(
+                    "overlay_exact_entity_mismatch_blocked",
+                    firstObservationFrameId(result.plateObservations),
+                    0L,
+                    details
+            );
+        }
+        return filtered;
     }
 
     static List<OverlayItem> filterScanOverlayItems(
@@ -4834,6 +4879,7 @@ public final class MainActivity extends AppCompatActivity {
         long safeEntityId = Math.max(0L, entityId);
         if (scanOverlayPresentationEntityId == safeEntityId) return;
 
+        long previousEntityId = scanOverlayPresentationEntityId;
         scanOverlayPresentationEntityId = safeEntityId;
         overlayTracker.reset();
         plateOverlayFreshness.reset();
@@ -4841,6 +4887,19 @@ public final class MainActivity extends AppCompatActivity {
             latestPipelinePlateItems = java.util.Collections.emptyList();
             latestPipelinePlateEntityId = 0L;
         }
+        JSONObject details = new JSONObject();
+        try {
+            details.put("previous_entity_id", previousEntityId);
+            details.put("overlay_entity_id", safeEntityId);
+        } catch (Exception ignored) {
+            // Best-effort acceptance telemetry.
+        }
+        metricsCollector.recordEvent(
+                "overlay_entity_switch",
+                0L,
+                0L,
+                details
+        );
     }
 
     static long scanPresentationEntityId(
@@ -5215,7 +5274,7 @@ public final class MainActivity extends AppCompatActivity {
                 }
             }
         }
-        return entityOverlayMotionProjector.project(
+        List<OverlayItem> projected = entityOverlayMotionProjector.project(
                 currentOverlayItems(),
                 plateOnlyOverlayItems(displayableTrackedPlates),
                 focusedEntityId,
@@ -5223,6 +5282,37 @@ public final class MainActivity extends AppCompatActivity {
                 vehicleFrame,
                 maximumVehicleAgeNanos
         );
+        String projectionEvent = focusedEntityId > 0L
+                ? "overlay_dynamic_projection_applied"
+                : "overlay_dynamic_projection_skipped_no_identity";
+        recordOverlaySnapshot(
+                displayableTrackedPlates.isEmpty() ? "KALMAN" : "KLT",
+                projected,
+                vehicleFrame == null ? 0L : vehicleFrame.sourceFrameId,
+                vehicleFrame == null ? 0L : vehicleFrame.sourceSequence,
+                nowNanos
+        );
+        if (nowNanos - lastDynamicProjectionEventNanos >= 250_000_000L) {
+            lastDynamicProjectionEventNanos = nowNanos;
+            JSONObject details = new JSONObject();
+            try {
+                details.put("overlay_entity_id", focusedEntityId);
+                details.put("overlay_plate_track_id", focusedPlateTrackId);
+                details.put("vehicle_overlay_count",
+                        countKind(projected, OverlayItem.Kind.VEHICLE));
+                details.put("plate_overlay_count",
+                        countKind(projected, OverlayItem.Kind.PLATE));
+            } catch (Exception ignored) {
+                // Best-effort acceptance telemetry.
+            }
+            metricsCollector.recordEvent(
+                    projectionEvent,
+                    vehicleFrame == null ? 0L : vehicleFrame.sourceFrameId,
+                    focusedPlateTrackId,
+                    details
+            );
+        }
+        return projected;
     }
 
     private void applyDynamicOverlayDisposition(
@@ -5266,6 +5356,21 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateItems = retained;
         overlayView.clearPlateItems();
         if (retained.isEmpty()) {
+            JSONObject details = new JSONObject();
+            try {
+                details.put("overlay_entity_id", latestPipelinePlateEntityId);
+                details.put("overlay_plate_track_id", targetStateMachine.snapshot().trackId);
+                details.put("overlay_age_ms", PlateOverlayFreshness.MAXIMUM_AGE_NANOS
+                        / 1_000_000.0);
+            } catch (Exception ignored) {
+                // Best-effort acceptance telemetry.
+            }
+            metricsCollector.recordEvent(
+                    "overlay_plate_hidden_stale",
+                    0L,
+                    targetStateMachine.snapshot().trackId,
+                    details
+            );
             recordInfo("Ukryto nieświeżą ramkę tablicy");
         } else {
             overlayView.setTrackedPlateItems(retained);
@@ -5285,6 +5390,98 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         return java.util.Collections.unmodifiableList(plates);
+    }
+
+    private void recordOverlaySnapshot(
+            String source,
+            List<OverlayItem> items,
+            long sourceFrameId,
+            long sourceSequence,
+            long nowNanos
+    ) {
+        if (metricsCollector == null) return;
+        long safeNow = Math.max(0L, nowNanos);
+        if (safeNow - lastOverlayTelemetryNanos < 250_000_000L) return;
+        lastOverlayTelemetryNanos = safeNow;
+
+        TargetSnapshot focused = targetStateMachine.snapshot();
+        ScanAcquisitionSnapshot scan = pipeline == null
+                ? null : pipeline.scanAcquisitionSnapshot();
+        long plateTrackId = focused.trackId;
+        boolean predicted = false;
+        if (items != null) {
+            for (OverlayItem item : items) {
+                if (item != null && item.carriedPrediction) predicted = true;
+                if (item != null && item.kind == OverlayItem.Kind.PLATE
+                        && item.trackId > 0L) plateTrackId = item.trackId;
+            }
+        }
+
+        JSONObject details = new JSONObject();
+        try {
+            details.put("overlay_revision", overlayPresentationRevision.incrementAndGet());
+            details.put("overlay_source", source == null ? "UNKNOWN" : source);
+            details.put("overlay_entity_id", latestPipelinePlateEntityId);
+            details.put("overlay_plate_track_id", plateTrackId);
+            details.put("overlay_age_ms",
+                    plateOverlayFreshness.ageMillis(plateTrackId, safeNow));
+            details.put("overlay_predicted", predicted);
+            details.put("overlay_geometry_source_frame_id", sourceFrameId);
+            details.put("overlay_geometry_source_sequence", sourceSequence);
+            details.put("focused_entity_id", scan == null ? 0L : scan.activeEntityId);
+            details.put("scan_presentation_entity_id", scanOverlayPresentationEntityId);
+            details.put("scan_release_barrier_active", scan != null
+                    && scan.directive.action
+                    == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET);
+            details.put("vehicle_overlay_count",
+                    countKind(items, OverlayItem.Kind.VEHICLE));
+            details.put("plate_overlay_count",
+                    countKind(items, OverlayItem.Kind.PLATE));
+            details.put("roi_overlay_count",
+                    countKind(items, OverlayItem.Kind.VEHICLE_ROI));
+        } catch (Exception ignored) {
+            // Best-effort acceptance telemetry.
+        }
+        metricsCollector.recordEvent(
+                "overlay_snapshot",
+                sourceFrameId,
+                plateTrackId,
+                details
+        );
+
+        if (geometryCalibrationEnabled && !geometryCalibrationEventRecorded) {
+            geometryCalibrationEventRecorded = true;
+            metricsCollector.recordEvent(
+                    "overlay_geometry_calibration",
+                    sourceFrameId,
+                    plateTrackId,
+                    details
+            );
+        }
+    }
+
+    private static int countKind(
+            List<OverlayItem> items,
+            OverlayItem.Kind kind
+    ) {
+        if (items == null || kind == null) return 0;
+        int count = 0;
+        for (OverlayItem item : items) {
+            if (item != null && item.kind == kind) count++;
+        }
+        return count;
+    }
+
+    private static long firstObservationFrameId(
+            List<PlateObservation> observations
+    ) {
+        if (observations == null) return 0L;
+        for (PlateObservation observation : observations) {
+            if (observation != null && observation.frameId > 0L) {
+                return observation.frameId;
+            }
+        }
+        return 0L;
     }
 
     private void updateAutoZoomAnalysisRoi(RectF plateBounds) {
