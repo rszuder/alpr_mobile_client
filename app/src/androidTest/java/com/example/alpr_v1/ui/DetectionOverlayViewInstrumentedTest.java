@@ -132,6 +132,30 @@ public final class DetectionOverlayViewInstrumentedTest {
                 rendered.get().get(0).normalizedBounds);
     }
 
+    @Test
+    public void actualRenderBoundsUseFitCenterLetterbox() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<RectF> renderedBounds = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setItems(Collections.singletonList(item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0f, 0f, 1f, 1f),
+                    70L
+            )), 1920, 1080);
+            renderedBounds.set(view.snapshotRenderBoundsForTesting().get(0));
+        });
+
+        RectF bounds = renderedBounds.get();
+        assertEquals(0f, bounds.left, 0.01f);
+        assertEquals(896.25f, bounds.top, 0.01f);
+        assertEquals(1080f, bounds.right, 0.01f);
+        assertEquals(1503.75f, bounds.bottom, 0.01f);
+    }
+
     private static OverlayItem item(
             OverlayItem.Kind kind,
             RectF bounds,

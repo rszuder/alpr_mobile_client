@@ -4,8 +4,13 @@ import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.os.SystemClock;
+import android.util.Log;
 
 import androidx.camera.core.ImageProxy;
+
+import com.example.alpr_v1.BuildConfig;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 
 /**
@@ -15,6 +20,7 @@ import androidx.camera.core.ImageProxy;
  * - koszt zastosowania rotacji obrazu.
  */
 public final class CameraImageConverter {
+    private static final AtomicLong LAST_GEOMETRY_LOG_NANOS = new AtomicLong();
 
     private CameraImageConverter() {}
 
@@ -64,6 +70,7 @@ public final class CameraImageConverter {
                 image.toBitmap();
 
         Rect crop = image.getCropRect();
+        maybeLogGeometry(image, crop, bitmap);
         if (crop != null
                 && (crop.left != 0
                 || crop.top != 0
@@ -150,6 +157,27 @@ public final class CameraImageConverter {
                 toBitmapNanos,
                 rotationNanos,
                 rotation
+        );
+    }
+
+    private static void maybeLogGeometry(
+            ImageProxy image,
+            Rect crop,
+            Bitmap bitmap
+    ) {
+        if (!BuildConfig.DEBUG) return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        long previous = LAST_GEOMETRY_LOG_NANOS.get();
+        if (now - previous < 1_000_000_000L
+                || !LAST_GEOMETRY_LOG_NANOS.compareAndSet(previous, now)) {
+            return;
+        }
+        Log.d(
+                "ALPR_GEOMETRY",
+                "image_proxy=" + image.getWidth() + "x" + image.getHeight()
+                        + " crop=" + (crop == null ? "none" : crop.toShortString())
+                        + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
+                        + " rotation=" + image.getImageInfo().getRotationDegrees()
         );
     }
 }

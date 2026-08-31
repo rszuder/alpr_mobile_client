@@ -943,6 +943,7 @@ public final class MainActivity extends AppCompatActivity {
     private int failedBatchWrites;
     private SharedPreferences uiPreferences;
     private int knownSettingsRevision;
+    private boolean geometryCalibrationEnabled;
     private CaptureGalleryViewModel captureGalleryState;
 
 
@@ -1022,6 +1023,13 @@ public final class MainActivity extends AppCompatActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
         bindViews();
+        geometryCalibrationEnabled = BuildConfig.DEBUG
+                && getIntent() != null
+                && getIntent().getBooleanExtra(
+                "debug_geometry_calibration",
+                false
+        );
+        overlayView.setGeometryCalibrationEnabled(geometryCalibrationEnabled);
         applySystemInsets();
         enableImmersiveMode();
 

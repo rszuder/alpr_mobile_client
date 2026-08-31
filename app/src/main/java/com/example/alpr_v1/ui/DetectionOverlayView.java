@@ -30,6 +30,7 @@ public final class DetectionOverlayView extends View {
     private final Paint detectionTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint confidenceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint calibrationPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final long OVERLAY_TRANSITION_MS =
             120L;
 
@@ -54,6 +55,7 @@ public final class DetectionOverlayView extends View {
 
     private int sourceWidth;
     private int sourceHeight;
+    private boolean geometryCalibrationEnabled;
     private boolean diagnosticMode;
     private long focusedTrackId;
 
@@ -122,7 +124,15 @@ public final class DetectionOverlayView extends View {
 
         labelPaint.setColor(Color.argb(188, 8, 13, 21));
         labelPaint.setStyle(Paint.Style.FILL);
+        calibrationPaint.setColor(Color.rgb(250, 204, 21));
+        calibrationPaint.setStyle(Paint.Style.STROKE);
+        calibrationPaint.setStrokeWidth(dp(1.5f));
         setWillNotDraw(false);
+    }
+
+    public void setGeometryCalibrationEnabled(boolean enabled) {
+        geometryCalibrationEnabled = enabled;
+        invalidate();
     }
 
     public void setItems(List<OverlayItem> newItems) {
@@ -386,15 +396,15 @@ public final class DetectionOverlayView extends View {
             return new PointF(0f, 0f);
         }
 
-        float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
-        float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
-        float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
-        float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
-
-        return new PointF(
-                offsetX + normalizedX * imageWidth * scale,
-                offsetY + normalizedY * imageHeight * scale
+        int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
+        int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
+        return OverlayViewportTransform.mapNormalizedToView(
+                normalizedX,
+                normalizedY,
+                imageWidth,
+                imageHeight,
+                Math.round(viewWidth),
+                Math.round(viewHeight)
         );
     }
 
@@ -410,19 +420,27 @@ public final class DetectionOverlayView extends View {
             return new RectF(0f, 0f, 1f, 1f);
         }
 
-        float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
-        float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
-        float scaledWidth = imageWidth * scale;
-        float scaledHeight = imageHeight * scale;
-        float offsetX = (viewWidth - scaledWidth) * 0.5f;
-        float offsetY = (viewHeight - scaledHeight) * 0.5f;
-
+        int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
+        int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
+        PointF topLeft = OverlayViewportTransform.mapViewToNormalized(
+                new PointF(0f, 0f),
+                imageWidth,
+                imageHeight,
+                Math.round(viewWidth),
+                Math.round(viewHeight)
+        );
+        PointF bottomRight = OverlayViewportTransform.mapViewToNormalized(
+                new PointF(viewWidth, viewHeight),
+                imageWidth,
+                imageHeight,
+                Math.round(viewWidth),
+                Math.round(viewHeight)
+        );
         return new RectF(
-                clamp(-offsetX / scaledWidth, 0f, 1f),
-                clamp(-offsetY / scaledHeight, 0f, 1f),
-                clamp((viewWidth - offsetX) / scaledWidth, 0f, 1f),
-                clamp((viewHeight - offsetY) / scaledHeight, 0f, 1f)
+                topLeft.x,
+                topLeft.y,
+                bottomRight.x,
+                bottomRight.y
         );
     }
 
@@ -926,6 +944,36 @@ public final class DetectionOverlayView extends View {
         for (RenderItem renderItem : renderItems) {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
+        if (geometryCalibrationEnabled) drawGeometryCalibration(canvas);
+    }
+
+    private void drawGeometryCalibration(Canvas canvas) {
+        float[][] markers = new float[][]{
+                {0.50f, 0.50f},
+                {0.05f, 0.05f},
+                {0.95f, 0.05f},
+                {0.05f, 0.95f},
+                {0.95f, 0.95f}
+        };
+        for (float[] marker : markers) {
+            PointF point = normalizedToViewPoint(marker[0], marker[1]);
+            float radius = dp(7f);
+            canvas.drawCircle(point.x, point.y, radius, calibrationPaint);
+            canvas.drawLine(
+                    point.x - radius * 1.5f,
+                    point.y,
+                    point.x + radius * 1.5f,
+                    point.y,
+                    calibrationPaint
+            );
+            canvas.drawLine(
+                    point.x,
+                    point.y - radius * 1.5f,
+                    point.x,
+                    point.y + radius * 1.5f,
+                    calibrationPaint
+            );
+        }
     }
 
     private void drawPlateQuad(
@@ -1057,11 +1105,25 @@ public final class DetectionOverlayView extends View {
             renderItems = Collections.emptyList();
             return;
         }
-        float imageWidth = sourceWidth > 0 ? sourceWidth : viewWidth;
-        float imageHeight = sourceHeight > 0 ? sourceHeight : viewHeight;
-        float scale = Math.min(viewWidth / imageWidth, viewHeight / imageHeight);
-        float offsetX = (viewWidth - imageWidth * scale) * 0.5f;
-        float offsetY = (viewHeight - imageHeight * scale) * 0.5f;
+        int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
+        int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
+        if (geometryCalibrationEnabled) {
+            PointF center = OverlayViewportTransform.mapNormalizedToView(
+                    0.5f,
+                    0.5f,
+                    imageWidth,
+                    imageHeight,
+                    Math.round(viewWidth),
+                    Math.round(viewHeight)
+            );
+            android.util.Log.d(
+                    "ALPR_GEOMETRY",
+                    "overlay source=" + imageWidth + "x" + imageHeight
+                            + " view=" + Math.round(viewWidth) + "x"
+                            + Math.round(viewHeight)
+                            + " mapped_center=" + center.x + "," + center.y
+            );
+        }
         List<RenderItem> prepared = new ArrayList<>(items.size());
 
         /*
@@ -1075,18 +1137,21 @@ public final class DetectionOverlayView extends View {
 
         for (OverlayItem item : orderedForRendering(items)) {
             if (!diagnosticMode && item.kind != OverlayItem.Kind.PLATE) continue;
-            RectF source = item.normalizedBounds;
-            RectF bounds = new RectF(
-                    offsetX + source.left * imageWidth * scale,
-                    offsetY + source.top * imageHeight * scale,
-                    offsetX + source.right * imageWidth * scale,
-                    offsetY + source.bottom * imageHeight * scale
+            RectF bounds = OverlayViewportTransform.mapNormalizedToView(
+                    item.normalizedBounds,
+                    imageWidth,
+                    imageHeight,
+                    Math.round(viewWidth),
+                    Math.round(viewHeight)
             );
             List<PointF> points = new ArrayList<>(item.normalizedKeypoints.size());
             for (PointF point : item.normalizedKeypoints) {
-                points.add(new PointF(
-                        offsetX + point.x * imageWidth * scale,
-                        offsetY + point.y * imageHeight * scale
+                points.add(OverlayViewportTransform.mapNormalizedToView(
+                        point,
+                        imageWidth,
+                        imageHeight,
+                        Math.round(viewWidth),
+                        Math.round(viewHeight)
                 ));
             }
             RenderItem renderItem = new RenderItem(item, bounds, points);
@@ -1129,6 +1194,12 @@ public final class DetectionOverlayView extends View {
             if (renderItem.badge != null) occupiedLabels.add(renderItem.badge);
         }
         renderItems = Collections.unmodifiableList(prepared);
+    }
+
+    List<RectF> snapshotRenderBoundsForTesting() {
+        List<RectF> bounds = new ArrayList<>(renderItems.size());
+        for (RenderItem item : renderItems) bounds.add(new RectF(item.bounds));
+        return Collections.unmodifiableList(bounds);
     }
 
     static List<OverlayItem> orderedForRendering(List<OverlayItem> source) {

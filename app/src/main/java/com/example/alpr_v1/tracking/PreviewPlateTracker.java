@@ -6,6 +6,7 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.ui.OverlayItem;
+import com.example.alpr_v1.ui.OverlayViewportTransform;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1792,49 +1793,21 @@ public final class PreviewPlateTracker {
             int trackerHeight
     ) {
 
-        float scale =
-                Math.max(
-                        previewWidth
-                                / (float) sourceWidth,
-                        previewHeight
-                                / (float) sourceHeight
-                );
-
-
-        float offsetX =
-                (
-                        previewWidth
-                                - sourceWidth
-                                * scale
-                ) * 0.5f;
-
-        float offsetY =
-                (
-                        previewHeight
-                                - sourceHeight
-                                * scale
-                ) * 0.5f;
-
-
-        float previewX =
-                offsetX
-                        + point.x
-                        * sourceWidth
-                        * scale;
-
-        float previewY =
-                offsetY
-                        + point.y
-                        * sourceHeight
-                        * scale;
+        PointF preview = OverlayViewportTransform.mapNormalizedToView(
+                point,
+                sourceWidth,
+                sourceHeight,
+                previewWidth,
+                previewHeight
+        );
 
 
         return new PointF(
-                previewX
+                preview.x
                         * trackerWidth
                         / previewWidth,
 
-                previewY
+                preview.y
                         * trackerHeight
                         / previewHeight
         );
@@ -1862,56 +1835,12 @@ public final class PreviewPlateTracker {
                         / trackerHeight;
 
 
-        float scale =
-                Math.max(
-                        previewWidth
-                                / (float) sourceWidth,
-                        previewHeight
-                                / (float) sourceHeight
-                );
-
-
-        float offsetX =
-                (
-                        previewWidth
-                                - sourceWidth
-                                * scale
-                ) * 0.5f;
-
-        float offsetY =
-                (
-                        previewHeight
-                                - sourceHeight
-                                * scale
-                ) * 0.5f;
-
-
-        return new PointF(
-                clamp(
-                        (
-                                previewX
-                                        - offsetX
-                        )
-                                / (
-                                sourceWidth
-                                        * scale
-                        ),
-                        0f,
-                        1f
-                ),
-
-                clamp(
-                        (
-                                previewY
-                                        - offsetY
-                        )
-                                / (
-                                sourceHeight
-                                        * scale
-                        ),
-                        0f,
-                        1f
-                )
+        return OverlayViewportTransform.mapViewToNormalized(
+                new PointF(previewX, previewY),
+                sourceWidth,
+                sourceHeight,
+                previewWidth,
+                previewHeight
         );
     }
 
