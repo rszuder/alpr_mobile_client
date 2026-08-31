@@ -1960,7 +1960,14 @@ final class MobileAlprEngine implements AutoCloseable {
             Bitmap frame,
             RoiBudgetPolicy policy
     ) {
-        for (Detection vehicle : vehicles) {
+        List<Long> overlayEntityIds = stableVehicleOverlayIds(
+                vehicles,
+                candidates,
+                frame.getWidth(),
+                frame.getHeight()
+        );
+        for (int vehicleIndex = 0; vehicleIndex < vehicles.size(); vehicleIndex++) {
+            Detection vehicle = vehicles.get(vehicleIndex);
             overlays.add(new OverlayItem(
                     OverlayItem.Kind.VEHICLE,
                     new RectF(
@@ -1975,12 +1982,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             "Pojazd %.0f%%",
                             vehicle.confidence * 100f
                     ),
-                    stableVehicleOverlayId(
-                            vehicle,
-                            candidates,
-                            frame.getWidth(),
-                            frame.getHeight()
-                    ),
+                    overlayEntityIds.get(vehicleIndex),
                     false
             ));
         }
@@ -2000,32 +2002,78 @@ final class MobileAlprEngine implements AutoCloseable {
         }
     }
 
-    static long stableVehicleOverlayId(
-            Detection vehicle,
+    static List<Long> stableVehicleOverlayIds(
+            List<Detection> vehicles,
             List<VehicleCandidate> candidates,
             int frameWidth,
             int frameHeight
     ) {
-        if (vehicle == null || candidates == null || candidates.isEmpty()
-                || frameWidth <= 0 || frameHeight <= 0) return 0L;
+        if (vehicles == null || vehicles.isEmpty()) return Collections.emptyList();
+        List<Long> result = new ArrayList<>(Collections.nCopies(vehicles.size(), 0L));
+        if (candidates == null || candidates.isEmpty()
+                || frameWidth <= 0 || frameHeight <= 0) {
+            return Collections.unmodifiableList(result);
+        }
 
-        NormalizedBounds bounds = new NormalizedBounds(
-                vehicle.left / frameWidth,
-                vehicle.top / frameHeight,
-                vehicle.right / frameWidth,
-                vehicle.bottom / frameHeight
-        );
-        VehicleCandidate best = null;
-        float bestOverlap = 0f;
+        Map<Integer, VehicleCandidate> measuredBySourceIndex = new HashMap<>();
         for (VehicleCandidate candidate : candidates) {
-            if (candidate == null) continue;
-            float overlap = bounds.iou(candidate.bounds);
-            if (overlap > bestOverlap) {
-                bestOverlap = overlap;
-                best = candidate;
+            if (candidate == null
+                    || candidate.predicted
+                    || candidate.sourceIndex < 0
+                    || candidate.sourceIndex >= vehicles.size()) {
+                continue;
+            }
+            VehicleCandidate previous = measuredBySourceIndex.get(candidate.sourceIndex);
+            if (previous == null
+                    || candidate.effectiveConfidence > previous.effectiveConfidence) {
+                measuredBySourceIndex.put(candidate.sourceIndex, candidate);
             }
         }
-        return best != null && bestOverlap >= 0.15f ? best.entityId : 0L;
+
+        Set<Long> assignedEntities = new HashSet<>();
+        for (int index = 0; index < vehicles.size(); index++) {
+            VehicleCandidate exact = measuredBySourceIndex.get(index);
+            if (exact != null && assignedEntities.add(exact.entityId)) {
+                result.set(index, exact.entityId);
+            }
+        }
+
+        final float minimumIou = 0.15f;
+        final float associationMargin = 0.05f;
+        for (int index = 0; index < vehicles.size(); index++) {
+            if (result.get(index) > 0L) continue;
+            Detection vehicle = vehicles.get(index);
+            if (vehicle == null) continue;
+            NormalizedBounds bounds = new NormalizedBounds(
+                    vehicle.left / frameWidth,
+                    vehicle.top / frameHeight,
+                    vehicle.right / frameWidth,
+                    vehicle.bottom / frameHeight
+            );
+            VehicleCandidate best = null;
+            float bestOverlap = 0f;
+            float secondOverlap = 0f;
+            for (VehicleCandidate candidate : candidates) {
+                if (candidate == null || assignedEntities.contains(candidate.entityId)) {
+                    continue;
+                }
+                float overlap = bounds.iou(candidate.bounds);
+                if (overlap > bestOverlap) {
+                    secondOverlap = bestOverlap;
+                    bestOverlap = overlap;
+                    best = candidate;
+                } else if (overlap > secondOverlap) {
+                    secondOverlap = overlap;
+                }
+            }
+            if (best != null
+                    && bestOverlap >= minimumIou
+                    && bestOverlap - secondOverlap >= associationMargin
+                    && assignedEntities.add(best.entityId)) {
+                result.set(index, best.entityId);
+            }
+        }
+        return Collections.unmodifiableList(result);
     }
 
     private static OverlayItem roiOverlay(
