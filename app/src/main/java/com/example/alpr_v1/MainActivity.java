@@ -1599,6 +1599,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
         pipeline.resetTracking();
         overlayView.setActiveVehicleEntityId(0L);
+        overlayView.clearPlateItems();
         overlayView.setItems(java.util.Collections.emptyList());
         livePresentation.clearResult();
         livePresentation.showState(
@@ -2538,6 +2539,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
 
+        overlayView.clearPlateItems();
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
@@ -2647,6 +2649,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
 
+        overlayView.clearPlateItems();
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
@@ -2735,6 +2738,7 @@ public final class MainActivity extends AppCompatActivity {
 
         lastCaptureByTrack.clear();
 
+        overlayView.clearPlateItems();
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
@@ -3545,12 +3549,13 @@ public final class MainActivity extends AppCompatActivity {
             /*
              * Natychmiast usuwamy ewentualny stary overlay.
              */
+            overlayView.clearPlateItems();
             overlayView.setItems(
                     java.util.Collections.emptyList()
             );
         }
 
-        applyScanTargetReleaseIfNeeded();
+        boolean scanReleaseBarrierActive = applyScanTargetReleaseIfNeeded();
 
         if (autoZoomController.state()
                 == AutoZoomController.State.ZOOMED_RETRY) {
@@ -3690,8 +3695,11 @@ public final class MainActivity extends AppCompatActivity {
             latestPipelinePlateEntityId = 0L;
         }
 
-        List<OverlayItem> presentedOverlayItems = visibleOverlayItems;
+        List<OverlayItem> presentedOverlayItems = scanReleaseBarrierActive
+                ? nonPlateOverlayItems(visibleOverlayItems)
+                : visibleOverlayItems;
         if (!containsPlate(visibleOverlayItems)
+                && !scanReleaseBarrierActive
                 && shouldHoldScanPlateGeometry()) {
             presentedOverlayItems = new ArrayList<>(visibleOverlayItems);
             for (OverlayItem plate : latestPipelinePlateItems) {
@@ -4495,13 +4503,14 @@ public final class MainActivity extends AppCompatActivity {
         recordInfo("Auto zoom przerwany: telefon zmienił kadr podczas zbliżenia");
     }
 
-    private void applyScanTargetReleaseIfNeeded() {
-        if (pipeline == null) return;
+    private boolean applyScanTargetReleaseIfNeeded() {
+        if (pipeline == null) return false;
         ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
-        if (scan.directive.action
-                != AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET
+        boolean releaseActive = scan.directive.action
+                == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET;
+        if (!releaseActive
                 || scan.directive.revision <= appliedScanTargetReleaseRevision) {
-            return;
+            return releaseActive;
         }
         appliedScanTargetReleaseRevision = scan.directive.revision;
         JSONObject releaseDetails = new JSONObject();
@@ -4535,6 +4544,7 @@ public final class MainActivity extends AppCompatActivity {
         // Stan celu jest już zwolniony natychmiast. View wygasza tylko nieruchomą
         // migawkę starej ramki, która nie uczestniczy dalej w trackingu.
         overlayView.fadeOutPlateItems();
+        return true;
     }
 
     private void refreshPipelineCameraMotionEvidence() {
@@ -5344,6 +5354,7 @@ public final class MainActivity extends AppCompatActivity {
                 : disposition;
         switch (safe) {
             case CLEAR:
+                overlayView.clearPlateItems();
                 overlayView.setPreviewItems(java.util.Collections.emptyList());
                 break;
             case PLATE_ONLY:
@@ -5408,6 +5419,21 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         return java.util.Collections.unmodifiableList(plates);
+    }
+
+    private static List<OverlayItem> nonPlateOverlayItems(
+            List<OverlayItem> items
+    ) {
+        if (items == null || items.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        List<OverlayItem> retained = new ArrayList<>();
+        for (OverlayItem item : items) {
+            if (item != null && item.kind != OverlayItem.Kind.PLATE) {
+                retained.add(item);
+            }
+        }
+        return java.util.Collections.unmodifiableList(retained);
     }
 
     private void recordOverlaySnapshot(

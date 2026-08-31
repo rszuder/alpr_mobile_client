@@ -14,6 +14,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
 import android.graphics.Path;
 
 import androidx.annotation.Nullable;
@@ -44,7 +45,7 @@ public final class DetectionOverlayView extends View {
     private static final long ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS =
             620L;
     private static final long PLATE_FADE_OUT_MS =
-            260L;
+            2_400L;
 
 
     /*
@@ -180,7 +181,7 @@ public final class DetectionOverlayView extends View {
     public void setTrackedPlateItems(List<OverlayItem> trackedPlates) {
         if (trackedPlates == null || trackedPlates.isEmpty()) return;
 
-        cancelPlateFade();
+        removeReappearedFadingPlates(trackedPlates);
 
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
@@ -285,7 +286,7 @@ public final class DetectionOverlayView extends View {
                 1L,
                 Math.round(PLATE_FADE_OUT_MS * startAlpha)
         ));
-        animator.setInterpolator(new DecelerateInterpolator());
+        animator.setInterpolator(new LinearInterpolator());
         animator.addUpdateListener(valueAnimator -> {
             fadingPlateAlpha = (float) valueAnimator.getAnimatedValue();
             postInvalidateOnAnimation();
@@ -311,9 +312,26 @@ public final class DetectionOverlayView extends View {
         fadingPlateAlpha = 1f;
     }
 
+    private void removeReappearedFadingPlates(List<OverlayItem> freshItems) {
+        if (fadingPlateRenderItems.isEmpty() || !containsPlateItem(freshItems)) return;
+        List<RenderItem> retained = new ArrayList<>();
+        for (RenderItem fading : fadingPlateRenderItems) {
+            if (!containsPlateTrack(freshItems, fading.item.trackId)) {
+                retained.add(fading);
+            }
+        }
+        if (retained.size() == fadingPlateRenderItems.size()) return;
+        if (retained.isEmpty()) {
+            cancelPlateFade();
+        } else {
+            fadingPlateRenderItems = Collections.unmodifiableList(retained);
+            postInvalidateOnAnimation();
+        }
+    }
+
     /** Bezanimacyjna klatka Preview zawierajaca juz komplet warstw. */
     public void setPreviewItems(List<OverlayItem> previewItems) {
-        if (containsPlateItem(previewItems)) cancelPlateFade();
+        removeReappearedFadingPlates(previewItems);
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
             overlayAnimator = null;
@@ -344,8 +362,10 @@ public final class DetectionOverlayView extends View {
                         )
                 );
 
-        if (targetItems.isEmpty() || containsPlateItem(targetItems)) {
+        if (targetItems.isEmpty() && !analysisViewportEnabled) {
             cancelPlateFade();
+        } else {
+            removeReappearedFadingPlates(targetItems);
         }
 
 
@@ -1549,6 +1569,10 @@ public final class DetectionOverlayView extends View {
 
     int fadingPlateCountForTesting() {
         return fadingPlateRenderItems.size();
+    }
+
+    float fadingPlateAlphaForTesting() {
+        return fadingPlateAlpha;
     }
 
     RectF analysisViewportBoundsForTesting() {

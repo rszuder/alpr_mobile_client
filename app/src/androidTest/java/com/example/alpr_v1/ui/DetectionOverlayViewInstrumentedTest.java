@@ -1,6 +1,7 @@
 package com.example.alpr_v1.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.graphics.PointF;
@@ -169,6 +170,105 @@ public final class DetectionOverlayViewInstrumentedTest {
         assertEquals(1, rendered.get().size());
         assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
         assertEquals(1, (int) fadingCount.get());
+    }
+
+    @Test
+    public void emptyPipelineFrameKeepsFadeButStoppedAnalysisCancelsIt() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<Integer> activeFadeCount = new AtomicReference<>();
+        AtomicReference<Integer> stoppedFadeCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setAnalysisViewportEnabled(true);
+            view.setItems(Collections.singletonList(item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    70L
+            )), 1920, 1080);
+
+            view.fadeOutPlateItems();
+            view.setItems(Collections.emptyList(), 1920, 1080);
+            activeFadeCount.set(view.fadingPlateCountForTesting());
+
+            view.setAnalysisViewportEnabled(false);
+            view.setItems(Collections.emptyList(), 1920, 1080);
+            stoppedFadeCount.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(1, (int) activeFadeCount.get());
+        assertEquals(0, (int) stoppedFadeCount.get());
+    }
+
+    @Test
+    public void nextPlateDoesNotCancelPreviousFadeButSameTrackDoes() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<Integer> differentTrackFadeCount = new AtomicReference<>();
+        AtomicReference<Integer> sameTrackFadeCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setAnalysisViewportEnabled(true);
+            OverlayItem firstPlate = item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    70L
+            );
+            view.setItems(Collections.singletonList(firstPlate), 1920, 1080);
+            view.fadeOutPlateItems();
+
+            view.setTrackedPlateItems(Collections.singletonList(item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.65f, 0.45f, 0.77f, 0.49f),
+                    71L
+            )));
+            differentTrackFadeCount.set(view.fadingPlateCountForTesting());
+
+            view.setTrackedPlateItems(Collections.singletonList(firstPlate));
+            sameTrackFadeCount.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(1, (int) differentTrackFadeCount.get());
+        assertEquals(0, (int) sameTrackFadeCount.get());
+    }
+
+    @Test
+    public void plateFadeRemainsVisibleMidwayAndFinishesAfterAboutTwoPointFourSeconds() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<DetectionOverlayView> viewReference = new AtomicReference<>();
+        AtomicReference<Float> midwayAlpha = new AtomicReference<>();
+        AtomicReference<Integer> finalFadeCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setAnalysisViewportEnabled(true);
+            view.setItems(Collections.singletonList(item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    70L
+            )), 1920, 1080);
+            view.fadeOutPlateItems();
+            viewReference.set(view);
+        });
+
+        android.os.SystemClock.sleep(1_100L);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                midwayAlpha.set(viewReference.get().fadingPlateAlphaForTesting())
+        );
+        android.os.SystemClock.sleep(1_500L);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                finalFadeCount.set(viewReference.get().fadingPlateCountForTesting())
+        );
+
+        assertTrue(midwayAlpha.get() > 0.30f);
+        assertTrue(midwayAlpha.get() < 0.75f);
+        assertEquals(0, (int) finalFadeCount.get());
     }
 
     @Test
