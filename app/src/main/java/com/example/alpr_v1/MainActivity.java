@@ -108,6 +108,7 @@ import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.ui.PlateOverlayFreshness;
 import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
+import com.example.alpr_v1.ui.PreviewPresentationBarrier;
 import com.example.alpr_v1.ui.SceneModeHudPolicy;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
@@ -189,6 +190,7 @@ public final class MainActivity extends AppCompatActivity {
         final List<OverlayItem> trackedItems;
         final long sceneGeneration;
         final long transformGeneration;
+        final long presentationGeneration;
         final boolean trackingLost;
         final boolean trackingDegraded;
         final boolean sensorAvailable;
@@ -210,6 +212,7 @@ public final class MainActivity extends AppCompatActivity {
                 List<OverlayItem> trackedItems,
                 long sceneGeneration,
                 long transformGeneration,
+                long presentationGeneration,
                 boolean trackingLost,
                 boolean trackingDegraded,
                 boolean sensorAvailable,
@@ -233,6 +236,7 @@ public final class MainActivity extends AppCompatActivity {
             );
             this.sceneGeneration = sceneGeneration;
             this.transformGeneration = transformGeneration;
+            this.presentationGeneration = presentationGeneration;
             this.trackingLost = trackingLost;
             this.trackingDegraded = trackingDegraded;
             this.sensorAvailable = sensorAvailable;
@@ -276,6 +280,8 @@ public final class MainActivity extends AppCompatActivity {
             new AtomicLong();
     private final AtomicLong overlayPresentationRevision =
             new AtomicLong();
+    private final PreviewPresentationBarrier previewPresentationBarrier =
+            new PreviewPresentationBarrier();
     private final EntityOverlayMotionProjector entityOverlayMotionProjector =
             new EntityOverlayMotionProjector();
     private final GlobalLumaMotionTracker globalLumaMotionTracker =
@@ -489,6 +495,15 @@ public final class MainActivity extends AppCompatActivity {
                 autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
                 previewSceneRecoveryRebaseAppliedRevision =
                         requestedRecoveryRebaseRevision;
+                if (previewPresentationBarrier.active()) {
+                    long releasedGeneration = previewPresentationBarrier.release();
+                    android.util.Log.d(
+                            "ALPR_PRESENTATION_BARRIER",
+                            "release generation=" + releasedGeneration
+                                    + " recovery_revision="
+                                    + requestedRecoveryRebaseRevision
+                    );
+                }
                 ReacquireTelemetry recovery = pipeline.reacquireTelemetry();
                 if (PreviewContinuityUiPolicy
                         .shouldClearFocusedTargetAfterRecovery(
@@ -563,6 +578,14 @@ public final class MainActivity extends AppCompatActivity {
             );
             MotionExplanationEvidence previewMotionEvidence =
                     currentPreviewMotionEvidence();
+            if (PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                    changed,
+                    evidenceFraction,
+                    previewMotionEvidence.cameraMoving,
+                    previewMotionEvidence.motionSettling
+            )) {
+                activateAbruptScenePresentationBarrier(evidenceFraction);
+            }
             refreshPipelineCameraMotionEvidence(previewMotionEvidence);
             SceneTransitionDecision continuityDecision = pipeline == null
                     ? null
@@ -600,8 +623,14 @@ public final class MainActivity extends AppCompatActivity {
                             != uiCameraTransformGeneration.get()) {
                         return;
                     }
+                    boolean presentationBlocked =
+                            previewPresentationBarrier.active();
+                    List<OverlayItem> presentationTrackedItems = presentationBlocked
+                            ? java.util.Collections.emptyList() : trackedItems;
                     PreviewContinuityUiPolicy.DynamicOverlayDisposition disposition =
-                            PreviewContinuityUiPolicy.dynamicOverlayDisposition(
+                            presentationBlocked
+                            ? PreviewContinuityUiPolicy.DynamicOverlayDisposition.CLEAR
+                            : PreviewContinuityUiPolicy.dynamicOverlayDisposition(
                             effectiveSceneHandlingMode(),
                             continuityDecision,
                             changed,
@@ -610,14 +639,17 @@ public final class MainActivity extends AppCompatActivity {
                     if (disposition
                             != PreviewContinuityUiPolicy.DynamicOverlayDisposition.KEEP
                             || isDynamicCameraMotion()) {
-                        applyDynamicOverlayDisposition(disposition, trackedItems);
+                        applyDynamicOverlayDisposition(
+                                disposition,
+                                presentationTrackedItems
+                        );
                     }
                     PreviewContinuityUiPolicy.Outcome uiOutcome =
                             PreviewContinuityUiPolicy.decide(
                                     continuityDecision,
                                     changed,
-                                    trackedItems != null
-                                            && !trackedItems.isEmpty()
+                                    presentationTrackedItems != null
+                                            && !presentationTrackedItems.isEmpty()
                             );
                     recordPreviewDecisionAuthority(uiOutcome, "bitmap");
                     if (uiOutcome.renderCoordinatorDecision) {
@@ -625,7 +657,7 @@ public final class MainActivity extends AppCompatActivity {
                                 continuityDecision,
                                 evidenceScore,
                                 evidenceFraction,
-                                trackedItems
+                                presentationTrackedItems
                         );
                         autoZoomDynamicFrameGraceCount = 0;
                         if (uiOutcome.rebaseAcceptedPreviewScene) {
@@ -635,7 +667,9 @@ public final class MainActivity extends AppCompatActivity {
                             autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
                         }
                         if (uiOutcome.presentTrackedOverlay) {
-                            presentTrackedPreviewOverlay(trackedItems);
+                            presentTrackedPreviewOverlay(
+                                    presentationTrackedItems
+                            );
                         }
                         return;
                     }
@@ -654,7 +688,7 @@ public final class MainActivity extends AppCompatActivity {
                     } else if (uiOutcome.legacyTrackingLossInvalidation) {
                         invalidateUiForLostPreviewTracking();
                     } else if (uiOutcome.presentTrackedOverlay) {
-                        presentTrackedPreviewOverlay(trackedItems);
+                        presentTrackedPreviewOverlay(presentationTrackedItems);
                     }
                 } finally {
                     recycleBitmap(previewBitmap);
@@ -786,9 +820,50 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void activateAbruptScenePresentationBarrier(
+            float changedFraction
+    ) {
+        if (previewPresentationBarrier.active()) return;
+        long barrierGeneration = previewPresentationBarrier.activate();
+        pendingPreviewCoordination.set(null);
+        resetGlobalPreviewMotionState();
+        previewPlateTracker.reset();
+        android.util.Log.d(
+                "ALPR_PRESENTATION_BARRIER",
+                String.format(
+                        Locale.ROOT,
+                        "activate generation=%d changed_fraction=%.3f",
+                        barrierGeneration,
+                        changedFraction
+                )
+        );
+        runOnUiThread(() -> {
+            if (!previewPresentationBarrier.isActiveGeneration(
+                    barrierGeneration
+            )) return;
+            overlayTracker.reset();
+            plateOverlayFreshness.reset();
+            latestDiagnosticOverlayItems = java.util.Collections.emptyList();
+            latestPipelinePlateItems = java.util.Collections.emptyList();
+            latestPreviewMotionItems = java.util.Collections.emptyList();
+            latestPipelinePlateEntityId = 0L;
+            overlayView.setFocusedTrackId(0L);
+            overlayView.setActiveVehicleEntityId(0L);
+            overlayView.clearPlateItems();
+            overlayView.setPreviewItems(java.util.Collections.emptyList());
+            livePresentation.showState(
+                    LivePresentationController.State.RECOVERING,
+                    "Zmiana widoku — weryfikacja sceny"
+            );
+        });
+    }
+
     private void processDirectLumaFrame(LumaFrame frame) {
         if (frame == null || !cameraStarted || cameraTransformInProgress
-                || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending) return;
+                || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending
+                || previewPresentationBarrier.active()) return;
+        final long presentationGeneration = previewPresentationBarrier.capture();
+        if (!previewPresentationBarrier.permits(presentationGeneration)) return;
         if (PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
                 previewSceneRecoveryRebaseRevision.get(),
                 previewSceneRecoveryRebaseAppliedRevision
@@ -807,7 +882,8 @@ public final class MainActivity extends AppCompatActivity {
                 frame,
                 continuityStamp
         );
-        if (!isCurrentPreviewStamp(continuityStamp)) {
+        if (!isCurrentPreviewStamp(continuityStamp)
+                || !previewPresentationBarrier.permits(presentationGeneration)) {
             resetGlobalPreviewMotionState();
             previewPlateTracker.reset();
             return;
@@ -854,7 +930,8 @@ public final class MainActivity extends AppCompatActivity {
                         - trackingStartedNanos
         );
         if (trackingFrame == null) return;
-        if (!isCurrentPreviewStamp(continuityStamp)) {
+        if (!isCurrentPreviewStamp(continuityStamp)
+                || !previewPresentationBarrier.permits(presentationGeneration)) {
             resetGlobalPreviewMotionState();
             previewPlateTracker.reset();
             return;
@@ -882,7 +959,8 @@ public final class MainActivity extends AppCompatActivity {
         TargetSnapshot targetAfterTracking = targetStateMachine.onTrackingFrame(
                 trackingFrame
         );
-        if (!isCurrentPreviewStamp(continuityStamp)) {
+        if (!isCurrentPreviewStamp(continuityStamp)
+                || !previewPresentationBarrier.permits(presentationGeneration)) {
             targetStateMachine.reset();
             previewPlateTracker.reset();
             resetGlobalPreviewMotionState();
@@ -927,6 +1005,7 @@ public final class MainActivity extends AppCompatActivity {
                     || sceneGeneration != uiSceneGeneration.get()
                     || transformGeneration != uiCameraTransformGeneration.get()
                     || cameraTransformInProgress
+                    || !previewPresentationBarrier.permits(presentationGeneration)
                     || !isCurrentPreviewStamp(continuityStamp)) return;
             if (!trackedItems.isEmpty()) {
                 presentTrackedPreviewOverlay(trackedItems, frameMotion);
@@ -938,7 +1017,8 @@ public final class MainActivity extends AppCompatActivity {
             }
         });
 
-        if (!isCurrentPreviewStamp(continuityStamp)) return;
+        if (!isCurrentPreviewStamp(continuityStamp)
+                || !previewPresentationBarrier.permits(presentationGeneration)) return;
         submitPreviewCoordination(new PreviewCoordinationRequest(
                 lumaSourceFrame,
                 continuityStamp,
@@ -946,6 +1026,7 @@ public final class MainActivity extends AppCompatActivity {
                 trackedItems,
                 sceneGeneration,
                 transformGeneration,
+                presentationGeneration,
                 trackingLost,
                 trackingDegraded,
                 sensorAvailable,
@@ -965,6 +1046,9 @@ public final class MainActivity extends AppCompatActivity {
     private void submitPreviewCoordination(PreviewCoordinationRequest request) {
         if (request == null
                 || pipeline == null
+                || !previewPresentationBarrier.permits(
+                        request.presentationGeneration
+                )
                 || !isCurrentPreviewStamp(request.continuityStamp)) return;
         pendingPreviewCoordination.getAndUpdate(previous -> {
             if (previous != null
@@ -1002,6 +1086,9 @@ public final class MainActivity extends AppCompatActivity {
                 || !cameraStarted
                 || request.sceneGeneration != uiSceneGeneration.get()
                 || request.transformGeneration != uiCameraTransformGeneration.get()
+                || !previewPresentationBarrier.permits(
+                        request.presentationGeneration
+                )
                 || !isCurrentPreviewStamp(request.continuityStamp)) {
             return;
         }
@@ -1015,7 +1102,10 @@ public final class MainActivity extends AppCompatActivity {
                 request.targetSnapshot,
                 request.continuityStamp
         )) return;
-        if (!isCurrentPreviewStamp(request.continuityStamp)) return;
+        if (!isCurrentPreviewStamp(request.continuityStamp)
+                || !previewPresentationBarrier.permits(
+                        request.presentationGeneration
+                )) return;
         SceneTransitionDecision decision = activePipeline.onPreviewSceneEvidence(
                 request.sourceFrame,
                 false,
@@ -1052,6 +1142,9 @@ public final class MainActivity extends AppCompatActivity {
                     || request.sceneGeneration != uiSceneGeneration.get()
                     || request.transformGeneration
                     != uiCameraTransformGeneration.get()
+                    || !previewPresentationBarrier.permits(
+                            request.presentationGeneration
+                    )
                     || !isCurrentPreviewStamp(request.continuityStamp)) return;
             PreviewContinuityUiPolicy.Outcome uiOutcome =
                     PreviewContinuityUiPolicy.decide(
@@ -2614,6 +2707,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneDetector.reset();
         previewSceneRecoveryRebaseRevision.set(0L);
         previewSceneRecoveryRebaseAppliedRevision = 0L;
+        previewPresentationBarrier.reset();
 
         previewSceneMonitorRunning =
                 true;
@@ -2624,7 +2718,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean needsPreviewSceneSampling() {
-        return previewSceneAnchorPending
+        return previewPresentationBarrier.active()
+                || previewSceneAnchorPending
                 || previewSceneRecoveryRebaseRevision.get()
                 > previewSceneRecoveryRebaseAppliedRevision
                 || lastRenderedContinuityState
@@ -2651,6 +2746,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneDetector.reset();
         previewSceneRecoveryRebaseRevision.set(0L);
         previewSceneRecoveryRebaseAppliedRevision = 0L;
+        previewPresentationBarrier.reset();
     }
 
 
@@ -3146,6 +3242,8 @@ public final class MainActivity extends AppCompatActivity {
                             uiSceneGeneration.get();
                     final long transformGenerationAtStart =
                             uiCameraTransformGeneration.get();
+                    final long presentationGenerationAtStart =
+                            previewPresentationBarrier.capture();
 
                     if (!pipelineFrameInFlight.compareAndSet(false, true)) {
                         return;
@@ -3193,6 +3291,9 @@ public final class MainActivity extends AppCompatActivity {
                                     conversion.rotationDegrees,
                                     (overlayItems, sourceWidth, sourceHeight, sourceStamp) -> {
                                         if (pipeline == null
+                                                || !previewPresentationBarrier.permits(
+                                                        presentationGenerationAtStart
+                                                )
                                                 || !pipeline.isCurrentContinuityStamp(
                                                         sourceStamp
                                                 )) {
@@ -3212,6 +3313,9 @@ public final class MainActivity extends AppCompatActivity {
                                         }
                                         runOnUiThread(() -> {
                                             if (!cameraStarted
+                                                    || !previewPresentationBarrier.permits(
+                                                            presentationGenerationAtStart
+                                                    )
                                                     || pipeline == null
                                                     || !pipeline.isCurrentContinuityStamp(
                                                             sourceStamp
@@ -3310,6 +3414,9 @@ public final class MainActivity extends AppCompatActivity {
                      * ani zapisać jako crop.
                      */
                     if (!cameraStarted
+                            || !previewPresentationBarrier.permits(
+                                    presentationGenerationAtStart
+                            )
                             || sceneGenerationAtStart
                             != uiSceneGeneration.get()
                             || transformGenerationAtStart
@@ -3350,6 +3457,9 @@ public final class MainActivity extends AppCompatActivity {
                                          * pomiędzy post() a wykonaniem callbacku UI.
                                          */
                                         if (!cameraStarted
+                                                || !previewPresentationBarrier.permits(
+                                                        presentationGenerationAtStart
+                                                )
                                                 || sceneGenerationAtStart
                                                 != uiSceneGeneration.get()
                                                 || transformGenerationAtStart
@@ -3392,6 +3502,9 @@ public final class MainActivity extends AppCompatActivity {
                                          * do kolekcji cropów.
                                          */
                                         if (!cameraStarted
+                                                || !previewPresentationBarrier.permits(
+                                                        presentationGenerationAtStart
+                                                )
                                                 || sceneGenerationAtStart
                                                 != uiSceneGeneration.get()
                                                 || transformGenerationAtStart

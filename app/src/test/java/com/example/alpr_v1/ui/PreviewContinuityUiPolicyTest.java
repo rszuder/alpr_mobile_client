@@ -138,6 +138,22 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
+    public void abruptUnexplainedSceneChangeActivatesPresentationBarrier() {
+        assertTrue(PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                true, 0.47f, false, false
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                true, 0.44f, false, false
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                true, 0.80f, true, false
+        ));
+        assertFalse(PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                true, 0.80f, false, true
+        ));
+    }
+
+    @Test
     public void dynamicMotionKeepsBoundedVehiclesUntilHardReset() {
         assertEquals(
                 PreviewContinuityUiPolicy.DynamicOverlayDisposition
@@ -226,6 +242,41 @@ public final class PreviewContinuityUiPolicyTest {
                         hardReset,
                         true,
                         1f
+                )
+        );
+    }
+
+    @Test
+    public void softReacquireAlsoClearsPreviousVisualEpochGeometry() {
+        SceneTransitionDecision softReacquire = new SceneTransitionDecision(
+                10L,
+                SceneTransitionAction.SOFT_REACQUIRE,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneContinuityState.REACQUIRING,
+                ContinuityAssessment.none(),
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true,
+                true,
+                true,
+                false,
+                "soft_reacquire"
+        );
+
+        assertEquals(
+                PreviewContinuityUiPolicy.DynamicOverlayDisposition.CLEAR,
+                PreviewContinuityUiPolicy.dynamicOverlayDisposition(
+                        SceneHandlingMode.DYNAMIC_CONTINUITY,
+                        softReacquire,
+                        true,
+                        0.50f
                 )
         );
     }

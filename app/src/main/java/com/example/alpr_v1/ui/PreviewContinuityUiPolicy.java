@@ -9,6 +9,7 @@ import com.example.alpr_v1.pipeline.TargetSnapshot;
 /** Pure authority rule for preview presentation after continuity evaluation. */
 public final class PreviewContinuityUiPolicy {
     private static final float DYNAMIC_OVERLAY_INVALIDATION_FRACTION = 0.12f;
+    private static final float ABRUPT_UNEXPLAINED_CHANGE_FRACTION = 0.45f;
     private static final long MINIMUM_VEHICLE_OVERLAY_AGE_NANOS = 500_000_000L;
     private static final long MAXIMUM_VEHICLE_OVERLAY_AGE_NANOS = 1_500_000_000L;
     public enum Authority { COORDINATOR, LEGACY_FALLBACK }
@@ -104,6 +105,23 @@ public final class PreviewContinuityUiPolicy {
         return requestedRevision > appliedRevision;
     }
 
+    /**
+     * Duża zmiana bez dowodu ruchu kamery musi zamknąć prezentację przed
+     * wejściem do ciężkiego, potencjalnie zablokowanego koordynatora.
+     */
+    public static boolean shouldActivatePresentationBarrier(
+            boolean sceneChanged,
+            float changedFraction,
+            boolean cameraMotion,
+            boolean motionSettling
+    ) {
+        return sceneChanged
+                && Float.isFinite(changedFraction)
+                && changedFraction >= ABRUPT_UNEXPLAINED_CHANGE_FRACTION
+                && !cameraMotion
+                && !motionSettling;
+    }
+
     /** Jawna decyzja warstwy UI, niezależna od życia encji domenowej. */
     public static DynamicOverlayDisposition dynamicOverlayDisposition(
             SceneHandlingMode mode,
@@ -115,7 +133,9 @@ public final class PreviewContinuityUiPolicy {
             return DynamicOverlayDisposition.KEEP;
         }
         if (decision != null
-                && decision.action == SceneTransitionAction.HARD_RESET) {
+                && (decision.action == SceneTransitionAction.HARD_RESET
+                || decision.action == SceneTransitionAction.SOFT_REACQUIRE
+                || decision.nextState == SceneContinuityState.REACQUIRING)) {
             return DynamicOverlayDisposition.CLEAR;
         }
         if (sceneChanged
