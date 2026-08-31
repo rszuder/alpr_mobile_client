@@ -1,11 +1,16 @@
 package com.example.alpr_v1.domain;
 
-/** Stały, znormalizowany kadr roboczy wspólny dla inferencji i prezentacji. */
-public final class AnalysisViewport {
+/**
+ * Znormalizowany kadr roboczy kolejki Scan.
+ *
+ * <p>Nie ogranicza wejścia modeli ani trackingu. Określa wyłącznie, kiedy
+ * śledzony na pełnej klatce pojazd może zostać dopuszczony do akwizycji Scan.
+ */
+public final class ScanAcquisitionViewport {
     public static final NormalizedBounds BOUNDS =
             new NormalizedBounds(0.05f, 0.16f, 0.95f, 0.84f);
 
-    private AnalysisViewport() {
+    private ScanAcquisitionViewport() {
     }
 
     public static boolean accepts(NormalizedBounds candidate) {

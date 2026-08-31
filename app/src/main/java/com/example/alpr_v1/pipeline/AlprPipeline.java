@@ -36,7 +36,7 @@ import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.continuity.VisualChangeClassification;
 import com.example.alpr_v1.domain.VehicleEntity;
-import com.example.alpr_v1.domain.AnalysisViewport;
+import com.example.alpr_v1.domain.ScanAcquisitionViewport;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
@@ -1594,7 +1594,7 @@ public final class AlprPipeline {
         AcquisitionDirective directive = before.directive;
         if (before.runState == ScanRunState.RUNNING) {
             directive = scanAcquisitionController.onVehicleFrame(
-                    analysisViewportVehicleFrame(latestVehicleTrackingFrame()),
+                    scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1628,7 +1628,7 @@ public final class AlprPipeline {
         AcquisitionDirective next = decision.nextDirective;
         if ("scan_queue_updated".equals(result.status)) {
             next = scanAcquisitionController.onVehicleFrame(
-                    analysisViewportVehicleFrame(latestVehicleTrackingFrame()),
+                    scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1638,7 +1638,7 @@ public final class AlprPipeline {
         );
         StringBuilder scanPool = new StringBuilder();
         for (com.example.alpr_v1.tracking.VehicleCandidate candidate
-                : analysisViewportVehicleFrame(latestVehicleTrackingFrame()).candidates) {
+                : scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()).candidates) {
             if (scanPool.length() > 0) scanPool.append(';');
             scanPool.append(candidate.entityId)
                     .append('/')
@@ -1701,13 +1701,13 @@ public final class AlprPipeline {
         );
     }
 
-    static VehicleTrackingFrame analysisViewportVehicleFrame(
+    static VehicleTrackingFrame scanWorkingViewportVehicleFrame(
             VehicleTrackingFrame frame
     ) {
         if (frame == null || frame.candidates.isEmpty()) return frame;
         List<VehicleCandidate> accepted = new ArrayList<>();
         for (VehicleCandidate candidate : frame.candidates) {
-            if (AnalysisViewport.accepts(candidate.bounds)) accepted.add(candidate);
+            if (ScanAcquisitionViewport.accepts(candidate.bounds)) accepted.add(candidate);
         }
         if (accepted.size() == frame.candidates.size()) return frame;
         return new VehicleTrackingFrame(
@@ -1728,6 +1728,30 @@ public final class AlprPipeline {
             long nowRuntimeNanos
     ) {
         if (trace == null) return;
+        VehicleTrackingFrame fullFrame = latestVehicleTrackingFrame();
+        VehicleTrackingFrame scanFrame = scanWorkingViewportVehicleFrame(fullFrame);
+        int fullFrameCount = fullFrame == null ? 0 : fullFrame.candidates.size();
+        int scanFrameCount = scanFrame == null ? 0 : scanFrame.candidates.size();
+        trace.putAttribute("mp_frame_policy", "FULL_SENSOR_FRAME");
+        trace.putAttribute("analysis_viewport_policy", "SCAN_ACQUISITION_ONLY");
+        trace.putAttribute(
+                "analysis_viewport_bounds",
+                String.format(
+                        java.util.Locale.ROOT,
+                        "%.2f,%.2f,%.2f,%.2f",
+                        ScanAcquisitionViewport.BOUNDS.left,
+                        ScanAcquisitionViewport.BOUNDS.top,
+                        ScanAcquisitionViewport.BOUNDS.right,
+                        ScanAcquisitionViewport.BOUNDS.bottom
+                )
+        );
+        trace.putCount("mp_full_frame", 1);
+        trace.putCount("tracking_full_frame_candidates", fullFrameCount);
+        trace.putCount("scan_working_viewport_candidates", scanFrameCount);
+        trace.putCount(
+                "queue_viewport_filtered",
+                Math.max(0, fullFrameCount - scanFrameCount)
+        );
         ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(
                 nowRuntimeNanos
         );

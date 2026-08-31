@@ -12,7 +12,7 @@ import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.domain.AppearanceDescriptor;
-import com.example.alpr_v1.domain.AnalysisViewport;
+import com.example.alpr_v1.domain.ScanAcquisitionViewport;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.domain.NormalizedQuad;
 import com.example.alpr_v1.domain.PlateTextConsensus;
@@ -798,7 +798,7 @@ final class MobileAlprEngine implements AutoCloseable {
             if (roiBudgetPolicy == RoiBudgetPolicy.FULL_FRAME) {
                 List<Detection> detected = detectPlates(
                         frame,
-                        analysisFrameRegion(frame),
+                        fullFrameRegion(frame),
                         plateDurations
                 );
                 plates.addAll(detected);
@@ -827,7 +827,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         && mtFallbackPolicy == MtFallbackPolicy.SAME_CYCLE) {
                     List<Detection> detected = detectPlates(
                             frame,
-                            analysisFrameRegion(frame),
+                            fullFrameRegion(frame),
                             plateDurations
                     );
                     plates.addAll(detected);
@@ -936,7 +936,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                 false
                         );
                     } else if (vehicleRois.isEmpty()) {
-                        scheduledRegion = analysisFrameRegion(frame);
+                        scheduledRegion = fullFrameRegion(frame);
                         scheduledWorkKind = MtWorkKind.FULL_FRAME;
                     } else {
                         if (scheduledVehicleRoi == null) {
@@ -967,7 +967,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     break;
                 case FULL_FRAME:
                 default:
-                    scheduledRegion = analysisFrameRegion(frame);
+                    scheduledRegion = fullFrameRegion(frame);
                     scheduledWorkKind = MtWorkKind.FULL_FRAME;
                     if (mtDecision.reason.contains("deferred")) {
                         trace.putCount("mt_deferred_fallbacks", 1);
@@ -2198,14 +2198,22 @@ final class MobileAlprEngine implements AutoCloseable {
             ContinuityStamp sourceStamp
     ) {
         long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
-        VehicleRoiSelector.Region analysisRegion = analysisFrameRegion(frame);
-        Bitmap analysisBitmap = Bitmap.createBitmap(
-                frame,
-                analysisRegion.left,
-                analysisRegion.top,
-                analysisRegion.width(),
-                analysisRegion.height()
+        VehicleRoiSelector.Region analysisRegion = fullFrameRegion(frame);
+        Bitmap analysisBitmap = frame;
+        trace.putAttribute("mp_frame_policy", "FULL_SENSOR_FRAME");
+        trace.putAttribute("analysis_viewport_policy", "SCAN_ACQUISITION_ONLY");
+        trace.putAttribute(
+                "analysis_viewport_bounds",
+                String.format(
+                        Locale.ROOT,
+                        "%.2f,%.2f,%.2f,%.2f",
+                        ScanAcquisitionViewport.BOUNDS.left,
+                        ScanAcquisitionViewport.BOUNDS.top,
+                        ScanAcquisitionViewport.BOUNDS.right,
+                        ScanAcquisitionViewport.BOUNDS.bottom
+                )
         );
+        trace.putCount("mp_full_frame", 1);
         List<Detection> decodedVehicles;
         List<Detection> vehicles = new ArrayList<>();
         int classEligibleVehicleCount = 0;
@@ -2304,12 +2312,10 @@ final class MobileAlprEngine implements AutoCloseable {
                             + mapped.width() + "x" + mapped.height()
             );
 
-            if (AnalysisViewport.accepts(normalizedVehicleBounds(mapped, frame))) {
-                vehicles.add(mapped);
-            }
+            vehicles.add(mapped);
         }
         } finally {
-            analysisBitmap.recycle();
+            if (analysisBitmap != frame) analysisBitmap.recycle();
         }
 
         trace.putCount(
@@ -2324,7 +2330,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
         trace.putCount(
                 "vehicle_detections_rejected_viewport",
-                Math.max(0, classEligibleVehicleCount - vehicles.size())
+                0
         );
 
         trace.putCount(
@@ -2336,7 +2342,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 "ALPR_MP",
                 "CLASS FILTER raw=" + decodedVehicles.size()
                         + ", class_eligible=" + classEligibleVehicleCount
-                        + ", viewport_used=" + vehicles.size()
+                        + ", full_frame_used=" + vehicles.size()
                         + ", rejected="
                         + Math.max(0, decodedVehicles.size() - classEligibleVehicleCount)
                         + ", allowedClassIds=" + vehicleClassIds
@@ -2400,14 +2406,12 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
-        List<VehicleCandidate> viewportCandidates = analysisCandidates(
-                trackingFrame.candidates
-        );
+        List<VehicleCandidate> fullFrameCandidates = trackingFrame.candidates;
         List<Detection> trackedDiagnosticVehicles = trackedVehicleDetections(
-                viewportCandidates, frame
+                fullFrameCandidates, frame
         );
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
-        trace.putCount("vehicle_tracks_in_viewport", viewportCandidates.size());
+        trace.putCount("vehicle_tracks_full_frame", fullFrameCandidates.size());
         trace.putCount(
                 "vehicle_entities_active",
                 vehicleTrackingCoordinator.repository().activeEntities().size()
@@ -2421,7 +2425,7 @@ final class MobileAlprEngine implements AutoCloseable {
         List<VehicleRoi> rois = VehicleRoiSelector.selectForPolicy(
                 vehicleTrackingPolicy,
                 rawMpVehicleDetections,
-                viewportCandidates,
+                fullFrameCandidates,
                 frame.getWidth(),
                 frame.getHeight(),
                 roiBudgetPolicy.maximumRegions(),
@@ -2484,23 +2488,21 @@ final class MobileAlprEngine implements AutoCloseable {
         );
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
-        List<VehicleCandidate> viewportCandidates = analysisCandidates(
-                trackingFrame.candidates
-        );
+        List<VehicleCandidate> fullFrameCandidates = trackingFrame.candidates;
         cachedVehicleDetections.clear();
         cachedVehicleDetections.addAll(trackedVehicleDetections(
-                viewportCandidates, frame
+                fullFrameCandidates, frame
         ));
         cachedVehicleRois.clear();
         cachedVehicleRois.addAll(VehicleRoiSelector.selectTrackedCandidates(
-                viewportCandidates,
+                fullFrameCandidates,
                 frame.getWidth(),
                 frame.getHeight(),
                 roiBudgetPolicy.maximumRegions(),
                 rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN
         ));
         trace.putCount("vehicle_tracks_active", trackingFrame.candidates.size());
-        trace.putCount("vehicle_tracks_in_viewport", viewportCandidates.size());
+        trace.putCount("vehicle_tracks_full_frame", fullFrameCandidates.size());
         trace.putCount("vehicle_tracks_predicted", trackingFrame.candidates.size());
         trace.putCount(
                 "vehicle_entities_active",
@@ -2658,19 +2660,6 @@ final class MobileAlprEngine implements AutoCloseable {
                 vehicle.right / Math.max(1f, frame.getWidth()),
                 vehicle.bottom / Math.max(1f, frame.getHeight())
         );
-    }
-
-    private static List<VehicleCandidate> analysisCandidates(
-            List<VehicleCandidate> candidates
-    ) {
-        if (candidates == null || candidates.isEmpty()) return Collections.emptyList();
-        List<VehicleCandidate> accepted = new ArrayList<>();
-        for (VehicleCandidate candidate : candidates) {
-            if (candidate != null && AnalysisViewport.accepts(candidate.bounds)) {
-                accepted.add(candidate);
-            }
-        }
-        return accepted;
     }
 
     private static List<Detection> trackedVehicleDetections(
@@ -2873,7 +2862,7 @@ final class MobileAlprEngine implements AutoCloseable {
             VehicleRoiSelector.Region region,
             long[] durations
     ) {
-        VehicleRoiSelector.Region boundedRegion = intersectWithAnalysisFrame(
+        VehicleRoiSelector.Region boundedRegion = intersectWithSensorFrame(
                 region,
                 frame
         );
@@ -2917,23 +2906,20 @@ final class MobileAlprEngine implements AutoCloseable {
         }
     }
 
-    private static VehicleRoiSelector.Region analysisFrameRegion(Bitmap frame) {
-        return VehicleRoiSelector.normalizedRegion(
-                frame.getWidth(),
-                frame.getHeight(),
-                AnalysisViewport.BOUNDS.left,
-                AnalysisViewport.BOUNDS.top,
-                AnalysisViewport.BOUNDS.right,
-                AnalysisViewport.BOUNDS.bottom
-        );
+    static VehicleRoiSelector.Region fullSensorFrameRegion(int width, int height) {
+        return new VehicleRoiSelector.Region(0, 0, width, height, null);
     }
 
-    private static VehicleRoiSelector.Region intersectWithAnalysisFrame(
+    private static VehicleRoiSelector.Region fullFrameRegion(Bitmap frame) {
+        return fullSensorFrameRegion(frame.getWidth(), frame.getHeight());
+    }
+
+    private static VehicleRoiSelector.Region intersectWithSensorFrame(
             VehicleRoiSelector.Region requested,
             Bitmap frame
     ) {
         if (requested == null || frame == null) return null;
-        VehicleRoiSelector.Region allowed = analysisFrameRegion(frame);
+        VehicleRoiSelector.Region allowed = fullFrameRegion(frame);
         int left = Math.max(requested.left, allowed.left);
         int top = Math.max(requested.top, allowed.top);
         int right = Math.min(requested.right, allowed.right);

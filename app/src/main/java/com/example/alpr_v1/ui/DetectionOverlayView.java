@@ -19,7 +19,7 @@ import android.graphics.Path;
 
 import androidx.annotation.Nullable;
 
-import com.example.alpr_v1.domain.AnalysisViewport;
+import com.example.alpr_v1.domain.ScanAcquisitionViewport;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1231,10 +1231,10 @@ public final class DetectionOverlayView extends View {
                 || sourceWidth <= 0 || sourceHeight <= 0) return null;
         return OverlayViewportTransform.mapNormalizedToView(
                 new RectF(
-                        AnalysisViewport.BOUNDS.left,
-                        AnalysisViewport.BOUNDS.top,
-                        AnalysisViewport.BOUNDS.right,
-                        AnalysisViewport.BOUNDS.bottom
+                        ScanAcquisitionViewport.BOUNDS.left,
+                        ScanAcquisitionViewport.BOUNDS.top,
+                        ScanAcquisitionViewport.BOUNDS.right,
+                        ScanAcquisitionViewport.BOUNDS.bottom
                 ),
                 sourceWidth,
                 sourceHeight,
