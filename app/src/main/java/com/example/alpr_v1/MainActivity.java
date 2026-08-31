@@ -101,6 +101,7 @@ import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
+import com.example.alpr_v1.ui.EntityAwareOverlayAlignment;
 import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
@@ -3569,9 +3570,15 @@ public final class MainActivity extends AppCompatActivity {
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
         long presentationNanos = System.nanoTime();
         List<OverlayItem> scanScopedItems = scanScopedOverlayItems(result);
-        List<OverlayItem> latencyAlignedItems = alignMtGeometryToLiveTarget(
+        TargetSnapshot liveTarget = targetStateMachine.snapshot();
+        long alignmentEntityId = EntityAwareOverlayAlignment.resolveSourceEntityId(
+                result.plateObservations,
+                liveTarget.trackId
+        );
+        List<OverlayItem> latencyAlignedItems = EntityAwareOverlayAlignment.align(
                 scanScopedItems,
-                targetStateMachine.snapshot()
+                liveTarget,
+                alignmentEntityId
         );
         boolean geometryAlignedToPresentation =
                 latencyAlignedItems != scanScopedItems;
@@ -7404,111 +7411,6 @@ public final class MainActivity extends AppCompatActivity {
                 remainingSeconds
         );
     }
-    /**
-     * A heavy MT/MZ result describes the camera frame captured before inference.
-     * If the lightweight preview tracker has already moved the same target, keep
-     * its current position and only apply the fresh label/shape from MT.
-     */
-    private static List<OverlayItem> alignMtGeometryToLiveTarget(
-            List<OverlayItem> items,
-            TargetSnapshot liveTarget
-    ) {
-        if (items == null
-                || items.isEmpty()
-                || liveTarget == null
-                || !liveTarget.hasTrack()
-                || liveTarget.trackingQuality
-                < TargetStateMachine.QUALITY_TRACKING
-                || liveTarget.normalizedBounds.width() <= 0f
-                || liveTarget.normalizedBounds.height() <= 0f) {
-            return items;
-        }
-
-        OverlayItem sourcePlate = null;
-        for (OverlayItem item : items) {
-            if (item.kind == OverlayItem.Kind.PLATE
-                    && !item.carriedPrediction
-                    && item.trackId == liveTarget.trackId) {
-                sourcePlate = item;
-                break;
-            }
-        }
-        if (sourcePlate == null
-                || sourcePlate.normalizedBounds.width() <= 0f
-                || sourcePlate.normalizedBounds.height() <= 0f) {
-            return items;
-        }
-
-        RectF liveBounds = new RectF(liveTarget.normalizedBounds);
-        float dx = liveBounds.centerX() - sourcePlate.normalizedBounds.centerX();
-        float dy = liveBounds.centerY() - sourcePlate.normalizedBounds.centerY();
-        List<OverlayItem> aligned = new ArrayList<>(items.size());
-
-        for (OverlayItem item : items) {
-            if (item == sourcePlate) {
-                aligned.add(new OverlayItem(
-                        OverlayItem.Kind.PLATE,
-                        liveBounds,
-                        remapPointsToBounds(
-                                sourcePlate.normalizedKeypoints,
-                                sourcePlate.normalizedBounds,
-                                liveBounds,
-                                liveTarget.overlayItem == null
-                                        ? java.util.Collections.emptyList()
-                                        : liveTarget.overlayItem.normalizedKeypoints
-                        ),
-                        sourcePlate.label,
-                        liveTarget.trackId,
-                        false
-                ));
-            } else if (item.kind != OverlayItem.Kind.PLATE
-                    && item.normalizedBounds.contains(
-                    sourcePlate.normalizedBounds.centerX(),
-                    sourcePlate.normalizedBounds.centerY()
-            )) {
-                RectF movedBounds = translatedBounds(item.normalizedBounds, dx, dy);
-                aligned.add(new OverlayItem(
-                        item.kind,
-                        movedBounds,
-                        translatedPoints(item.normalizedKeypoints, dx, dy),
-                        item.label,
-                        item.trackId,
-                        item.carriedPrediction
-                ));
-            } else {
-                aligned.add(item);
-            }
-        }
-
-        return aligned;
-    }
-
-    private static List<android.graphics.PointF> remapPointsToBounds(
-            List<android.graphics.PointF> sourcePoints,
-            RectF sourceBounds,
-            RectF targetBounds,
-            List<android.graphics.PointF> fallbackPoints
-    ) {
-        if (sourcePoints == null
-                || sourcePoints.isEmpty()
-                || sourceBounds.width() <= 0f
-                || sourceBounds.height() <= 0f) {
-            return fallbackPoints == null
-                    ? java.util.Collections.emptyList()
-                    : fallbackPoints;
-        }
-        List<android.graphics.PointF> result = new ArrayList<>(sourcePoints.size());
-        for (android.graphics.PointF point : sourcePoints) {
-            float relativeX = (point.x - sourceBounds.left) / sourceBounds.width();
-            float relativeY = (point.y - sourceBounds.top) / sourceBounds.height();
-            result.add(new android.graphics.PointF(
-                    targetBounds.left + relativeX * targetBounds.width(),
-                    targetBounds.top + relativeY * targetBounds.height()
-            ));
-        }
-        return result;
-    }
-
     private static List<android.graphics.PointF> translatedPoints(
             List<android.graphics.PointF> points,
             float dx,
