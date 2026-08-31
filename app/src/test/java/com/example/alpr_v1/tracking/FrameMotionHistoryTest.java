@@ -24,6 +24,18 @@ public final class FrameMotionHistoryTest {
     }
 
     @Test
+    public void transformBetweenStopsAtRequestedDestinationFrame() {
+        FrameMotionHistory history = new FrameMotionHistory();
+        history.record(100L, FrameMotionTransform.translation(0.10f, 0f));
+        history.record(200L, FrameMotionTransform.translation(0.20f, 0f));
+        history.record(300L, FrameMotionTransform.translation(0.30f, 0f));
+
+        FrameMotionTransform transform = history.transformBetween(100L, 200L);
+
+        assertEquals(0.20f, transform.mapX(0.5f, 0.5f) - 0.5f, 0.0001f);
+    }
+
+    @Test
     public void resetMakesOldInferenceTimestampUnusable() {
         FrameMotionHistory history = new FrameMotionHistory();
         history.record(100L, FrameMotionTransform.translation(0.1f, 0f));

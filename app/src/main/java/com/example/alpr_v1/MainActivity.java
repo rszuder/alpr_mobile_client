@@ -165,11 +165,16 @@ public final class MainActivity extends AppCompatActivity {
             1000L;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService previewTrackingExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService directLumaTrackingExecutor =
+            Executors.newSingleThreadExecutor();
     private final ExecutorService previewCoordinationExecutor =
             Executors.newSingleThreadExecutor();
     private final ExecutorService pipelineInferenceExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean previewFrameInFlight = new AtomicBoolean();
     private final AtomicBoolean pipelineFrameInFlight = new AtomicBoolean();
+    private final AtomicBoolean directLumaWorkerRunning = new AtomicBoolean();
+    private final AtomicReference<LumaFrame> pendingDirectLumaFrame =
+            new AtomicReference<>();
     private final AtomicBoolean previewCoordinationWorkerRunning = new AtomicBoolean();
     private final AtomicReference<PreviewCoordinationRequest>
             pendingPreviewCoordination = new AtomicReference<>();
@@ -918,6 +923,14 @@ public final class MainActivity extends AppCompatActivity {
             previewPlateTracker.reset();
             return;
         }
+        AlprPipeline motionPipeline = pipeline;
+        if (motionPipeline != null) {
+            motionPipeline.recordPreviewFrameMotion(
+                    continuityStamp,
+                    frame.timestampNanos,
+                    frameMotion
+            );
+        }
         CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
         boolean earlySensorMotion = earlyMotionMonitor != null
                 && earlyMotionMonitor.isMoving();
@@ -1099,6 +1112,30 @@ public final class MainActivity extends AppCompatActivity {
                 visualMotion.quality.inliers,
                 visualMotion.quality.spatialCoverage
         ));
+    }
+
+    private void submitDirectLumaFrame(LumaFrame frame) {
+        if (frame == null) return;
+        pendingDirectLumaFrame.set(frame);
+        if (directLumaWorkerRunning.compareAndSet(false, true)) {
+            directLumaTrackingExecutor.execute(this::drainDirectLumaFrames);
+        }
+    }
+
+    private void drainDirectLumaFrames() {
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                LumaFrame frame = pendingDirectLumaFrame.getAndSet(null);
+                if (frame == null) return;
+                processDirectLumaFrame(frame);
+            }
+        } finally {
+            directLumaWorkerRunning.set(false);
+            if (pendingDirectLumaFrame.get() != null
+                    && directLumaWorkerRunning.compareAndSet(false, true)) {
+                directLumaTrackingExecutor.execute(this::drainDirectLumaFrames);
+            }
+        }
     }
 
     private void submitPreviewCoordination(PreviewCoordinationRequest request) {
@@ -2432,6 +2469,7 @@ public final class MainActivity extends AppCompatActivity {
         finishAnalysisMeasurement(reason);
 
         if (cameraController != null) {
+            pendingDirectLumaFrame.set(null);
             cameraController.stop();
         }
         /*
@@ -3288,6 +3326,8 @@ public final class MainActivity extends AppCompatActivity {
                                 requestedCameraSize
                         );
         lastDirectLumaFrameNanos = 0L;
+        lastDirectLumaSourceTimestampNanos = 0L;
+        pendingDirectLumaFrame.set(null);
         directLumaTrackingUnavailable = false;
         cameraController.start(
                 (image, cameraFrameStamp) -> {
@@ -3611,12 +3651,13 @@ public final class MainActivity extends AppCompatActivity {
                     @Override
                     public void onLumaFrame(LumaFrame frame) {
                         directLumaTrackingUnavailable = false;
-                        processDirectLumaFrame(frame);
+                        submitDirectLumaFrame(frame);
                     }
 
                     @Override
                     public void onUnavailable() {
                         directLumaTrackingUnavailable = true;
+                        pendingDirectLumaFrame.set(null);
                         lastDirectLumaFrameNanos = 0L;
                         android.util.Log.w(
                                 "ALPR_PREVIEW_TRACK",
@@ -8081,6 +8122,8 @@ public final class MainActivity extends AppCompatActivity {
 
         backgroundExecutor.shutdownNow();
         previewTrackingExecutor.shutdownNow();
+        pendingDirectLumaFrame.set(null);
+        directLumaTrackingExecutor.shutdownNow();
         previewCoordinationExecutor.shutdownNow();
         pipelineInferenceExecutor.shutdownNow();
         cancelExperimentTimer();

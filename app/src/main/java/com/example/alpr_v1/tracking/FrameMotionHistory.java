@@ -52,13 +52,23 @@ public final class FrameMotionHistory {
     public synchronized FrameMotionTransform transformAfter(
             long sourceTimestampNanos
     ) {
-        if (sourceTimestampNanos <= 0L || samples.isEmpty()) {
+        return transformBetween(sourceTimestampNanos, Long.MAX_VALUE);
+    }
+
+    public synchronized FrameMotionTransform transformBetween(
+            long sourceTimestampExclusive,
+            long destinationTimestampInclusive
+    ) {
+        if (sourceTimestampExclusive <= 0L
+                || destinationTimestampInclusive <= sourceTimestampExclusive
+                || samples.isEmpty()) {
             return FrameMotionTransform.invalid();
         }
         FrameMotionTransform composed = FrameMotionTransform.identity();
         boolean found = false;
         for (Sample sample : samples) {
-            if (sample.destinationTimestampNanos <= sourceTimestampNanos) continue;
+            if (sample.destinationTimestampNanos <= sourceTimestampExclusive) continue;
+            if (sample.destinationTimestampNanos > destinationTimestampInclusive) break;
             composed = FrameMotionTransform.compose(composed, sample.transform);
             found = true;
         }

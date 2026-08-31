@@ -108,6 +108,15 @@ public final class VehicleEntity {
         lastMpNanos = Math.max(lastMpNanos, nowNanos);
     }
 
+    /** Zmienia wyłącznie układ współrzędnych obrazu, bez odświeżania MP TTL. */
+    synchronized void applyCameraMotion(
+            NormalizedBounds bounds,
+            MotionState motion
+    ) {
+        if (bounds != null) vehicleBounds = bounds;
+        if (motion != null) this.motion = motion;
+    }
+
     synchronized void attachPlate(
             long trackId,
             NormalizedQuad quad,

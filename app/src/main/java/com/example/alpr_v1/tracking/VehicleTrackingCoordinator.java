@@ -64,6 +64,22 @@ public final class VehicleTrackingCoordinator {
         );
     }
 
+    public synchronized void applyCameraMotion(
+            FrameMotionTransform transform,
+            long sourceTimestampNanos
+    ) {
+        tracker.applyCameraMotion(transform, sourceTimestampNanos);
+        if (latestFrame.candidates.isEmpty()) return;
+        latestFrame = frame(
+                latestFrame.sourceFrameId,
+                latestFrame.sourceSequence,
+                Math.max(latestFrame.sourceTimestampNanos, sourceTimestampNanos),
+                latestFrame.sourceTimestampDomain,
+                Math.max(latestFrame.snapshotTimestampNanos, sourceTimestampNanos),
+                tracker.predict(sourceTimestampNanos)
+        );
+    }
+
     public synchronized VehicleTrackingFrame updateFromMp(
             long sourceFrameId,
             long sourceTimestampNanos,
@@ -220,6 +236,9 @@ public final class VehicleTrackingCoordinator {
     }
     public synchronized long lastMpObservationGapNanos() {
         return lastMpObservationGapNanos;
+    }
+    public synchronized long lastMpSourceTimestampNanos() {
+        return lastMpSourceTimestampNanos;
     }
     public synchronized long currentTrackTtlNanos() { return tracker.trackTtlNanos(); }
     public VehicleEntityRepository repository() { return repository; }

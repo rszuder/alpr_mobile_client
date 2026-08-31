@@ -46,6 +46,9 @@ import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingEvent;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.FrameMotionHistory;
+import com.example.alpr_v1.tracking.FrameMotionTransform;
+import com.example.alpr_v1.tracking.PreviewMotionGenerationGate;
 import com.example.alpr_v1.vision.SceneChangeDetector;
 
 import java.nio.ByteBuffer;
@@ -144,6 +147,11 @@ public final class AlprPipeline {
             new ContinuityGenerationGate();
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator =
             new VehicleTrackingCoordinator();
+    private final FrameMotionHistory previewFrameMotionHistory =
+            new FrameMotionHistory();
+    private final PreviewMotionGenerationGate previewMotionGenerationGate =
+            new PreviewMotionGenerationGate();
+    private final Object previewFrameMotionLock = new Object();
     private final ScanAcquisitionController scanAcquisitionController =
             new ScanAcquisitionController();
     private long lastScanTelemetryRunId;
@@ -504,6 +512,9 @@ public final class AlprPipeline {
                     engine.setSoftReacquireResultListener(
                             this::handleSoftReacquireReport
                     );
+                    engine.setPreviewFrameMotionHistory(
+                            previewFrameMotionHistory
+                    );
                 }
 
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
@@ -815,6 +826,9 @@ public final class AlprPipeline {
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
                     engine.setSoftReacquireResultListener(
                             this::handleSoftReacquireReport
+                    );
+                    engine.setPreviewFrameMotionHistory(
+                            previewFrameMotionHistory
                     );
                 }
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
@@ -2619,6 +2633,23 @@ public final class AlprPipeline {
                 ? Math.max(0f, angularMagnitude) : 0f;
         MobileAlprEngine activeEngine = engine;
         if (activeEngine != null) activeEngine.setRapidCameraMotion(rapid);
+    }
+
+    public void recordPreviewFrameMotion(
+            ContinuityStamp stamp,
+            long destinationTimestampNanos,
+            FrameMotionTransform transform
+    ) {
+        if (stamp == null || !isCurrentContinuityStamp(stamp)) return;
+        synchronized (previewFrameMotionLock) {
+            if (previewMotionGenerationGate.enter(stamp)) {
+                previewFrameMotionHistory.reset();
+            }
+            previewFrameMotionHistory.record(
+                    destinationTimestampNanos,
+                    transform
+            );
+        }
     }
 
     public synchronized void setSceneHandlingMode(SceneHandlingMode mode) {

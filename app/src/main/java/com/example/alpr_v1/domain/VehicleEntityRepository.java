@@ -336,6 +336,15 @@ public final class VehicleEntityRepository {
         return entity;
     }
 
+    public synchronized void applyCameraMotion(
+            long vehicleTrackId,
+            NormalizedBounds bounds,
+            MotionState motion
+    ) {
+        VehicleEntity entity = findByVehicleTrackId(vehicleTrackId);
+        if (entity != null) entity.applyCameraMotion(bounds, motion);
+    }
+
     private void ensureActiveCapacity() {
         while (byEntityId.size() >= MAX_ACTIVE_ENTITIES) {
             Long removableId = null;

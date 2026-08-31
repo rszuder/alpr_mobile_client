@@ -138,6 +138,40 @@ public class VehicleTrackManagerTest {
     }
 
     @Test
+    public void cameraMotionRebasesTracksBeforeNextMpAssociation() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        VehicleTrackManager.Snapshot initial = manager.update(
+                Collections.singletonList(
+                        observation(0.05f, 0.2f, 0.25f, 0.5f, red(), 0)
+                ),
+                1_000_000_000L
+        ).get(0);
+        long mpFreshnessBeforeMotion = repository.get(initial.entityId).lastMpNanos();
+
+        manager.applyCameraMotion(
+                FrameMotionTransform.translation(0.50f, 0f),
+                1_200_000_000L
+        );
+        assertEquals(mpFreshnessBeforeMotion,
+                repository.get(initial.entityId).lastMpNanos());
+        VehicleTrackManager.Snapshot afterPan = manager.update(
+                Collections.singletonList(
+                        observation(0.55f, 0.2f, 0.75f, 0.5f, red(), 0)
+                ),
+                1_300_000_000L
+        ).get(0);
+
+        assertEquals(initial.entityId, afterPan.entityId);
+        assertEquals(initial.vehicleTrackId, afterPan.vehicleTrackId);
+        assertEquals(1, repository.size());
+        assertEquals(1_300_000_000L,
+                repository.get(initial.entityId).lastMpNanos());
+        assertTrue(mpFreshnessBeforeMotion <
+                repository.get(initial.entityId).lastMpNanos());
+    }
+
+    @Test
     public void predictsMotionDuringShortMpGapAndDropsTechnicalTrackAfterTtl() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         VehicleTrackManager manager = manager(repository);

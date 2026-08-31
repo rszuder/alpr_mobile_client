@@ -37,6 +37,8 @@ import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.tracking.VehicleTrackingStats;
 import com.example.alpr_v1.tracking.VehicleTrackManager;
+import com.example.alpr_v1.tracking.FrameMotionHistory;
+import com.example.alpr_v1.tracking.FrameMotionTransform;
 import com.example.alpr_v1.vision.BitmapTensorPreprocessor;
 import com.example.alpr_v1.vision.CharacterSequencePostProcessor;
 import com.example.alpr_v1.vision.Detection;
@@ -98,6 +100,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
     private final PlateEntityBinder plateEntityBinder;
+    private volatile FrameMotionHistory previewFrameMotionHistory;
 
     private final List<VehicleRoi> cachedVehicleRois = new ArrayList<>();
     private final List<Detection> cachedVehicleDetections = new ArrayList<>();
@@ -254,6 +257,10 @@ final class MobileAlprEngine implements AutoCloseable {
 
     void setRecognitionProfile(RecognitionProfile profile) {
         trackCoordinator.setProfile(profile);
+    }
+
+    void setPreviewFrameMotionHistory(FrameMotionHistory history) {
+        previewFrameMotionHistory = history;
     }
 
     void requestVehicleEntity(
@@ -2374,6 +2381,43 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace,
                 resultAvailableRuntimeNanos
         );
+        FrameMotionHistory motionHistory = previewFrameMotionHistory;
+        long previousMpSourceTimestampNanos =
+                vehicleTrackingCoordinator.lastMpSourceTimestampNanos();
+        FrameMotionTransform cameraMotionToMpSource =
+                FrameMotionTransform.invalid();
+        if (motionHistory != null
+                && sourceStamp.sourceTimestampDomain.cameraDerived()
+                && previousMpSourceTimestampNanos > 0L
+                && sourceTimestampNanos > previousMpSourceTimestampNanos) {
+            cameraMotionToMpSource = motionHistory.transformBetween(
+                    previousMpSourceTimestampNanos,
+                    sourceTimestampNanos
+            );
+            vehicleTrackingCoordinator.applyCameraMotion(
+                    cameraMotionToMpSource,
+                    sourceTimestampNanos
+            );
+        }
+        trace.putCount(
+                "vehicle_camera_motion_applied",
+                cameraMotionToMpSource.valid
+                        && cameraMotionToMpSource.significant() ? 1 : 0
+        );
+        if (cameraMotionToMpSource.valid
+                && cameraMotionToMpSource.significant()) {
+            android.util.Log.d(
+                    "ALPR_VEHICLE_CAMERA_MOTION",
+                    String.format(
+                            Locale.ROOT,
+                            "from_ns=%d to_ns=%d dx=%.5f dy=%.5f",
+                            previousMpSourceTimestampNanos,
+                            sourceTimestampNanos,
+                            cameraMotionToMpSource.mapX(0.5f, 0.5f) - 0.5f,
+                            cameraMotionToMpSource.mapY(0.5f, 0.5f) - 0.5f
+                    )
+            );
+        }
         List<VehicleTrackManager.Observation> vehicleObservations = new ArrayList<>(
                 rawMpVehicleDetections.size()
         );

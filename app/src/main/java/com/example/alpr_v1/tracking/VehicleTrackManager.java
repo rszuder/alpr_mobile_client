@@ -131,6 +131,10 @@ public final class VehicleTrackManager {
             missedUpdates = 0;
             sourceIndex = observation.sourceIndex;
         }
+
+        void applyCameraMotion(FrameMotionTransform transform, long nowNanos) {
+            kalman.applyCameraMotion(transform, nowNanos);
+        }
     }
 
     private static final class Assignment {
@@ -347,6 +351,23 @@ public final class VehicleTrackManager {
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
         trackingNanos += lastTrackingNanos;
         return result;
+    }
+
+    /** Przenosi tracki do układu współrzędnych kolejnej klatki MP. */
+    public synchronized void applyCameraMotion(
+            FrameMotionTransform transform,
+            long nowNanos
+    ) {
+        if (transform == null || !transform.valid || !transform.significant()) return;
+        long safeNow = Math.max(0L, nowNanos);
+        for (Track track : tracks) {
+            track.applyCameraMotion(transform, safeNow);
+            repository.applyCameraMotion(
+                    track.trackId,
+                    track.predicted(safeNow),
+                    track.motion()
+            );
+        }
     }
 
     public synchronized void resetScene() {
@@ -720,6 +741,49 @@ public final class VehicleTrackManager {
 
         float velocityX() { return centerX.velocity; }
         float velocityY() { return centerY.velocity; }
+
+        void applyCameraMotion(
+                FrameMotionTransform transform,
+                long nowNanos
+        ) {
+            if (!initialized || transform == null || !transform.valid) return;
+            float dt = seconds(stateNanos, nowNanos);
+            centerX.predict(dt);
+            centerY.predict(dt);
+            width.predict(dt);
+            height.predict(dt);
+            float halfWidth = Math.max(0.0005f, width.position * 0.5f);
+            float halfHeight = Math.max(0.0005f, height.position * 0.5f);
+            float left = Float.POSITIVE_INFINITY;
+            float top = Float.POSITIVE_INFINITY;
+            float right = Float.NEGATIVE_INFINITY;
+            float bottom = Float.NEGATIVE_INFINITY;
+            float[][] corners = new float[][]{
+                    {centerX.position - halfWidth, centerY.position - halfHeight},
+                    {centerX.position + halfWidth, centerY.position - halfHeight},
+                    {centerX.position + halfWidth, centerY.position + halfHeight},
+                    {centerX.position - halfWidth, centerY.position + halfHeight}
+            };
+            for (float[] corner : corners) {
+                float x = transform.mapX(corner[0], corner[1]);
+                float y = transform.mapY(corner[0], corner[1]);
+                left = Math.min(left, x);
+                top = Math.min(top, y);
+                right = Math.max(right, x);
+                bottom = Math.max(bottom, y);
+            }
+            float oldVelocityX = centerX.velocity;
+            float oldVelocityY = centerY.velocity;
+            centerX.position = (left + right) * 0.5f;
+            centerY.position = (top + bottom) * 0.5f;
+            width.position = Math.max(0.001f, right - left);
+            height.position = Math.max(0.001f, bottom - top);
+            centerX.velocity = transform.a * oldVelocityX
+                    + transform.b * oldVelocityY;
+            centerY.velocity = transform.c * oldVelocityX
+                    + transform.d * oldVelocityY;
+            stateNanos = Math.max(stateNanos, nowNanos);
+        }
 
         private static float seconds(long from, long to) {
             if (to <= from) return 0f;
