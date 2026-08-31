@@ -126,6 +126,7 @@ import com.example.alpr_v1.tracking.FrameMotionHistory;
 import com.example.alpr_v1.tracking.FrameMotionQuality;
 import com.example.alpr_v1.tracking.FrameMotionTransform;
 import com.example.alpr_v1.tracking.GlobalLumaMotionTracker;
+import com.example.alpr_v1.tracking.LumaSceneChangeDetector;
 import com.example.alpr_v1.tracking.VisualMotionEvidenceDecay;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.vision.SceneAnchorGuard;
@@ -286,6 +287,8 @@ public final class MainActivity extends AppCompatActivity {
             new EntityOverlayMotionProjector();
     private final GlobalLumaMotionTracker globalLumaMotionTracker =
             new GlobalLumaMotionTracker();
+    private final LumaSceneChangeDetector lumaSceneChangeDetector =
+            new LumaSceneChangeDetector();
     private final FrameMotionHistory frameMotionHistory =
             new FrameMotionHistory();
     private final PreviewMotionGenerationGate previewMotionGenerationGate =
@@ -762,7 +765,20 @@ public final class MainActivity extends AppCompatActivity {
                 && activePipeline.isCurrentContinuityStamp(stamp);
     }
 
-    private FrameMotionTransform updatePreviewFrameMotion(
+    private static final class PreviewFrameMotionSample {
+        final FrameMotionTransform motion;
+        final LumaSceneChangeDetector.Result sceneChange;
+
+        PreviewFrameMotionSample(
+                FrameMotionTransform motion,
+                LumaSceneChangeDetector.Result sceneChange
+        ) {
+            this.motion = motion;
+            this.sceneChange = sceneChange;
+        }
+    }
+
+    private PreviewFrameMotionSample updatePreviewFrameMotion(
             LumaFrame frame,
             ContinuityStamp stamp
     ) {
@@ -771,9 +787,17 @@ public final class MainActivity extends AppCompatActivity {
         synchronized (previewMotionStateLock) {
             if (previewMotionGenerationGate.enter(stamp)) {
                 globalLumaMotionTracker.reset();
+                lumaSceneChangeDetector.reset();
                 frameMotionHistory.reset();
                 visualMotionEvidenceDecay.reset();
             }
+            LumaSceneChangeDetector.Result sceneChange =
+                    lumaSceneChangeDetector.update(
+                            frame.gray,
+                            frame.width,
+                            frame.height,
+                            foregroundMasks
+                    );
             FrameMotionTransform motion = globalLumaMotionTracker.update(
                     frame.gray,
                     frame.width,
@@ -781,7 +805,7 @@ public final class MainActivity extends AppCompatActivity {
                     foregroundMasks
             );
             frameMotionHistory.record(frame.timestampNanos, motion);
-            return motion;
+            return new PreviewFrameMotionSample(motion, sceneChange);
         }
     }
 
@@ -814,6 +838,7 @@ public final class MainActivity extends AppCompatActivity {
     private void resetGlobalPreviewMotionState() {
         synchronized (previewMotionStateLock) {
             globalLumaMotionTracker.reset();
+            lumaSceneChangeDetector.reset();
             frameMotionHistory.reset();
             previewMotionGenerationGate.reset();
             visualMotionEvidenceDecay.reset();
@@ -878,14 +903,43 @@ public final class MainActivity extends AppCompatActivity {
         final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
         if (!isCurrentPreviewStamp(continuityStamp)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
-        FrameMotionTransform frameMotion = updatePreviewFrameMotion(
+        PreviewFrameMotionSample motionSample = updatePreviewFrameMotion(
                 frame,
                 continuityStamp
         );
+        FrameMotionTransform frameMotion = motionSample.motion;
         if (!isCurrentPreviewStamp(continuityStamp)
                 || !previewPresentationBarrier.permits(presentationGeneration)) {
             resetGlobalPreviewMotionState();
             previewPlateTracker.reset();
+            return;
+        }
+        CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
+        boolean earlySensorMotion = earlyMotionMonitor != null
+                && earlyMotionMonitor.isMoving();
+        VisualMotionEvidenceDecay.Snapshot earlyVisualMotion =
+                visualMotionEvidenceDecay.snapshot(
+                        android.os.SystemClock.elapsedRealtimeNanos()
+                );
+        if (PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+                motionSample.sceneChange.changed,
+                motionSample.sceneChange.changedFraction,
+                earlySensorMotion || isVisualCameraMotion(frameMotion),
+                earlyVisualMotion.settling
+        )) {
+            android.util.Log.d(
+                    "ALPR_LUMA_SCENE_CHANGE",
+                    String.format(
+                            Locale.ROOT,
+                            "changed_fraction=%.3f mean_delta=%.1f samples=%d",
+                            motionSample.sceneChange.changedFraction,
+                            motionSample.sceneChange.meanDelta,
+                            motionSample.sceneChange.samples
+                    )
+            );
+            activateAbruptScenePresentationBarrier(
+                    motionSample.sceneChange.changedFraction
+            );
             return;
         }
         if (isVisualCameraMotion(frameMotion)) {
