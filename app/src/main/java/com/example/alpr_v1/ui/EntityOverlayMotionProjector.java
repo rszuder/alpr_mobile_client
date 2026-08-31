@@ -1,0 +1,230 @@
+package com.example.alpr_v1.ui;
+
+import android.graphics.PointF;
+import android.graphics.RectF;
+
+import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.tracking.VehicleCandidate;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/** Projekcja lekkiego overlayu, w której każda encja ma własny dowód ruchu. */
+public final class EntityOverlayMotionProjector {
+    private static final float MAXIMUM_LOCAL_PLATE_DELTA = 0.30f;
+
+    public List<OverlayItem> project(
+            List<OverlayItem> diagnostics,
+            List<OverlayItem> trackedPlates,
+            long focusedEntityId,
+            long focusedPlateTrackId,
+            VehicleTrackingFrame vehicleFrame
+    ) {
+        List<OverlayItem> base = diagnostics == null
+                ? Collections.emptyList() : diagnostics;
+        List<OverlayItem> plates = trackedPlates == null
+                ? Collections.emptyList() : trackedPlates;
+
+        OverlayItem baseFocusedPlate = findPlate(base, focusedPlateTrackId);
+        OverlayItem trackedFocusedPlate = findPlate(plates, focusedPlateTrackId);
+        LocalDelta focusedDelta = LocalDelta.between(
+                baseFocusedPlate,
+                trackedFocusedPlate
+        );
+
+        Map<Long, VehicleCandidate> candidates = candidatesByEntity(vehicleFrame);
+        Map<Long, OverlayItem> measuredVehicles = vehiclesByEntity(base);
+        List<OverlayItem> projected = new ArrayList<>(base.size() + plates.size());
+
+        for (OverlayItem item : base) {
+            if (item == null || item.kind == OverlayItem.Kind.PLATE) continue;
+
+            if (focusedEntityId > 0L
+                    && item.trackId == focusedEntityId
+                    && focusedDelta.valid) {
+                projected.add(translated(item, focusedDelta.dx, focusedDelta.dy, true));
+                continue;
+            }
+
+            VehicleCandidate candidate = candidates.get(item.trackId);
+            if (candidate == null) {
+                projected.add(item);
+                continue;
+            }
+
+            if (item.kind == OverlayItem.Kind.VEHICLE) {
+                projected.add(withCandidateBounds(item, candidate));
+                continue;
+            }
+
+            OverlayItem measuredVehicle = measuredVehicles.get(item.trackId);
+            LocalDelta entityDelta = LocalDelta.between(
+                    measuredVehicle == null ? null : measuredVehicle.normalizedBounds,
+                    candidate.bounds
+            );
+            projected.add(entityDelta.valid
+                    ? translated(
+                    item,
+                    entityDelta.dx,
+                    entityDelta.dy,
+                    candidate.predicted
+            )
+                    : item);
+        }
+
+        for (OverlayItem plate : plates) {
+            if (plate != null && plate.kind == OverlayItem.Kind.PLATE) {
+                projected.add(plate);
+            }
+        }
+        return Collections.unmodifiableList(projected);
+    }
+
+    private static Map<Long, VehicleCandidate> candidatesByEntity(
+            VehicleTrackingFrame frame
+    ) {
+        if (frame == null || frame.candidates.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, VehicleCandidate> result = new HashMap<>();
+        for (VehicleCandidate candidate : frame.candidates) {
+            if (candidate != null && candidate.entityId > 0L) {
+                result.put(candidate.entityId, candidate);
+            }
+        }
+        return result;
+    }
+
+    private static Map<Long, OverlayItem> vehiclesByEntity(List<OverlayItem> items) {
+        Map<Long, OverlayItem> result = new HashMap<>();
+        for (OverlayItem item : items) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.VEHICLE
+                    && item.trackId > 0L) {
+                result.put(item.trackId, item);
+            }
+        }
+        return result;
+    }
+
+    private static OverlayItem findPlate(List<OverlayItem> items, long trackId) {
+        if (trackId <= 0L) return null;
+        for (OverlayItem item : items) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.PLATE
+                    && item.trackId == trackId) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private static OverlayItem withCandidateBounds(
+            OverlayItem source,
+            VehicleCandidate candidate
+    ) {
+        NormalizedBounds bounds = candidate.bounds;
+        return new OverlayItem(
+                source.kind,
+                new RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+                source.normalizedKeypoints,
+                source.label,
+                source.trackId,
+                candidate.predicted
+        );
+    }
+
+    private static OverlayItem translated(
+            OverlayItem source,
+            float dx,
+            float dy,
+            boolean predicted
+    ) {
+        return new OverlayItem(
+                source.kind,
+                translatedBounds(source.normalizedBounds, dx, dy),
+                translatedPoints(source.normalizedKeypoints, dx, dy),
+                source.label,
+                source.trackId,
+                predicted || source.carriedPrediction
+        );
+    }
+
+    private static RectF translatedBounds(RectF source, float dx, float dy) {
+        float width = source.right - source.left;
+        float height = source.bottom - source.top;
+        float left = clamp(source.left + dx, 0f, Math.max(0f, 1f - width));
+        float top = clamp(source.top + dy, 0f, Math.max(0f, 1f - height));
+        return new RectF(left, top, left + width, top + height);
+    }
+
+    private static List<PointF> translatedPoints(
+            List<PointF> source,
+            float dx,
+            float dy
+    ) {
+        if (source == null || source.isEmpty()) return Collections.emptyList();
+        List<PointF> result = new ArrayList<>(source.size());
+        for (PointF point : source) {
+            result.add(new PointF(
+                    clamp(point.x + dx, 0f, 1f),
+                    clamp(point.y + dy, 0f, 1f)
+            ));
+        }
+        return result;
+    }
+
+    private static float clamp(float value, float minimum, float maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static final class LocalDelta {
+        final float dx;
+        final float dy;
+        final boolean valid;
+
+        private LocalDelta(float dx, float dy, boolean valid) {
+            this.dx = dx;
+            this.dy = dy;
+            this.valid = valid;
+        }
+
+        static LocalDelta between(OverlayItem from, OverlayItem to) {
+            return from == null || to == null
+                    ? new LocalDelta(0f, 0f, false)
+                    : between(from.normalizedBounds, to.normalizedBounds);
+        }
+
+        static LocalDelta between(RectF from, NormalizedBounds to) {
+            if (from == null || to == null) return new LocalDelta(0f, 0f, false);
+            return checked(
+                    to.centerX() - centerX(from),
+                    to.centerY() - centerY(from)
+            );
+        }
+
+        private static LocalDelta between(RectF from, RectF to) {
+            return checked(centerX(to) - centerX(from), centerY(to) - centerY(from));
+        }
+
+        private static LocalDelta checked(float dx, float dy) {
+            boolean valid = Float.isFinite(dx)
+                    && Float.isFinite(dy)
+                    && Math.abs(dx) <= MAXIMUM_LOCAL_PLATE_DELTA
+                    && Math.abs(dy) <= MAXIMUM_LOCAL_PLATE_DELTA;
+            return new LocalDelta(dx, dy, valid);
+        }
+
+        private static float centerX(RectF bounds) {
+            return (bounds.left + bounds.right) * 0.5f;
+        }
+
+        private static float centerY(RectF bounds) {
+            return (bounds.top + bounds.bottom) * 0.5f;
+        }
+    }
+}

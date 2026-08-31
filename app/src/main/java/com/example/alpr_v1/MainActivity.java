@@ -102,6 +102,7 @@ import com.example.alpr_v1.pipeline.TargetStateMachine;
 import com.example.alpr_v1.ui.CameraMotionOverlayTracker;
 import com.example.alpr_v1.ui.DetectionOverlayView;
 import com.example.alpr_v1.ui.EntityAwareOverlayAlignment;
+import com.example.alpr_v1.ui.EntityOverlayMotionProjector;
 import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
 import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
@@ -116,6 +117,7 @@ import com.example.alpr_v1.vision.SceneChangeDetector;
 import com.example.alpr_v1.vision.CameraImageConverter;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
 import com.example.alpr_v1.tracking.PreviewTrackingFrame;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.vision.SceneAnchorGuard;
 
@@ -177,6 +179,8 @@ public final class MainActivity extends AppCompatActivity {
      */
     private final AtomicLong uiCameraTransformGeneration =
             new AtomicLong();
+    private final EntityOverlayMotionProjector entityOverlayMotionProjector =
+            new EntityOverlayMotionProjector();
 
 
     private final Handler previewSceneHandler =
@@ -5150,48 +5154,28 @@ public final class MainActivity extends AppCompatActivity {
     private List<OverlayItem> dynamicCameraMotionOverlayItems(
             List<OverlayItem> trackedPlates
     ) {
-        OverlayItem basePlate = null;
-        OverlayItem trackedPlate = null;
-        for (OverlayItem tracked : trackedPlates) {
-            if (tracked == null || tracked.kind != OverlayItem.Kind.PLATE) continue;
-            for (OverlayItem base : latestPipelinePlateItems) {
-                if (base.trackId == tracked.trackId) {
-                    basePlate = base;
-                    trackedPlate = tracked;
-                    break;
+        TargetSnapshot focusedTarget = targetStateMachine.snapshot();
+        long focusedEntityId = latestPipelinePlateEntityId;
+        long focusedPlateTrackId = focusedTarget.trackId;
+        VehicleTrackingFrame vehicleFrame = pipeline == null
+                ? null : pipeline.latestVehicleTrackingFrame();
+        if (pipeline != null) {
+            ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
+            if (scan.runState.active() && scan.activeEntityId > 0L) {
+                focusedEntityId = scan.activeEntityId;
+                if (scan.plateAnchor != null
+                        && scan.plateAnchor.entityId == focusedEntityId) {
+                    focusedPlateTrackId = scan.plateAnchor.plateTrackId;
                 }
             }
-            if (basePlate != null) break;
         }
-
-        if (basePlate == null || trackedPlate == null) {
-            return plateOnlyOverlayItems(trackedPlates);
-        }
-
-        float dx = trackedPlate.normalizedBounds.centerX()
-                - basePlate.normalizedBounds.centerX();
-        float dy = trackedPlate.normalizedBounds.centerY()
-                - basePlate.normalizedBounds.centerY();
-        if (!Float.isFinite(dx) || !Float.isFinite(dy)
-                || Math.abs(dx) > 0.30f || Math.abs(dy) > 0.30f) {
-            return plateOnlyOverlayItems(trackedPlates);
-        }
-
-        List<OverlayItem> moved = new ArrayList<>(
-                latestDiagnosticOverlayItems.size() + trackedPlates.size()
+        return entityOverlayMotionProjector.project(
+                currentOverlayItems(),
+                plateOnlyOverlayItems(trackedPlates),
+                focusedEntityId,
+                focusedPlateTrackId,
+                vehicleFrame
         );
-        for (OverlayItem diagnostic : latestDiagnosticOverlayItems) {
-            moved.add(new OverlayItem(
-                    diagnostic.kind,
-                    translatedBounds(diagnostic.normalizedBounds, dx, dy),
-                    translatedPoints(diagnostic.normalizedKeypoints, dx, dy),
-                    diagnostic.label,
-                    diagnostic.trackId,
-                    true
-            ));
-        }
-        moved.addAll(plateOnlyOverlayItems(trackedPlates));
-        return java.util.Collections.unmodifiableList(moved);
     }
 
     private static List<OverlayItem> plateOnlyOverlayItems(
