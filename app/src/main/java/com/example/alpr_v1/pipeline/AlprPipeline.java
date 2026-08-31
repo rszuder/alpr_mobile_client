@@ -160,7 +160,7 @@ public final class AlprPipeline {
     private final AtomicLong previewTrackingUpdates = new AtomicLong();
     private final AtomicLong lastPreviewTrackingNanos = new AtomicLong();
     private final AtomicLong lastTracedPreviewTrackingUpdates = new AtomicLong();
-    private MobileAlprEngine engine;
+    private volatile MobileAlprEngine engine;
     private volatile boolean reloadRequested;
     /*
      * Żądanie resetu może przyjść z wątku UI
@@ -2567,13 +2567,14 @@ public final class AlprPipeline {
         reloadRequested = true;
     }
 
-    public synchronized void setRapidCameraMotion(boolean rapid) {
+    public void setRapidCameraMotion(boolean rapid) {
         rapidCameraMotion = rapid;
         if (rapid) cameraMoving = true;
-        if (engine != null) engine.setRapidCameraMotion(rapid);
+        MobileAlprEngine activeEngine = engine;
+        if (activeEngine != null) activeEngine.setRapidCameraMotion(rapid);
     }
 
-    public synchronized void setCameraMotionEvidence(
+    public void setCameraMotionEvidence(
             boolean sensorAvailable,
             boolean moving,
             boolean rapid,
@@ -2584,7 +2585,8 @@ public final class AlprPipeline {
         rapidCameraMotion = rapid;
         angularMotionMagnitude = Float.isFinite(angularMagnitude)
                 ? Math.max(0f, angularMagnitude) : 0f;
-        if (engine != null) engine.setRapidCameraMotion(rapid);
+        MobileAlprEngine activeEngine = engine;
+        if (activeEngine != null) activeEngine.setRapidCameraMotion(rapid);
     }
 
     public synchronized void setSceneHandlingMode(SceneHandlingMode mode) {
@@ -2879,9 +2881,49 @@ public final class AlprPipeline {
             boolean focusedTrackingLost,
             boolean focusedTrackingDegraded
     ) {
+        return onPreviewSceneEvidence(
+                sourceFrameStamp,
+                rawVisualChange,
+                rawVisualChangeScore,
+                changedFraction,
+                brightnessDelta,
+                anchorDriftScore,
+                anchorChangedFraction,
+                focusedTrackingLost,
+                focusedTrackingDegraded,
+                null
+        );
+    }
+
+    public synchronized SceneTransitionDecision onPreviewSceneEvidence(
+            SourceFrameStamp sourceFrameStamp,
+            boolean rawVisualChange,
+            float rawVisualChangeScore,
+            float changedFraction,
+            float brightnessDelta,
+            float anchorDriftScore,
+            float anchorChangedFraction,
+            boolean focusedTrackingLost,
+            boolean focusedTrackingDegraded,
+            MotionExplanationEvidence motionOverride
+    ) {
         SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
                 ? SourceFrameStamp.unknown(0L, 0L, 0L)
                 : sourceFrameStamp;
+        MotionExplanationEvidence motionEvidence = motionOverride == null
+                ? new MotionExplanationEvidence(
+                motionSensorAvailable,
+                cameraMoving,
+                rapidCameraMotion,
+                angularMotionMagnitude,
+                cameraTransformInProgress,
+                false,
+                0f,
+                0f,
+                0f,
+                0f
+        )
+                : motionOverride;
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
                 safeSourceFrame.sourceTimestampNanos
         );
@@ -2898,18 +2940,7 @@ public final class AlprPipeline {
                         clamp01(anchorChangedFraction),
                         targetEvidence,
                         currentVehicleEvidence(),
-                        new MotionExplanationEvidence(
-                                motionSensorAvailable,
-                                cameraMoving,
-                                rapidCameraMotion,
-                                angularMotionMagnitude,
-                                cameraTransformInProgress,
-                                false,
-                                0f,
-                                0f,
-                                0f,
-                                0f
-                        ),
+                        motionEvidence,
                         focusedTrackingLost,
                         focusedTrackingDegraded,
                         false,
@@ -2940,9 +2971,9 @@ public final class AlprPipeline {
                             targetEvidence.plateAppearanceSimilarity,
                             decision.assessment.targetContinuityScore,
                             decision.assessment.vehicleContinuityScore,
-                            cameraMoving,
-                            rapidCameraMotion,
-                            angularMotionMagnitude,
+                            motionEvidence.cameraMoving,
+                            motionEvidence.rapidCameraMotion,
+                            motionEvidence.angularMotionMagnitude,
                             decision.assessment.classification,
                             decision.action,
                             decision.reason

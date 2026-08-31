@@ -6,6 +6,7 @@ import android.graphics.RectF;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.FrameMotionTransform;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,7 +31,8 @@ public final class EntityOverlayMotionProjector {
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame,
-                500_000_000L
+                500_000_000L,
+                FrameMotionTransform.invalid()
         );
     }
 
@@ -41,6 +43,26 @@ public final class EntityOverlayMotionProjector {
             long focusedPlateTrackId,
             VehicleTrackingFrame vehicleFrame,
             long maximumVehicleAgeNanos
+    ) {
+        return project(
+                diagnostics,
+                trackedPlates,
+                focusedEntityId,
+                focusedPlateTrackId,
+                vehicleFrame,
+                maximumVehicleAgeNanos,
+                FrameMotionTransform.invalid()
+        );
+    }
+
+    public List<OverlayItem> project(
+            List<OverlayItem> diagnostics,
+            List<OverlayItem> trackedPlates,
+            long focusedEntityId,
+            long focusedPlateTrackId,
+            VehicleTrackingFrame vehicleFrame,
+            long maximumVehicleAgeNanos,
+            FrameMotionTransform frameMotion
     ) {
         List<OverlayItem> base = diagnostics == null
                 ? Collections.emptyList() : diagnostics;
@@ -61,25 +83,39 @@ public final class EntityOverlayMotionProjector {
         for (OverlayItem item : base) {
             if (item == null || item.kind == OverlayItem.Kind.PLATE) continue;
 
+            OverlayItem globallyMoved = frameMotion != null && frameMotion.valid
+                    ? transformed(item, frameMotion)
+                    : item;
+
             VehicleCandidate candidate = candidates.get(item.trackId);
+            boolean focusedEntityGeometry = focusedEntityId > 0L
+                    && item.trackId == focusedEntityId;
             if (vehicleFrame != null
                     && !vehicleFrame.candidates.isEmpty()
                     && item.trackId > 0L
+                    && !focusedEntityGeometry
                     && (candidate == null
                     || candidate.predictionAgeNanos
                     > Math.max(0L, maximumVehicleAgeNanos))) {
                 continue;
             }
 
-            if (focusedEntityId > 0L
-                    && item.trackId == focusedEntityId
+            // Ruch całego kadru jest wspólnym, bieżącym dowodem dla każdej
+            // warstwy. Nie może zostać zastąpiony przez lokalny delta PLATE,
+            // który przy chwilowo błędnej kotwicy zamroziłby aktywne ROI.
+            if (frameMotion != null && frameMotion.valid) {
+                projected.add(globallyMoved);
+                continue;
+            }
+
+            if (focusedEntityGeometry
                     && focusedDelta.valid) {
                 projected.add(translated(item, focusedDelta.dx, focusedDelta.dy, true));
                 continue;
             }
 
             if (candidate == null) {
-                projected.add(item);
+                projected.add(globallyMoved);
                 continue;
             }
 
@@ -109,6 +145,74 @@ public final class EntityOverlayMotionProjector {
             }
         }
         return Collections.unmodifiableList(projected);
+    }
+
+    /** Przenosi kompletny wynik MP/MT z jego klatki źródłowej do bieżącego podglądu. */
+    public List<OverlayItem> compensateInferenceLatency(
+            List<OverlayItem> items,
+            FrameMotionTransform accumulatedMotion
+    ) {
+        if (items == null || items.isEmpty()) return Collections.emptyList();
+        if (accumulatedMotion == null
+                || !accumulatedMotion.valid
+                || !accumulatedMotion.significant()) {
+            return items;
+        }
+        List<OverlayItem> compensated = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item != null) {
+                compensated.add(transformed(item, accumulatedMotion, false));
+            }
+        }
+        return Collections.unmodifiableList(compensated);
+    }
+
+    private static OverlayItem transformed(
+            OverlayItem source,
+            FrameMotionTransform transform
+    ) {
+        return transformed(source, transform, true);
+    }
+
+    private static OverlayItem transformed(
+            OverlayItem source,
+            FrameMotionTransform transform,
+            boolean markAsPrediction
+    ) {
+        RectF bounds = source.normalizedBounds;
+        float left = Float.POSITIVE_INFINITY;
+        float top = Float.POSITIVE_INFINITY;
+        float right = Float.NEGATIVE_INFINITY;
+        float bottom = Float.NEGATIVE_INFINITY;
+        float[][] corners = new float[][]{
+                {bounds.left, bounds.top},
+                {bounds.right, bounds.top},
+                {bounds.right, bounds.bottom},
+                {bounds.left, bounds.bottom}
+        };
+        for (float[] corner : corners) {
+            float x = transform.mapX(corner[0], corner[1]);
+            float y = transform.mapY(corner[0], corner[1]);
+            left = Math.min(left, x);
+            top = Math.min(top, y);
+            right = Math.max(right, x);
+            bottom = Math.max(bottom, y);
+        }
+        List<PointF> points = new ArrayList<>(source.normalizedKeypoints.size());
+        for (PointF point : source.normalizedKeypoints) {
+            points.add(new PointF(
+                    transform.mapX(point.x, point.y),
+                    transform.mapY(point.x, point.y)
+            ));
+        }
+        return new OverlayItem(
+                source.kind,
+                new RectF(left, top, right, bottom),
+                points,
+                source.label,
+                source.trackId,
+                markAsPrediction || source.carriedPrediction
+        );
     }
 
     private static Map<Long, VehicleCandidate> candidatesByEntity(

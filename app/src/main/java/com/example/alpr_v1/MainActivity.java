@@ -93,6 +93,7 @@ import com.example.alpr_v1.continuity.SceneHandlingMode;
 import com.example.alpr_v1.continuity.SceneAnchorRefreshPolicy;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.ReacquireTelemetry;
+import com.example.alpr_v1.continuity.MotionExplanationEvidence;
 import com.example.alpr_v1.continuity.SceneContinuitySnapshot;
 import com.example.alpr_v1.continuity.SceneTransitionAction;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
@@ -119,6 +120,9 @@ import com.example.alpr_v1.vision.CameraImageConverter;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
 import com.example.alpr_v1.tracking.PreviewTrackingFrame;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.FrameMotionHistory;
+import com.example.alpr_v1.tracking.FrameMotionTransform;
+import com.example.alpr_v1.tracking.GlobalLumaMotionTracker;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.vision.SceneAnchorGuard;
 
@@ -138,6 +142,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends AppCompatActivity {
     private static final String LOG_TAG = "MainActivity";
@@ -155,9 +160,14 @@ public final class MainActivity extends AppCompatActivity {
             1000L;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService previewTrackingExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService previewCoordinationExecutor =
+            Executors.newSingleThreadExecutor();
     private final ExecutorService pipelineInferenceExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean previewFrameInFlight = new AtomicBoolean();
     private final AtomicBoolean pipelineFrameInFlight = new AtomicBoolean();
+    private final AtomicBoolean previewCoordinationWorkerRunning = new AtomicBoolean();
+    private final AtomicReference<PreviewCoordinationRequest>
+            pendingPreviewCoordination = new AtomicReference<>();
     private final AtomicLong lastUiUpdateNanos = new AtomicLong();
     /*
      * Lekki monitor tego, co użytkownik faktycznie widzi
@@ -169,6 +179,54 @@ public final class MainActivity extends AppCompatActivity {
             50L;
     private static final long PRE_ZOOM_OVERLAY_HOLD_MS =
             120L;
+    private static final long VISUAL_CAMERA_MOTION_SETTLE_NANOS =
+            5_000_000_000L;
+
+    private static final class PreviewCoordinationRequest {
+        final SourceFrameStamp sourceFrame;
+        final ContinuityStamp continuityStamp;
+        final TargetSnapshot targetSnapshot;
+        final List<OverlayItem> trackedItems;
+        final long sceneGeneration;
+        final long transformGeneration;
+        final boolean trackingLost;
+        final boolean trackingDegraded;
+        final boolean sensorAvailable;
+        final boolean cameraMoving;
+        final boolean rapidMotion;
+        final float angularMagnitude;
+
+        PreviewCoordinationRequest(
+                SourceFrameStamp sourceFrame,
+                ContinuityStamp continuityStamp,
+                TargetSnapshot targetSnapshot,
+                List<OverlayItem> trackedItems,
+                long sceneGeneration,
+                long transformGeneration,
+                boolean trackingLost,
+                boolean trackingDegraded,
+                boolean sensorAvailable,
+                boolean cameraMoving,
+                boolean rapidMotion,
+                float angularMagnitude
+        ) {
+            this.sourceFrame = sourceFrame;
+            this.continuityStamp = continuityStamp;
+            this.targetSnapshot = targetSnapshot;
+            this.trackedItems = java.util.Collections.unmodifiableList(
+                    new ArrayList<>(trackedItems == null
+                            ? java.util.Collections.emptyList() : trackedItems)
+            );
+            this.sceneGeneration = sceneGeneration;
+            this.transformGeneration = transformGeneration;
+            this.trackingLost = trackingLost;
+            this.trackingDegraded = trackingDegraded;
+            this.sensorAvailable = sensorAvailable;
+            this.cameraMoving = cameraMoving;
+            this.rapidMotion = rapidMotion;
+            this.angularMagnitude = angularMagnitude;
+        }
+    }
 
 
     private final AtomicLong uiSceneGeneration =
@@ -184,6 +242,10 @@ public final class MainActivity extends AppCompatActivity {
             new AtomicLong();
     private final EntityOverlayMotionProjector entityOverlayMotionProjector =
             new EntityOverlayMotionProjector();
+    private final GlobalLumaMotionTracker globalLumaMotionTracker =
+            new GlobalLumaMotionTracker();
+    private final FrameMotionHistory frameMotionHistory =
+            new FrameMotionHistory();
     private final PlateOverlayFreshness plateOverlayFreshness =
             new PlateOverlayFreshness();
 
@@ -231,6 +293,8 @@ public final class MainActivity extends AppCompatActivity {
      */
     private List<OverlayItem> latestPipelinePlateItems =
             java.util.Collections.emptyList();
+    private List<OverlayItem> latestPreviewMotionItems =
+            java.util.Collections.emptyList();
     private long latestPipelinePlateEntityId;
     private long scanOverlayPresentationEntityId;
     private List<OverlayItem> autoZoomBaseMemoryOverlayItems =
@@ -241,6 +305,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private volatile boolean previewSceneMonitorRunning;
     private volatile long lastDirectLumaFrameNanos;
+    private volatile long lastVisualCameraMotionRuntimeNanos;
+    private volatile boolean lastVisualCameraMotionRapid;
     private volatile boolean directLumaTrackingUnavailable;
 
 
@@ -455,7 +521,9 @@ public final class MainActivity extends AppCompatActivity {
                             zoomedAnchorResult.changedFraction
                     )
             );
-            refreshPipelineCameraMotionEvidence();
+            MotionExplanationEvidence previewMotionEvidence =
+                    currentPreviewMotionEvidence();
+            refreshPipelineCameraMotionEvidence(previewMotionEvidence);
             SceneTransitionDecision continuityDecision = pipeline == null
                     ? null
                     : pipeline.onPreviewSceneEvidence(
@@ -470,7 +538,8 @@ public final class MainActivity extends AppCompatActivity {
                             zoomedAnchorResult.changedFraction
                     ),
                     trackingLost,
-                    trackingDegraded
+                    trackingDegraded,
+                    previewMotionEvidence
             );
             if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
                     continuityDecision
@@ -627,6 +696,32 @@ public final class MainActivity extends AppCompatActivity {
         );
         final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
         lastDirectLumaFrameNanos = System.nanoTime();
+        FrameMotionTransform frameMotion = globalLumaMotionTracker.update(
+                frame.gray,
+                frame.width,
+                frame.height
+        );
+        frameMotionHistory.record(frame.timestampNanos, frameMotion);
+        if (isVisualCameraMotion(frameMotion)) {
+            lastVisualCameraMotionRuntimeNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos();
+            float frameDx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
+            float frameDy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
+            lastVisualCameraMotionRapid =
+                    frameDx * frameDx + frameDy * frameDy >= 0.035f * 0.035f;
+            android.util.Log.d(
+                    "ALPR_GLOBAL_MOTION",
+                    String.format(
+                            Locale.ROOT,
+                            "timestamp_ns=%d dx=%.5f dy=%.5f inliers=%d error=%.3f",
+                            frame.timestampNanos,
+                            frameMotion.mapX(0.5f, 0.5f) - 0.5f,
+                            frameMotion.mapY(0.5f, 0.5f) - 0.5f,
+                            frameMotion.inliers,
+                            frameMotion.meanError
+                    )
+            );
+        }
         long trackingStartedNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
         PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
@@ -662,16 +757,9 @@ public final class MainActivity extends AppCompatActivity {
                 )
         );
         TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
-        TargetSnapshot targetAfterTracking = targetBeforeTracking;
-        if (pipeline != null) {
-            targetAfterTracking = targetStateMachine.onTrackingFrame(
-                    trackingFrame
-            );
-            pipeline.setTargetSnapshotIfCurrent(
-                    targetAfterTracking,
-                    continuityStamp
-            );
-        }
+        TargetSnapshot targetAfterTracking = targetStateMachine.onTrackingFrame(
+                trackingFrame
+        );
         List<OverlayItem> trackedItems = trackingFrame.overlayItems;
         boolean establishedFocusedTarget = PreviewContinuityUiPolicy
                 .isEstablishedFocusedTarget(
@@ -682,61 +770,160 @@ public final class MainActivity extends AppCompatActivity {
                 && trackedItems.isEmpty();
         boolean trackingDegraded = establishedFocusedTarget
                 && targetAfterTracking.state == TargetSnapshot.State.DEGRADED;
-        refreshPipelineCameraMotionEvidence();
-        SceneTransitionDecision lumaContinuityDecision = pipeline == null
-                ? null
-                : pipeline.onPreviewSceneEvidence(
+
+        CameraMotionMonitor motionMonitor = cameraMotionMonitor;
+        boolean sensorAvailable = motionMonitor != null
+                && motionMonitor.isGyroscopeAvailable();
+        boolean moving = motionMonitor != null && motionMonitor.isMoving();
+        boolean rapid = motionMonitor != null && motionMonitor.isRapidMotion();
+        float angularMagnitude = motionMonitor == null ? 0f : motionMonitor.magnitude();
+        boolean visualMoving = visualCameraMotionFresh();
+        boolean effectiveMoving = moving || visualMoving;
+        boolean effectiveRapid = rapid
+                || visualMoving && lastVisualCameraMotionRapid;
+        if (pipeline != null) {
+            pipeline.setCameraMotionEvidence(
+                    sensorAvailable,
+                    effectiveMoving,
+                    effectiveRapid,
+                    angularMagnitude
+            );
+        }
+
+        // Publikacja geometrii nie czeka na synchronized ciężkiego pipeline'u.
+        runOnUiThread(() -> {
+            if (!cameraStarted
+                    || sceneGeneration != uiSceneGeneration.get()
+                    || transformGeneration != uiCameraTransformGeneration.get()
+                    || cameraTransformInProgress) return;
+            if (!trackedItems.isEmpty()) {
+                presentTrackedPreviewOverlay(trackedItems, frameMotion);
+            } else if (isDynamicCameraMotion()
+                    || frameMotion.significant()) {
+                overlayView.setPreviewItems(
+                        dynamicCameraMotionOverlayItems(trackedItems, frameMotion)
+                );
+            }
+        });
+
+        submitPreviewCoordination(new PreviewCoordinationRequest(
                 lumaSourceFrame,
+                continuityStamp,
+                targetAfterTracking,
+                trackedItems,
+                sceneGeneration,
+                transformGeneration,
+                trackingLost,
+                trackingDegraded,
+                sensorAvailable,
+                effectiveMoving,
+                effectiveRapid,
+                angularMagnitude
+        ));
+    }
+
+    private void submitPreviewCoordination(PreviewCoordinationRequest request) {
+        if (request == null || pipeline == null) return;
+        pendingPreviewCoordination.getAndUpdate(previous -> {
+            if (previous != null
+                    && previous.cameraMoving
+                    && !request.cameraMoving) {
+                return previous;
+            }
+            return request;
+        });
+        if (previewCoordinationWorkerRunning.compareAndSet(false, true)) {
+            previewCoordinationExecutor.execute(this::drainPreviewCoordination);
+        }
+    }
+
+    private void drainPreviewCoordination() {
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                PreviewCoordinationRequest request =
+                        pendingPreviewCoordination.getAndSet(null);
+                if (request == null) return;
+                coordinatePreviewFrame(request);
+            }
+        } finally {
+            previewCoordinationWorkerRunning.set(false);
+            if (pendingPreviewCoordination.get() != null
+                    && previewCoordinationWorkerRunning.compareAndSet(false, true)) {
+                previewCoordinationExecutor.execute(this::drainPreviewCoordination);
+            }
+        }
+    }
+
+    private void coordinatePreviewFrame(PreviewCoordinationRequest request) {
+        AlprPipeline activePipeline = pipeline;
+        if (activePipeline == null
+                || !cameraStarted
+                || request.sceneGeneration != uiSceneGeneration.get()
+                || request.transformGeneration != uiCameraTransformGeneration.get()) {
+            return;
+        }
+        activePipeline.setCameraMotionEvidence(
+                request.sensorAvailable,
+                request.cameraMoving,
+                request.rapidMotion,
+                request.angularMagnitude
+        );
+        activePipeline.setTargetSnapshotIfCurrent(
+                request.targetSnapshot,
+                request.continuityStamp
+        );
+        SceneTransitionDecision decision = activePipeline.onPreviewSceneEvidence(
+                request.sourceFrame,
                 false,
                 0f,
                 0f,
                 0f,
                 0f,
                 0f,
-                trackingLost,
-                trackingDegraded
+                request.trackingLost,
+                request.trackingDegraded,
+                new MotionExplanationEvidence(
+                        request.sensorAvailable,
+                        request.cameraMoving,
+                        request.rapidMotion,
+                        request.angularMagnitude,
+                        false,
+                        request.cameraMoving,
+                        request.cameraMoving ? 1f : 0f,
+                        0f,
+                        0f,
+                        0f
+                )
         );
-        if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
-                lumaContinuityDecision
-        )) {
+        if (PreviewContinuityUiPolicy.requestsRecoveryRebase(decision)) {
             previewSceneRecoveryRebaseRevision.accumulateAndGet(
-                    lumaContinuityDecision.revision,
+                    decision.revision,
                     Math::max
             );
         }
         runOnUiThread(() -> {
             if (!cameraStarted
-                    || sceneGeneration != uiSceneGeneration.get()
-                    || transformGeneration != uiCameraTransformGeneration.get()
-                    || cameraTransformInProgress) return;
-            if (isDynamicCameraMotion() && trackedItems.isEmpty()) {
-                overlayView.setPreviewItems(
-                        dynamicCameraMotionOverlayItems(trackedItems)
-                );
-            }
+                    || request.sceneGeneration != uiSceneGeneration.get()
+                    || request.transformGeneration
+                    != uiCameraTransformGeneration.get()) return;
             PreviewContinuityUiPolicy.Outcome uiOutcome =
                     PreviewContinuityUiPolicy.decide(
-                            lumaContinuityDecision,
+                            decision,
                             false,
-                            !trackedItems.isEmpty()
+                            !request.trackedItems.isEmpty()
                     );
-            recordPreviewDecisionAuthority(uiOutcome, "direct_luma");
+            recordPreviewDecisionAuthority(uiOutcome, "direct_luma_async");
             if (uiOutcome.renderCoordinatorDecision) {
                 renderPreviewContinuityDecision(
-                        lumaContinuityDecision,
+                        decision,
                         0f,
                         0f,
-                        trackedItems
+                        request.trackedItems
                 );
-                if (uiOutcome.presentTrackedOverlay) {
-                    presentTrackedPreviewOverlay(trackedItems);
-                }
                 return;
             }
             if (uiOutcome.legacyTrackingLossInvalidation) {
                 invalidateUiForLostPreviewTracking();
-            } else if (uiOutcome.presentTrackedOverlay) {
-                presentTrackedPreviewOverlay(trackedItems);
             }
         });
     }
@@ -1914,6 +2101,7 @@ public final class MainActivity extends AppCompatActivity {
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
+        pendingPreviewCoordination.set(null);
         // Odpowiedź wizualna na STOP nie może czekać na zamknięcie CameraX,
         // pipeline'u ani zapisu metryk.
         overlayView.setActiveVehicleEntityId(0L);
@@ -1974,11 +2162,17 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+
+        globalLumaMotionTracker.reset();
+        frameMotionHistory.reset();
+        lastVisualCameraMotionRuntimeNanos = 0L;
+        lastVisualCameraMotionRapid = false;
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
 
@@ -2520,6 +2714,11 @@ public final class MainActivity extends AppCompatActivity {
 
         previewPlateTracker.reset();
 
+        globalLumaMotionTracker.reset();
+        frameMotionHistory.reset();
+        lastVisualCameraMotionRuntimeNanos = 0L;
+        lastVisualCameraMotionRapid = false;
+
         previewSceneAnchorGuard.reset();
 
         previewSceneAnchorPending =
@@ -2530,6 +2729,7 @@ public final class MainActivity extends AppCompatActivity {
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
 
@@ -2722,12 +2922,17 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
+        globalLumaMotionTracker.reset();
+        frameMotionHistory.reset();
+        lastVisualCameraMotionRuntimeNanos = 0L;
+        lastVisualCameraMotionRapid = false;
 
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
 
@@ -3537,6 +3742,8 @@ public final class MainActivity extends AppCompatActivity {
              */
             overlayTracker.reset();
             previewPlateTracker.reset();
+            globalLumaMotionTracker.reset();
+            frameMotionHistory.reset();
             targetStateMachine.reset();
             plateOverlayFreshness.reset();
             /*
@@ -3614,18 +3821,43 @@ public final class MainActivity extends AppCompatActivity {
         if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
         long presentationNanos = System.nanoTime();
         List<OverlayItem> scanScopedItems = scanScopedOverlayItems(result);
+        FrameMotionTransform inferenceLatencyMotion =
+                result.sourceTimestampDomain.cameraDerived()
+                        ? frameMotionHistory.transformAfter(
+                        result.sourceTimestampNanos
+                )
+                        : FrameMotionTransform.invalid();
+        List<OverlayItem> motionCompensatedItems =
+                entityOverlayMotionProjector.compensateInferenceLatency(
+                        scanScopedItems,
+                        inferenceLatencyMotion
+                );
+        if (motionCompensatedItems != scanScopedItems) {
+            android.util.Log.d(
+                    "ALPR_RESULT_MOTION",
+                    String.format(
+                            Locale.ROOT,
+                            "source_timestamp_ns=%d dx=%.5f dy=%.5f items=%d",
+                            result.sourceTimestampNanos,
+                            inferenceLatencyMotion.mapX(0.5f, 0.5f) - 0.5f,
+                            inferenceLatencyMotion.mapY(0.5f, 0.5f) - 0.5f,
+                            motionCompensatedItems.size()
+                    )
+            );
+        }
         TargetSnapshot liveTarget = targetStateMachine.snapshot();
         long alignmentEntityId = EntityAwareOverlayAlignment.resolveSourceEntityId(
                 result.plateObservations,
                 liveTarget.trackId
         );
         List<OverlayItem> latencyAlignedItems = EntityAwareOverlayAlignment.align(
-                scanScopedItems,
+                motionCompensatedItems,
                 liveTarget,
                 alignmentEntityId
         );
         boolean geometryAlignedToPresentation =
-                latencyAlignedItems != scanScopedItems;
+                latencyAlignedItems != motionCompensatedItems
+                        || motionCompensatedItems != scanScopedItems;
         List<OverlayItem> visibleOverlayItems =
                 overlayTracker.update(
                         latencyAlignedItems,
@@ -3724,6 +3956,9 @@ public final class MainActivity extends AppCompatActivity {
                 presentedOverlayItems,
                 result.sourceWidth,
                 result.sourceHeight
+        );
+        latestPreviewMotionItems = java.util.Collections.unmodifiableList(
+                new ArrayList<>(presentedOverlayItems)
         );
         recordOverlaySnapshot(
                 containsPlate(presentedOverlayItems) ? "MT" : "MP",
@@ -4420,6 +4655,8 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorGuard.reset();
         previewPlateTracker.reset();
         overlayTracker.reset();
+        globalLumaMotionTracker.reset();
+        frameMotionHistory.reset();
         liveHudAwaitingFreshResult = true;
         updateAutoZoomButton();
     }
@@ -4437,6 +4674,8 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorGuard.reset();
         previewPlateTracker.reset();
         overlayTracker.reset();
+        globalLumaMotionTracker.reset();
+        frameMotionHistory.reset();
         previewSceneAnchorPending = false;
         liveHudAwaitingFreshResult = true;
         if (keepTarget) {
@@ -4548,15 +4787,60 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void refreshPipelineCameraMotionEvidence() {
+        refreshPipelineCameraMotionEvidence(currentPreviewMotionEvidence());
+    }
+
+    private void refreshPipelineCameraMotionEvidence(
+            MotionExplanationEvidence evidence
+    ) {
         AlprPipeline activePipeline = pipeline;
-        CameraMotionMonitor activeMonitor = cameraMotionMonitor;
-        if (activePipeline == null || activeMonitor == null) return;
+        if (activePipeline == null || evidence == null) return;
         activePipeline.setCameraMotionEvidence(
-                activeMonitor.isGyroscopeAvailable(),
-                activeMonitor.isMoving(),
-                activeMonitor.isRapidMotion(),
-                activeMonitor.magnitude()
+                evidence.gyroAvailable,
+                evidence.cameraMoving,
+                evidence.rapidCameraMotion,
+                evidence.angularMotionMagnitude
         );
+    }
+
+    private MotionExplanationEvidence currentPreviewMotionEvidence() {
+        CameraMotionMonitor activeMonitor = cameraMotionMonitor;
+        boolean sensorAvailable = activeMonitor != null
+                && activeMonitor.isGyroscopeAvailable();
+        boolean visualMoving = visualCameraMotionFresh();
+        boolean moving = visualMoving
+                || activeMonitor != null && activeMonitor.isMoving();
+        boolean rapid = visualMoving && lastVisualCameraMotionRapid
+                || activeMonitor != null && activeMonitor.isRapidMotion();
+        float angular = activeMonitor == null ? 0f : activeMonitor.magnitude();
+        return new MotionExplanationEvidence(
+                sensorAvailable,
+                moving,
+                rapid,
+                angular,
+                cameraTransformInProgress,
+                visualMoving,
+                visualMoving ? 1f : 0f,
+                0f,
+                0f,
+                0f
+        );
+    }
+
+    private boolean visualCameraMotionFresh() {
+        long lastMotion = lastVisualCameraMotionRuntimeNanos;
+        return lastMotion > 0L
+                && android.os.SystemClock.elapsedRealtimeNanos() - lastMotion
+                <= VISUAL_CAMERA_MOTION_SETTLE_NANOS;
+    }
+
+    private static boolean isVisualCameraMotion(
+            FrameMotionTransform frameMotion
+    ) {
+        if (frameMotion == null || !frameMotion.valid) return false;
+        float dx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
+        float dy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
+        return dx * dx + dy * dy >= 0.0025f * 0.0025f;
     }
 
     private void freezeCurrentOverlayAsMemory() {
@@ -4743,6 +5027,9 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateItems =
                 java.util.Collections.unmodifiableList(plates);
         overlayView.setItems(items, sourceWidth, sourceHeight);
+        latestPreviewMotionItems = java.util.Collections.unmodifiableList(
+                new ArrayList<>(items)
+        );
     }
 
     private static List<OverlayItem> memoryOverlayItems(
@@ -5231,8 +5518,19 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void presentTrackedPreviewOverlay(List<OverlayItem> trackedItems) {
+        presentTrackedPreviewOverlay(
+                trackedItems,
+                FrameMotionTransform.invalid()
+        );
+    }
+
+    private void presentTrackedPreviewOverlay(
+            List<OverlayItem> trackedItems,
+            FrameMotionTransform frameMotion
+    ) {
         overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
-        boolean dynamicCameraMotion = isDynamicCameraMotion();
+        boolean dynamicCameraMotion = isDynamicCameraMotion()
+                || frameMotion != null && frameMotion.significant();
         long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
         plateOverlayFreshness.recordFresh(
                 trackedItems,
@@ -5245,7 +5543,10 @@ public final class MainActivity extends AppCompatActivity {
             expireStalePlateOverlayIfNeeded();
             if (dynamicCameraMotion) {
                 overlayView.setPreviewItems(
-                        dynamicCameraMotionOverlayItems(displayableTrackedItems)
+                        dynamicCameraMotionOverlayItems(
+                                displayableTrackedItems,
+                                frameMotion
+                        )
                 );
             }
             return;
@@ -5253,7 +5554,10 @@ public final class MainActivity extends AppCompatActivity {
 
         if (dynamicCameraMotion) {
             overlayView.setPreviewItems(
-                    dynamicCameraMotionOverlayItems(displayableTrackedItems)
+                    dynamicCameraMotionOverlayItems(
+                            displayableTrackedItems,
+                            frameMotion
+                    )
             );
         } else {
             overlayView.setTrackedPlateItems(displayableTrackedItems);
@@ -5273,6 +5577,16 @@ public final class MainActivity extends AppCompatActivity {
 
     private List<OverlayItem> dynamicCameraMotionOverlayItems(
             List<OverlayItem> trackedPlates
+    ) {
+        return dynamicCameraMotionOverlayItems(
+                trackedPlates,
+                FrameMotionTransform.invalid()
+        );
+    }
+
+    private List<OverlayItem> dynamicCameraMotionOverlayItems(
+            List<OverlayItem> trackedPlates,
+            FrameMotionTransform frameMotion
     ) {
         long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
         plateOverlayFreshness.recordFresh(
@@ -5305,13 +5619,19 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         List<OverlayItem> projected = entityOverlayMotionProjector.project(
-                currentOverlayItems(),
+                latestPreviewMotionItems.isEmpty()
+                        ? currentOverlayItems()
+                        : latestPreviewMotionItems,
                 plateOnlyOverlayItems(displayableTrackedPlates),
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame,
-                maximumVehicleAgeNanos
+                maximumVehicleAgeNanos,
+                frameMotion == null
+                        ? FrameMotionTransform.invalid()
+                        : frameMotion
         );
+        latestPreviewMotionItems = projected;
         String projectionEvent = focusedEntityId > 0L
                 ? "overlay_dynamic_projection_applied"
                 : "overlay_dynamic_projection_skipped_no_identity";
@@ -7390,6 +7710,7 @@ public final class MainActivity extends AppCompatActivity {
 
         backgroundExecutor.shutdownNow();
         previewTrackingExecutor.shutdownNow();
+        previewCoordinationExecutor.shutdownNow();
         pipelineInferenceExecutor.shutdownNow();
         cancelExperimentTimer();
 

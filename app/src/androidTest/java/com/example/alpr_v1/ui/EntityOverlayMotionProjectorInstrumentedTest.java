@@ -10,6 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.FrameMotionTransform;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -96,6 +97,90 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
         );
 
         assertEquals(0, result.size());
+    }
+
+    @Test
+    public void globalFrameMotionMovesEveryDiagnosticLayerWithoutPlateAnchor() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 1L, 0.10f, 0.30f);
+        OverlayItem roi = item(OverlayItem.Kind.VEHICLE_ROI, 1L, 0.08f, 0.32f);
+
+        List<OverlayItem> result = projector.project(
+                Arrays.asList(vehicle, roi),
+                Collections.emptyList(),
+                1L,
+                0L,
+                VehicleTrackingFrame.empty(1L),
+                500_000_000L,
+                FrameMotionTransform.translation(0.06f, -0.04f)
+        );
+
+        assertEquals(0.16f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(0.06f, result.get(0).normalizedBounds.top, EPSILON);
+        assertEquals(0.14f, result.get(1).normalizedBounds.left, EPSILON);
+        assertEquals(0.06f, result.get(1).normalizedBounds.top, EPSILON);
+    }
+
+    @Test
+    public void accumulatedMotionCompensatesDelayedInferenceIncludingNewPlate() {
+        OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 1L, 0.40f, 0.70f);
+        OverlayItem plate = item(OverlayItem.Kind.PLATE, 101L, 0.50f, 0.58f);
+
+        List<OverlayItem> result = projector.compensateInferenceLatency(
+                Arrays.asList(vehicle, plate),
+                FrameMotionTransform.translation(-0.18f, 0.03f)
+        );
+
+        assertEquals(0.22f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(0.32f, result.get(1).normalizedBounds.left, EPSILON);
+        assertEquals(0.13f, result.get(1).normalizedBounds.top, EPSILON);
+        assertEquals(false, result.get(0).carriedPrediction);
+        assertEquals(false, result.get(1).carriedPrediction);
+    }
+
+    @Test
+    public void focusedVehicleSurvivesMissingCandidateAndFollowsGlobalMotion() {
+        OverlayItem focusedVehicle = item(
+                OverlayItem.Kind.VEHICLE, 7L, 0.30f, 0.60f
+        );
+
+        List<OverlayItem> result = projector.project(
+                Collections.singletonList(focusedVehicle),
+                Collections.emptyList(),
+                7L,
+                0L,
+                frame(candidate(8L, 0.10f, 0.25f, false)),
+                500_000_000L,
+                FrameMotionTransform.translation(0.12f, 0f)
+        );
+
+        assertEquals(1, result.size());
+        assertEquals(7L, result.get(0).trackId);
+        assertEquals(0.42f, result.get(0).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
+    public void globalMotionWinsOverConflictingFocusedPlateDelta() {
+        OverlayItem focusedVehicle = item(
+                OverlayItem.Kind.VEHICLE, 7L, 0.30f, 0.60f
+        );
+        OverlayItem basePlate = item(
+                OverlayItem.Kind.PLATE, 70L, 0.40f, 0.48f
+        );
+        OverlayItem locallyTrackedPlate = item(
+                OverlayItem.Kind.PLATE, 70L, 0.40f, 0.48f
+        );
+
+        List<OverlayItem> result = projector.project(
+                Arrays.asList(focusedVehicle, basePlate),
+                Collections.singletonList(locallyTrackedPlate),
+                7L,
+                70L,
+                VehicleTrackingFrame.empty(1L),
+                500_000_000L,
+                FrameMotionTransform.translation(0.14f, 0f)
+        );
+
+        assertEquals(0.44f, result.get(0).normalizedBounds.left, EPSILON);
     }
 
     private static VehicleTrackingFrame frame(VehicleCandidate... candidates) {
