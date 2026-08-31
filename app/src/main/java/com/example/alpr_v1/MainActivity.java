@@ -105,6 +105,7 @@ import com.example.alpr_v1.ui.EntityAwareOverlayAlignment;
 import com.example.alpr_v1.ui.EntityOverlayMotionProjector;
 import com.example.alpr_v1.ui.LivePresentationController;
 import com.example.alpr_v1.ui.PlateCaptureAdapter;
+import com.example.alpr_v1.ui.PlateOverlayFreshness;
 import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
 import com.example.alpr_v1.ui.SceneModeHudPolicy;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
@@ -181,6 +182,8 @@ public final class MainActivity extends AppCompatActivity {
             new AtomicLong();
     private final EntityOverlayMotionProjector entityOverlayMotionProjector =
             new EntityOverlayMotionProjector();
+    private final PlateOverlayFreshness plateOverlayFreshness =
+            new PlateOverlayFreshness();
 
 
     private final Handler previewSceneHandler =
@@ -1955,6 +1958,7 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
+        plateOverlayFreshness.reset();
 
         previewSceneAnchorGuard.reset();
 
@@ -2373,6 +2377,7 @@ public final class MainActivity extends AppCompatActivity {
                 overlayTracker.reset();
                 latestPipelinePlateItems = java.util.Collections.emptyList();
                 latestPipelinePlateEntityId = 0L;
+                plateOverlayFreshness.reset();
                 lastCaptureByTrack.clear();
                 overlayView.setFocusedTrackId(0L);
 
@@ -2504,6 +2509,7 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
+        plateOverlayFreshness.reset();
 
 
 
@@ -2697,6 +2703,7 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
+        plateOverlayFreshness.reset();
 
         previewSceneAnchorGuard.reset();
 
@@ -3500,6 +3507,7 @@ public final class MainActivity extends AppCompatActivity {
             overlayTracker.reset();
             previewPlateTracker.reset();
             targetStateMachine.reset();
+            plateOverlayFreshness.reset();
             /*
              * TrackId w pipeline może po resecie zacząć się ponownie od 1.
              * Stary stan próbkowania cropów nie może zostać przypisany
@@ -3645,6 +3653,10 @@ public final class MainActivity extends AppCompatActivity {
                             pipelinePlateItems
                     );
             latestPipelinePlateEntityId = freshPlateEntityId;
+            plateOverlayFreshness.recordFresh(
+                    pipelinePlateItems,
+                    android.os.SystemClock.elapsedRealtimeNanos()
+            );
         } else if (!hasCarriedPlatePrediction
                 && !shouldHoldScanPlateGeometry()) {
             latestPipelinePlateItems = java.util.Collections.emptyList();
@@ -4463,6 +4475,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
         latestPipelinePlateItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
+        plateOverlayFreshness.reset();
         overlayView.setFocusedTrackId(0L);
     }
 
@@ -4812,6 +4825,7 @@ public final class MainActivity extends AppCompatActivity {
 
         scanOverlayPresentationEntityId = safeEntityId;
         overlayTracker.reset();
+        plateOverlayFreshness.reset();
         if (latestPipelinePlateEntityId != safeEntityId) {
             latestPipelinePlateItems = java.util.Collections.emptyList();
             latestPipelinePlateEntityId = 0L;
@@ -5119,8 +5133,16 @@ public final class MainActivity extends AppCompatActivity {
     private void presentTrackedPreviewOverlay(List<OverlayItem> trackedItems) {
         overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
         boolean dynamicCameraMotion = isDynamicCameraMotion();
+        long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
+        plateOverlayFreshness.recordFresh(
+                trackedItems,
+                nowNanos
+        );
+        List<OverlayItem> displayableTrackedItems =
+                plateOverlayFreshness.retainDisplayable(trackedItems, nowNanos);
 
-        if (trackedItems == null || trackedItems.isEmpty()) {
+        if (displayableTrackedItems.isEmpty()) {
+            expireStalePlateOverlayIfNeeded();
             if (dynamicCameraMotion) {
                 /*
                  * Bez kotwicy nie znamy transformacji kadru. Stara ramka MP
@@ -5133,14 +5155,14 @@ public final class MainActivity extends AppCompatActivity {
 
         if (dynamicCameraMotion) {
             overlayView.setPreviewItems(
-                    dynamicCameraMotionOverlayItems(trackedItems)
+                    dynamicCameraMotionOverlayItems(displayableTrackedItems)
             );
         } else {
-            overlayView.setTrackedPlateItems(trackedItems);
+            overlayView.setTrackedPlateItems(displayableTrackedItems);
         }
         if (autoZoomController.state()
                 == AutoZoomController.State.ZOOMED_RETRY) {
-            updateAutoZoomTargetFromOverlayItems(trackedItems);
+            updateAutoZoomTargetFromOverlayItems(displayableTrackedItems);
         }
     }
 
@@ -5154,6 +5176,17 @@ public final class MainActivity extends AppCompatActivity {
     private List<OverlayItem> dynamicCameraMotionOverlayItems(
             List<OverlayItem> trackedPlates
     ) {
+        long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
+        plateOverlayFreshness.recordFresh(
+                trackedPlates,
+                nowNanos
+        );
+        List<OverlayItem> displayableTrackedPlates =
+                plateOverlayFreshness.retainDisplayable(trackedPlates, nowNanos);
+        if ((trackedPlates != null && !trackedPlates.isEmpty())
+                && displayableTrackedPlates.isEmpty()) {
+            expireStalePlateOverlayIfNeeded();
+        }
         TargetSnapshot focusedTarget = targetStateMachine.snapshot();
         long focusedEntityId = latestPipelinePlateEntityId;
         long focusedPlateTrackId = focusedTarget.trackId;
@@ -5171,11 +5204,28 @@ public final class MainActivity extends AppCompatActivity {
         }
         return entityOverlayMotionProjector.project(
                 currentOverlayItems(),
-                plateOnlyOverlayItems(trackedPlates),
+                plateOnlyOverlayItems(displayableTrackedPlates),
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame
         );
+    }
+
+    private void expireStalePlateOverlayIfNeeded() {
+        if (latestPipelinePlateItems.isEmpty()) return;
+        List<OverlayItem> retained = plateOverlayFreshness.retainDisplayable(
+                latestPipelinePlateItems,
+                android.os.SystemClock.elapsedRealtimeNanos()
+        );
+        if (retained.size() == latestPipelinePlateItems.size()) return;
+
+        latestPipelinePlateItems = retained;
+        overlayView.clearPlateItems();
+        if (retained.isEmpty()) {
+            recordInfo("Ukryto nieświeżą ramkę tablicy");
+        } else {
+            overlayView.setTrackedPlateItems(retained);
+        }
     }
 
     private static List<OverlayItem> plateOnlyOverlayItems(

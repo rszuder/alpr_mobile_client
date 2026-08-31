@@ -102,6 +102,36 @@ public final class DetectionOverlayViewInstrumentedTest {
                 rendered.get().get(1).normalizedBounds);
     }
 
+    @Test
+    public void explicitExpiryRemovesOnlyPlateLayer() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<List<OverlayItem>> rendered = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            OverlayItem vehicle = item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                    7L
+            );
+            OverlayItem plate = item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    70L
+            );
+            view.setItems(Arrays.asList(vehicle, plate), 1088, 1088);
+
+            view.clearPlateItems();
+            rendered.set(view.snapshotItemsForTesting());
+        });
+
+        assertEquals(1, rendered.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
+        assertEquals(new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                rendered.get().get(0).normalizedBounds);
+    }
+
     private static OverlayItem item(
             OverlayItem.Kind kind,
             RectF bounds,

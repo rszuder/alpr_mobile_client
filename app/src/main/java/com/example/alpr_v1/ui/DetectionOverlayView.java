@@ -157,6 +157,22 @@ public final class DetectionOverlayView extends View {
         postInvalidateOnAnimation();
     }
 
+    /** Usuwa wyłącznie fizyczną warstwę PLATE po upływie jej krótkiego TTL. */
+    public void clearPlateItems() {
+        if (overlayAnimator != null) {
+            overlayAnimator.cancel();
+            overlayAnimator = null;
+        }
+        List<OverlayItem> updated = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item.kind != OverlayItem.Kind.PLATE) updated.add(item);
+        }
+        if (updated.size() == items.size()) return;
+        items = Collections.unmodifiableList(updated);
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
     /** Bezanimacyjna klatka Preview zawierajaca juz komplet warstw. */
     public void setPreviewItems(List<OverlayItem> previewItems) {
         if (overlayAnimator != null) {
