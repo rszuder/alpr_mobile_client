@@ -1598,6 +1598,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         overlayTracker.reset();
         pipeline.resetTracking();
+        overlayView.setActiveVehicleEntityId(0L);
         overlayView.setItems(java.util.Collections.emptyList());
         livePresentation.clearResult();
         livePresentation.showState(
@@ -1912,6 +1913,10 @@ public final class MainActivity extends AppCompatActivity {
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
+        // Odpowiedź wizualna na STOP nie może czekać na zamknięcie CameraX,
+        // pipeline'u ani zapisu metryk.
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.setAnalysisViewportEnabled(false);
         resetAutoZoomForStoppedCamera();
         cameraStarted = false;
         liveHudAwaitingFreshResult =
@@ -2536,6 +2541,8 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.setAnalysisViewportEnabled(true);
 
 
         /*
@@ -2731,6 +2738,8 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.setAnalysisViewportEnabled(true);
 
         /*
          * Nowe uruchomienie kamery oznacza nową generację.

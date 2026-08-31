@@ -276,6 +276,31 @@ public final class DetectionOverlayViewInstrumentedTest {
     }
 
     @Test
+    public void analysisViewportUsesSameFitCenterMappingAsDetectionFrames() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<RectF> viewportBounds = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setItems(Collections.singletonList(item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                    7L
+            )), 1920, 1080);
+            view.setAnalysisViewportEnabled(true);
+            viewportBounds.set(view.analysisViewportBoundsForTesting());
+        });
+
+        RectF bounds = viewportBounds.get();
+        assertEquals(54f, bounds.left, 0.01f);
+        assertEquals(993.45f, bounds.top, 0.01f);
+        assertEquals(1026f, bounds.right, 0.01f);
+        assertEquals(1406.55f, bounds.bottom, 0.01f);
+    }
+
+    @Test
     public void activeVehicleMarkerUsesLastMpGeometryEvenWhenVehicleFrameIsHidden() {
         Context context = InstrumentationRegistry.getInstrumentation()
                 .getTargetContext();

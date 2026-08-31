@@ -36,6 +36,7 @@ import com.example.alpr_v1.continuity.TargetContinuityEvidence;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
 import com.example.alpr_v1.continuity.VisualChangeClassification;
 import com.example.alpr_v1.domain.VehicleEntity;
+import com.example.alpr_v1.domain.AnalysisViewport;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
@@ -50,6 +51,7 @@ import com.example.alpr_v1.vision.SceneChangeDetector;
 import java.nio.ByteBuffer;
 
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -1592,7 +1594,7 @@ public final class AlprPipeline {
         AcquisitionDirective directive = before.directive;
         if (before.runState == ScanRunState.RUNNING) {
             directive = scanAcquisitionController.onVehicleFrame(
-                    latestVehicleTrackingFrame(),
+                    analysisViewportVehicleFrame(latestVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1626,7 +1628,7 @@ public final class AlprPipeline {
         AcquisitionDirective next = decision.nextDirective;
         if ("scan_queue_updated".equals(result.status)) {
             next = scanAcquisitionController.onVehicleFrame(
-                    latestVehicleTrackingFrame(),
+                    analysisViewportVehicleFrame(latestVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1636,7 +1638,7 @@ public final class AlprPipeline {
         );
         StringBuilder scanPool = new StringBuilder();
         for (com.example.alpr_v1.tracking.VehicleCandidate candidate
-                : latestVehicleTrackingFrame().candidates) {
+                : analysisViewportVehicleFrame(latestVehicleTrackingFrame()).candidates) {
             if (scanPool.length() > 0) scanPool.append(';');
             scanPool.append(candidate.entityId)
                     .append('/')
@@ -1696,6 +1698,28 @@ public final class AlprPipeline {
         recordScanTelemetryEvents(
                 scanAcquisitionController.snapshot(nowRuntimeNanos),
                 decision
+        );
+    }
+
+    static VehicleTrackingFrame analysisViewportVehicleFrame(
+            VehicleTrackingFrame frame
+    ) {
+        if (frame == null || frame.candidates.isEmpty()) return frame;
+        List<VehicleCandidate> accepted = new ArrayList<>();
+        for (VehicleCandidate candidate : frame.candidates) {
+            if (AnalysisViewport.accepts(candidate.bounds)) accepted.add(candidate);
+        }
+        if (accepted.size() == frame.candidates.size()) return frame;
+        return new VehicleTrackingFrame(
+                frame.sourceFrameId,
+                frame.sourceSequence,
+                frame.sourceTimestampNanos,
+                frame.sourceTimestampDomain,
+                frame.snapshotTimestampNanos,
+                frame.sceneGeneration,
+                frame.visualEpoch,
+                frame.cameraTransformGeneration,
+                accepted
         );
     }
 

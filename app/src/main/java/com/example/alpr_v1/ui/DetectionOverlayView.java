@@ -18,6 +18,8 @@ import android.graphics.Path;
 
 import androidx.annotation.Nullable;
 
+import com.example.alpr_v1.domain.AnalysisViewport;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -35,6 +37,8 @@ public final class DetectionOverlayView extends View {
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint calibrationPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint activeVehicleMarkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint analysisViewportShadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint analysisViewportCornerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final long OVERLAY_TRANSITION_MS =
             120L;
     private static final long ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS =
@@ -73,6 +77,7 @@ public final class DetectionOverlayView extends View {
     private long activeVehicleEntityId;
     private RectF activeVehicleNormalizedBounds;
     private float activeVehicleMarkerProgress;
+    private boolean analysisViewportEnabled;
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -144,7 +149,18 @@ public final class DetectionOverlayView extends View {
         calibrationPaint.setStrokeWidth(dp(1.5f));
         activeVehicleMarkerPaint.setColor(Color.rgb(250, 204, 21));
         activeVehicleMarkerPaint.setStyle(Paint.Style.FILL);
+        analysisViewportShadePaint.setColor(Color.argb(54, 0, 0, 0));
+        analysisViewportShadePaint.setStyle(Paint.Style.FILL);
+        analysisViewportCornerPaint.setColor(Color.argb(185, 125, 211, 252));
+        analysisViewportCornerPaint.setStyle(Paint.Style.STROKE);
+        analysisViewportCornerPaint.setStrokeWidth(dp(1.4f));
         setWillNotDraw(false);
+    }
+
+    public void setAnalysisViewportEnabled(boolean enabled) {
+        if (analysisViewportEnabled == enabled) return;
+        analysisViewportEnabled = enabled;
+        postInvalidateOnAnimation();
     }
 
     public void setGeometryCalibrationEnabled(boolean enabled) {
@@ -1101,6 +1117,7 @@ public final class DetectionOverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        drawAnalysisViewport(canvas);
         // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
         // przykrywały żadnej z ramek detekcyjnych.
         for (RenderItem renderItem : renderItems) {
@@ -1144,6 +1161,53 @@ public final class DetectionOverlayView extends View {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
         if (geometryCalibrationEnabled) drawGeometryCalibration(canvas);
+    }
+
+    private void drawAnalysisViewport(Canvas canvas) {
+        RectF bounds = analysisViewportViewBounds();
+        if (!analysisViewportEnabled || bounds == null) return;
+
+        canvas.drawRect(0f, 0f, getWidth(), bounds.top, analysisViewportShadePaint);
+        canvas.drawRect(0f, bounds.bottom, getWidth(), getHeight(), analysisViewportShadePaint);
+        canvas.drawRect(0f, bounds.top, bounds.left, bounds.bottom,
+                analysisViewportShadePaint);
+        canvas.drawRect(bounds.right, bounds.top, getWidth(), bounds.bottom,
+                analysisViewportShadePaint);
+
+        float corner = Math.min(dp(18f), Math.min(bounds.width(), bounds.height()) * 0.10f);
+        canvas.drawLine(bounds.left, bounds.top, bounds.left + corner, bounds.top,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.left, bounds.top, bounds.left, bounds.top + corner,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.right, bounds.top, bounds.right - corner, bounds.top,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.right, bounds.top, bounds.right, bounds.top + corner,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.left, bounds.bottom, bounds.left + corner, bounds.bottom,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.left, bounds.bottom, bounds.left, bounds.bottom - corner,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.right, bounds.bottom, bounds.right - corner, bounds.bottom,
+                analysisViewportCornerPaint);
+        canvas.drawLine(bounds.right, bounds.bottom, bounds.right, bounds.bottom - corner,
+                analysisViewportCornerPaint);
+    }
+
+    private RectF analysisViewportViewBounds() {
+        if (getWidth() <= 0 || getHeight() <= 0
+                || sourceWidth <= 0 || sourceHeight <= 0) return null;
+        return OverlayViewportTransform.mapNormalizedToView(
+                new RectF(
+                        AnalysisViewport.BOUNDS.left,
+                        AnalysisViewport.BOUNDS.top,
+                        AnalysisViewport.BOUNDS.right,
+                        AnalysisViewport.BOUNDS.bottom
+                ),
+                sourceWidth,
+                sourceHeight,
+                getWidth(),
+                getHeight()
+        );
     }
 
     private void drawFadingPlateLayer(Canvas canvas) {
@@ -1485,6 +1549,11 @@ public final class DetectionOverlayView extends View {
 
     int fadingPlateCountForTesting() {
         return fadingPlateRenderItems.size();
+    }
+
+    RectF analysisViewportBoundsForTesting() {
+        RectF bounds = analysisViewportViewBounds();
+        return bounds == null ? null : new RectF(bounds);
     }
 
     private static boolean containsPlateItem(List<OverlayItem> source) {
