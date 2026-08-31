@@ -1051,7 +1051,8 @@ public final class MainActivity extends AppCompatActivity {
             if (!cameraStarted
                     || request.sceneGeneration != uiSceneGeneration.get()
                     || request.transformGeneration
-                    != uiCameraTransformGeneration.get()) return;
+                    != uiCameraTransformGeneration.get()
+                    || !isCurrentPreviewStamp(request.continuityStamp)) return;
             PreviewContinuityUiPolicy.Outcome uiOutcome =
                     PreviewContinuityUiPolicy.decide(
                             decision,
@@ -1059,21 +1060,15 @@ public final class MainActivity extends AppCompatActivity {
                             !request.trackedItems.isEmpty()
                     );
             recordPreviewDecisionAuthority(uiOutcome, "direct_luma_async");
-            boolean stampCurrent = isCurrentPreviewStamp(
-                    request.continuityStamp
-            );
             if (uiOutcome.renderCoordinatorDecision) {
                 renderPreviewContinuityDecision(
                         decision,
                         0f,
                         0f,
-                        stampCurrent
-                                ? request.trackedItems
-                                : java.util.Collections.emptyList()
+                        request.trackedItems
                 );
                 return;
             }
-            if (!stampCurrent) return;
             if (uiOutcome.legacyTrackingLossInvalidation) {
                 invalidateUiForLostPreviewTracking();
             }
