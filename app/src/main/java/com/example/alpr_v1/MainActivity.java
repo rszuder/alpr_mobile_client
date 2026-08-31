@@ -3396,6 +3396,7 @@ public final class MainActivity extends AppCompatActivity {
         if (scanActive) {
             showScanUserStatus(scan);
         } else {
+            overlayView.setActiveVehicleEntityId(0L);
             livePresentation.showState(presentationState, "");
         }
         livePresentation.updateDiagnostics(hudText);
@@ -3403,6 +3404,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
+        overlayView.setActiveVehicleEntityId(scan.activeEntityId);
         if (scan.activeSessionState
                 == com.example.alpr_v1.domain.TargetSessionState.RECOVERING) {
             livePresentation.showUserStatus(
@@ -4515,6 +4517,7 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
         overlayView.setFocusedTrackId(0L);
+        overlayView.setActiveVehicleEntityId(0L);
         /*
          * Bariera musi dotyczyć również aktualnego stanu View. Samo wyczyszczenie
          * pamięci prezentacji nie usuwa ramki, jeżeli wynik RELEASE nie przejdzie

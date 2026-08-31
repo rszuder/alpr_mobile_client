@@ -3,6 +3,7 @@ package com.example.alpr_v1.ui;
 import static org.junit.Assert.assertEquals;
 
 import android.content.Context;
+import android.graphics.PointF;
 import android.graphics.RectF;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -154,6 +155,59 @@ public final class DetectionOverlayViewInstrumentedTest {
         assertEquals(896.25f, bounds.top, 0.01f);
         assertEquals(1080f, bounds.right, 0.01f);
         assertEquals(1503.75f, bounds.bottom, 0.01f);
+    }
+
+    @Test
+    public void activeVehicleMarkerUsesLastMpGeometryEvenWhenVehicleFrameIsHidden() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<RectF> cachedBounds = new AtomicReference<>();
+        AtomicReference<PointF> awayTip = new AtomicReference<>();
+        AtomicReference<PointF> touchingTip = new AtomicReference<>();
+        AtomicReference<RectF> mappedBounds = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            RectF vehicleBounds = new RectF(0.20f, 0.30f, 0.60f, 0.55f);
+            view.setItems(Arrays.asList(
+                    item(OverlayItem.Kind.VEHICLE, vehicleBounds, 7L),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.31f, 0.46f, 0.43f, 0.50f),
+                            70L
+                    )
+            ), 1920, 1080);
+            view.setActiveVehicleEntityId(7L);
+
+            // Domyślnie VEHICLE nie jest rysowany, ale jego geometria nadal kotwiczy marker.
+            assertEquals(1, view.snapshotRenderBoundsForTesting().size());
+            cachedBounds.set(view.snapshotActiveVehicleBoundsForTesting());
+            awayTip.set(view.activeVehicleMarkerTipForTesting(0f));
+            touchingTip.set(view.activeVehicleMarkerTipForTesting(1f));
+            mappedBounds.set(OverlayViewportTransform.mapNormalizedToView(
+                    vehicleBounds,
+                    1920,
+                    1080,
+                    1080,
+                    2400
+            ));
+
+            // Krótkotrwały brak warstwy MP nie może zgubić pozycji aktywnego celu.
+            view.setPreviewItems(Collections.singletonList(item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.32f, 0.46f, 0.44f, 0.50f),
+                    70L
+            )));
+            assertEquals(vehicleBounds, view.snapshotActiveVehicleBoundsForTesting());
+        });
+
+        assertEquals(new RectF(0.20f, 0.30f, 0.60f, 0.55f), cachedBounds.get());
+        assertEquals(mappedBounds.get().centerX(), touchingTip.get().x, 0.01f);
+        assertEquals(mappedBounds.get().top, touchingTip.get().y, 0.01f);
+        assertEquals(10f * context.getResources().getDisplayMetrics().density,
+                touchingTip.get().y - awayTip.get().y,
+                0.01f);
     }
 
     private static OverlayItem item(

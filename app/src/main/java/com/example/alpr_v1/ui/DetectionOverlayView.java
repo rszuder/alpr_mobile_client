@@ -10,6 +10,7 @@ import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 import android.animation.ValueAnimator;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.graphics.Path;
 
@@ -31,8 +32,11 @@ public final class DetectionOverlayView extends View {
     private final Paint confidenceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint calibrationPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint activeVehicleMarkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final long OVERLAY_TRANSITION_MS =
             120L;
+    private static final long ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS =
+            620L;
 
 
     /*
@@ -47,6 +51,7 @@ public final class DetectionOverlayView extends View {
 
 
     private ValueAnimator overlayAnimator;
+    private ValueAnimator activeVehicleMarkerAnimator;
 
 
     private final DecelerateInterpolator overlayInterpolator =
@@ -58,6 +63,9 @@ public final class DetectionOverlayView extends View {
     private boolean geometryCalibrationEnabled;
     private boolean diagnosticMode;
     private long focusedTrackId;
+    private long activeVehicleEntityId;
+    private RectF activeVehicleNormalizedBounds;
+    private float activeVehicleMarkerProgress;
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -127,6 +135,8 @@ public final class DetectionOverlayView extends View {
         calibrationPaint.setColor(Color.rgb(250, 204, 21));
         calibrationPaint.setStyle(Paint.Style.STROKE);
         calibrationPaint.setStrokeWidth(dp(1.5f));
+        activeVehicleMarkerPaint.setColor(Color.rgb(250, 204, 21));
+        activeVehicleMarkerPaint.setStyle(Paint.Style.FILL);
         setWillNotDraw(false);
     }
 
@@ -352,6 +362,84 @@ public final class DetectionOverlayView extends View {
         focusedTrackId = safeTrackId;
         rebuildRenderItems();
         postInvalidateOnAnimation();
+    }
+
+    /**
+     * Wskazuje pojazd aktualnie analizowany przez Scan. Znacznik korzysta z
+     * ostatniej znanej geometrii MP, dlatego pozostaje widoczny również wtedy,
+     * gdy diagnostyczna ramka VEHICLE jest ukryta.
+     */
+    public void setActiveVehicleEntityId(long entityId) {
+        long safeEntityId = Math.max(0L, entityId);
+        if (activeVehicleEntityId != safeEntityId) {
+            activeVehicleEntityId = safeEntityId;
+            activeVehicleNormalizedBounds = null;
+        }
+        refreshActiveVehicleBounds();
+        if (activeVehicleEntityId > 0L) {
+            ensureActiveVehicleMarkerAnimator();
+        } else {
+            stopActiveVehicleMarkerAnimator();
+        }
+        postInvalidateOnAnimation();
+    }
+
+    private void refreshActiveVehicleBounds() {
+        if (activeVehicleEntityId <= 0L) {
+            activeVehicleNormalizedBounds = null;
+            return;
+        }
+        OverlayItem roiFallback = null;
+        for (OverlayItem item : items) {
+            if (item == null || item.trackId != activeVehicleEntityId) continue;
+            if (item.kind == OverlayItem.Kind.VEHICLE) {
+                activeVehicleNormalizedBounds = new RectF(item.normalizedBounds);
+                return;
+            }
+            if (item.kind == OverlayItem.Kind.VEHICLE_ROI) roiFallback = item;
+        }
+        if (roiFallback != null) {
+            activeVehicleNormalizedBounds = new RectF(roiFallback.normalizedBounds);
+        }
+        // Brak geometrii w bieżącej klatce nie usuwa ostatniej pozycji celu.
+    }
+
+    private void ensureActiveVehicleMarkerAnimator() {
+        if (!isAttachedToWindow() || activeVehicleMarkerAnimator != null) return;
+        activeVehicleMarkerAnimator = ValueAnimator.ofFloat(0f, 1f);
+        activeVehicleMarkerAnimator.setDuration(ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS);
+        activeVehicleMarkerAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+        activeVehicleMarkerAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        activeVehicleMarkerAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        activeVehicleMarkerAnimator.addUpdateListener(animator -> {
+            activeVehicleMarkerProgress = (float) animator.getAnimatedValue();
+            postInvalidateOnAnimation();
+        });
+        activeVehicleMarkerAnimator.start();
+    }
+
+    private void stopActiveVehicleMarkerAnimator() {
+        if (activeVehicleMarkerAnimator != null) {
+            activeVehicleMarkerAnimator.cancel();
+            activeVehicleMarkerAnimator = null;
+        }
+        activeVehicleMarkerProgress = 0f;
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (activeVehicleEntityId > 0L) ensureActiveVehicleMarkerAnimator();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        stopActiveVehicleMarkerAnimator();
+        if (overlayAnimator != null) {
+            overlayAnimator.cancel();
+            overlayAnimator = null;
+        }
+        super.onDetachedFromWindow();
     }
 
     private static boolean sameTrackedTargets(
@@ -941,10 +1029,55 @@ public final class DetectionOverlayView extends View {
             }
         }
 
+        drawActiveVehicleMarker(canvas);
+
         for (RenderItem renderItem : renderItems) {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
         if (geometryCalibrationEnabled) drawGeometryCalibration(canvas);
+    }
+
+    private void drawActiveVehicleMarker(Canvas canvas) {
+        PointF tip = activeVehicleMarkerTip(activeVehicleMarkerProgress);
+        if (tip == null) return;
+
+        float halfWidth = dp(8f);
+        float height = dp(10f);
+        Path triangle = new Path();
+        triangle.moveTo(tip.x, tip.y);
+        triangle.lineTo(tip.x + halfWidth, tip.y - height);
+        triangle.lineTo(tip.x - halfWidth, tip.y - height);
+        triangle.close();
+        canvas.drawPath(triangle, activeVehicleMarkerPaint);
+    }
+
+    private PointF activeVehicleMarkerTip(float progress) {
+        if (activeVehicleEntityId <= 0L
+                || activeVehicleNormalizedBounds == null
+                || getWidth() <= 0
+                || getHeight() <= 0) {
+            return null;
+        }
+        int imageWidth = sourceWidth > 0 ? sourceWidth : getWidth();
+        int imageHeight = sourceHeight > 0 ? sourceHeight : getHeight();
+        RectF bounds = OverlayViewportTransform.mapNormalizedToView(
+                activeVehicleNormalizedBounds,
+                imageWidth,
+                imageHeight,
+                getWidth(),
+                getHeight()
+        );
+        float halfWidth = dp(8f);
+        float height = dp(10f);
+        float awayDistance = dp(10f);
+        float centerX = Math.max(
+                halfWidth,
+                Math.min(getWidth() - halfWidth, bounds.centerX())
+        );
+        float safeProgress = Math.max(0f, Math.min(1f, progress));
+        float tipY = bounds.top - awayDistance * (1f - safeProgress);
+        tipY = Math.max(height, Math.min(getHeight(), tipY));
+        return new PointF(centerX, tipY);
     }
 
     private void drawGeometryCalibration(Canvas canvas) {
@@ -1099,6 +1232,7 @@ public final class DetectionOverlayView extends View {
     }
 
     private void rebuildRenderItems() {
+        refreshActiveVehicleBounds();
         float viewWidth = getWidth();
         float viewHeight = getHeight();
         if (viewWidth <= 0f || viewHeight <= 0f || items.isEmpty()) {
@@ -1200,6 +1334,17 @@ public final class DetectionOverlayView extends View {
         List<RectF> bounds = new ArrayList<>(renderItems.size());
         for (RenderItem item : renderItems) bounds.add(new RectF(item.bounds));
         return Collections.unmodifiableList(bounds);
+    }
+
+    RectF snapshotActiveVehicleBoundsForTesting() {
+        return activeVehicleNormalizedBounds == null
+                ? null
+                : new RectF(activeVehicleNormalizedBounds);
+    }
+
+    PointF activeVehicleMarkerTipForTesting(float progress) {
+        PointF tip = activeVehicleMarkerTip(progress);
+        return tip == null ? null : new PointF(tip.x, tip.y);
     }
 
     static List<OverlayItem> orderedForRendering(List<OverlayItem> source) {
