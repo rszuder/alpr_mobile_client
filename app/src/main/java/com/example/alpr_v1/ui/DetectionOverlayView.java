@@ -9,6 +9,8 @@ import android.graphics.PointF;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
@@ -37,6 +39,8 @@ public final class DetectionOverlayView extends View {
             120L;
     private static final long ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS =
             620L;
+    private static final long PLATE_FADE_OUT_MS =
+            260L;
 
 
     /*
@@ -52,6 +56,9 @@ public final class DetectionOverlayView extends View {
 
     private ValueAnimator overlayAnimator;
     private ValueAnimator activeVehicleMarkerAnimator;
+    private ValueAnimator plateFadeAnimator;
+    private List<RenderItem> fadingPlateRenderItems = Collections.emptyList();
+    private float fadingPlateAlpha = 1f;
 
 
     private final DecelerateInterpolator overlayInterpolator =
@@ -157,6 +164,8 @@ public final class DetectionOverlayView extends View {
     public void setTrackedPlateItems(List<OverlayItem> trackedPlates) {
         if (trackedPlates == null || trackedPlates.isEmpty()) return;
 
+        cancelPlateFade();
+
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
             overlayAnimator = null;
@@ -178,8 +187,9 @@ public final class DetectionOverlayView extends View {
         postInvalidateOnAnimation();
     }
 
-    /** Usuwa wyłącznie fizyczną warstwę PLATE po upływie jej krótkiego TTL. */
+    /** Natychmiast usuwa PLATE, np. podczas STOP lub pełnego resetu sceny. */
     public void clearPlateItems() {
+        cancelPlateFade();
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
             overlayAnimator = null;
@@ -194,8 +204,100 @@ public final class DetectionOverlayView extends View {
         postInvalidateOnAnimation();
     }
 
+    /** Łagodnie wygasza nieświeżą warstwę PLATE bez zamrażania geometrii MP. */
+    public void fadeOutPlateItems() {
+        fadeOutPlateItems(Collections.emptyList());
+    }
+
+    /** Wygasza wyłącznie tablice nieobecne już w zbiorze nadal świeżych ramek. */
+    public void fadeOutPlateItems(List<OverlayItem> retainedPlates) {
+        List<OverlayItem> safeRetained = new ArrayList<>();
+        if (retainedPlates != null) {
+            for (OverlayItem item : retainedPlates) {
+                if (item != null && item.kind == OverlayItem.Kind.PLATE) {
+                    safeRetained.add(item);
+                }
+            }
+        }
+
+        float startAlpha = 1f;
+        List<RenderItem> fading = new ArrayList<>();
+        if (plateFadeAnimator != null) {
+            startAlpha = fadingPlateAlpha;
+            for (RenderItem renderItem : fadingPlateRenderItems) {
+                if (!containsPlateTrack(safeRetained, renderItem.item.trackId)) {
+                    fading.add(renderItem);
+                }
+            }
+            ValueAnimator previousAnimator = plateFadeAnimator;
+            plateFadeAnimator = null;
+            previousAnimator.cancel();
+        }
+        for (RenderItem renderItem : renderItems) {
+            if (renderItem.item.kind == OverlayItem.Kind.PLATE
+                    && !containsPlateTrack(safeRetained, renderItem.item.trackId)
+                    && !containsRenderTrack(fading, renderItem.item.trackId)) {
+                fading.add(renderItem);
+            }
+        }
+        if (fading.isEmpty()) {
+            if (safeRetained.isEmpty()) {
+                clearPlateItems();
+            } else {
+                setTrackedPlateItems(safeRetained);
+            }
+            return;
+        }
+
+        if (overlayAnimator != null) {
+            overlayAnimator.cancel();
+            overlayAnimator = null;
+        }
+        fadingPlateRenderItems = Collections.unmodifiableList(fading);
+        List<OverlayItem> retained = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item.kind != OverlayItem.Kind.PLATE) retained.add(item);
+        }
+        retained.addAll(safeRetained);
+        items = Collections.unmodifiableList(retained);
+        rebuildRenderItems();
+
+        fadingPlateAlpha = startAlpha;
+        final ValueAnimator animator = ValueAnimator.ofFloat(startAlpha, 0f);
+        plateFadeAnimator = animator;
+        animator.setDuration(Math.max(
+                1L,
+                Math.round(PLATE_FADE_OUT_MS * startAlpha)
+        ));
+        animator.setInterpolator(new DecelerateInterpolator());
+        animator.addUpdateListener(valueAnimator -> {
+            fadingPlateAlpha = (float) valueAnimator.getAnimatedValue();
+            postInvalidateOnAnimation();
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (plateFadeAnimator != animator) return;
+                plateFadeAnimator = null;
+                fadingPlateRenderItems = Collections.emptyList();
+                fadingPlateAlpha = 1f;
+                postInvalidateOnAnimation();
+            }
+        });
+        animator.start();
+    }
+
+    private void cancelPlateFade() {
+        ValueAnimator animator = plateFadeAnimator;
+        plateFadeAnimator = null;
+        if (animator != null) animator.cancel();
+        fadingPlateRenderItems = Collections.emptyList();
+        fadingPlateAlpha = 1f;
+    }
+
     /** Bezanimacyjna klatka Preview zawierajaca juz komplet warstw. */
     public void setPreviewItems(List<OverlayItem> previewItems) {
+        if (containsPlateItem(previewItems)) cancelPlateFade();
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
             overlayAnimator = null;
@@ -225,6 +327,10 @@ public final class DetectionOverlayView extends View {
                                         : newItems
                         )
                 );
+
+        if (targetItems.isEmpty() || containsPlateItem(targetItems)) {
+            cancelPlateFade();
+        }
 
 
         this.sourceWidth =
@@ -435,6 +541,7 @@ public final class DetectionOverlayView extends View {
     @Override
     protected void onDetachedFromWindow() {
         stopActiveVehicleMarkerAnimator();
+        cancelPlateFade();
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
             overlayAnimator = null;
@@ -1029,12 +1136,41 @@ public final class DetectionOverlayView extends View {
             }
         }
 
+        drawFadingPlateLayer(canvas);
+
         drawActiveVehicleMarker(canvas);
 
         for (RenderItem renderItem : renderItems) {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
         if (geometryCalibrationEnabled) drawGeometryCalibration(canvas);
+    }
+
+    private void drawFadingPlateLayer(Canvas canvas) {
+        if (fadingPlateRenderItems.isEmpty() || fadingPlateAlpha <= 0f) return;
+        int saveCount = canvas.saveLayerAlpha(
+                0f,
+                0f,
+                getWidth(),
+                getHeight(),
+                Math.round(255f * fadingPlateAlpha)
+        );
+        for (RenderItem renderItem : fadingPlateRenderItems) {
+            if (renderItem.points.size() >= 4) {
+                drawPlateQuad(canvas, renderItem);
+            } else {
+                canvas.drawRoundRect(
+                        renderItem.bounds,
+                        dp(5),
+                        dp(5),
+                        paintFor(renderItem.item)
+                );
+            }
+        }
+        for (RenderItem renderItem : fadingPlateRenderItems) {
+            if (renderItem.badge != null) drawLabel(canvas, renderItem);
+        }
+        canvas.restoreToCount(saveCount);
     }
 
     private void drawActiveVehicleMarker(Canvas canvas) {
@@ -1345,6 +1481,34 @@ public final class DetectionOverlayView extends View {
     PointF activeVehicleMarkerTipForTesting(float progress) {
         PointF tip = activeVehicleMarkerTip(progress);
         return tip == null ? null : new PointF(tip.x, tip.y);
+    }
+
+    int fadingPlateCountForTesting() {
+        return fadingPlateRenderItems.size();
+    }
+
+    private static boolean containsPlateItem(List<OverlayItem> source) {
+        if (source == null) return false;
+        for (OverlayItem item : source) {
+            if (item != null && item.kind == OverlayItem.Kind.PLATE) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsPlateTrack(List<OverlayItem> source, long trackId) {
+        if (trackId <= 0L) return false;
+        for (OverlayItem item : source) {
+            if (item.trackId == trackId) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsRenderTrack(List<RenderItem> source, long trackId) {
+        if (trackId <= 0L) return false;
+        for (RenderItem item : source) {
+            if (item.item.trackId == trackId) return true;
+        }
+        return false;
     }
 
     static List<OverlayItem> orderedForRendering(List<OverlayItem> source) {

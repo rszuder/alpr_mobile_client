@@ -134,6 +134,124 @@ public final class DetectionOverlayViewInstrumentedTest {
     }
 
     @Test
+    public void stalePlateFadesAsSnapshotWhilePreviewGeometryKeepsUpdating() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<List<OverlayItem>> rendered = new AtomicReference<>();
+        AtomicReference<Integer> fadingCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setItems(Arrays.asList(
+                    item(
+                            OverlayItem.Kind.VEHICLE,
+                            new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                            70L
+                    )
+            ), 1920, 1080);
+
+            view.fadeOutPlateItems();
+            view.setPreviewItems(Collections.singletonList(item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.21f, 0.30f, 0.61f, 0.55f),
+                    7L
+            )));
+            rendered.set(view.snapshotItemsForTesting());
+            fadingCount.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(1, rendered.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
+        assertEquals(1, (int) fadingCount.get());
+    }
+
+    @Test
+    public void partialExpiryKeepsFreshPlateAndFadesOnlyStalePlate() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<List<OverlayItem>> rendered = new AtomicReference<>();
+        AtomicReference<Integer> fadingCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            OverlayItem freshPlate = item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.65f, 0.45f, 0.77f, 0.49f),
+                    71L
+            );
+            view.setItems(Arrays.asList(
+                    item(
+                            OverlayItem.Kind.VEHICLE,
+                            new RectF(0.20f, 0.30f, 0.80f, 0.60f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                            70L
+                    ),
+                    freshPlate
+            ), 1920, 1080);
+
+            view.fadeOutPlateItems(Collections.singletonList(freshPlate));
+            rendered.set(view.snapshotItemsForTesting());
+            fadingCount.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(2, rendered.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
+        assertEquals(71L, rendered.get().get(1).trackId);
+        assertEquals(1, (int) fadingCount.get());
+    }
+
+    @Test
+    public void consecutiveExpiryMergesFadeSnapshotsWithoutLeavingAStalePlate() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<List<OverlayItem>> rendered = new AtomicReference<>();
+        AtomicReference<Integer> fadingCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            OverlayItem secondPlate = item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.65f, 0.45f, 0.77f, 0.49f),
+                    71L
+            );
+            view.setItems(Arrays.asList(
+                    item(
+                            OverlayItem.Kind.VEHICLE,
+                            new RectF(0.20f, 0.30f, 0.80f, 0.60f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                            70L
+                    ),
+                    secondPlate
+            ), 1920, 1080);
+
+            view.fadeOutPlateItems(Collections.singletonList(secondPlate));
+            view.fadeOutPlateItems(Collections.emptyList());
+            rendered.set(view.snapshotItemsForTesting());
+            fadingCount.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(1, rendered.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
+        assertEquals(2, (int) fadingCount.get());
+    }
+
+    @Test
     public void actualRenderBoundsUseFitCenterLetterbox() {
         Context context = InstrumentationRegistry.getInstrumentation()
                 .getTargetContext();

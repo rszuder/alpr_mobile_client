@@ -4523,7 +4523,9 @@ public final class MainActivity extends AppCompatActivity {
          * pamięci prezentacji nie usuwa ramki, jeżeli wynik RELEASE nie przejdzie
          * dalej przez zwykłą ścieżkę setItems().
          */
-        overlayView.clearPlateItems();
+        // Stan celu jest już zwolniony natychmiast. View wygasza tylko nieruchomą
+        // migawkę starej ramki, która nie uczestniczy dalej w trackingu.
+        overlayView.fadeOutPlateItems();
     }
 
     private void refreshPipelineCameraMotionEvidence() {
@@ -5363,7 +5365,7 @@ public final class MainActivity extends AppCompatActivity {
         if (retained.size() == latestPipelinePlateItems.size()) return;
 
         latestPipelinePlateItems = retained;
-        overlayView.clearPlateItems();
+        overlayView.fadeOutPlateItems(retained);
         if (retained.isEmpty()) {
             JSONObject details = new JSONObject();
             try {
@@ -5381,8 +5383,6 @@ public final class MainActivity extends AppCompatActivity {
                     details
             );
             recordInfo("Ukryto nieświeżą ramkę tablicy");
-        } else {
-            overlayView.setTrackedPlateItems(retained);
         }
     }
 
