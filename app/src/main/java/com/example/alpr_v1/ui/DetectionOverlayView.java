@@ -17,6 +17,7 @@ import androidx.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 /** Lekki overlay ramek z badge'ami układanymi poza obszarem detekcji. */
@@ -1072,7 +1073,7 @@ public final class DetectionOverlayView extends View {
          */
         List<RectF> plateFrameBounds = new ArrayList<>();
 
-        for (OverlayItem item : items) {
+        for (OverlayItem item : orderedForRendering(items)) {
             if (!diagnosticMode && item.kind != OverlayItem.Kind.PLATE) continue;
             RectF source = item.normalizedBounds;
             RectF bounds = new RectF(
@@ -1128,6 +1129,25 @@ public final class DetectionOverlayView extends View {
             if (renderItem.badge != null) occupiedLabels.add(renderItem.badge);
         }
         renderItems = Collections.unmodifiableList(prepared);
+    }
+
+    static List<OverlayItem> orderedForRendering(List<OverlayItem> source) {
+        if (source == null || source.isEmpty()) return Collections.emptyList();
+        List<OverlayItem> ordered = new ArrayList<>(source);
+        ordered.sort(
+                Comparator.comparingInt(
+                                (OverlayItem item) -> zOrder(item.kind)
+                        )
+                        .thenComparingLong(item -> item.trackId)
+        );
+        return Collections.unmodifiableList(ordered);
+    }
+
+    private static int zOrder(OverlayItem.Kind kind) {
+        if (kind == OverlayItem.Kind.VEHICLE) return 0;
+        if (kind == OverlayItem.Kind.VEHICLE_ROI) return 1;
+        if (kind == OverlayItem.Kind.PLATE) return 2;
+        return 0;
     }
 
     private RectF findFreeBadge(
