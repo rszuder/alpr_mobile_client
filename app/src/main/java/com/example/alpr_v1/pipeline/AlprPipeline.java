@@ -2166,6 +2166,7 @@ public final class AlprPipeline {
         trace.putCount("camera_motion_available", evidence.motion.gyroAvailable ? 1 : 0);
         trace.putCount("camera_moving", evidence.motion.cameraMoving ? 1 : 0);
         trace.putCount("rapid_camera_motion", evidence.motion.rapidCameraMotion ? 1 : 0);
+        trace.putCount("camera_motion_settling", evidence.motion.motionSettling ? 1 : 0);
         trace.putConfidence("camera_motion_magnitude",
                 evidence.motion.angularMotionMagnitude);
         trace.putCount("global_motion_estimated",
@@ -2375,8 +2376,15 @@ public final class AlprPipeline {
                 details.put("camera_motion_available", evidence.motion.gyroAvailable);
                 details.put("camera_moving", evidence.motion.cameraMoving);
                 details.put("rapid_camera_motion", evidence.motion.rapidCameraMotion);
+                details.put("camera_motion_settling", evidence.motion.motionSettling);
                 details.put("camera_motion_magnitude",
                         evidence.motion.angularMotionMagnitude);
+                details.put("global_motion_estimated",
+                        evidence.motion.dominantMotionEstimated);
+                details.put("global_motion_coherence",
+                        evidence.motion.globalMotionCoherence);
+                details.put("compensated_frame_residual",
+                        evidence.motion.compensatedFrameResidual);
             }
         } catch (JSONException ignored) {
             // Telemetry must never influence runtime scene policy.
@@ -2960,7 +2968,8 @@ public final class AlprPipeline {
                             "raw=%s focused_lost=%s focused_degraded=%s "
                                     + "score=%.3f fraction=%.3f local_valid=%s "
                                     + "local_similarity=%.3f target=%.3f vehicle=%.3f "
-                                    + "moving=%s rapid=%s angular=%.3f "
+                                    + "moving=%s rapid=%s settling=%s angular=%.3f "
+                                    + "visual=%s coherence=%.3f residual=%.3f "
                                     + "class=%s action=%s reason=%s",
                             rawVisualChange,
                             focusedTrackingLost,
@@ -2973,7 +2982,11 @@ public final class AlprPipeline {
                             decision.assessment.vehicleContinuityScore,
                             motionEvidence.cameraMoving,
                             motionEvidence.rapidCameraMotion,
+                            motionEvidence.motionSettling,
                             motionEvidence.angularMotionMagnitude,
+                            motionEvidence.dominantMotionEstimated,
+                            motionEvidence.globalMotionCoherence,
+                            motionEvidence.compensatedFrameResidual,
                             decision.assessment.classification,
                             decision.action,
                             decision.reason

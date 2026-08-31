@@ -6,6 +6,10 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import com.example.alpr_v1.domain.NormalizedBounds;
+
+import java.util.Collections;
+
 public final class GlobalLumaMotionTrackerTest {
     @Test
     public void estimatesFrameToFrameTranslationInNormalizedCoordinates() {
@@ -19,6 +23,7 @@ public final class GlobalLumaMotionTrackerTest {
         FrameMotionTransform motion = tracker.update(second, width, height);
 
         assertTrue(motion.valid);
+        assertTrue(motion.quality.reliableCameraMotion());
         assertTrue(motion.inliers >= 6);
         assertEquals(6f / width,
                 motion.mapX(0.5f, 0.5f) - 0.5f,
@@ -57,6 +62,49 @@ public final class GlobalLumaMotionTrackerTest {
                 0.012f);
     }
 
+    @Test
+    public void foregroundOnlyMotionDoesNotBecomeGlobalCameraMotion() {
+        int width = 180;
+        int height = 240;
+        byte[] first = textured(width, height);
+        byte[] second = first.clone();
+        movePatch(first, second, width, height, 30, 55, 150, 205, 12, 0);
+        NormalizedBounds foreground = new NormalizedBounds(
+                0.14f, 0.20f, 0.88f, 0.88f
+        );
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+
+        tracker.update(
+                first, width, height, Collections.singletonList(foreground)
+        );
+        FrameMotionTransform motion = tracker.update(
+                second, width, height, Collections.singletonList(foreground)
+        );
+
+        assertFalse(motion.significant());
+    }
+
+    @Test
+    public void globalMotionRequiresDistributedSpatialSupport() {
+        int width = 180;
+        int height = 240;
+        byte[] first = textured(width, height);
+        byte[] second = translated(first, width, height, 8, 0);
+        NormalizedBounds rightSideMask = new NormalizedBounds(
+                0.38f, 0f, 1f, 1f
+        );
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+
+        tracker.update(
+                first, width, height, Collections.singletonList(rightSideMask)
+        );
+        FrameMotionTransform motion = tracker.update(
+                second, width, height, Collections.singletonList(rightSideMask)
+        );
+
+        assertFalse(motion.valid);
+    }
+
     private static byte[] textured(int width, int height) {
         byte[] image = new byte[width * height];
         for (int y = 0; y < height; y++) {
@@ -93,5 +141,31 @@ public final class GlobalLumaMotionTrackerTest {
             }
         }
         return target;
+    }
+
+    private static void movePatch(
+            byte[] source,
+            byte[] target,
+            int width,
+            int height,
+            int left,
+            int top,
+            int right,
+            int bottom,
+            int dx,
+            int dy
+    ) {
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                int targetX = x + dx;
+                int targetY = y + dy;
+                if (targetX >= left && targetX < right
+                        && targetY >= top && targetY < bottom
+                        && targetX >= 0 && targetX < width
+                        && targetY >= 0 && targetY < height) {
+                    target[targetY * width + targetX] = source[y * width + x];
+                }
+            }
+        }
     }
 }

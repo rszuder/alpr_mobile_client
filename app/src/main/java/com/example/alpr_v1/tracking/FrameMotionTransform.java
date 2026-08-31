@@ -11,6 +11,7 @@ public final class FrameMotionTransform {
     public final float ty;
     public final int inliers;
     public final float meanError;
+    public final FrameMotionQuality quality;
 
     FrameMotionTransform(
             boolean valid,
@@ -23,6 +24,26 @@ public final class FrameMotionTransform {
             int inliers,
             float meanError
     ) {
+        this(
+                valid, a, b, tx, c, d, ty, inliers, meanError,
+                valid
+                        ? FrameMotionQuality.syntheticReliable()
+                        : FrameMotionQuality.unavailable(0)
+        );
+    }
+
+    FrameMotionTransform(
+            boolean valid,
+            float a,
+            float b,
+            float tx,
+            float c,
+            float d,
+            float ty,
+            int inliers,
+            float meanError,
+            FrameMotionQuality quality
+    ) {
         this.valid = valid;
         this.a = a;
         this.b = b;
@@ -33,6 +54,8 @@ public final class FrameMotionTransform {
         this.inliers = Math.max(0, inliers);
         this.meanError = Float.isFinite(meanError)
                 ? Math.max(0f, meanError) : Float.POSITIVE_INFINITY;
+        this.quality = quality == null
+                ? FrameMotionQuality.unavailable(0) : quality;
     }
 
     public float mapX(float normalizedX, float normalizedY) {
@@ -88,7 +111,8 @@ public final class FrameMotionTransform {
                 second.c * first.b + second.d * first.d,
                 second.c * first.tx + second.d * first.ty + second.ty,
                 Math.min(first.inliers, second.inliers),
-                Math.max(first.meanError, second.meanError)
+                Math.max(first.meanError, second.meanError),
+                FrameMotionQuality.compose(first.quality, second.quality)
         );
     }
 

@@ -366,6 +366,7 @@ public final class SceneTransitionCoordinator {
                 && !evidence.motion.cameraMoving
                 && !evidence.motion.rapidCameraMotion
                 && !evidence.motion.cameraTransformInProgress
+                && !evidence.motion.motionSettling
                 && evidence.target.localAppearanceValidated
                 && evidence.target.plateAppearanceSimilarity
                 < profile.localAppearanceContradictionThreshold;
@@ -373,6 +374,7 @@ public final class SceneTransitionCoordinator {
                 && !evidence.motion.cameraMoving
                 && !evidence.motion.rapidCameraMotion
                 && !evidence.motion.cameraTransformInProgress
+                && !evidence.motion.motionSettling
                 && evidence.target.level != TargetContinuityLevel.NO_TARGET
                 && evidence.target.measurementAgeNanos
                 > profile.maximumFocusedEvidenceAgeNanos;
@@ -475,7 +477,8 @@ public final class SceneTransitionCoordinator {
                 || evidence.focusedTrackingDegraded)) {
             if (evidence.motion.cameraMoving
                     || evidence.motion.rapidCameraMotion
-                    || evidence.motion.cameraTransformInProgress) {
+                    || evidence.motion.cameraTransformInProgress
+                    || evidence.motion.motionSettling) {
                 return beginSoftHold(nowNanos, "local_tracking_loss_during_motion");
             }
             return beginSoftReacquire(
@@ -513,7 +516,8 @@ public final class SceneTransitionCoordinator {
 
         if (evidence.motion.cameraMoving
                 || evidence.motion.rapidCameraMotion
-                || evidence.motion.cameraTransformInProgress) {
+                || evidence.motion.cameraTransformInProgress
+                || evidence.motion.motionSettling) {
             return beginSoftHold(nowNanos, "motion_requires_stable_observation");
         }
         return beginSoftReacquire(
@@ -541,8 +545,11 @@ public final class SceneTransitionCoordinator {
             boolean motionSettled = !evidence.motion.cameraMoving
                     && !evidence.motion.rapidCameraMotion
                     && !evidence.motion.cameraTransformInProgress
+                    && !evidence.motion.motionSettling
                     && holdDuration >= profile.motionSettleNanos;
-            if (motionSettled || holdDuration >= profile.maximumSoftHoldNanos) {
+            if (!evidence.motion.motionSettling
+                    && (motionSettled
+                    || holdDuration >= profile.maximumSoftHoldNanos)) {
                 return beginSoftReacquire(
                         nowNanos,
                         evidence.sourceSequence,

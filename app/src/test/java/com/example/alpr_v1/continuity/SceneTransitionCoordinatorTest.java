@@ -210,6 +210,45 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
+    public void settlingStateDoesNotPretendCurrentMotionOrStartReacquire() {
+        SceneTransitionCoordinator coordinator = coordinator(
+                SceneHandlingMode.DYNAMIC_CONTINUITY
+        );
+        coordinator.observe(
+                weakTargetScene(1L, true, true, true),
+                1_000L
+        );
+        SceneEvidence settling = new SceneEvidence(
+                2L, 20L, true,
+                0.80f, 0.80f, 0f, 0.70f, 0.70f,
+                targetEvidence(
+                        TargetContinuityLevel.PREDICTED_ONLY,
+                        0.10f, 1, 0.10f,
+                        0.20f, 0.20f, 0f, 0f, 0.10f,
+                        false
+                ),
+                VehicleContinuityEvidence.empty(),
+                new MotionExplanationEvidence(
+                        true, false, false, 0f,
+                        false, false, 0f, 0f,
+                        0.20f, 0f,
+                        true
+                ),
+                false, false, false, false
+        );
+
+        SceneTransitionDecision decision = coordinator.observe(
+                settling,
+                2_000_000_000L
+        );
+
+        assertFalse(settling.motion.cameraMoving);
+        assertTrue(settling.motion.motionSettling);
+        assertFalse(decision.action == SceneTransitionAction.SOFT_REACQUIRE);
+        assertEquals(SceneContinuityState.MOTION_HOLD, decision.nextState);
+    }
+
+    @Test
     public void reassociatedVehiclePoolExplainsChangeWithoutFocusedTarget() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY

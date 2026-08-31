@@ -12,6 +12,7 @@ public final class MotionExplanationEvidence {
     public final float compensatedFrameResidual;
     public final float targetContinuityScore;
     public final float vehicleContinuityScore;
+    public final boolean motionSettling;
 
     public MotionExplanationEvidence(
             boolean gyroAvailable,
@@ -24,6 +25,34 @@ public final class MotionExplanationEvidence {
             float compensatedFrameResidual,
             float targetContinuityScore,
             float vehicleContinuityScore
+    ) {
+        this(
+                gyroAvailable,
+                cameraMoving,
+                rapidCameraMotion,
+                angularMotionMagnitude,
+                cameraTransformInProgress,
+                dominantMotionEstimated,
+                globalMotionCoherence,
+                compensatedFrameResidual,
+                targetContinuityScore,
+                vehicleContinuityScore,
+                false
+        );
+    }
+
+    public MotionExplanationEvidence(
+            boolean gyroAvailable,
+            boolean cameraMoving,
+            boolean rapidCameraMotion,
+            float angularMotionMagnitude,
+            boolean cameraTransformInProgress,
+            boolean dominantMotionEstimated,
+            float globalMotionCoherence,
+            float compensatedFrameResidual,
+            float targetContinuityScore,
+            float vehicleContinuityScore,
+            boolean motionSettling
     ) {
         this.gyroAvailable = gyroAvailable;
         this.cameraMoving = cameraMoving;
@@ -45,6 +74,7 @@ public final class MotionExplanationEvidence {
         this.vehicleContinuityScore = Contracts.unit(
                 "vehicleContinuityScore", vehicleContinuityScore
         );
+        this.motionSettling = motionSettling;
     }
 
     public static MotionExplanationEvidence none() {

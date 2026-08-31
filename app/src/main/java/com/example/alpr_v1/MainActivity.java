@@ -122,8 +122,10 @@ import com.example.alpr_v1.tracking.PreviewTrackingFrame;
 import com.example.alpr_v1.tracking.PreviewMotionGenerationGate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.tracking.FrameMotionHistory;
+import com.example.alpr_v1.tracking.FrameMotionQuality;
 import com.example.alpr_v1.tracking.FrameMotionTransform;
 import com.example.alpr_v1.tracking.GlobalLumaMotionTracker;
+import com.example.alpr_v1.tracking.VisualMotionEvidenceDecay;
 import com.example.alpr_v1.ui.OverlayItem;
 import com.example.alpr_v1.vision.SceneAnchorGuard;
 
@@ -180,9 +182,6 @@ public final class MainActivity extends AppCompatActivity {
             50L;
     private static final long PRE_ZOOM_OVERLAY_HOLD_MS =
             120L;
-    private static final long VISUAL_CAMERA_MOTION_SETTLE_NANOS =
-            5_000_000_000L;
-
     private static final class PreviewCoordinationRequest {
         final SourceFrameStamp sourceFrame;
         final ContinuityStamp continuityStamp;
@@ -193,9 +192,16 @@ public final class MainActivity extends AppCompatActivity {
         final boolean trackingLost;
         final boolean trackingDegraded;
         final boolean sensorAvailable;
-        final boolean cameraMoving;
-        final boolean rapidMotion;
+        final boolean sensorMoving;
+        final boolean sensorRapid;
         final float angularMagnitude;
+        final boolean visualMotionEstimated;
+        final boolean visualRapid;
+        final boolean motionSettling;
+        final float visualMotionCoherence;
+        final float visualMotionResidual;
+        final int visualMotionInliers;
+        final float visualMotionSpatialCoverage;
 
         PreviewCoordinationRequest(
                 SourceFrameStamp sourceFrame,
@@ -207,9 +213,16 @@ public final class MainActivity extends AppCompatActivity {
                 boolean trackingLost,
                 boolean trackingDegraded,
                 boolean sensorAvailable,
-                boolean cameraMoving,
-                boolean rapidMotion,
-                float angularMagnitude
+                boolean sensorMoving,
+                boolean sensorRapid,
+                float angularMagnitude,
+                boolean visualMotionEstimated,
+                boolean visualRapid,
+                boolean motionSettling,
+                float visualMotionCoherence,
+                float visualMotionResidual,
+                int visualMotionInliers,
+                float visualMotionSpatialCoverage
         ) {
             this.sourceFrame = sourceFrame;
             this.continuityStamp = continuityStamp;
@@ -223,9 +236,31 @@ public final class MainActivity extends AppCompatActivity {
             this.trackingLost = trackingLost;
             this.trackingDegraded = trackingDegraded;
             this.sensorAvailable = sensorAvailable;
-            this.cameraMoving = cameraMoving;
-            this.rapidMotion = rapidMotion;
+            this.sensorMoving = sensorMoving;
+            this.sensorRapid = sensorRapid;
             this.angularMagnitude = angularMagnitude;
+            this.visualMotionEstimated = visualMotionEstimated;
+            this.visualRapid = visualRapid;
+            this.motionSettling = motionSettling;
+            this.visualMotionCoherence = clamp01(visualMotionCoherence);
+            this.visualMotionResidual = clamp01(visualMotionResidual);
+            this.visualMotionInliers = Math.max(0, visualMotionInliers);
+            this.visualMotionSpatialCoverage = clamp01(
+                    visualMotionSpatialCoverage
+            );
+        }
+
+        boolean currentMotion() {
+            return sensorMoving || visualMotionEstimated;
+        }
+
+        boolean rapidMotion() {
+            return sensorRapid || visualRapid;
+        }
+
+        private static float clamp01(float value) {
+            if (!Float.isFinite(value)) return 0f;
+            return Math.max(0f, Math.min(1f, value));
         }
     }
 
@@ -249,6 +284,8 @@ public final class MainActivity extends AppCompatActivity {
             new FrameMotionHistory();
     private final PreviewMotionGenerationGate previewMotionGenerationGate =
             new PreviewMotionGenerationGate();
+    private final VisualMotionEvidenceDecay visualMotionEvidenceDecay =
+            new VisualMotionEvidenceDecay();
     private final Object previewMotionStateLock = new Object();
     private final PlateOverlayFreshness plateOverlayFreshness =
             new PlateOverlayFreshness();
@@ -309,8 +346,6 @@ public final class MainActivity extends AppCompatActivity {
 
     private volatile boolean previewSceneMonitorRunning;
     private volatile long lastDirectLumaFrameNanos;
-    private volatile long lastVisualCameraMotionRuntimeNanos;
-    private volatile boolean lastVisualCameraMotionRapid;
     private volatile boolean directLumaTrackingUnavailable;
 
 
@@ -697,21 +732,49 @@ public final class MainActivity extends AppCompatActivity {
             LumaFrame frame,
             ContinuityStamp stamp
     ) {
+        List<com.example.alpr_v1.domain.NormalizedBounds> foregroundMasks =
+                recentVehicleForegroundMasks();
         synchronized (previewMotionStateLock) {
             if (previewMotionGenerationGate.enter(stamp)) {
                 globalLumaMotionTracker.reset();
                 frameMotionHistory.reset();
-                lastVisualCameraMotionRuntimeNanos = 0L;
-                lastVisualCameraMotionRapid = false;
+                visualMotionEvidenceDecay.reset();
             }
             FrameMotionTransform motion = globalLumaMotionTracker.update(
                     frame.gray,
                     frame.width,
-                    frame.height
+                    frame.height,
+                    foregroundMasks
             );
             frameMotionHistory.record(frame.timestampNanos, motion);
             return motion;
         }
+    }
+
+    private List<com.example.alpr_v1.domain.NormalizedBounds>
+    recentVehicleForegroundMasks() {
+        AlprPipeline activePipeline = pipeline;
+        if (activePipeline == null) return java.util.Collections.emptyList();
+        VehicleTrackingFrame frame = activePipeline.latestVehicleTrackingFrame();
+        if (frame == null || frame.candidates.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        long maximumAgeNanos = PreviewContinuityUiPolicy
+                .vehicleOverlayMaximumAgeNanos(
+                        activePipeline.lastMpObservationGapNanos()
+                );
+        List<com.example.alpr_v1.domain.NormalizedBounds> masks =
+                new ArrayList<>();
+        for (com.example.alpr_v1.tracking.VehicleCandidate candidate
+                : frame.candidates) {
+            if (candidate != null
+                    && candidate.bounds != null
+                    && candidate.bounds.valid()
+                    && candidate.predictionAgeNanos <= maximumAgeNanos) {
+                masks.add(candidate.bounds);
+            }
+        }
+        return java.util.Collections.unmodifiableList(masks);
     }
 
     private void resetGlobalPreviewMotionState() {
@@ -719,8 +782,7 @@ public final class MainActivity extends AppCompatActivity {
             globalLumaMotionTracker.reset();
             frameMotionHistory.reset();
             previewMotionGenerationGate.reset();
-            lastVisualCameraMotionRuntimeNanos = 0L;
-            lastVisualCameraMotionRapid = false;
+            visualMotionEvidenceDecay.reset();
         }
     }
 
@@ -751,22 +813,31 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         if (isVisualCameraMotion(frameMotion)) {
-            lastVisualCameraMotionRuntimeNanos =
-                    android.os.SystemClock.elapsedRealtimeNanos();
             float frameDx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
             float frameDy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
-            lastVisualCameraMotionRapid =
-                    frameDx * frameDx + frameDy * frameDy >= 0.035f * 0.035f;
+            boolean visualRapid = frameDx * frameDx + frameDy * frameDy
+                    >= 0.035f * 0.035f;
+            visualMotionEvidenceDecay.record(
+                    android.os.SystemClock.elapsedRealtimeNanos(),
+                    frameMotion.quality,
+                    visualRapid
+            );
             android.util.Log.d(
                     "ALPR_GLOBAL_MOTION",
                     String.format(
                             Locale.ROOT,
-                            "timestamp_ns=%d dx=%.5f dy=%.5f inliers=%d error=%.3f",
+                            "timestamp_ns=%d dx=%.5f dy=%.5f inliers=%d "
+                                    + "ratio=%.3f coverage=%.3f quadrants=%d "
+                                    + "coherence=%.3f residual=%.3f",
                             frame.timestampNanos,
                             frameMotion.mapX(0.5f, 0.5f) - 0.5f,
                             frameMotion.mapY(0.5f, 0.5f) - 0.5f,
                             frameMotion.inliers,
-                            frameMotion.meanError
+                            frameMotion.quality.inlierRatio,
+                            frameMotion.quality.spatialCoverage,
+                            frameMotion.quality.occupiedQuadrants,
+                            frameMotion.quality.coherenceScore,
+                            frameMotion.quality.meanResidual
                     )
             );
         }
@@ -834,10 +905,13 @@ public final class MainActivity extends AppCompatActivity {
         boolean moving = motionMonitor != null && motionMonitor.isMoving();
         boolean rapid = motionMonitor != null && motionMonitor.isRapidMotion();
         float angularMagnitude = motionMonitor == null ? 0f : motionMonitor.magnitude();
-        boolean visualMoving = visualCameraMotionFresh();
+        VisualMotionEvidenceDecay.Snapshot visualMotion =
+                visualMotionEvidenceDecay.snapshot(
+                        android.os.SystemClock.elapsedRealtimeNanos()
+                );
+        boolean visualMoving = visualMotion.motionEstimated;
         boolean effectiveMoving = moving || visualMoving;
-        boolean effectiveRapid = rapid
-                || visualMoving && lastVisualCameraMotionRapid;
+        boolean effectiveRapid = rapid || visualMotion.rapid;
         if (pipeline != null) {
             pipeline.setCameraMotionEvidence(
                     sensorAvailable,
@@ -875,9 +949,16 @@ public final class MainActivity extends AppCompatActivity {
                 trackingLost,
                 trackingDegraded,
                 sensorAvailable,
-                effectiveMoving,
-                effectiveRapid,
-                angularMagnitude
+                moving,
+                rapid,
+                angularMagnitude,
+                visualMotion.motionEstimated,
+                visualMotion.rapid,
+                visualMotion.settling,
+                visualMotion.quality.coherenceScore,
+                normalizedMotionResidual(visualMotion.quality),
+                visualMotion.quality.inliers,
+                visualMotion.quality.spatialCoverage
         ));
     }
 
@@ -887,8 +968,8 @@ public final class MainActivity extends AppCompatActivity {
                 || !isCurrentPreviewStamp(request.continuityStamp)) return;
         pendingPreviewCoordination.getAndUpdate(previous -> {
             if (previous != null
-                    && previous.cameraMoving
-                    && !request.cameraMoving) {
+                    && previous.currentMotion()
+                    && !request.currentMotion()) {
                 return previous;
             }
             return request;
@@ -926,8 +1007,8 @@ public final class MainActivity extends AppCompatActivity {
         }
         activePipeline.setCameraMotionEvidence(
                 request.sensorAvailable,
-                request.cameraMoving,
-                request.rapidMotion,
+                request.currentMotion(),
+                request.rapidMotion(),
                 request.angularMagnitude
         );
         if (!activePipeline.setTargetSnapshotIfCurrent(
@@ -947,15 +1028,16 @@ public final class MainActivity extends AppCompatActivity {
                 request.trackingDegraded,
                 new MotionExplanationEvidence(
                         request.sensorAvailable,
-                        request.cameraMoving,
-                        request.rapidMotion,
+                        request.currentMotion(),
+                        request.rapidMotion(),
                         request.angularMagnitude,
                         false,
-                        request.cameraMoving,
-                        request.cameraMoving ? 1f : 0f,
+                        request.visualMotionEstimated,
+                        request.visualMotionCoherence,
+                        request.visualMotionResidual,
                         0f,
                         0f,
-                        0f
+                        request.motionSettling
                 )
         );
         if (PreviewContinuityUiPolicy.requestsRecoveryRebase(decision)) {
@@ -4877,10 +4959,14 @@ public final class MainActivity extends AppCompatActivity {
         CameraMotionMonitor activeMonitor = cameraMotionMonitor;
         boolean sensorAvailable = activeMonitor != null
                 && activeMonitor.isGyroscopeAvailable();
-        boolean visualMoving = visualCameraMotionFresh();
+        VisualMotionEvidenceDecay.Snapshot visualMotion =
+                visualMotionEvidenceDecay.snapshot(
+                        android.os.SystemClock.elapsedRealtimeNanos()
+                );
+        boolean visualMoving = visualMotion.motionEstimated;
         boolean moving = visualMoving
                 || activeMonitor != null && activeMonitor.isMoving();
-        boolean rapid = visualMoving && lastVisualCameraMotionRapid
+        boolean rapid = visualMotion.rapid
                 || activeMonitor != null && activeMonitor.isRapidMotion();
         float angular = activeMonitor == null ? 0f : activeMonitor.magnitude();
         return new MotionExplanationEvidence(
@@ -4890,24 +4976,26 @@ public final class MainActivity extends AppCompatActivity {
                 angular,
                 cameraTransformInProgress,
                 visualMoving,
-                visualMoving ? 1f : 0f,
+                visualMotion.quality.coherenceScore,
+                normalizedMotionResidual(visualMotion.quality),
                 0f,
                 0f,
-                0f
+                visualMotion.settling
         );
     }
 
-    private boolean visualCameraMotionFresh() {
-        long lastMotion = lastVisualCameraMotionRuntimeNanos;
-        return lastMotion > 0L
-                && android.os.SystemClock.elapsedRealtimeNanos() - lastMotion
-                <= VISUAL_CAMERA_MOTION_SETTLE_NANOS;
+    private static float normalizedMotionResidual(FrameMotionQuality quality) {
+        if (quality == null || !Float.isFinite(quality.meanResidual)) return 1f;
+        return Math.max(0f, Math.min(1f, quality.meanResidual / 32f));
     }
 
     private static boolean isVisualCameraMotion(
             FrameMotionTransform frameMotion
     ) {
-        if (frameMotion == null || !frameMotion.valid) return false;
+        if (frameMotion == null
+                || !frameMotion.valid
+                || frameMotion.quality == null
+                || !frameMotion.quality.reliableCameraMotion()) return false;
         float dx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
         float dy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
         return dx * dx + dy * dy >= 0.0025f * 0.0025f;
