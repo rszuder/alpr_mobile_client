@@ -4767,12 +4767,8 @@ public final class MainActivity extends AppCompatActivity {
                 0L,
                 releaseDetails
         );
-        previewPlateTracker.reset();
         targetStateMachine.reset();
-        overlayTracker.reset();
-        latestPipelinePlateItems = java.util.Collections.emptyList();
-        latestPipelinePlateEntityId = 0L;
-        plateOverlayFreshness.reset();
+        clearScanPlateVisualState();
         overlayView.setFocusedTrackId(0L);
         overlayView.setActiveVehicleEntityId(0L);
         /*
@@ -4782,8 +4778,20 @@ public final class MainActivity extends AppCompatActivity {
          */
         // Stan celu jest już zwolniony natychmiast. View wygasza tylko nieruchomą
         // migawkę starej ramki, która nie uczestniczy dalej w trackingu.
-        overlayView.fadeOutPlateItems();
         return true;
+    }
+
+    private void clearScanPlateVisualState() {
+        previewPlateTracker.reset();
+        overlayTracker.reset();
+        plateOverlayFreshness.reset();
+        latestPipelinePlateItems = java.util.Collections.emptyList();
+        latestPipelinePlateEntityId = 0L;
+        latestPreviewMotionItems = java.util.Collections.unmodifiableList(
+                new ArrayList<>(nonPlateOverlayItems(latestPreviewMotionItems))
+        );
+        // RELEASE/switch jest twardą barierą i anuluje również osobną warstwę fade.
+        overlayView.clearPlateItems();
     }
 
     private void refreshPipelineCameraMotionEvidence() {
@@ -5198,12 +5206,7 @@ public final class MainActivity extends AppCompatActivity {
 
         long previousEntityId = scanOverlayPresentationEntityId;
         scanOverlayPresentationEntityId = safeEntityId;
-        overlayTracker.reset();
-        plateOverlayFreshness.reset();
-        if (latestPipelinePlateEntityId != safeEntityId) {
-            latestPipelinePlateItems = java.util.Collections.emptyList();
-            latestPipelinePlateEntityId = 0L;
-        }
+        clearScanPlateVisualState();
         JSONObject details = new JSONObject();
         try {
             details.put("previous_entity_id", previousEntityId);

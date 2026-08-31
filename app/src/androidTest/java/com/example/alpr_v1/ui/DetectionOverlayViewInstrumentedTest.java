@@ -203,6 +203,44 @@ public final class DetectionOverlayViewInstrumentedTest {
     }
 
     @Test
+    public void hardReleaseCancelsCurrentAndFadingPlateImmediately() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<Integer> fadingBeforeRelease = new AtomicReference<>();
+        AtomicReference<Integer> fadingAfterRelease = new AtomicReference<>();
+        AtomicReference<List<OverlayItem>> itemsAfterRelease = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setAnalysisViewportEnabled(true);
+            view.setItems(Arrays.asList(
+                    item(
+                            OverlayItem.Kind.VEHICLE,
+                            new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                            70L
+                    )
+            ), 1920, 1080);
+
+            view.fadeOutPlateItems();
+            fadingBeforeRelease.set(view.fadingPlateCountForTesting());
+            view.clearPlateItems();
+            fadingAfterRelease.set(view.fadingPlateCountForTesting());
+            itemsAfterRelease.set(view.snapshotItemsForTesting());
+        });
+
+        assertEquals(1, (int) fadingBeforeRelease.get());
+        assertEquals(0, (int) fadingAfterRelease.get());
+        assertEquals(1, itemsAfterRelease.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, itemsAfterRelease.get().get(0).kind);
+    }
+
+    @Test
     public void nextPlateDoesNotCancelPreviousFadeButSameTrackDoes() {
         Context context = InstrumentationRegistry.getInstrumentation()
                 .getTargetContext();
