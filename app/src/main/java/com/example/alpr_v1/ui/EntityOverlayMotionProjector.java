@@ -63,6 +63,7 @@ public final class EntityOverlayMotionProjector {
 
             VehicleCandidate candidate = candidates.get(item.trackId);
             if (vehicleFrame != null
+                    && !vehicleFrame.candidates.isEmpty()
                     && item.trackId > 0L
                     && (candidate == null
                     || candidate.predictionAgeNanos

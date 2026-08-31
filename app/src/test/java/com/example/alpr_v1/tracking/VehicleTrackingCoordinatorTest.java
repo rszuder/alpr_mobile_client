@@ -299,6 +299,47 @@ public class VehicleTrackingCoordinatorTest {
         assertEquals(1, coordinator.repository().size());
     }
 
+    @Test
+    public void crossingAndDetectionReorderPreserveBothEntityIds() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame initial = coordinator.updateFromMp(
+                1L,
+                1_000_000_000L,
+                1_000_000_000L,
+                java.util.Arrays.asList(
+                        observation(0.10f, new float[]{1f, 0f}, 0),
+                        observation(0.60f, new float[]{0f, 1f}, 1)
+                )
+        );
+        long entityA = leftmost(initial.candidates).entityId;
+        long entityB = rightmost(initial.candidates).entityId;
+
+        coordinator.updateFromMp(
+                2L,
+                1_100_000_000L,
+                1_100_000_000L,
+                java.util.Arrays.asList(
+                        observation(0.30f, new float[]{1f, 0f}, 0),
+                        observation(0.40f, new float[]{0f, 1f}, 1)
+                )
+        );
+        VehicleTrackingFrame crossedAndReordered = coordinator.updateFromMp(
+                3L,
+                1_200_000_000L,
+                1_200_000_000L,
+                java.util.Arrays.asList(
+                        observation(0.20f, new float[]{0f, 1f}, 0),
+                        observation(0.60f, new float[]{1f, 0f}, 1)
+                )
+        );
+
+        assertEquals(2, crossedAndReordered.candidates.size());
+        assertEquals(entityB, leftmost(crossedAndReordered.candidates).entityId);
+        assertEquals(entityA, rightmost(crossedAndReordered.candidates).entityId);
+        assertFalse(leftmost(crossedAndReordered.candidates).predicted);
+        assertFalse(rightmost(crossedAndReordered.candidates).predicted);
+    }
+
     private static boolean hasEvent(
             List<VehicleTrackingEvent> events,
             String eventType
@@ -321,12 +362,28 @@ public class VehicleTrackingCoordinatorTest {
     }
 
     private static VehicleTrackManager.Observation observation(float left) {
+        return observation(left, new float[]{1f, 0f}, 0);
+    }
+
+    private static VehicleTrackManager.Observation observation(
+            float left,
+            float[] appearance,
+            int sourceIndex
+    ) {
         return new VehicleTrackManager.Observation(
                 new NormalizedBounds(left, 0.2f, left + 0.3f, 0.7f),
                 0.9f,
-                new AppearanceDescriptor(new float[]{1f, 0f}),
-                0
+                new AppearanceDescriptor(appearance),
+                sourceIndex
         );
+    }
+
+    private static VehicleCandidate leftmost(List<VehicleCandidate> candidates) {
+        VehicleCandidate result = candidates.get(0);
+        for (VehicleCandidate candidate : candidates) {
+            if (candidate.bounds.left < result.bounds.left) result = candidate;
+        }
+        return result;
     }
 
     private static VehicleCandidate rightmost(List<VehicleCandidate> candidates) {

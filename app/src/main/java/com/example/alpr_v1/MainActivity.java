@@ -4515,6 +4515,12 @@ public final class MainActivity extends AppCompatActivity {
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
         overlayView.setFocusedTrackId(0L);
+        /*
+         * Bariera musi dotyczyć również aktualnego stanu View. Samo wyczyszczenie
+         * pamięci prezentacji nie usuwa ramki, jeżeli wynik RELEASE nie przejdzie
+         * dalej przez zwykłą ścieżkę setItems().
+         */
+        overlayView.clearPlateItems();
     }
 
     private void refreshPipelineCameraMotionEvidence() {
