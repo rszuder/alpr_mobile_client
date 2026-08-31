@@ -119,6 +119,7 @@ import com.example.alpr_v1.vision.SceneChangeDetector;
 import com.example.alpr_v1.vision.CameraImageConverter;
 import com.example.alpr_v1.tracking.PreviewPlateTracker;
 import com.example.alpr_v1.tracking.PreviewTrackingFrame;
+import com.example.alpr_v1.tracking.PreviewMotionGenerationGate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 import com.example.alpr_v1.tracking.FrameMotionHistory;
 import com.example.alpr_v1.tracking.FrameMotionTransform;
@@ -246,6 +247,9 @@ public final class MainActivity extends AppCompatActivity {
             new GlobalLumaMotionTracker();
     private final FrameMotionHistory frameMotionHistory =
             new FrameMotionHistory();
+    private final PreviewMotionGenerationGate previewMotionGenerationGate =
+            new PreviewMotionGenerationGate();
+    private final Object previewMotionStateLock = new Object();
     private final PlateOverlayFreshness plateOverlayFreshness =
             new PlateOverlayFreshness();
 
@@ -443,6 +447,7 @@ public final class MainActivity extends AppCompatActivity {
                             previewSceneRecoveryRebaseAppliedRevision,
                             runtimeContinuity.state
                     )) {
+                resetGlobalPreviewMotionState();
                 previewSceneDetector.reset();
                 previewSceneDetector.update(previewBitmap);
                 previewSceneAnchorGuard.anchor(previewBitmap);
@@ -544,6 +549,7 @@ public final class MainActivity extends AppCompatActivity {
             if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
                     continuityDecision
             )) {
+                resetGlobalPreviewMotionState();
                 previewSceneRecoveryRebaseRevision.accumulateAndGet(
                         continuityDecision.revision,
                         Math::max
@@ -680,6 +686,44 @@ public final class MainActivity extends AppCompatActivity {
                 && System.nanoTime() - lastFrame < 600_000_000L;
     }
 
+    private boolean isCurrentPreviewStamp(ContinuityStamp stamp) {
+        AlprPipeline activePipeline = pipeline;
+        return activePipeline != null
+                && stamp != null
+                && activePipeline.isCurrentContinuityStamp(stamp);
+    }
+
+    private FrameMotionTransform updatePreviewFrameMotion(
+            LumaFrame frame,
+            ContinuityStamp stamp
+    ) {
+        synchronized (previewMotionStateLock) {
+            if (previewMotionGenerationGate.enter(stamp)) {
+                globalLumaMotionTracker.reset();
+                frameMotionHistory.reset();
+                lastVisualCameraMotionRuntimeNanos = 0L;
+                lastVisualCameraMotionRapid = false;
+            }
+            FrameMotionTransform motion = globalLumaMotionTracker.update(
+                    frame.gray,
+                    frame.width,
+                    frame.height
+            );
+            frameMotionHistory.record(frame.timestampNanos, motion);
+            return motion;
+        }
+    }
+
+    private void resetGlobalPreviewMotionState() {
+        synchronized (previewMotionStateLock) {
+            globalLumaMotionTracker.reset();
+            frameMotionHistory.reset();
+            previewMotionGenerationGate.reset();
+            lastVisualCameraMotionRuntimeNanos = 0L;
+            lastVisualCameraMotionRapid = false;
+        }
+    }
+
     private void processDirectLumaFrame(LumaFrame frame) {
         if (frame == null || !cameraStarted || cameraTransformInProgress
                 || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending) return;
@@ -695,13 +739,17 @@ public final class MainActivity extends AppCompatActivity {
                 frame.timestampDomain
         );
         final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
+        if (!isCurrentPreviewStamp(continuityStamp)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
-        FrameMotionTransform frameMotion = globalLumaMotionTracker.update(
-                frame.gray,
-                frame.width,
-                frame.height
+        FrameMotionTransform frameMotion = updatePreviewFrameMotion(
+                frame,
+                continuityStamp
         );
-        frameMotionHistory.record(frame.timestampNanos, frameMotion);
+        if (!isCurrentPreviewStamp(continuityStamp)) {
+            resetGlobalPreviewMotionState();
+            previewPlateTracker.reset();
+            return;
+        }
         if (isVisualCameraMotion(frameMotion)) {
             lastVisualCameraMotionRuntimeNanos =
                     android.os.SystemClock.elapsedRealtimeNanos();
@@ -735,8 +783,11 @@ public final class MainActivity extends AppCompatActivity {
                         - trackingStartedNanos
         );
         if (trackingFrame == null) return;
-        if (pipeline != null
-                && !pipeline.isCurrentContinuityStamp(continuityStamp)) return;
+        if (!isCurrentPreviewStamp(continuityStamp)) {
+            resetGlobalPreviewMotionState();
+            previewPlateTracker.reset();
+            return;
+        }
         float maximumQuality = 0f;
         int maximumInliers = 0;
         for (com.example.alpr_v1.tracking.TrackedPlate plate
@@ -760,6 +811,12 @@ public final class MainActivity extends AppCompatActivity {
         TargetSnapshot targetAfterTracking = targetStateMachine.onTrackingFrame(
                 trackingFrame
         );
+        if (!isCurrentPreviewStamp(continuityStamp)) {
+            targetStateMachine.reset();
+            previewPlateTracker.reset();
+            resetGlobalPreviewMotionState();
+            return;
+        }
         List<OverlayItem> trackedItems = trackingFrame.overlayItems;
         boolean establishedFocusedTarget = PreviewContinuityUiPolicy
                 .isEstablishedFocusedTarget(
@@ -795,7 +852,8 @@ public final class MainActivity extends AppCompatActivity {
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
                     || transformGeneration != uiCameraTransformGeneration.get()
-                    || cameraTransformInProgress) return;
+                    || cameraTransformInProgress
+                    || !isCurrentPreviewStamp(continuityStamp)) return;
             if (!trackedItems.isEmpty()) {
                 presentTrackedPreviewOverlay(trackedItems, frameMotion);
             } else if (isDynamicCameraMotion()
@@ -806,6 +864,7 @@ public final class MainActivity extends AppCompatActivity {
             }
         });
 
+        if (!isCurrentPreviewStamp(continuityStamp)) return;
         submitPreviewCoordination(new PreviewCoordinationRequest(
                 lumaSourceFrame,
                 continuityStamp,
@@ -823,7 +882,9 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void submitPreviewCoordination(PreviewCoordinationRequest request) {
-        if (request == null || pipeline == null) return;
+        if (request == null
+                || pipeline == null
+                || !isCurrentPreviewStamp(request.continuityStamp)) return;
         pendingPreviewCoordination.getAndUpdate(previous -> {
             if (previous != null
                     && previous.cameraMoving
@@ -859,7 +920,8 @@ public final class MainActivity extends AppCompatActivity {
         if (activePipeline == null
                 || !cameraStarted
                 || request.sceneGeneration != uiSceneGeneration.get()
-                || request.transformGeneration != uiCameraTransformGeneration.get()) {
+                || request.transformGeneration != uiCameraTransformGeneration.get()
+                || !isCurrentPreviewStamp(request.continuityStamp)) {
             return;
         }
         activePipeline.setCameraMotionEvidence(
@@ -868,10 +930,11 @@ public final class MainActivity extends AppCompatActivity {
                 request.rapidMotion,
                 request.angularMagnitude
         );
-        activePipeline.setTargetSnapshotIfCurrent(
+        if (!activePipeline.setTargetSnapshotIfCurrent(
                 request.targetSnapshot,
                 request.continuityStamp
-        );
+        )) return;
+        if (!isCurrentPreviewStamp(request.continuityStamp)) return;
         SceneTransitionDecision decision = activePipeline.onPreviewSceneEvidence(
                 request.sourceFrame,
                 false,
@@ -896,6 +959,7 @@ public final class MainActivity extends AppCompatActivity {
                 )
         );
         if (PreviewContinuityUiPolicy.requestsRecoveryRebase(decision)) {
+            resetGlobalPreviewMotionState();
             previewSceneRecoveryRebaseRevision.accumulateAndGet(
                     decision.revision,
                     Math::max
@@ -913,15 +977,21 @@ public final class MainActivity extends AppCompatActivity {
                             !request.trackedItems.isEmpty()
                     );
             recordPreviewDecisionAuthority(uiOutcome, "direct_luma_async");
+            boolean stampCurrent = isCurrentPreviewStamp(
+                    request.continuityStamp
+            );
             if (uiOutcome.renderCoordinatorDecision) {
                 renderPreviewContinuityDecision(
                         decision,
                         0f,
                         0f,
-                        request.trackedItems
+                        stampCurrent
+                                ? request.trackedItems
+                                : java.util.Collections.emptyList()
                 );
                 return;
             }
+            if (!stampCurrent) return;
             if (uiOutcome.legacyTrackingLossInvalidation) {
                 invalidateUiForLostPreviewTracking();
             }
@@ -2162,11 +2232,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
-
-        globalLumaMotionTracker.reset();
-        frameMotionHistory.reset();
-        lastVisualCameraMotionRuntimeNanos = 0L;
-        lastVisualCameraMotionRapid = false;
+        resetGlobalPreviewMotionState();
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
 
@@ -2589,6 +2655,7 @@ public final class MainActivity extends AppCompatActivity {
         if (reacquiring) {
             if (decision.resetFocusedTracker
                     || action == SceneTransitionAction.SOFT_REACQUIRE) {
+                resetGlobalPreviewMotionState();
                 previewPlateTracker.reset();
                 overlayTracker.reset();
                 latestPipelinePlateItems = java.util.Collections.emptyList();
@@ -2713,11 +2780,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
-
-        globalLumaMotionTracker.reset();
-        frameMotionHistory.reset();
-        lastVisualCameraMotionRuntimeNanos = 0L;
-        lastVisualCameraMotionRapid = false;
+        resetGlobalPreviewMotionState();
 
         previewSceneAnchorGuard.reset();
 
@@ -2922,10 +2985,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayTracker.reset();
 
         previewPlateTracker.reset();
-        globalLumaMotionTracker.reset();
-        frameMotionHistory.reset();
-        lastVisualCameraMotionRuntimeNanos = 0L;
-        lastVisualCameraMotionRapid = false;
+        resetGlobalPreviewMotionState();
 
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
@@ -3742,8 +3802,7 @@ public final class MainActivity extends AppCompatActivity {
              */
             overlayTracker.reset();
             previewPlateTracker.reset();
-            globalLumaMotionTracker.reset();
-            frameMotionHistory.reset();
+            resetGlobalPreviewMotionState();
             targetStateMachine.reset();
             plateOverlayFreshness.reset();
             /*
@@ -4655,8 +4714,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorGuard.reset();
         previewPlateTracker.reset();
         overlayTracker.reset();
-        globalLumaMotionTracker.reset();
-        frameMotionHistory.reset();
+        resetGlobalPreviewMotionState();
         liveHudAwaitingFreshResult = true;
         updateAutoZoomButton();
     }
@@ -4674,8 +4732,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneAnchorGuard.reset();
         previewPlateTracker.reset();
         overlayTracker.reset();
-        globalLumaMotionTracker.reset();
-        frameMotionHistory.reset();
+        resetGlobalPreviewMotionState();
         previewSceneAnchorPending = false;
         liveHudAwaitingFreshResult = true;
         if (keepTarget) {
