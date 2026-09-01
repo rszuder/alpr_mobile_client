@@ -161,6 +161,26 @@ public final class PreviewContinuityUiPolicy {
         );
     }
 
+    /** Chroni nowszy direct-luma overlay przed pustym, opĂłĹşnionym wynikiem pipeline'u. */
+    public static boolean shouldPreserveDynamicVehiclePresentation(
+            boolean dynamicMode,
+            boolean freshResultHasVehicle,
+            boolean previewHasVehicle,
+            boolean directLumaFresh,
+            boolean presentationBarrierActive,
+            long previewGeometryAgeNanos,
+            long maximumVehicleAgeNanos
+    ) {
+        return dynamicMode
+                && !freshResultHasVehicle
+                && previewHasVehicle
+                && directLumaFresh
+                && !presentationBarrierActive
+                && previewGeometryAgeNanos >= 0L
+                && previewGeometryAgeNanos
+                <= Math.max(0L, maximumVehicleAgeNanos);
+    }
+
     public static boolean shouldClearFocusedTargetAfterRecovery(
             boolean vehiclePoolRecovered,
             String recoveryResult

@@ -166,7 +166,18 @@ public final class MainActivity extends AppCompatActivity {
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService previewTrackingExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService directLumaTrackingExecutor =
-            Executors.newSingleThreadExecutor();
+            Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(
+                        () -> {
+                            android.os.Process.setThreadPriority(
+                                    android.os.Process.THREAD_PRIORITY_DISPLAY
+                            );
+                            runnable.run();
+                        },
+                        "alpr-direct-luma"
+                );
+                return thread;
+            });
     private final ExecutorService previewCoordinationExecutor =
             Executors.newSingleThreadExecutor();
     private final ExecutorService pipelineInferenceExecutor = Executors.newSingleThreadExecutor();
@@ -363,6 +374,16 @@ public final class MainActivity extends AppCompatActivity {
     private volatile long lastDirectLumaFrameNanos;
     private volatile long lastDirectLumaSourceTimestampNanos;
     private volatile boolean directLumaTrackingUnavailable;
+    private volatile long previewVehicleGeometryFreshAtNanos;
+    /*
+     * Lokalny KLT ma sens dla ruchu pojedynczego obiektu przy nieruchomej
+     * kamerze. Podczas obrotu telefonu maĹ‚e MP boxy zawierajÄ… za maĹ‚o tekstury
+     * pojazdu i KLT potrafi przykleiÄ‡ siÄ™ do tĹ‚a. Wtedy autorytatywna jest
+     * transformacja caĹ‚ego kadru. Po ruchu czekamy na nowÄ… kotwicÄ™ MP, aby nie
+     * porĂłwnywaÄ‡ klatki sprzed i po obrocie.
+     */
+    private volatile boolean previewVehicleTrackerAwaitingFreshMpAnchor;
+    private volatile boolean previewVehicleTrackerAwaitingFirstLocalFrame;
 
 
     private final Runnable previewSceneMonitorRunnable =
@@ -787,7 +808,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private PreviewFrameMotionSample updatePreviewFrameMotion(
             LumaFrame frame,
-            ContinuityStamp stamp
+            ContinuityStamp stamp,
+            boolean cameraMotionConfirmedBySensor
     ) {
         List<com.example.alpr_v1.domain.NormalizedBounds> foregroundMasks =
                 recentVehicleForegroundMasks();
@@ -809,7 +831,8 @@ public final class MainActivity extends AppCompatActivity {
                     frame.gray,
                     frame.width,
                     frame.height,
-                    foregroundMasks
+                    foregroundMasks,
+                    cameraMotionConfirmedBySensor
             );
             frameMotionHistory.record(frame.timestampNanos, motion);
             return new PreviewFrameMotionSample(motion, sceneChange);
@@ -849,6 +872,8 @@ public final class MainActivity extends AppCompatActivity {
             frameMotionHistory.reset();
             previewMotionGenerationGate.reset();
             visualMotionEvidenceDecay.reset();
+            previewVehicleGeometryFreshAtNanos = 0L;
+            previewVehicleTrackerAwaitingFirstLocalFrame = false;
         }
     }
 
@@ -913,9 +938,13 @@ public final class MainActivity extends AppCompatActivity {
         if (!isCurrentPreviewStamp(continuityStamp)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
         lastDirectLumaSourceTimestampNanos = frame.timestampNanos;
+        CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
+        boolean earlySensorMotion = earlyMotionMonitor != null
+                && earlyMotionMonitor.isMoving();
         PreviewFrameMotionSample motionSample = updatePreviewFrameMotion(
                 frame,
-                continuityStamp
+                continuityStamp,
+                earlySensorMotion
         );
         FrameMotionTransform frameMotion = motionSample.motion;
         if (!isCurrentPreviewStamp(continuityStamp)
@@ -933,9 +962,6 @@ public final class MainActivity extends AppCompatActivity {
                     frameMotion
             );
         }
-        CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
-        boolean earlySensorMotion = earlyMotionMonitor != null
-                && earlyMotionMonitor.isMoving();
         VisualMotionEvidenceDecay.Snapshot earlyVisualMotion =
                 visualMotionEvidenceDecay.snapshot(
                         android.os.SystemClock.elapsedRealtimeNanos()
@@ -961,23 +987,30 @@ public final class MainActivity extends AppCompatActivity {
             );
             return;
         }
-        if (isVisualCameraMotion(frameMotion)) {
+        boolean acceptedCameraMotion = isVisualCameraMotion(frameMotion)
+                || earlySensorMotion
+                && isSensorConfirmedFrameMotion(frameMotion);
+        if (acceptedCameraMotion) {
+            previewVehicleGeometryFreshAtNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos();
             float frameDx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
             float frameDy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
             boolean visualRapid = frameDx * frameDx + frameDy * frameDy
                     >= 0.035f * 0.035f;
-            visualMotionEvidenceDecay.record(
-                    android.os.SystemClock.elapsedRealtimeNanos(),
-                    frameMotion.quality,
-                    visualRapid
-            );
+            if (frameMotion.quality.reliableCameraMotion()) {
+                visualMotionEvidenceDecay.record(
+                        android.os.SystemClock.elapsedRealtimeNanos(),
+                        frameMotion.quality,
+                        visualRapid
+                );
+            }
             android.util.Log.d(
                     "ALPR_GLOBAL_MOTION",
                     String.format(
                             Locale.ROOT,
                             "timestamp_ns=%d dx=%.5f dy=%.5f inliers=%d "
                                     + "ratio=%.3f coverage=%.3f quadrants=%d "
-                                    + "coherence=%.3f residual=%.3f",
+                                    + "coherence=%.3f residual=%.3f sensor_confirmed=%s",
                             frame.timestampNanos,
                             frameMotion.mapX(0.5f, 0.5f) - 0.5f,
                             frameMotion.mapY(0.5f, 0.5f) - 0.5f,
@@ -986,7 +1019,8 @@ public final class MainActivity extends AppCompatActivity {
                             frameMotion.quality.spatialCoverage,
                             frameMotion.quality.occupiedQuadrants,
                             frameMotion.quality.coherenceScore,
-                            frameMotion.quality.meanResidual
+                            frameMotion.quality.meanResidual,
+                            !frameMotion.quality.reliableCameraMotion()
                     )
             );
         }
@@ -997,12 +1031,49 @@ public final class MainActivity extends AppCompatActivity {
                 frame.width,
                 frame.height
         );
-        PreviewTrackingFrame vehicleTrackingFrame =
-                previewVehicleTracker.updateLuma(
-                        frame.gray,
-                        frame.width,
-                        frame.height
+        boolean cameraMotionOwnsVehicleGeometry = earlySensorMotion
+                || earlyVisualMotion.motionEstimated
+                || isVisualCameraMotion(frameMotion);
+        if (cameraMotionOwnsVehicleGeometry
+                && !previewVehicleTrackerAwaitingFreshMpAnchor) {
+            previewVehicleTracker.reset();
+            previewVehicleTrackerAwaitingFreshMpAnchor = true;
+            previewVehicleTrackerAwaitingFirstLocalFrame = false;
+            android.util.Log.d(
+                    "ALPR_VEHICLE_PREVIEW_TRACK",
+                    "mode=GLOBAL_FRAME_MOTION awaiting_fresh_mp_anchor=true"
+            );
+        }
+        if (!cameraMotionOwnsVehicleGeometry
+                && previewVehicleTrackerAwaitingFreshMpAnchor) {
+            long rebaseNowNanos = android.os.SystemClock.elapsedRealtimeNanos();
+            long rebaseMaximumAgeNanos = PreviewContinuityUiPolicy
+                    .vehicleOverlayMaximumAgeNanos(
+                            pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
+                    );
+            long rebaseGeometryAgeNanos = previewVehicleGeometryFreshAtNanos <= 0L
+                    ? Long.MAX_VALUE
+                    : Math.max(0L, rebaseNowNanos - previewVehicleGeometryFreshAtNanos);
+            if (rebaseGeometryAgeNanos <= rebaseMaximumAgeNanos
+                    && countKind(latestPreviewMotionItems, OverlayItem.Kind.VEHICLE) > 0
+                    && latestOverlaySourceWidth > 0
+                    && latestOverlaySourceHeight > 0) {
+                anchorPreviewVehicleTracker(
+                        latestPreviewMotionItems,
+                        latestOverlaySourceWidth,
+                        latestOverlaySourceHeight,
+                        "GLOBAL_PRESENTATION"
                 );
+            }
+        }
+        PreviewTrackingFrame vehicleTrackingFrame =
+                previewVehicleTrackerAwaitingFreshMpAnchor
+                        ? null
+                        : previewVehicleTracker.updateLuma(
+                                frame.gray,
+                                frame.width,
+                                frame.height
+                        );
         long trackingElapsedNanos = Math.max(
                 0L,
                 android.os.SystemClock.elapsedRealtimeNanos()
@@ -1053,6 +1124,11 @@ public final class MainActivity extends AppCompatActivity {
                 : trackingFrame.overlayItems;
         List<OverlayItem> locallyTrackedVehicles =
                 trackedVehicleOverlayItems(vehicleTrackingFrame);
+        if (!locallyTrackedVehicles.isEmpty()) {
+            previewVehicleGeometryFreshAtNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos();
+            previewVehicleTrackerAwaitingFirstLocalFrame = false;
+        }
         boolean establishedFocusedTarget = PreviewContinuityUiPolicy
                 .isEstablishedFocusedTarget(
                         targetBeforeTracking.state,
@@ -1102,7 +1178,8 @@ public final class MainActivity extends AppCompatActivity {
                         frameMotion
                 );
             } else if (isDynamicCameraMotion()
-                    || frameMotion.significant()) {
+                    || frameMotion.significant()
+                    || !locallyTrackedVehicles.isEmpty()) {
                 overlayView.setPreviewItems(
                         dynamicCameraMotionOverlayItems(
                                 trackedItems,
@@ -4287,6 +4364,45 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
 
+        long vehiclePresentationNowNanos =
+                android.os.SystemClock.elapsedRealtimeNanos();
+        long vehiclePresentationMaximumAgeNanos = PreviewContinuityUiPolicy
+                .vehicleOverlayMaximumAgeNanos(
+                        pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
+                );
+        long previewVehicleGeometryAgeNanos =
+                previewVehicleGeometryFreshAtNanos <= 0L
+                        ? Long.MAX_VALUE
+                        : Math.max(
+                                0L,
+                                vehiclePresentationNowNanos
+                                        - previewVehicleGeometryFreshAtNanos
+                        );
+        boolean preserveDynamicVehiclePresentation = PreviewContinuityUiPolicy
+                .shouldPreserveDynamicVehiclePresentation(
+                        effectiveSceneHandlingMode()
+                                == SceneHandlingMode.DYNAMIC_CONTINUITY,
+                        countKind(diagnosticItems, OverlayItem.Kind.VEHICLE) > 0,
+                        countKind(latestPreviewMotionItems, OverlayItem.Kind.VEHICLE) > 0,
+                        directLumaTrackingFresh(),
+                        previewPresentationBarrier.active(),
+                        previewVehicleGeometryAgeNanos,
+                        vehiclePresentationMaximumAgeNanos
+                );
+        if (preserveDynamicVehiclePresentation) {
+            diagnosticItems.clear();
+            diagnosticItems.addAll(nonPlateOverlayItems(latestPreviewMotionItems));
+            android.util.Log.d(
+                    "ALPR_OVERLAY_AUTHORITY",
+                    String.format(
+                            Locale.ROOT,
+                            "preserve=direct_luma age_ms=%.1f vehicles=%d",
+                            previewVehicleGeometryAgeNanos / 1_000_000.0,
+                            countKind(diagnosticItems, OverlayItem.Kind.VEHICLE)
+                    )
+            );
+        }
+
 
         latestDiagnosticOverlayItems =
                 java.util.Collections.unmodifiableList(
@@ -4320,13 +4436,23 @@ public final class MainActivity extends AppCompatActivity {
             latestPipelinePlateEntityId = 0L;
         }
 
+        List<OverlayItem> presentationSourceItems = visibleOverlayItems;
+        if (preserveDynamicVehiclePresentation) {
+            List<OverlayItem> preserved = new ArrayList<>(diagnosticItems);
+            for (OverlayItem item : visibleOverlayItems) {
+                if (item.kind == OverlayItem.Kind.PLATE) preserved.add(item);
+            }
+            presentationSourceItems = java.util.Collections.unmodifiableList(
+                    preserved
+            );
+        }
         List<OverlayItem> presentedOverlayItems = scanReleaseBarrierActive
-                ? nonPlateOverlayItems(visibleOverlayItems)
-                : visibleOverlayItems;
-        if (!containsPlate(visibleOverlayItems)
+                ? nonPlateOverlayItems(presentationSourceItems)
+                : presentationSourceItems;
+        if (!containsPlate(presentationSourceItems)
                 && !scanReleaseBarrierActive
                 && shouldHoldScanPlateGeometry()) {
-            presentedOverlayItems = new ArrayList<>(visibleOverlayItems);
+            presentedOverlayItems = new ArrayList<>(presentationSourceItems);
             for (OverlayItem plate : latestPipelinePlateItems) {
                 presentedOverlayItems.add(new OverlayItem(
                         plate.kind,
@@ -5248,6 +5374,20 @@ public final class MainActivity extends AppCompatActivity {
         return dx * dx + dy * dy >= 0.0025f * 0.0025f;
     }
 
+    private static boolean isSensorConfirmedFrameMotion(
+            FrameMotionTransform frameMotion
+    ) {
+        if (frameMotion == null
+                || !frameMotion.valid
+                || frameMotion.quality == null
+                || !frameMotion.quality.supportsSensorConfirmedCameraMotion()) {
+            return false;
+        }
+        float dx = frameMotion.mapX(0.5f, 0.5f) - 0.5f;
+        float dy = frameMotion.mapY(0.5f, 0.5f) - 0.5f;
+        return dx * dx + dy * dy >= 0.0025f * 0.0025f;
+    }
+
     private void freezeCurrentOverlayAsMemory() {
         if (latestOverlaySourceWidth <= 0 || latestOverlaySourceHeight <= 0) return;
         List<OverlayItem> frozen = memoryOverlayItems(
@@ -5929,7 +6069,36 @@ public final class MainActivity extends AppCompatActivity {
             int sourceWidth,
             int sourceHeight
     ) {
+        anchorPreviewVehicleTracker(
+                diagnostics,
+                sourceWidth,
+                sourceHeight,
+                "MP"
+        );
+    }
+
+    private void anchorPreviewVehicleTracker(
+            List<OverlayItem> diagnostics,
+            int sourceWidth,
+            int sourceHeight,
+            String source
+    ) {
         if (diagnostics == null || diagnostics.isEmpty()) return;
+        if ("MP".equals(source)) {
+            VisualMotionEvidenceDecay.Snapshot visualMotion =
+                    visualMotionEvidenceDecay.snapshot(
+                            android.os.SystemClock.elapsedRealtimeNanos()
+                    );
+            if (isDynamicCameraMotion() || visualMotion.motionEstimated) {
+                previewVehicleTrackerAwaitingFreshMpAnchor = true;
+                previewVehicleTrackerAwaitingFirstLocalFrame = false;
+                android.util.Log.d(
+                        "ALPR_VEHICLE_PREVIEW_TRACK",
+                        "mode=GLOBAL_FRAME_MOTION defer_mp_anchor=true"
+                );
+                return;
+            }
+        }
         List<OverlayItem> anchors = new ArrayList<>();
         for (OverlayItem item : diagnostics) {
             if (item == null
@@ -5953,7 +6122,17 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         if (!anchors.isEmpty()) {
-            previewVehicleTracker.anchor(anchors, sourceWidth, sourceHeight);
+            if (previewVehicleTracker.anchor(anchors, sourceWidth, sourceHeight)) {
+                previewVehicleTrackerAwaitingFreshMpAnchor = false;
+                previewVehicleTrackerAwaitingFirstLocalFrame =
+                        "GLOBAL_PRESENTATION".equals(source);
+                android.util.Log.d(
+                        "ALPR_VEHICLE_PREVIEW_TRACK",
+                        "mode=LOCAL_KLT anchor=true source="
+                                + (source == null ? "UNKNOWN" : source)
+                                + " vehicles=" + anchors.size()
+                );
+            }
         }
     }
 
@@ -6104,10 +6283,43 @@ public final class MainActivity extends AppCompatActivity {
                 candidateMotion = diagnosticMotion;
             }
         }
+        List<OverlayItem> motionTrackedVehicles = locallyTrackedVehicles;
+        long globalGeometryAgeNanos = previewVehicleGeometryFreshAtNanos <= 0L
+                ? Long.MAX_VALUE
+                : Math.max(
+                        0L,
+                        nowNanos - previewVehicleGeometryFreshAtNanos
+                );
+        boolean freshGlobalVehicleGeometry =
+                (previewVehicleTrackerAwaitingFreshMpAnchor
+                        || previewVehicleTrackerAwaitingFirstLocalFrame)
+                        && diagnosticMotion.valid
+                        && globalGeometryAgeNanos
+                        <= maximumVehicleAgeNanos;
+        if (freshGlobalVehicleGeometry) {
+            List<OverlayItem> globalVehicleBase = latestDiagnosticOverlayItems;
+            FrameMotionTransform globalVehicleMotion = diagnosticMotion;
+            if (globalVehicleBase.isEmpty() && !projectionBase.isEmpty()) {
+                /*
+                 * Pojedynczy pusty MP/Scan nie moĹĽe usuwaÄ‡ ostatniej
+                 * geometrii w tej samej chwili, w ktĂłrej bieĹĽÄ…ca klatka daje
+                 * Ĺ›wieĹĽy, wiarygodny ruch kamery. latestPreviewMotionItems sÄ…
+                 * juĹĽ w ukĹ‚adzie poprzedniej klatki, dlatego stosujemy do nich
+                 * tylko transformacjÄ™ frame-to-frame, bez podwĂłjnego cumulative.
+                 */
+                globalVehicleBase = projectionBase;
+                globalVehicleMotion = frameMotion == null
+                        ? FrameMotionTransform.invalid() : frameMotion;
+            }
+            motionTrackedVehicles = globallyTrackedVehicleOverlayItems(
+                    globalVehicleBase,
+                    globalVehicleMotion
+            );
+        }
         List<OverlayItem> projected = entityOverlayMotionProjector.project(
                 projectionBase,
                 plateOnlyOverlayItems(displayableTrackedPlates),
-                locallyTrackedVehicles,
+                motionTrackedVehicles,
                 focusedEntityId,
                 focusedPlateTrackId,
                 vehicleFrame,
@@ -6137,7 +6349,14 @@ public final class MainActivity extends AppCompatActivity {
                 details.put("plate_overlay_count",
                         countKind(projected, OverlayItem.Kind.PLATE));
                 details.put("local_vehicle_overlay_count",
-                        countKind(locallyTrackedVehicles, OverlayItem.Kind.VEHICLE));
+                        countKind(motionTrackedVehicles, OverlayItem.Kind.VEHICLE));
+                details.put(
+                        "vehicle_geometry_source",
+                        freshGlobalVehicleGeometry ? "GLOBAL_FRAME_MOTION" : "LOCAL_KLT"
+                );
+                details.put("global_vehicle_geometry_age_ms",
+                        globalGeometryAgeNanos == Long.MAX_VALUE
+                                ? -1.0 : globalGeometryAgeNanos / 1_000_000.0);
                 details.put(
                         "diagnostic_anchor_timestamp_ns",
                         latestDiagnosticOverlayAnchorTimestampNanos
@@ -6164,15 +6383,40 @@ public final class MainActivity extends AppCompatActivity {
                     String.format(
                             Locale.ROOT,
                             "anchor_ns=%d diagnostic_dx=%.5f candidate_dx=%.5f "
-                                    + "vehicles=%d",
+                                    + "vehicles=%d tracked_vehicles=%d source=%s",
                             latestDiagnosticOverlayAnchorTimestampNanos,
                             diagnosticMotion.mapX(0.5f, 0.5f) - 0.5f,
                             candidateMotion.mapX(0.5f, 0.5f) - 0.5f,
-                            countKind(projected, OverlayItem.Kind.VEHICLE)
+                            countKind(projected, OverlayItem.Kind.VEHICLE),
+                            countKind(motionTrackedVehicles, OverlayItem.Kind.VEHICLE),
+                            freshGlobalVehicleGeometry
+                                    ? "GLOBAL_FRAME_MOTION" : "LOCAL_KLT"
                     )
             );
         }
         return projected;
+    }
+
+    private List<OverlayItem> globallyTrackedVehicleOverlayItems(
+            List<OverlayItem> diagnostics,
+            FrameMotionTransform accumulatedMotion
+    ) {
+        if (diagnostics == null
+                || diagnostics.isEmpty()
+                || accumulatedMotion == null
+                || !accumulatedMotion.valid) {
+            return java.util.Collections.emptyList();
+        }
+        List<OverlayItem> vehicles = new ArrayList<>();
+        for (OverlayItem item : diagnostics) {
+            if (item != null && item.kind == OverlayItem.Kind.VEHICLE) {
+                vehicles.add(item);
+            }
+        }
+        return entityOverlayMotionProjector.compensateInferenceLatency(
+                vehicles,
+                accumulatedMotion
+        );
     }
 
     private static List<OverlayItem> trackedVehicleOverlayItems(

@@ -71,6 +71,85 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     }
 
     @Test
+    public void freshCandidateRebuildsVehicleWhenDiagnosticBaseIsTemporarilyEmpty() {
+        List<OverlayItem> result = projector.project(
+                Collections.emptyList(),
+                Collections.emptyList(),
+                0L,
+                0L,
+                frame(candidate(9L, 0.24f, 0.44f, false)),
+                500_000_000L
+        );
+
+        assertEquals(1, result.size());
+        assertEquals(OverlayItem.Kind.VEHICLE, result.get(0).kind);
+        assertEquals(9L, result.get(0).trackId);
+        assertEquals(0.24f, result.get(0).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
+    public void staleCandidateCannotRebuildMissingDiagnosticVehicle() {
+        VehicleCandidate stale = new VehicleCandidate(
+                9L,
+                109L,
+                new NormalizedBounds(0.24f, 0.10f, 0.44f, 0.50f),
+                0.9f,
+                0.9f,
+                0f,
+                true,
+                3,
+                1L,
+                700_000_001L
+        );
+
+        List<OverlayItem> result = projector.project(
+                Collections.emptyList(),
+                Collections.emptyList(),
+                0L,
+                0L,
+                frame(stale),
+                500_000_000L
+        );
+
+        assertEquals(0, result.size());
+    }
+
+    @Test
+    public void freshLocalTrackerRebuildsVehicleDespiteStaleCandidate() {
+        OverlayItem localVehicle = item(
+                OverlayItem.Kind.VEHICLE, 9L, 0.30f, 0.50f
+        );
+        VehicleCandidate stale = new VehicleCandidate(
+                9L,
+                109L,
+                new NormalizedBounds(0.10f, 0.10f, 0.30f, 0.50f),
+                0.9f,
+                0.9f,
+                0f,
+                true,
+                3,
+                1L,
+                700_000_001L
+        );
+
+        List<OverlayItem> result = projector.project(
+                Collections.emptyList(),
+                Collections.emptyList(),
+                Collections.singletonList(localVehicle),
+                0L,
+                0L,
+                frame(stale),
+                500_000_000L,
+                FrameMotionTransform.invalid(),
+                FrameMotionTransform.invalid()
+        );
+
+        assertEquals(1, result.size());
+        assertEquals(9L, result.get(0).trackId);
+        assertEquals(0.30f, result.get(0).normalizedBounds.left, EPSILON);
+    }
+
+    @Test
     public void vehiclePredictionDisappearsAfterOverlayDeadline() {
         OverlayItem vehicle = item(OverlayItem.Kind.VEHICLE, 4L, 0.10f, 0.30f);
         VehicleCandidate stale = new VehicleCandidate(

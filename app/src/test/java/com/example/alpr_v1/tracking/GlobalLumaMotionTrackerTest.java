@@ -63,6 +63,26 @@ public final class GlobalLumaMotionTrackerTest {
     }
 
     @Test
+    public void recoversLargePositiveHorizontalStep() {
+        int width = 180;
+        int height = 240;
+        byte[] first = textured(width, height);
+        byte[] second = translated(first, width, height, 27, -1);
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+
+        tracker.update(first, width, height);
+        FrameMotionTransform motion = tracker.update(second, width, height);
+
+        assertTrue(motion.valid);
+        assertEquals(27f / width,
+                motion.mapX(0.5f, 0.5f) - 0.5f,
+                0.018f);
+        assertEquals(-1f / height,
+                motion.mapY(0.5f, 0.5f) - 0.5f,
+                0.012f);
+    }
+
+    @Test
     public void foregroundOnlyMotionDoesNotBecomeGlobalCameraMotion() {
         int width = 180;
         int height = 240;
@@ -103,6 +123,58 @@ public final class GlobalLumaMotionTrackerTest {
         );
 
         assertFalse(motion.valid);
+    }
+
+    @Test
+    public void sensorConfirmationAllowsReducedButCoherentSpatialSupport() {
+        int width = 180;
+        int height = 240;
+        byte[] first = textured(width, height);
+        byte[] second = translated(first, width, height, 8, 0);
+        NormalizedBounds rightSideMask = new NormalizedBounds(
+                0.38f, 0f, 1f, 1f
+        );
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+
+        tracker.update(
+                first, width, height,
+                Collections.singletonList(rightSideMask),
+                true
+        );
+        FrameMotionTransform motion = tracker.update(
+                second, width, height,
+                Collections.singletonList(rightSideMask),
+                true
+        );
+
+        assertTrue(motion.valid);
+        assertTrue(motion.quality.supportsSensorConfirmedCameraMotion());
+        assertEquals(8f / width,
+                motion.mapX(0.5f, 0.5f) - 0.5f,
+                0.012f);
+    }
+
+    @Test
+    public void tracksDirectionReversalWithSensorConfirmation() {
+        int width = 180;
+        int height = 240;
+        byte[] origin = textured(width, height);
+        byte[] left = translated(origin, width, height, -18, 0);
+        byte[] returned = translated(origin, width, height, -8, 0);
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+
+        tracker.update(origin, width, height, Collections.emptyList(), true);
+        FrameMotionTransform outward = tracker.update(
+                left, width, height, Collections.emptyList(), true
+        );
+        FrameMotionTransform returning = tracker.update(
+                returned, width, height, Collections.emptyList(), true
+        );
+
+        assertTrue(outward.valid);
+        assertTrue(returning.valid);
+        assertTrue(outward.mapX(0.5f, 0.5f) < 0.5f);
+        assertTrue(returning.mapX(0.5f, 0.5f) > 0.5f);
     }
 
     private static byte[] textured(int width, int height) {

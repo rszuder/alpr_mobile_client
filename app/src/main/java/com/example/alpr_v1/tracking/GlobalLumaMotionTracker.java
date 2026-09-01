@@ -31,6 +31,16 @@ public final class GlobalLumaMotionTracker {
             int height,
             List<NormalizedBounds> foregroundMasks
     ) {
+        return update(gray, width, height, foregroundMasks, false);
+    }
+
+    public synchronized FrameMotionTransform update(
+            byte[] gray,
+            int width,
+            int height,
+            List<NormalizedBounds> foregroundMasks,
+            boolean cameraMotionConfirmedBySensor
+    ) {
         if (gray == null || width < 32 || height < 32
                 || gray.length < width * height) {
             reset();
@@ -106,7 +116,9 @@ public final class GlobalLumaMotionTracker {
                                 affine.ty
                         )
                 );
-                if (normalized.quality.reliableCameraMotion()
+                if ((normalized.quality.reliableCameraMotion()
+                        || cameraMotionConfirmedBySensor
+                        && normalized.quality.supportsSensorConfirmedCameraMotion())
                         && maximumCornerDisplacement(normalized) <= 0.28f) {
                     return normalized;
                 }
@@ -120,14 +132,41 @@ public final class GlobalLumaMotionTracker {
                 height
         );
         if (sparseFallback.valid) return sparseFallback;
+        if (cameraMotionConfirmedBySensor
+                && sparseFallback.quality.supportsSensorConfirmedCameraMotion()) {
+            return sensorConfirmed(sparseFallback);
+        }
 
-        return coarseTranslation(
+        FrameMotionTransform coarse = coarseTranslation(
                 reference,
                 current,
                 width,
                 height,
                 points,
                 combinedForegroundMasks
+        );
+        if (coarse.valid) return coarse;
+        return cameraMotionConfirmedBySensor
+                && coarse.quality.supportsSensorConfirmedCameraMotion()
+                ? sensorConfirmed(coarse)
+                : coarse;
+    }
+
+    private static FrameMotionTransform sensorConfirmed(
+            FrameMotionTransform candidate
+    ) {
+        if (candidate == null) return FrameMotionTransform.invalid();
+        return new FrameMotionTransform(
+                true,
+                candidate.a,
+                candidate.b,
+                candidate.tx,
+                candidate.c,
+                candidate.d,
+                candidate.ty,
+                candidate.inliers,
+                candidate.meanError,
+                candidate.quality
         );
     }
 
@@ -310,39 +349,67 @@ public final class GlobalLumaMotionTracker {
         int endY = height - maximumDy - 4;
         if (endX <= startX || endY <= startY) return Translation.invalid();
 
-        float bestError = Float.POSITIVE_INFINITY;
-        float zeroError = Float.POSITIVE_INFINITY;
-        int bestDx = 0;
-        int bestDy = 0;
-        for (int dy = -maximumDy; dy <= maximumDy; dy++) {
-            for (int dx = -maximumDx; dx <= maximumDx; dx++) {
-                long difference = 0L;
-                int samples = 0;
-                for (int y = startY; y < endY; y += 4) {
-                    int sourceRow = y * width;
-                    int targetRow = (y + dy) * width;
-                    for (int x = startX; x < endX; x += 4) {
-                        if (insideForeground(
-                                x / (float) width,
-                                y / (float) height,
-                                foregroundMasks
-                        )) continue;
-                        difference += Math.abs(
-                                (source[sourceRow + x] & 0xff)
-                                        - (target[targetRow + x + dx] & 0xff)
-                        );
-                        samples++;
-                    }
-                }
-                float error = difference / (float) Math.max(1, samples);
-                if (dx == 0 && dy == 0) zeroError = error;
-                if (error < bestError) {
-                    bestError = error;
-                    bestDx = dx;
-                    bestDy = dy;
-                }
-            }
-        }
+        /*
+         * PeĹ‚na siatka 1 px kosztowaĹ‚a na sĹ‚abszym telefonie ponad 2 s i
+         * sama powodowaĹ‚a utratÄ™ overlayu. Najpierw sprawdzamy caĹ‚y zakres
+         * rzadko, a nastÄ™pnie tylko maĹ‚e otoczenie najlepszego wyniku.
+         */
+        Translation coarse = searchTranslationRange(
+                source,
+                target,
+                width,
+                height,
+                foregroundMasks,
+                startX,
+                endX,
+                startY,
+                endY,
+                -maximumDx,
+                maximumDx,
+                -maximumDy,
+                maximumDy,
+                4,
+                8
+        );
+        if (!coarse.valid) return Translation.invalid();
+
+        int refinementRadius = 5;
+        Translation refined = searchTranslationRange(
+                source,
+                target,
+                width,
+                height,
+                foregroundMasks,
+                startX,
+                endX,
+                startY,
+                endY,
+                Math.max(-maximumDx, coarse.dx - refinementRadius),
+                Math.min(maximumDx, coarse.dx + refinementRadius),
+                Math.max(-maximumDy, coarse.dy - refinementRadius),
+                Math.min(maximumDy, coarse.dy + refinementRadius),
+                1,
+                4
+        );
+        if (!refined.valid) return Translation.invalid();
+
+        float bestError = refined.error;
+        int bestDx = refined.dx;
+        int bestDy = refined.dy;
+        float zeroError = translationError(
+                source,
+                target,
+                width,
+                height,
+                foregroundMasks,
+                startX,
+                endX,
+                startY,
+                endY,
+                0,
+                0,
+                4
+        );
         if (!Float.isFinite(bestError) || bestError > 34f) {
             return Translation.invalid();
         }
@@ -356,6 +423,95 @@ public final class GlobalLumaMotionTracker {
             }
         }
         return new Translation(true, bestDx, bestDy, bestError);
+    }
+
+    private static Translation searchTranslationRange(
+            byte[] source,
+            byte[] target,
+            int width,
+            int height,
+            List<NormalizedBounds> foregroundMasks,
+            int startX,
+            int endX,
+            int startY,
+            int endY,
+            int minimumDx,
+            int maximumDx,
+            int minimumDy,
+            int maximumDy,
+            int motionStep,
+            int sampleStep
+    ) {
+        float bestError = Float.POSITIVE_INFINITY;
+        int bestDx = 0;
+        int bestDy = 0;
+        boolean evaluated = false;
+        int safeMotionStep = Math.max(1, motionStep);
+        for (int dy = minimumDy; dy <= maximumDy; dy += safeMotionStep) {
+            for (int dx = minimumDx; dx <= maximumDx; dx += safeMotionStep) {
+                float error = translationError(
+                        source,
+                        target,
+                        width,
+                        height,
+                        foregroundMasks,
+                        startX,
+                        endX,
+                        startY,
+                        endY,
+                        dx,
+                        dy,
+                        sampleStep
+                );
+                if (error < bestError) {
+                    evaluated = true;
+                    bestError = error;
+                    bestDx = dx;
+                    bestDy = dy;
+                }
+            }
+        }
+        return evaluated
+                ? new Translation(true, bestDx, bestDy, bestError)
+                : Translation.invalid();
+    }
+
+    private static float translationError(
+            byte[] source,
+            byte[] target,
+            int width,
+            int height,
+            List<NormalizedBounds> foregroundMasks,
+            int startX,
+            int endX,
+            int startY,
+            int endY,
+            int dx,
+            int dy,
+            int sampleStep
+    ) {
+        long difference = 0L;
+        int samples = 0;
+        int safeSampleStep = Math.max(1, sampleStep);
+        for (int y = startY; y < endY; y += safeSampleStep) {
+            int sourceRow = y * width;
+            int targetRow = (y + dy) * width;
+            for (int x = startX; x < endX; x += safeSampleStep) {
+                if (insideForeground(
+                        x / (float) width,
+                        y / (float) height,
+                        foregroundMasks
+                )) continue;
+                difference += Math.abs(
+                        (source[sourceRow + x] & 0xff)
+                                - (target[targetRow + x + dx] & 0xff)
+                );
+                samples++;
+            }
+        }
+        return samples <= 0
+                ? Float.POSITIVE_INFINITY
+                : difference / (float) samples;
     }
 
     private static List<SparsePyramidalFlow.Match> translationMatches(

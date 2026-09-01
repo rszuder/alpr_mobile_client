@@ -40,6 +40,20 @@ public final class FrameMotionQuality {
                 && coherenceScore >= 0.55f;
     }
 
+    /**
+     * SĹ‚abszy prĂłg geometrii dozwolony wyĹ‚Ä…cznie wtedy, gdy niezaleĹĽny
+     * ĹĽyroskop potwierdza ruch telefonu. Sam obraz nie moĹĽe uĹĽyÄ‡ tego progu
+     * do klasyfikowania ruchu kamery.
+     */
+    public boolean supportsSensorConfirmedCameraMotion() {
+        return inliers >= 4
+                && inlierRatio >= 0.20f
+                && occupiedQuadrants >= 2
+                && spatialCoverage >= 0.10f
+                && coherenceScore >= 0.35f
+                && meanResidual <= 2.8f;
+    }
+
     public static FrameMotionQuality unavailable(int totalSamples) {
         return new FrameMotionQuality(
                 totalSamples, 0, 0f, 0,

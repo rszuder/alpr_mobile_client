@@ -212,6 +212,34 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
+    public void delayedEmptyPipelineCannotOverwriteFreshDynamicPreviewGeometry() {
+        assertTrue(PreviewContinuityUiPolicy
+                .shouldPreserveDynamicVehiclePresentation(
+                        true, false, true, true, false,
+                        1_200_000_000L, 1_500_000_000L
+                ));
+    }
+
+    @Test
+    public void dynamicPreviewMemoryCannotBypassBarrierOrVehicleDeadline() {
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldPreserveDynamicVehiclePresentation(
+                        true, false, true, true, true,
+                        100_000_000L, 1_500_000_000L
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldPreserveDynamicVehiclePresentation(
+                        true, false, true, true, false,
+                        1_500_000_001L, 1_500_000_000L
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldPreserveDynamicVehiclePresentation(
+                        true, true, true, true, false,
+                        100_000_000L, 1_500_000_000L
+                ));
+    }
+
+    @Test
     public void hardResetIsTheDynamicClearBoundary() {
         SceneTransitionDecision hardReset = new SceneTransitionDecision(
                 9L,

@@ -228,12 +228,82 @@ public final class EntityOverlayMotionProjector {
                     : item);
         }
 
+        /*
+         * PeĹ‚ny wynik pipeline'u moĹĽe chwilowo wyczyĹ›ciÄ‡ diagnostics po
+         * pojedynczym miss MP, podczas gdy domenowy tracker ma juĽĽ nowszy,
+         * Ĺ›wieĹĽy pomiar z kolejnej klatki MP. Bez tej gaĹ‚Ä™zi projector nie ma
+         * elementu bazowego, ktĂłry mĂłgĹ‚by zaktualizowaÄ‡, wiÄ™c ramka wracaĹ‚a
+         * dopiero po zakoĹ„czeniu caĹ‚ego ciÄ™ĹĽkiego cyklu inferencji.
+         */
+        if (measuredVehicles.isEmpty()) {
+            for (VehicleCandidate candidate : candidates.values()) {
+                if (candidate == null
+                        || candidate.entityId <= 0L
+                        || candidate.bounds == null
+                        || !candidate.bounds.valid()
+                        || candidate.predictionAgeNanos
+                        > Math.max(0L, maximumVehicleAgeNanos)) {
+                    continue;
+                }
+                OverlayItem localVehicle = localVehicles.get(candidate.entityId);
+                projected.add(candidateVehicle(
+                        candidate,
+                        localVehicle == null
+                                ? candidate.bounds : normalized(localVehicle.normalizedBounds)
+                ));
+            }
+            for (OverlayItem localVehicle : localVehicles.values()) {
+                if (localVehicle != null
+                        && localVehicle.trackId > 0L
+                        && !containsVehicle(projected, localVehicle.trackId)) {
+                    projected.add(localVehicle);
+                }
+            }
+        }
+
         for (OverlayItem plate : plates) {
             if (plate != null && plate.kind == OverlayItem.Kind.PLATE) {
                 projected.add(plate);
             }
         }
         return Collections.unmodifiableList(projected);
+    }
+
+    private static OverlayItem candidateVehicle(
+            VehicleCandidate candidate,
+            NormalizedBounds bounds
+    ) {
+        return new OverlayItem(
+                OverlayItem.Kind.VEHICLE,
+                new RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+                Collections.emptyList(),
+                "",
+                candidate.entityId,
+                candidate.predicted
+        );
+    }
+
+    private static NormalizedBounds normalized(RectF bounds) {
+        return new NormalizedBounds(
+                bounds.left,
+                bounds.top,
+                bounds.right,
+                bounds.bottom
+        );
+    }
+
+    private static boolean containsVehicle(
+            List<OverlayItem> items,
+            long entityId
+    ) {
+        for (OverlayItem item : items) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.VEHICLE
+                    && item.trackId == entityId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Przenosi kompletny wynik MP/MT z jego klatki źródłowej do bieżącego podglądu. */
