@@ -4137,8 +4137,27 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.clearPlateItems();
         livePresentation.clearResult();
         livePresentation.showMissingModelsStatus(
-                getString(R.string.live_state_models_missing),
+                missingModelsStatusText(),
                 getString(R.string.live_hint_models_missing)
+        );
+    }
+
+    private String missingModelsStatusText() {
+        boolean plateMissing = modelRegistry == null
+                || modelRegistry.getActive(
+                com.example.alpr_v1.model.ModelRole.PLATE
+        ) == null;
+        boolean characterMissing = modelRegistry == null
+                || modelRegistry.getActive(
+                com.example.alpr_v1.model.ModelRole.CHARACTER
+        ) == null;
+        if (plateMissing && characterMissing) {
+            return getString(R.string.live_state_models_missing_both);
+        }
+        return getString(
+                plateMissing
+                        ? R.string.live_state_plate_model_missing
+                        : R.string.live_state_character_model_missing
         );
     }
 

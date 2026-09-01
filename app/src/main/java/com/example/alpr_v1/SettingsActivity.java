@@ -13,6 +13,7 @@ import android.widget.ArrayAdapter;
 
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
@@ -98,6 +99,7 @@ public final class SettingsActivity extends AppCompatActivity {
     private TextInputEditText experimentReplicateIndex;
     private TextInputEditText experimentNotes;
     private ModelRole pendingImportRole;
+    private boolean importInProgress;
 
     private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(
             new ActivityResultContracts.OpenDocument(),
@@ -140,7 +142,16 @@ public final class SettingsActivity extends AppCompatActivity {
         autoTuneManager = new AutoTuneManager(this);
 
         MaterialToolbar toolbar = findViewById(R.id.settings_toolbar);
-        toolbar.setNavigationOnClickListener(view -> finish());
+        toolbar.setNavigationOnClickListener(view -> requestSettingsClose());
+        getOnBackPressedDispatcher().addCallback(
+                this,
+                new OnBackPressedCallback(true) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        requestSettingsClose();
+                    }
+                }
+        );
         modelStatusSummary = findViewById(R.id.settings_model_status_summary);
         vehicleModelStatus = findViewById(R.id.settings_model_status_vehicle);
         plateModelStatus = findViewById(R.id.settings_model_status_plate);
@@ -983,8 +994,21 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void setBusy(boolean busy) {
+        importInProgress = busy;
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
         importButton.setEnabled(!busy);
+    }
+
+    private void requestSettingsClose() {
+        if (importInProgress) {
+            Toast.makeText(
+                    this,
+                    R.string.settings_import_in_progress_wait,
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+        finish();
     }
 
     private void applySystemInsets() {
@@ -1003,7 +1027,11 @@ public final class SettingsActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        backgroundExecutor.shutdownNow();
+        // Import zapisuje duże archiwa. Natychmiastowe przerwanie executora
+        // mogło pozostawić tylko pierwszy model kompletnego pakietu. Pozwalamy
+        // już rozpoczętej transakcji zakończyć się również przy technicznym
+        // odtworzeniu Activity.
+        backgroundExecutor.shutdown();
         super.onDestroy();
     }
 

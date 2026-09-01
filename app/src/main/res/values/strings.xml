@@ -18,7 +18,10 @@
     <string name="live_state_recognizing">Odczytuję numer</string>
     <string name="live_state_confirmed">Numer odczytany</string>
     <string name="live_state_recovering">Szukam tablicy ponownie</string>
-    <string name="live_state_models_missing">Brak wymaganych modeli</string>
+    <string name="live_state_models_missing">Brak modeli tablic lub znaków</string>
+    <string name="live_state_models_missing_both">Brak modeli tablic i znaków</string>
+    <string name="live_state_plate_model_missing">Brak modelu tablic</string>
+    <string name="live_state_character_model_missing">Brak modelu znaków</string>
     <string name="live_state_error">Analiza niedostępna</string>
     <string name="live_hint_tracking">Utrzymuj tablicę w kadrze</string>
     <string name="live_hint_recognizing">Utrzymuj tablicę w kadrze — trwa odczyt numeru</string>
@@ -32,6 +35,7 @@
         <item quantity="other">%d trafienia · cel nadal śledzony</item>
     </plurals>
     <string name="models_missing">Zaimportuj model tablic i model znaków</string>
+    <string name="settings_import_in_progress_wait">Trwa import modeli — poczekaj na jego zakończenie</string>
     <string name="camera_content_description">Podgląd obrazu z kamery</string>
     <string name="result_count_zero">0</string>
     <string name="collection_start">Zbieraj cropy</string>
