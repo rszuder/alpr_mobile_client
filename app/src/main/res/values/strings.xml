@@ -18,11 +18,13 @@
     <string name="live_state_recognizing">Odczytuję numer</string>
     <string name="live_state_confirmed">Numer odczytany</string>
     <string name="live_state_recovering">Szukam tablicy ponownie</string>
+    <string name="live_state_models_missing">Brak wymaganych modeli</string>
     <string name="live_state_error">Analiza niedostępna</string>
     <string name="live_hint_tracking">Utrzymuj tablicę w kadrze</string>
     <string name="live_hint_recognizing">Utrzymuj tablicę w kadrze — trwa odczyt numeru</string>
     <string name="live_hint_confirmed">Numer został potwierdzony</string>
     <string name="live_hint_recovering">Utrzymaj kadr — próbuję ponownie znaleźć tablicę</string>
+    <string name="live_hint_models_missing">Zaimportuj model tablic i model znaków w Opcjach</string>
     <plurals name="live_hit_count">
         <item quantity="one">%d trafienie · cel nadal śledzony</item>
         <item quantity="few">%d trafienia · cel nadal śledzony</item>

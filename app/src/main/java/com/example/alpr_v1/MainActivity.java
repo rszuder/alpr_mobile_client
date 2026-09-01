@@ -3347,7 +3347,8 @@ public final class MainActivity extends AppCompatActivity {
         pipeline.resetTracking();
         if (beginNewMeasurement
                 && vehicleCascadeEnabled
-                && !experimentModeEnabled) {
+                && !experimentModeEnabled
+                && requiredRecognitionModelsAvailable()) {
             long scanStartedRuntimeNanos =
                     android.os.SystemClock.elapsedRealtimeNanos();
             pipeline.startScanRun(
@@ -3413,10 +3414,12 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         livePresentation.clearResult();
-        livePresentation.showState(
-                LivePresentationController.State.SEARCHING,
-                hudRoiLabel() + " · SZUKAM"
-        );
+        if (!syncMissingModelsStatus()) {
+            livePresentation.showState(
+                    LivePresentationController.State.SEARCHING,
+                    hudRoiLabel() + " · SZUKAM"
+            );
+        }
 
         recordInfo(
                 beginNewMeasurement
@@ -4067,7 +4070,10 @@ public final class MainActivity extends AppCompatActivity {
                 presentationState = LivePresentationController.State.SEARCHING;
                 break;
         }
-        if (scanActive) {
+        boolean missingModels = syncMissingModelsStatus();
+        if (missingModels) {
+            overlayView.setActiveVehicleEntityId(0L);
+        } else if (scanActive) {
             showScanUserStatus(scan);
         } else {
             overlayView.setActiveVehicleEntityId(0L);
@@ -4078,6 +4084,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
+        if (syncMissingModelsStatus()) return;
         overlayView.setActiveVehicleGeometryMaximumAgeNanos(
                 PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
@@ -4111,6 +4118,30 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
     }
+
+    private boolean requiredRecognitionModelsAvailable() {
+        return modelRegistry != null && modelRegistry.hasRequiredPipeline();
+    }
+
+    private boolean syncMissingModelsStatus() {
+        if (requiredRecognitionModelsAvailable()) {
+            livePresentation.clearMissingModelsStatus();
+            return false;
+        }
+        showMissingModelsStatus();
+        return true;
+    }
+
+    private void showMissingModelsStatus() {
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.clearPlateItems();
+        livePresentation.clearResult();
+        livePresentation.showMissingModelsStatus(
+                getString(R.string.live_state_models_missing),
+                getString(R.string.live_hint_models_missing)
+        );
+    }
+
     private String hudPipelineLabel() {
         if (experimentModeEnabled) {
             return "EXP " + hudRoiLabel();
@@ -4185,6 +4216,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void presentCurrentResult(PipelineResult result, long observationNanos) {
+        if ("models_missing".equals(result.status)) {
+            showMissingModelsStatus();
+            return;
+        }
         if (result.sceneReset && !isAutoZoomHoldingMemory()) {
 
             clearAutoZoomRecognitionMemory();
@@ -4548,7 +4583,7 @@ public final class MainActivity extends AppCompatActivity {
             }
             collectCrops(result.plateObservations);
         }
-        if ("models_missing".equals(result.status) || "pipeline_error".equals(result.status)) {
+        if ("pipeline_error".equals(result.status)) {
             livePresentation.showState(
                     LivePresentationController.State.ERROR,
                     hudRoiLabel()
@@ -8410,6 +8445,8 @@ public final class MainActivity extends AppCompatActivity {
          */
         modelRegistry.reload();
         pipeline.invalidateModels();
+
+        syncMissingModelsStatus();
 
         lastCaptureByTrack.clear();
 

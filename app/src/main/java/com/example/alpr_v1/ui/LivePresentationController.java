@@ -24,6 +24,7 @@ public final class LivePresentationController {
         RECOGNIZING,
         CONFIRMED,
         RECOVERING,
+        SETUP_REQUIRED,
         ERROR
     }
 
@@ -54,6 +55,7 @@ public final class LivePresentationController {
     private long resultTrackId;
     private String stableResult = "";
     private double stableConfidence;
+    private boolean missingModelsStatusLocked;
     private DiagnosticsVisibilityListener diagnosticsVisibilityListener;
 
     public LivePresentationController(
@@ -91,7 +93,10 @@ public final class LivePresentationController {
     }
 
     public void showState(State next, String secondaryText) {
-        State safeState = next == null ? State.SEARCHING : next;
+        State safeState = resolveStateForMissingModels(
+                next,
+                missingModelsStatusLocked
+        );
         if (state == State.CONFIRMED
                 && resultTray.getVisibility() == View.VISIBLE
                 && (safeState == State.TRACKING || safeState == State.RECOGNIZING)) {
@@ -145,11 +150,27 @@ public final class LivePresentationController {
             CharSequence primary,
             CharSequence hint
     ) {
+        if (missingModelsStatusLocked && next != State.SETUP_REQUIRED) {
+            showState(State.SETUP_REQUIRED, "");
+            return;
+        }
         showState(next, "");
         String primaryText = primary == null ? "" : primary.toString().trim();
         String hintText = hint == null ? "" : hint.toString().trim();
         if (!primaryText.isEmpty()) statusPrimary.setText(primaryText);
         if (!hintText.isEmpty()) calmHint.setText(hintText);
+    }
+
+    public void showMissingModelsStatus(
+            CharSequence primary,
+            CharSequence hint
+    ) {
+        missingModelsStatusLocked = true;
+        showUserStatus(State.SETUP_REQUIRED, primary, hint);
+    }
+
+    public void clearMissingModelsStatus() {
+        missingModelsStatusLocked = false;
     }
 
     public void showResult(
@@ -159,6 +180,7 @@ public final class LivePresentationController {
             boolean stable,
             int hitCount
     ) {
+        if (missingModelsStatusLocked) return;
         String normalized = text == null ? "" : text.trim();
         if (normalized.isEmpty()) return;
         boolean sameResult = trackId == resultTrackId && normalized.equals(stableResult);
@@ -252,6 +274,7 @@ public final class LivePresentationController {
             case RECOGNIZING: return R.string.live_state_recognizing;
             case CONFIRMED: return R.string.live_state_confirmed;
             case RECOVERING: return R.string.live_state_recovering;
+            case SETUP_REQUIRED: return R.string.live_state_models_missing;
             case ERROR: return R.string.live_state_error;
             case SEARCHING:
             default: return R.string.live_state_searching;
@@ -264,6 +287,7 @@ public final class LivePresentationController {
             case RECOGNIZING: return R.string.live_hint_recognizing;
             case CONFIRMED: return R.string.live_hint_confirmed;
             case RECOVERING: return R.string.live_hint_recovering;
+            case SETUP_REQUIRED: return R.string.live_hint_models_missing;
             case ERROR: return R.string.recognition_unavailable;
             case SEARCHING:
             default: return R.string.recognition_searching;
@@ -283,6 +307,10 @@ public final class LivePresentationController {
             case RECOVERING:
                 accentColor = R.color.alpr_warning;
                 backgroundColor = R.color.alpr_status_working;
+                break;
+            case SETUP_REQUIRED:
+                accentColor = R.color.alpr_text_secondary;
+                backgroundColor = R.color.alpr_status_searching;
                 break;
             case ERROR:
                 accentColor = R.color.alpr_error;
@@ -304,5 +332,18 @@ public final class LivePresentationController {
         statusStrip.setBackgroundTintList(ColorStateList.valueOf(
                 ContextCompat.getColor(statusStrip.getContext(), backgroundColor)
         ));
+    }
+
+    static State resolveStateForMissingModels(
+            State requested,
+            boolean missingModels
+    ) {
+        State safe = requested == null ? State.SEARCHING : requested;
+        if (missingModels
+                && safe != State.STOPPED
+                && safe != State.ERROR) {
+            return State.SETUP_REQUIRED;
+        }
+        return safe;
     }
 }
