@@ -393,22 +393,40 @@ final class MobileAlprEngine implements AutoCloseable {
         continuityReacquireTriggerSourceTimestampNanos = Math.max(
                 0L, triggerSourceTimestampNanos
         );
-        continuityEntitiesBefore.clear();
-        for (VehicleEntity entity
-                : vehicleTrackingCoordinator.repository().activeEntities()) {
-            continuityEntitiesBefore.add(entity.entityId());
-        }
         VehicleEntity focused = targetSnapshot == null
                 ? null
                 : vehicleTrackingCoordinator.repository()
                 .findByPlateTrackId(targetSnapshot.trackId);
         continuityActiveEntityId = focused == null ? 0L : focused.entityId();
+        continuityEntitiesBefore.clear();
+        continuityEntitiesBefore.addAll(snapshotVisibleContinuityEntityIds(
+                vehicleTrackingCoordinator.latestFrame(),
+                continuityActiveEntityId
+        ));
         pendingSoftReacquireReport = SoftReacquireReport.none();
         pendingTerminalRecoveryDirective = null;
         latestSoftReacquireVehicles = VehicleContinuityEvidence.empty();
         trackCoordinator.reset();
         mtInferenceScheduler.reset();
         mtInferenceScheduler.forceRefresh("continuity_soft_reacquire");
+    }
+
+    static Set<Long> snapshotVisibleContinuityEntityIds(
+            VehicleTrackingFrame latestFrame,
+            long focusedEntityId
+    ) {
+        Set<Long> visibleEntityIds = new HashSet<>();
+        if (latestFrame != null) {
+            for (VehicleCandidate candidate : latestFrame.candidates) {
+                if (candidate != null && candidate.entityId > 0L) {
+                    visibleEntityIds.add(candidate.entityId);
+                }
+            }
+        }
+        if (focusedEntityId > 0L) {
+            visibleEntityIds.add(focusedEntityId);
+        }
+        return visibleEntityIds;
     }
 
     void releaseFocusedTarget(String reason) {

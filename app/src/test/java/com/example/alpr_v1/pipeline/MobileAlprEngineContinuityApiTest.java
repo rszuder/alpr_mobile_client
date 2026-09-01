@@ -2,13 +2,20 @@ package com.example.alpr_v1.pipeline;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.VehicleContinuityEvidence;
+import com.example.alpr_v1.tracking.VehicleCandidate;
+import com.example.alpr_v1.tracking.VehicleTrackingFrame;
 
 import org.junit.Test;
+
+import java.util.Arrays;
+import java.util.Set;
 
 public final class MobileAlprEngineContinuityApiTest {
     @Test
@@ -81,5 +88,42 @@ public final class MobileAlprEngineContinuityApiTest {
         assertTrue(MobileAlprEngine.shouldContinueForcedFreshMp(stale));
         assertFalse(MobileAlprEngine.shouldContinueForcedFreshMp(waitingForMt));
         assertFalse(MobileAlprEngine.shouldContinueForcedFreshMp(terminal));
+    }
+
+    @Test
+    public void reacquireSnapshotContainsVisiblePoolNotHistoricalRepository() {
+        VehicleTrackingFrame visible = new VehicleTrackingFrame(
+                9L,
+                1_000L,
+                1_010L,
+                0L,
+                Arrays.asList(candidate(11L), candidate(12L), candidate(13L))
+        );
+
+        Set<Long> snapshot = MobileAlprEngine.snapshotVisibleContinuityEntityIds(
+                visible,
+                17L
+        );
+
+        assertEquals(4, snapshot.size());
+        assertTrue(snapshot.contains(11L));
+        assertTrue(snapshot.contains(12L));
+        assertTrue(snapshot.contains(13L));
+        assertTrue(snapshot.contains(17L));
+    }
+
+    private static VehicleCandidate candidate(long entityId) {
+        return new VehicleCandidate(
+                entityId,
+                entityId + 100L,
+                new NormalizedBounds(0.1f, 0.2f, 0.4f, 0.6f),
+                0.9f,
+                0.9f,
+                0.1f,
+                false,
+                0,
+                1_000L,
+                1_010L
+        );
     }
 }
