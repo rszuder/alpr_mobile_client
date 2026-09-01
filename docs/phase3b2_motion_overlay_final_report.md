@@ -6,7 +6,7 @@ Gałąź: `phase3b2-motion-overlay-final-hardening`
 
 Baza audytu: `682461c4c17a57854e22cad2ef9ae83c95eacfe1`
 
-Zwalidowany SHA implementacji: `7d708f38e1fdad25596f606b8e7339755314787f`
+Zwalidowany SHA implementacji: `9f6f34abb29128ada58cbb71cb9fd0f897fd5e03`
 
 Commit utworzenia raportu: `0a80b215ba7084bf9fb0f9b2326c051a825a5a8f`
 
@@ -113,11 +113,16 @@ prezentacji. Regresję pokrywa
 - Blokada jest zdejmowana dopiero po ponownym załadowaniu kompletnego pipeline'u
   MT+MZ. Rzeczywisty błąd kamery nadal może przebić stan konfiguracji.
 - Regresję priorytetu pokrywa `LivePresentationControllerStateTest`.
+- Pasek rozróżnia brak obu modeli, samego MT albo samego MZ.
+- Ekran Opcje blokuje nawigację wstecz podczas aktywnego importu i wyświetla
+  spokojną prośbę o zaczekanie.
+- `SettingsActivity` nie używa już `shutdownNow()` dla trwającego importu, więc
+  techniczne odtworzenie Activity nie przerywa kopiowania dużego pakietu.
 
 ## 3. Walidacja automatyczna
 
 Wszystkie kontrole wykonano ponownie dla SHA
-`7d708f38e1fdad25596f606b8e7339755314787f`.
+`9f6f34abb29128ada58cbb71cb9fd0f897fd5e03`.
 
 | Kontrola | Wynik |
 |---|---|
@@ -253,6 +258,16 @@ powtarzany transient. Podgląd kamery pozostał dostępny. Dowody:
 - `app/build/model_status_now.png`;
 - `app/build/model_status_stable_15s.png`.
 
+Pierwsza próba kompletnego importu ujawniła błąd lifecycle: zamknięcie ekranu
+Opcje wywołało `shutdownNow()` i `ClosedByInterruptException` po zapisaniu tylko
+MP. Po poprawce ponowiono import, pozostając na ekranie do komunikatu końcowego.
+Rejestr zawierał następnie aktywne `vehicle`, `plate`, `character` i kompletny
+`active.package`. Po powrocie do uruchomionej analizy status konfiguracji zniknął
+bez restartu, a HUD pokazał czasy MP/MT oraz ramki pojazdów.
+
+Dowód: `app/build/alpr_import_unlock.png` oraz lokalny wpis
+`SettingsActivity Zaimportowano model: ALPR MP+MT+MZ`.
+
 ## 5. Kryteria odbioru
 
 | Obszar | Kryterium | Wynik |
@@ -270,6 +285,7 @@ powtarzany transient. Podgląd kamery pozostał dostępny. Dowody:
 | Dynamic UI | ciągłość ramek przy pan i ruchu foreground | PASS |
 | Recovery | świeża widoczna pula kończy soft reacquire | PASS |
 | Konfiguracja | brak MT/MZ daje stały neutralny status bez migania | PASS |
+| Import | wyjście nie przerywa aktywnego importu; kompletny pakiet odblokowuje pipeline | PASS |
 
 ## 6. Ograniczenia metodologiczne
 
