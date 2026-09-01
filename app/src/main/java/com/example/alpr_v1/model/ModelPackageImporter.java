@@ -86,7 +86,15 @@ public final class ModelPackageImporter {
     }
 
     private InstalledModel importPackage(InputStream raw) throws ModelPackageException {
-        File staging = new File(new File(context.getCacheDir(), "model-import"), UUID.randomUUID().toString());
+        // Końcowy staging musi znajdować się na tym samym systemie plików co
+        // katalog docelowy. Modele są instalowane w app-specific external
+        // storage, natomiast cache jest prywatny; przeniesienie niepustego
+        // katalogu pomiędzy tymi lokalizacjami nie jest obsługiwane przez
+        // java.nio.Files.move na części urządzeń.
+        File staging = new File(
+                new File(modelsRoot, ".model-import"),
+                UUID.randomUUID().toString()
+        );
         try {
             ensureDirectory(staging);
             extractArchive(raw, staging);

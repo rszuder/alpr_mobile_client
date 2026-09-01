@@ -315,10 +315,11 @@ public final class DetectionOverlayView extends View {
     }
 
     private void removeReappearedFadingPlates(List<OverlayItem> freshItems) {
-        if (fadingPlateRenderItems.isEmpty() || !containsPlateItem(freshItems)) return;
+        if (fadingPlateRenderItems.isEmpty()
+                || !containsFreshPlateItem(freshItems)) return;
         List<RenderItem> retained = new ArrayList<>();
         for (RenderItem fading : fadingPlateRenderItems) {
-            if (!containsPlateTrack(freshItems, fading.item.trackId)) {
+            if (!containsFreshPlateTrack(freshItems, fading.item.trackId)) {
                 retained.add(fading);
             }
         }
@@ -338,9 +339,9 @@ public final class DetectionOverlayView extends View {
             overlayAnimator.cancel();
             overlayAnimator = null;
         }
-        items = Collections.unmodifiableList(new ArrayList<>(
-                previewItems == null ? Collections.emptyList() : previewItems
-        ));
+        items = Collections.unmodifiableList(
+                withoutCarriedFadingPlates(previewItems)
+        );
         rebuildRenderItems();
         postInvalidateOnAnimation();
     }
@@ -355,19 +356,16 @@ public final class DetectionOverlayView extends View {
             int sourceHeight
     ) {
 
-        List<OverlayItem> targetItems =
-                Collections.unmodifiableList(
-                        new ArrayList<>(
-                                newItems == null
-                                        ? Collections.emptyList()
-                                        : newItems
-                        )
-                );
+        List<OverlayItem> incomingItems = new ArrayList<>(
+                newItems == null ? Collections.emptyList() : newItems
+        );
+        removeReappearedFadingPlates(incomingItems);
+        List<OverlayItem> targetItems = Collections.unmodifiableList(
+                withoutCarriedFadingPlates(incomingItems)
+        );
 
         if (targetItems.isEmpty() && !analysisViewportEnabled) {
             cancelPlateFade();
-        } else {
-            removeReappearedFadingPlates(targetItems);
         }
 
 
@@ -1605,10 +1603,46 @@ public final class DetectionOverlayView extends View {
         return bounds == null ? null : new RectF(bounds);
     }
 
-    private static boolean containsPlateItem(List<OverlayItem> source) {
+    private List<OverlayItem> withoutCarriedFadingPlates(
+            List<OverlayItem> source
+    ) {
+        if (source == null || source.isEmpty()) return new ArrayList<>();
+        List<OverlayItem> visible = new ArrayList<>(source.size());
+        for (OverlayItem item : source) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.PLATE
+                    && item.carriedPrediction
+                    && containsRenderTrack(
+                            fadingPlateRenderItems,
+                            item.trackId
+                    )) {
+                continue;
+            }
+            if (item != null) visible.add(item);
+        }
+        return visible;
+    }
+
+    private static boolean containsFreshPlateItem(List<OverlayItem> source) {
         if (source == null) return false;
         for (OverlayItem item : source) {
-            if (item != null && item.kind == OverlayItem.Kind.PLATE) return true;
+            if (item != null
+                    && item.kind == OverlayItem.Kind.PLATE
+                    && !item.carriedPrediction) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsFreshPlateTrack(
+            List<OverlayItem> source,
+            long trackId
+    ) {
+        if (source == null || trackId <= 0L) return false;
+        for (OverlayItem item : source) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.PLATE
+                    && !item.carriedPrediction
+                    && item.trackId == trackId) return true;
         }
         return false;
     }

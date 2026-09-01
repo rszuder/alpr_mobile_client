@@ -106,6 +106,24 @@ public final class PreviewContinuityUiPolicy {
     }
 
     /**
+     * Direct-luma może prewencyjnie zamknąć prezentację np. przy skoku
+     * ekspozycji. Jeżeli bitmapa tej samej generacji oraz koordynator zgodnie
+     * potwierdzają stabilną scenę, bariera nie ma właściciela recovery i musi
+     * zostać domknięta przed następną klatką pipeline'u.
+     */
+    public static boolean shouldCommitStablePresentationBarrier(
+            boolean barrierActive,
+            boolean rawPreviewChanged,
+            SceneTransitionDecision decision
+    ) {
+        return barrierActive
+                && !rawPreviewChanged
+                && decision != null
+                && decision.action == SceneTransitionAction.NONE
+                && decision.nextState == SceneContinuityState.STABLE;
+    }
+
+    /**
      * Duża zmiana bez dowodu ruchu kamery musi zamknąć prezentację przed
      * wejściem do ciężkiego, potencjalnie zablokowanego koordynatora.
      */
@@ -187,6 +205,23 @@ public final class PreviewContinuityUiPolicy {
     ) {
         return vehiclePoolRecovered
                 && "VEHICLE_POOL_RECOVERED".equals(recoveryResult);
+    }
+
+    /**
+     * Znalezienie tablicy kończy wizualny etap „analizuję ten pojazd”.
+     * Ramka PLATE przejmuje wtedy uwagę, więc oscylujący marker nie może
+     * sugerować, że ta sama analiza nadal trwa.
+     */
+    public static long activeVehicleMarkerEntityId(
+            long activeEntityId,
+            long presentedPlateEntityId,
+            boolean plateGeometryVisible
+    ) {
+        long safeActiveEntityId = Math.max(0L, activeEntityId);
+        boolean plateBelongsToActiveEntity = plateGeometryVisible
+                && safeActiveEntityId > 0L
+                && presentedPlateEntityId == safeActiveEntityId;
+        return plateBelongsToActiveEntity ? 0L : safeActiveEntityId;
     }
 
     public static boolean isEstablishedFocusedTarget(

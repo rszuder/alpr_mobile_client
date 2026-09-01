@@ -34,6 +34,21 @@ public final class PreviewPresentationBarrier {
         return active && generation == expectedGeneration;
     }
 
+    /** Czy klatka została pobrana w nadal obowiązującej generacji UI. */
+    public synchronized boolean matchesGeneration(long expectedGeneration) {
+        return generation == expectedGeneration;
+    }
+
+    /**
+     * Atomowo zatwierdza referencję pobraną dla wskazanej generacji.
+     * Nowsza aktywacja bariery unieważnia starą bitmapę i zwraca -1.
+     */
+    public synchronized long commitRebase(long expectedGeneration) {
+        if (generation != expectedGeneration) return -1L;
+        active = false;
+        return ++generation;
+    }
+
     public synchronized void reset() {
         active = false;
         generation++;

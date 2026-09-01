@@ -26,12 +26,15 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @RunWith(AndroidJUnit4.class)
 public final class RuntimeCompositionInstrumentedTest {
     private Context context;
     private Context targetContext;
     private File isolatedFiles;
+    private File isolatedExternalFiles;
     private String suffix;
 
     @Before
@@ -39,7 +42,14 @@ public final class RuntimeCompositionInstrumentedTest {
         suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
         isolatedFiles = new File(targetContext.getCacheDir(), "composition-fixture-" + suffix);
+        File androidProvidedRoot = targetContext.getExternalFilesDir(null);
+        assertNotNull(androidProvidedRoot);
+        isolatedExternalFiles = new File(
+                androidProvidedRoot,
+                "composition-external-fixture-" + suffix
+        );
         assertTrue(isolatedFiles.mkdirs() || isolatedFiles.isDirectory());
+        assertTrue(isolatedExternalFiles.mkdirs() || isolatedExternalFiles.isDirectory());
         context = new ContextWrapper(targetContext) {
             @Override
             public Context getApplicationContext() {
@@ -49,6 +59,11 @@ public final class RuntimeCompositionInstrumentedTest {
             @Override
             public File getFilesDir() {
                 return isolatedFiles;
+            }
+
+            @Override
+            public File getExternalFilesDir(String type) {
+                return isolatedExternalFiles;
             }
 
             @Override
@@ -65,6 +80,7 @@ public final class RuntimeCompositionInstrumentedTest {
         context.getSharedPreferences("model_registry", Context.MODE_PRIVATE).edit().clear().commit();
         context.getSharedPreferences("autotune", Context.MODE_PRIVATE).edit().clear().commit();
         deleteRecursively(isolatedFiles);
+        deleteRecursively(isolatedExternalFiles);
     }
 
     @Test
@@ -79,7 +95,7 @@ public final class RuntimeCompositionInstrumentedTest {
 
         ModelRegistry registry = new ModelRegistry(context);
         assertEquals(
-                new File(isolatedFiles, "models").getCanonicalPath(),
+                new File(isolatedExternalFiles, "models").getCanonicalPath(),
                 registry.modelsRoot().getCanonicalPath()
         );
         assertEquals(2, registry.getInstalled(ModelRole.PLATE).size());
@@ -115,10 +131,69 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     @Test
+    public void legacyPrivateModelIsCopiedToAndroidProvidedDirectory() throws Exception {
+        String storage = "legacy-plate-" + suffix;
+        File legacy = new File(isolatedFiles, "models/plate/" + storage);
+        assertTrue(legacy.mkdirs() || legacy.isDirectory());
+        Files.write(
+                new File(legacy, "manifest.json").toPath(),
+                modelManifest(ModelRole.PLATE, storage)
+                        .toString()
+                        .getBytes(StandardCharsets.UTF_8)
+        );
+
+        ModelRegistry registry = new ModelRegistry(context);
+
+        File migrated = new File(isolatedExternalFiles, "models/plate/" + storage);
+        assertTrue(new File(migrated, "manifest.json").isFile());
+        assertTrue(new File(legacy, "manifest.json").isFile());
+        assertNotNull(findStorage(registry.getInstalled(ModelRole.PLATE), storage));
+    }
+
+    @Test
+    public void modelImportPublishesFromPrivateCacheToAndroidProvidedDirectory() throws Exception {
+        byte[] modelBytes = new byte[]{1, 3, 3, 7};
+        String modelId = "external-import-" + suffix;
+        JSONObject manifest = modelManifest(ModelRole.CHARACTER, modelId);
+        manifest.put("variants", new JSONArray().put(
+                new JSONObject()
+                        .put("id", "tflite-fp32")
+                        .put("runtime", "tflite")
+                        .put("precision", "fp32")
+                        .put("file", "variants/model.tflite")
+                        .put("sha256", new JSONObject().put(
+                                "variants/model.tflite",
+                                Hashing.sha256(modelBytes)
+                        ))
+        ));
+        ModelManifest.parse(manifest.toString());
+        File archive = new File(isolatedFiles, modelId + ".alprmodel");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive.toPath()))) {
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(manifest.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("variants/model.tflite"));
+            zip.write(modelBytes);
+            zip.closeEntry();
+        }
+
+        File modelsRoot = new File(isolatedExternalFiles, "models");
+        InstalledModel installed = new ModelPackageImporter(context, modelsRoot)
+                .importPackage(archive);
+
+        assertTrue(installed.directory().getCanonicalPath().startsWith(
+                modelsRoot.getCanonicalPath() + File.separator
+        ));
+        assertTrue(new File(installed.directory(), "manifest.json").isFile());
+        assertTrue(new File(installed.directory(), "variants/model.tflite").isFile());
+        assertTrue(installed.sourceArchive().isFile());
+    }
+
+    @Test
     public void manualVariantOverridesAutoAndSupportsNcnn() throws Exception {
         String storage = "plate-variants-" + suffix;
         writeModel(ModelRole.PLATE, storage, "plate-variants-" + suffix);
-        File directory = new File(context.getFilesDir(), "models/plate/" + storage);
+        File directory = new File(isolatedExternalFiles, "models/plate/" + storage);
         InstalledModel model = new InstalledModel(
                 ModelManifest.parse(modelManifest(
                         ModelRole.PLATE, "plate-variants-" + suffix
@@ -176,7 +251,7 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     private void writeModel(ModelRole role, String storageId, String modelId) throws Exception {
-        File directory = new File(new File(context.getFilesDir(), "models"),
+        File directory = new File(new File(isolatedExternalFiles, "models"),
                 role.wireName() + "/" + storageId);
         assertTrue(directory.mkdirs() || directory.isDirectory());
         JSONObject manifest = modelManifest(role, modelId);
@@ -188,7 +263,7 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     private void writeNcnnOnlyVehicle(String storageId, String modelId) throws Exception {
-        File directory = new File(new File(context.getFilesDir(), "models"),
+        File directory = new File(new File(isolatedExternalFiles, "models"),
                 "vehicle/" + storageId);
         assertTrue(directory.mkdirs() || directory.isDirectory());
         JSONObject manifest = modelManifest(ModelRole.VEHICLE, modelId);
@@ -215,7 +290,7 @@ public final class RuntimeCompositionInstrumentedTest {
     private String writePackage(String plateStorage, String characterStorage) throws Exception {
         String packageId = "composition-" + suffix;
         String storageId = packageId + "-fingerprint" + suffix;
-        File directory = new File(context.getFilesDir(), "alpr-packages/" + storageId);
+        File directory = new File(isolatedExternalFiles, "alpr-packages/" + storageId);
         assertTrue(directory.mkdirs() || directory.isDirectory());
 
         JSONObject models = new JSONObject()
@@ -261,7 +336,7 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     private void addVehicleToPackage(String packageStorage, String vehicleStorage) throws Exception {
-        File directory = new File(context.getFilesDir(), "alpr-packages/" + packageStorage);
+        File directory = new File(isolatedExternalFiles, "alpr-packages/" + packageStorage);
         File manifestFile = new File(directory, "manifest.json");
         JSONObject manifest = new JSONObject(
                 new String(Files.readAllBytes(manifestFile.toPath()), StandardCharsets.UTF_8)

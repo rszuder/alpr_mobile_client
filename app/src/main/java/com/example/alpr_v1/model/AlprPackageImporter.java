@@ -178,7 +178,13 @@ public final class AlprPackageImporter {
         ModelPackageImporter.ensureDirectory(packagesRoot);
         File destination = new File(packagesRoot, manifest.packageId() + "-" + fingerprint);
         if (!destination.exists()) {
-            File record = new File(new File(context.getCacheDir(), "alpr-package-record"), UUID.randomUUID().toString());
+            // Rekord powstaje obok katalogu docelowego. Dzięki temu publikacja
+            // kompletnego pakietu jest atomowym rename także wtedy, gdy modele
+            // są przechowywane w pamięci współdzielonej aplikacji.
+            File record = new File(
+                    new File(packagesRoot, ".package-import"),
+                    UUID.randomUUID().toString()
+            );
             try {
                 ModelPackageImporter.ensureDirectory(record);
                 Files.write(new File(record, "manifest.json").toPath(), manifestBytes);

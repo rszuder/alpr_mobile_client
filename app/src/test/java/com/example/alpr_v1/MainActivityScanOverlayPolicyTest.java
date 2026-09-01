@@ -12,11 +12,13 @@ import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
 import com.example.alpr_v1.acquisition.ScanAcquisitionStats;
 import com.example.alpr_v1.acquisition.ScanRunState;
 import com.example.alpr_v1.continuity.ContinuityStamp;
+import com.example.alpr_v1.continuity.SourceTimestampDomain;
 import com.example.alpr_v1.domain.TargetSessionState;
 import com.example.alpr_v1.pipeline.MtReason;
 import com.example.alpr_v1.pipeline.MtWorkKind;
 import com.example.alpr_v1.pipeline.PlateGeometry;
 import com.example.alpr_v1.pipeline.PlateObservation;
+import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.PlateVehicleAssociation;
 import com.example.alpr_v1.pipeline.TemporalCharacterAggregator;
 import com.example.alpr_v1.ui.OverlayItem;
@@ -148,6 +150,74 @@ public final class MainActivityScanOverlayPolicyTest {
     }
 
     @Test
+    public void releaseKeepsOnlyFreshPlateFromSameTerminalPipelineResult() {
+        ContinuityStamp currentStamp = new ContinuityStamp(
+                1L, 8L, 0L, 359L, 123_000L,
+                SourceTimestampDomain.CAMERAX_SENSOR
+        );
+        PlateObservation current = observation(
+                4L, 404L, 40L, currentStamp
+        );
+        PipelineResult result = new PipelineResult(
+                "recognized",
+                "",
+                Collections.emptyList(),
+                Arrays.asList(
+                        overlay(OverlayItem.Kind.VEHICLE, 4L),
+                        overlay(OverlayItem.Kind.PLATE, 404L)
+                ),
+                480,
+                640,
+                Collections.singletonList(current),
+                false,
+                currentStamp
+        );
+
+        assertEquals(
+                Collections.singleton(404L),
+                MainActivity.terminalFreshReleasePlateTrackIds(
+                        snapshot(41L, 0L),
+                        result
+                )
+        );
+    }
+
+    @Test
+    public void releaseStillRejectsHistoricalPlateFromPreviousSourceFrame() {
+        ContinuityStamp resultStamp = new ContinuityStamp(
+                1L, 8L, 0L, 359L, 123_000L,
+                SourceTimestampDomain.CAMERAX_SENSOR
+        );
+        ContinuityStamp historicalStamp = new ContinuityStamp(
+                1L, 8L, 0L, 358L, 122_000L,
+                SourceTimestampDomain.CAMERAX_SENSOR
+        );
+        PipelineResult result = new PipelineResult(
+                "recognized",
+                "",
+                Collections.emptyList(),
+                Collections.singletonList(
+                        overlay(OverlayItem.Kind.PLATE, 404L)
+                ),
+                480,
+                640,
+                Collections.singletonList(
+                        observation(4L, 404L, 40L, historicalStamp)
+                ),
+                false,
+                resultStamp
+        );
+
+        assertEquals(
+                Collections.emptySet(),
+                MainActivity.terminalFreshReleasePlateTrackIds(
+                        snapshot(41L, 0L),
+                        result
+                )
+        );
+    }
+
+    @Test
     public void onlyNewestPlateTrackOfPresentationEntityIsAllowed() {
         Set<Long> tracks = MainActivity.scanPlateTrackIds(
                 7L,
@@ -180,6 +250,16 @@ public final class MainActivityScanOverlayPolicyTest {
                         )
                 )
         );
+    }
+
+    @Test
+    public void intermediateMtStageRequiresCurrentExactScanEntity() {
+        assertEquals(true, MainActivity.shouldPresentScanMtStage(
+                snapshot(50L, 7L)
+        ));
+        assertEquals(false, MainActivity.shouldPresentScanMtStage(
+                snapshot(51L, 0L)
+        ));
     }
 
     private static ScanAcquisitionSnapshot snapshot(
@@ -261,6 +341,20 @@ public final class MainActivityScanOverlayPolicyTest {
             long plateTrackId,
             long directiveRevision
     ) {
+        return observation(
+                entityId,
+                plateTrackId,
+                directiveRevision,
+                ContinuityStamp.initial(1L)
+        );
+    }
+
+    private static PlateObservation observation(
+            long entityId,
+            long plateTrackId,
+            long directiveRevision,
+            ContinuityStamp continuityStamp
+    ) {
         return new PlateObservation(
                 plateTrackId,
                 PlateVehicleAssociation.direct(entityId, entityId + 1000L, "test"),
@@ -289,7 +383,7 @@ public final class MainActivityScanOverlayPolicyTest {
                 Collections.emptyList(),
                 "",
                 "TEST",
-                ContinuityStamp.initial(1L),
+                continuityStamp,
                 directiveRevision
         );
     }

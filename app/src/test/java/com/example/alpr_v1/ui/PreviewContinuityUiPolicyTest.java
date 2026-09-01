@@ -138,6 +138,45 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
+    public void stableBitmapClosesOrphanedDirectLumaBarrier() {
+        SceneTransitionDecision stable = SceneTransitionDecision.none(
+                12L,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                ContinuityAssessment.none()
+        );
+        SceneTransitionDecision reacquiring = new SceneTransitionDecision(
+                13L,
+                SceneTransitionAction.SOFT_REACQUIRE,
+                SceneHandlingMode.DYNAMIC_CONTINUITY,
+                SceneContinuityState.REACQUIRING,
+                ContinuityAssessment.none(),
+                true, true, true,
+                true, false, true,
+                true, true,
+                false, true, true,
+                true, false,
+                "test_reacquire"
+        );
+
+        assertTrue(PreviewContinuityUiPolicy
+                .shouldCommitStablePresentationBarrier(
+                        true, false, stable
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldCommitStablePresentationBarrier(
+                        false, false, stable
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldCommitStablePresentationBarrier(
+                        true, true, stable
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldCommitStablePresentationBarrier(
+                        true, false, reacquiring
+                ));
+    }
+
+    @Test
     public void abruptUnexplainedSceneChangeActivatesPresentationBarrier() {
         assertTrue(PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
                 true, 0.47f, false, false
@@ -345,6 +384,19 @@ public final class PreviewContinuityUiPolicyTest {
         assertTrue(PreviewContinuityUiPolicy.isEstablishedFocusedTarget(
                 TargetSnapshot.State.DEGRADED,
                 44L
+        ));
+    }
+
+    @Test
+    public void freshPlateGeometryReplacesAnalysisMarkerForSameEntity() {
+        assertEquals(0L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+                7L, 7L, true
+        ));
+        assertEquals(7L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+                7L, 7L, false
+        ));
+        assertEquals(8L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+                8L, 7L, true
         ));
     }
 }

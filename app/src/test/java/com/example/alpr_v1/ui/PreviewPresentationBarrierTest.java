@@ -35,4 +35,31 @@ public final class PreviewPresentationBarrierTest {
         assertFalse(barrier.permits(recoveryCallback));
         assertTrue(barrier.permits(barrier.capture()));
     }
+
+    @Test
+    public void staleBitmapCannotCommitAcrossNewerBarrierActivation() {
+        PreviewPresentationBarrier barrier = new PreviewPresentationBarrier();
+        long staleBitmapGeneration = barrier.capture();
+
+        barrier.activate();
+
+        assertFalse(barrier.matchesGeneration(staleBitmapGeneration));
+        assertTrue(barrier.commitRebase(staleBitmapGeneration) < 0L);
+        assertTrue(barrier.active());
+    }
+
+    @Test
+    public void bitmapCapturedInsideActiveBarrierCommitsNewReference() {
+        PreviewPresentationBarrier barrier = new PreviewPresentationBarrier();
+        barrier.activate();
+        long recoveryBitmapGeneration = barrier.capture();
+
+        long committedGeneration = barrier.commitRebase(
+                recoveryBitmapGeneration
+        );
+
+        assertTrue(committedGeneration > recoveryBitmapGeneration);
+        assertFalse(barrier.active());
+        assertTrue(barrier.permits(barrier.capture()));
+    }
 }

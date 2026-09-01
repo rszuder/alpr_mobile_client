@@ -7,13 +7,19 @@ import android.util.Log;
 import com.example.alpr_v1.inference.RuntimeBackendFactory;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 public final class ModelRegistry {
     private static final String TAG = "ModelRegistry";
@@ -31,9 +37,24 @@ public final class ModelRegistry {
     private InstalledAlprPackage basePackage;
 
     public ModelRegistry(Context context) {
-        this.modelsRoot = new File(context.getFilesDir(), "models");
-        this.packagesRoot = new File(context.getFilesDir(), "alpr-packages");
+        File appStorage = context.getExternalFilesDir(null);
+        File privateStorage = context.getFilesDir();
+        if (appStorage == null) {
+            appStorage = privateStorage;
+            Log.w(TAG, "Pamięć współdzielona aplikacji jest niedostępna; używam katalogu prywatnego");
+        }
+        this.modelsRoot = new File(appStorage, "models");
+        this.packagesRoot = new File(appStorage, "alpr-packages");
         this.preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!samePath(appStorage, privateStorage)) {
+            migrateLegacyDirectory(new File(privateStorage, "models"), modelsRoot, true);
+            migrateLegacyDirectory(
+                    new File(privateStorage, "alpr-packages"),
+                    packagesRoot,
+                    false
+            );
+        }
+        Log.i(TAG, "Katalog modeli: " + modelsRoot.getAbsolutePath());
         reload();
     }
 
@@ -316,6 +337,102 @@ public final class ModelRegistry {
     private static boolean sameModel(InstalledModel left, InstalledModel right) {
         if (left == null || right == null) return left == right;
         return left.storageId().equals(right.storageId());
+    }
+
+    private static boolean samePath(File left, File right) {
+        try {
+            return left.getCanonicalFile().equals(right.getCanonicalFile());
+        } catch (IOException ignored) {
+            return left.getAbsoluteFile().equals(right.getAbsoluteFile());
+        }
+    }
+
+    /**
+     * Jednorazowo kopiuje instalacje ze starego, prywatnego katalogu. Źródło pozostaje
+     * nietknięte, a każdy katalog modelu/pakietu staje się widoczny dopiero po pełnym
+     * skopiowaniu, dzięki czemu przerwany transfer nie tworzy częściowej instalacji.
+     */
+    private static void migrateLegacyDirectory(File sourceRoot, File destinationRoot, boolean grouped) {
+        if (!sourceRoot.isDirectory()) return;
+        try {
+            if (grouped) {
+                File[] groups = sourceRoot.listFiles(File::isDirectory);
+                if (groups == null) return;
+                for (File group : groups) {
+                    File destinationGroup = new File(destinationRoot, group.getName());
+                    File[] installations = group.listFiles(File::isDirectory);
+                    if (installations == null) continue;
+                    for (File installation : installations) {
+                        copyDirectoryAtomically(
+                                installation,
+                                new File(destinationGroup, installation.getName())
+                        );
+                    }
+                }
+            } else {
+                File[] installations = sourceRoot.listFiles(File::isDirectory);
+                if (installations == null) return;
+                for (File installation : installations) {
+                    copyDirectoryAtomically(
+                            installation,
+                            new File(destinationRoot, installation.getName())
+                    );
+                }
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Nie udało się przenieść starszej instalacji modeli", error);
+        }
+    }
+
+    private static void copyDirectoryAtomically(File source, File destination) throws IOException {
+        if (destination.exists()) return;
+        File parent = destination.getParentFile();
+        if (parent == null) throw new IOException("Brak katalogu nadrzędnego: " + destination);
+        Files.createDirectories(parent.toPath());
+        File staging = new File(
+                parent,
+                "." + destination.getName() + "-migration-" + UUID.randomUUID()
+        );
+        try {
+            Path sourcePath = source.toPath();
+            Path stagingPath = staging.toPath();
+            try (java.util.stream.Stream<Path> paths = Files.walk(sourcePath)) {
+                for (Path path : (Iterable<Path>) paths::iterator) {
+                    Path relative = sourcePath.relativize(path);
+                    Path target = stagingPath.resolve(relative);
+                    if (Files.isDirectory(path)) {
+                        Files.createDirectories(target);
+                    } else {
+                        Files.createDirectories(target.getParent());
+                        Files.copy(path, target, StandardCopyOption.COPY_ATTRIBUTES);
+                    }
+                }
+            }
+            if (destination.exists()) return;
+            try {
+                Files.move(stagingPath, destination.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(stagingPath, destination.toPath());
+            }
+            Log.i(TAG, "Przeniesiono starszą instalację do " + destination.getAbsolutePath());
+        } finally {
+            deleteIfPresent(staging.toPath());
+        }
+    }
+
+    private static void deleteIfPresent(Path root) {
+        if (!Files.exists(root)) return;
+        try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                    // Niepełny staging ma nazwę techniczną i nie jest skanowany jako model.
+                }
+            });
+        } catch (IOException ignored) {
+            // System może później usunąć pozostałość przy czyszczeniu katalogu aplikacji.
+        }
     }
 
 }

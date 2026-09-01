@@ -275,6 +275,48 @@ public final class DetectionOverlayViewInstrumentedTest {
     }
 
     @Test
+    public void carriedPredictionCannotCancelTerminalPlateFade() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<Integer> afterPrediction = new AtomicReference<>();
+        AtomicReference<Integer> afterNextMp = new AtomicReference<>();
+        AtomicReference<List<OverlayItem>> rendered = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setAnalysisViewportEnabled(true);
+            OverlayItem freshPlate = item(
+                    OverlayItem.Kind.PLATE,
+                    new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    70L
+            );
+            OverlayItem vehicle = item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.20f, 0.30f, 0.80f, 0.60f),
+                    7L
+            );
+            view.setItems(Arrays.asList(vehicle, freshPlate), 1920, 1080);
+            view.fadeOutPlateItems();
+
+            view.setItems(Arrays.asList(
+                    vehicle,
+                    carriedPlate(freshPlate)
+            ), 1920, 1080);
+            afterPrediction.set(view.fadingPlateCountForTesting());
+            rendered.set(view.snapshotItemsForTesting());
+
+            view.setItems(Collections.singletonList(vehicle), 1920, 1080);
+            afterNextMp.set(view.fadingPlateCountForTesting());
+        });
+
+        assertEquals(1, (int) afterPrediction.get());
+        assertEquals(1, rendered.get().size());
+        assertEquals(OverlayItem.Kind.VEHICLE, rendered.get().get(0).kind);
+        assertEquals(1, (int) afterNextMp.get());
+    }
+
+    @Test
     public void plateFadeRemainsVisibleMidwayAndFinishesAfterAboutTwoPointFourSeconds() {
         Context context = InstrumentationRegistry.getInstrumentation()
                 .getTargetContext();
@@ -530,6 +572,17 @@ public final class DetectionOverlayViewInstrumentedTest {
                 "test",
                 trackId,
                 false
+        );
+    }
+
+    private static OverlayItem carriedPlate(OverlayItem source) {
+        return new OverlayItem(
+                source.kind,
+                source.normalizedBounds,
+                source.normalizedKeypoints,
+                source.label,
+                source.trackId,
+                true
         );
     }
 }

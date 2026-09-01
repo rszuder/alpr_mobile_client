@@ -413,6 +413,8 @@ public final class MainActivity extends AppCompatActivity {
                                 final long sceneGeneration = uiSceneGeneration.get();
                                 final long transformGeneration =
                                         uiCameraTransformGeneration.get();
+                                final long presentationGeneration =
+                                        previewPresentationBarrier.capture();
                                 final ContinuityStamp continuityStamp =
                                         currentPreviewSourceFrameStamp()
                                                 .continuityStamp();
@@ -422,6 +424,7 @@ public final class MainActivity extends AppCompatActivity {
                                                 ownedBitmap,
                                                 sceneGeneration,
                                                 transformGeneration,
+                                                presentationGeneration,
                                                 continuityStamp
                                         )
                                 );
@@ -451,6 +454,7 @@ public final class MainActivity extends AppCompatActivity {
             Bitmap previewBitmap,
             long sceneGeneration,
             long transformGeneration,
+            long presentationGeneration,
             ContinuityStamp continuityStamp
     ) {
         boolean bitmapHandedToUi = false;
@@ -458,6 +462,9 @@ public final class MainActivity extends AppCompatActivity {
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
                     || transformGeneration != uiCameraTransformGeneration.get()
+                    || !previewPresentationBarrier.matchesGeneration(
+                            presentationGeneration
+                    )
                     || (pipeline != null
                     && !pipeline.isCurrentContinuityStamp(continuityStamp))) {
                 return;
@@ -524,17 +531,6 @@ public final class MainActivity extends AppCompatActivity {
                 previewSceneDetector.update(previewBitmap);
                 previewSceneAnchorGuard.anchor(previewBitmap);
                 autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
-                previewSceneRecoveryRebaseAppliedRevision =
-                        requestedRecoveryRebaseRevision;
-                if (previewPresentationBarrier.active()) {
-                    long releasedGeneration = previewPresentationBarrier.release();
-                    android.util.Log.d(
-                            "ALPR_PRESENTATION_BARRIER",
-                            "release generation=" + releasedGeneration
-                                    + " recovery_revision="
-                                    + requestedRecoveryRebaseRevision
-                    );
-                }
                 ReacquireTelemetry recovery = pipeline.reacquireTelemetry();
                 if (PreviewContinuityUiPolicy
                         .shouldClearFocusedTargetAfterRecovery(
@@ -548,12 +544,39 @@ public final class MainActivity extends AppCompatActivity {
                             continuityStamp
                     );
                 }
+                long committedPresentationGeneration =
+                        previewPresentationBarrier.commitRebase(
+                                presentationGeneration
+                        );
+                if (committedPresentationGeneration < 0L) {
+                    android.util.Log.d(
+                            "ALPR_PREVIEW_REFERENCE",
+                            "defer=stale_rebase_bitmap presentation_generation="
+                                    + presentationGeneration
+                                    + " recovery_revision="
+                                    + requestedRecoveryRebaseRevision
+                    );
+                    return;
+                }
+                previewSceneRecoveryRebaseAppliedRevision =
+                        requestedRecoveryRebaseRevision;
+                android.util.Log.d(
+                        "ALPR_PRESENTATION_BARRIER",
+                        "commit_rebase generation="
+                                + committedPresentationGeneration
+                                + " recovery_revision="
+                                + requestedRecoveryRebaseRevision
+                );
                 android.util.Log.d(
                         "ALPR_PREVIEW_REFERENCE",
                         "rebase=coordinator_recovery revision="
                                 + runtimeContinuity.decisionRevision
                                 + " result=" + recovery.result
                 );
+                // Ta bitmapa jest wyłącznie nową referencją. Jej ponowne
+                // ocenienie w tym samym przebiegu mogłoby natychmiast
+                // uruchomić kolejny reacquire, zanim pojawi się świeża klatka.
+                return;
             }
 
             SceneAnchorGuard.Result anchorResult =
@@ -618,23 +641,58 @@ public final class MainActivity extends AppCompatActivity {
                 activateAbruptScenePresentationBarrier(evidenceFraction);
             }
             refreshPipelineCameraMotionEvidence(previewMotionEvidence);
-            SceneTransitionDecision continuityDecision = pipeline == null
-                    ? null
-                    : pipeline.onPreviewSceneEvidence(
-                    continuityStamp.sourceFrameStamp(),
-                    changed,
-                    evidenceScore,
-                    evidenceFraction,
-                    scene.brightnessDelta,
-                    Math.max(anchorResult.score, zoomedAnchorResult.score),
-                    Math.max(
-                            anchorResult.changedFraction,
-                            zoomedAnchorResult.changedFraction
-                    ),
-                    trackingLost,
-                    trackingDegraded,
-                    previewMotionEvidence
-            );
+            final SceneTransitionDecision continuityDecision;
+            AlprPipeline activePipeline = pipeline;
+            if (activePipeline != null) {
+                /*
+                 * MP i monitor bitmap pracują na różnych executorach. Bitmapa
+                 * pobrana podczas REACQUIRING może czekać na synchronized MP,
+                 * a następnie wejść tutaj już po udanym recovery. Sprawdzenie
+                 * pod tym samym monitorem co pipeline zapobiega wysłaniu do
+                 * koordynatora dowodu policzonego względem starej referencji.
+                 */
+                synchronized (activePipeline) {
+                    SceneContinuitySnapshot submissionContinuity =
+                            activePipeline.sceneContinuitySnapshot();
+                    long requestedRebaseRevision =
+                            previewSceneRecoveryRebaseRevision.get();
+                    if (PreviewContinuityUiPolicy
+                            .shouldApplyRecoveredSceneRebase(
+                                    requestedRebaseRevision,
+                                    previewSceneRecoveryRebaseAppliedRevision,
+                                    submissionContinuity.state
+                            )) {
+                        android.util.Log.d(
+                                "ALPR_PREVIEW_REFERENCE",
+                                "defer=stale_preview_evidence recovery_revision="
+                                        + requestedRebaseRevision
+                                        + " coordinator_revision="
+                                        + submissionContinuity.decisionRevision
+                        );
+                        return;
+                    }
+                    continuityDecision = activePipeline.onPreviewSceneEvidence(
+                            continuityStamp.sourceFrameStamp(),
+                            changed,
+                            evidenceScore,
+                            evidenceFraction,
+                            scene.brightnessDelta,
+                            Math.max(
+                                    anchorResult.score,
+                                    zoomedAnchorResult.score
+                            ),
+                            Math.max(
+                                    anchorResult.changedFraction,
+                                    zoomedAnchorResult.changedFraction
+                            ),
+                            trackingLost,
+                            trackingDegraded,
+                            previewMotionEvidence
+                    );
+                }
+            } else {
+                continuityDecision = null;
+            }
             if (PreviewContinuityUiPolicy.requestsRecoveryRebase(
                     continuityDecision
             )) {
@@ -643,6 +701,25 @@ public final class MainActivity extends AppCompatActivity {
                         continuityDecision.revision,
                         Math::max
                 );
+            }
+            if (PreviewContinuityUiPolicy
+                    .shouldCommitStablePresentationBarrier(
+                            previewPresentationBarrier.active(),
+                            changed,
+                            continuityDecision
+                    )) {
+                long committedGeneration =
+                        previewPresentationBarrier.commitRebase(
+                                presentationGeneration
+                        );
+                if (committedGeneration >= 0L) {
+                    android.util.Log.d(
+                            "ALPR_PRESENTATION_BARRIER",
+                            "commit_stable generation=" + committedGeneration
+                                    + " reason=" + continuityDecision.reason
+                    );
+                    return;
+                }
             }
 
             bitmapHandedToUi = true;
@@ -1289,44 +1366,65 @@ public final class MainActivity extends AppCompatActivity {
                 || !isCurrentPreviewStamp(request.continuityStamp)) {
             return;
         }
-        activePipeline.setCameraMotionEvidence(
-                request.sensorAvailable,
-                request.currentMotion(),
-                request.rapidMotion(),
-                request.angularMagnitude
-        );
-        if (!activePipeline.setTargetSnapshotIfCurrent(
-                request.targetSnapshot,
-                request.continuityStamp
-        )) return;
-        if (!isCurrentPreviewStamp(request.continuityStamp)
-                || !previewPresentationBarrier.permits(
-                        request.presentationGeneration
-                )) return;
-        SceneTransitionDecision decision = activePipeline.onPreviewSceneEvidence(
-                request.sourceFrame,
-                false,
-                0f,
-                0f,
-                0f,
-                0f,
-                0f,
-                request.trackingLost,
-                request.trackingDegraded,
-                new MotionExplanationEvidence(
-                        request.sensorAvailable,
-                        request.currentMotion(),
-                        request.rapidMotion(),
-                        request.angularMagnitude,
-                        false,
-                        request.visualMotionEstimated,
-                        request.visualMotionCoherence,
-                        request.visualMotionResidual,
-                        0f,
-                        0f,
-                        request.motionSettling
-                )
-        );
+        SceneTransitionDecision decision;
+        synchronized (activePipeline) {
+            SceneContinuitySnapshot submissionContinuity =
+                    activePipeline.sceneContinuitySnapshot();
+            long requestedRebaseRevision =
+                    previewSceneRecoveryRebaseRevision.get();
+            if (PreviewContinuityUiPolicy.shouldApplyRecoveredSceneRebase(
+                    requestedRebaseRevision,
+                    previewSceneRecoveryRebaseAppliedRevision,
+                    submissionContinuity.state
+            )) {
+                android.util.Log.d(
+                        "ALPR_PREVIEW_REFERENCE",
+                        "defer=stale_direct_luma_evidence recovery_revision="
+                                + requestedRebaseRevision
+                                + " coordinator_revision="
+                                + submissionContinuity.decisionRevision
+                );
+                return;
+            }
+            activePipeline.setCameraMotionEvidence(
+                    request.sensorAvailable,
+                    request.currentMotion(),
+                    request.rapidMotion(),
+                    request.angularMagnitude
+            );
+            if (!activePipeline.setTargetSnapshotIfCurrent(
+                    request.targetSnapshot,
+                    request.continuityStamp
+            )) return;
+            if (!isCurrentPreviewStamp(request.continuityStamp)
+                    || !previewPresentationBarrier.permits(
+                            request.presentationGeneration
+                    )) return;
+            decision = activePipeline.onPreviewSceneEvidence(
+                    request.sourceFrame,
+                    false,
+                    0f,
+                    0f,
+                    0f,
+                    0f,
+                    0f,
+                    request.trackingLost,
+                    request.trackingDegraded,
+                    new MotionExplanationEvidence(
+                            request.sensorAvailable,
+                            request.currentMotion(),
+                            request.rapidMotion(),
+                            request.angularMagnitude,
+                            false,
+                            request.visualMotionEstimated,
+                            request.visualMotionCoherence,
+                            request.visualMotionResidual,
+                            0f,
+                            0f,
+                            request.motionSettling
+                    )
+            );
+        }
         if (PreviewContinuityUiPolicy.requestsRecoveryRebase(decision)) {
             resetGlobalPreviewMotionState();
             previewSceneRecoveryRebaseRevision.accumulateAndGet(
@@ -2217,6 +2315,56 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Wyniki zebrane przed zmianą modeli, wariantu lub topologii pipeline'u nie
+     * mogą zostać pokazane po powrocie z ustawień. Dotyczy to także osobnej
+     * warstwy fade tablic, która inaczej potrafi zachować różową ramkę z trybu
+     * pełnoklatkowego po włączeniu MP.
+     */
+    private void invalidatePresentationAfterSettingsChange(int settingsRevision) {
+        pendingPreviewCoordination.set(null);
+        pendingDirectLumaFrame.set(null);
+        long generation = uiSceneGeneration.incrementAndGet();
+        previewPresentationBarrier.reset();
+
+        pipeline.resetTracking();
+        targetStateMachine.reset();
+        clearAutoZoomRecognitionMemory();
+
+        overlayTracker.reset();
+        previewPlateTracker.reset();
+        previewVehicleTracker.reset();
+        resetGlobalPreviewMotionState();
+        previewSceneDetector.reset();
+        previewSceneAnchorGuard.reset();
+        previewSceneAnchorPending = cameraStarted;
+        plateOverlayFreshness.reset();
+
+        latestDiagnosticOverlayItems = java.util.Collections.emptyList();
+        latestDiagnosticOverlayAnchorTimestampNanos = 0L;
+        latestPipelinePlateItems = java.util.Collections.emptyList();
+        latestPreviewMotionItems = java.util.Collections.emptyList();
+        latestPipelinePlateEntityId = 0L;
+        lastCaptureByTrack.clear();
+        lastUiUpdateNanos.set(0L);
+        liveHudAwaitingFreshResult = true;
+
+        overlayView.setFocusedTrackId(0L);
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.clearPlateItems();
+        overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setItems(java.util.Collections.emptyList());
+        overlayView.setAnalysisViewportEnabled(cameraStarted);
+        livePresentation.clearResult();
+
+        android.util.Log.i(
+                "ALPR_PIPELINE_CONFIG",
+                "presentation_invalidated generation=" + generation
+                        + " settings_revision=" + settingsRevision
+                        + " vehicle_cascade=" + vehicleCascadeEnabled
+        );
+    }
+
     private void clearCurrentResult() {
         if (exportInProgress) {
             Toast.makeText(this, R.string.export_in_progress, Toast.LENGTH_SHORT).show();
@@ -2228,10 +2376,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.clearPlateItems();
         overlayView.setItems(java.util.Collections.emptyList());
         livePresentation.clearResult();
-        livePresentation.showState(
-                LivePresentationController.State.SEARCHING,
-                hudRoiLabel() + " · SZUKAM"
-        );
+        showSearchingStatusForCurrentPipeline();
         clearCapturedCrops();
         livePresentation.showTransient(getString(R.string.recognition_cleared));
     }
@@ -2964,12 +3109,14 @@ public final class MainActivity extends AppCompatActivity {
             lastRenderedContinuityState =
                     com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
             TargetSnapshot target = targetStateMachine.snapshot();
-            livePresentation.showState(
-                    target != null && target.hasTrack()
-                            ? LivePresentationController.State.TRACKING
-                            : LivePresentationController.State.SEARCHING,
-                    hudRoiLabel()
-            );
+            if (target != null && target.hasTrack()) {
+                livePresentation.showState(
+                        LivePresentationController.State.TRACKING,
+                        hudRoiLabel()
+                );
+            } else {
+                showSearchingStatusForCurrentPipeline();
+            }
             return;
         }
         lastRenderedContinuityState = decision.nextState;
@@ -2990,10 +3137,7 @@ public final class MainActivity extends AppCompatActivity {
                     latestOverlaySourceWidth,
                     latestOverlaySourceHeight
             );
-            livePresentation.showState(
-                    LivePresentationController.State.SEARCHING,
-                    "Cel utracony — kontynuowanie skanowania"
-            );
+            showSearchingStatusForCurrentPipeline();
             return;
         }
 
@@ -3415,10 +3559,7 @@ public final class MainActivity extends AppCompatActivity {
 
         livePresentation.clearResult();
         if (!syncMissingModelsStatus()) {
-            livePresentation.showState(
-                    LivePresentationController.State.SEARCHING,
-                    hudRoiLabel() + " · SZUKAM"
-            );
+            showSearchingStatusForCurrentPipeline();
         }
 
         recordInfo(
@@ -3515,10 +3656,9 @@ public final class MainActivity extends AppCompatActivity {
                                             );
                                             return;
                                         }
-                                        if (autoZoomController.state()
-                                                != AutoZoomController.State.ZOOMED_RETRY) {
-                                            return;
-                                        }
+                                        final boolean zoomedMtStage =
+                                                autoZoomController.state()
+                                                == AutoZoomController.State.ZOOMED_RETRY;
                                         runOnUiThread(() -> {
                                             if (!cameraStarted
                                                     || !previewPresentationBarrier.permits(
@@ -3533,7 +3673,8 @@ public final class MainActivity extends AppCompatActivity {
                                                     || transformGenerationAtStart
                                                     != uiCameraTransformGeneration.get()
                                                     || cameraTransformInProgress
-                                                    || autoZoomController.state()
+                                                    || zoomedMtStage
+                                                    && autoZoomController.state()
                                                     != AutoZoomController.State.ZOOMED_RETRY) {
                                                 if (pipeline == null
                                                         || !pipeline.isCurrentContinuityStamp(
@@ -3561,12 +3702,21 @@ public final class MainActivity extends AppCompatActivity {
                                                             + " transform="
                                                             + sourceStamp.cameraTransformGeneration
                                             );
-                                            presentZoomedMtStage(
-                                                    overlayItems,
-                                                    sourceWidth,
-                                                    sourceHeight,
-                                                    sourceStamp
-                                            );
+                                            if (zoomedMtStage) {
+                                                presentZoomedMtStage(
+                                                        overlayItems,
+                                                        sourceWidth,
+                                                        sourceHeight,
+                                                        sourceStamp
+                                                );
+                                            } else {
+                                                presentScanMtStage(
+                                                        overlayItems,
+                                                        sourceWidth,
+                                                        sourceHeight,
+                                                        sourceStamp
+                                                );
+                                            }
                                         });
                                     },
                                     (score, changedFraction) -> runOnUiThread(() -> {
@@ -4075,6 +4225,10 @@ public final class MainActivity extends AppCompatActivity {
             overlayView.setActiveVehicleEntityId(0L);
         } else if (scanActive) {
             showScanUserStatus(scan);
+        } else if (presentationState == LivePresentationController.State.SEARCHING
+                && effectiveRoiBudgetPolicy().usesVehicleCascade()) {
+            overlayView.setActiveVehicleEntityId(0L);
+            showSearchingStatusForCurrentPipeline();
         } else {
             overlayView.setActiveVehicleEntityId(0L);
             livePresentation.showState(presentationState, "");
@@ -4090,7 +4244,13 @@ public final class MainActivity extends AppCompatActivity {
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                 )
         );
-        overlayView.setActiveVehicleEntityId(scan.activeEntityId);
+        overlayView.setActiveVehicleEntityId(
+                PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+                        scan.activeEntityId,
+                        latestPipelinePlateEntityId,
+                        !latestPipelinePlateItems.isEmpty()
+                )
+        );
         if (scan.activeSessionState
                 == com.example.alpr_v1.domain.TargetSessionState.RECOVERING) {
             livePresentation.showUserStatus(
@@ -4115,6 +4275,21 @@ public final class MainActivity extends AppCompatActivity {
                     LivePresentationController.State.SEARCHING,
                     getString(R.string.scan_status_searching),
                     getString(R.string.scan_hint_searching)
+            );
+        }
+    }
+
+    private void showSearchingStatusForCurrentPipeline() {
+        if (effectiveRoiBudgetPolicy().usesVehicleCascade()) {
+            livePresentation.showUserStatus(
+                    LivePresentationController.State.SEARCHING,
+                    getString(R.string.scan_status_searching),
+                    getString(R.string.scan_hint_searching)
+            );
+        } else {
+            livePresentation.showState(
+                    LivePresentationController.State.SEARCHING,
+                    ""
             );
         }
     }
@@ -4500,9 +4675,13 @@ public final class MainActivity extends AppCompatActivity {
                     preserved
             );
         }
-        List<OverlayItem> presentedOverlayItems = scanReleaseBarrierActive
-                ? nonPlateOverlayItems(presentationSourceItems)
-                : presentationSourceItems;
+        /*
+         * scanScopedOverlayItems() jest jedynym właścicielem bariery encji.
+         * Przy RELEASE może przepuścić wyłącznie świeżą geometrię z bieżącego
+         * wyniku MT jako nieruchomą migawkę do fade. Ponowne usunięcie całej
+         * warstwy PLATE w tym miejscu kasowałoby także tę poprawną ramkę.
+         */
+        List<OverlayItem> presentedOverlayItems = presentationSourceItems;
         if (!containsPlate(presentationSourceItems)
                 && !scanReleaseBarrierActive
                 && shouldHoldScanPlateGeometry()) {
@@ -4635,10 +4814,7 @@ public final class MainActivity extends AppCompatActivity {
                         hudRoiLabel() + " · CEL"
                 );
             } else {
-                livePresentation.showState(
-                        LivePresentationController.State.SEARCHING,
-                        hudRoiLabel() + " · SZUKAM"
-                );
+                showSearchingStatusForCurrentPipeline();
             }
         }
 
@@ -5741,11 +5917,23 @@ public final class MainActivity extends AppCompatActivity {
         );
         setScanOverlayPresentationEntity(presentationEntityId);
 
-        Set<Long> allowedPlateTrackIds = scanPlateTrackIds(
-                presentationEntityId,
-                scan.plateAnchor,
-                result.plateObservations
-        );
+        Set<Long> allowedPlateTrackIds = releaseBarrier
+                ? terminalFreshReleasePlateTrackIds(scan, result)
+                : scanPlateTrackIds(
+                        presentationEntityId,
+                        scan.plateAnchor,
+                        result.plateObservations
+                );
+        if (releaseBarrier) {
+            android.util.Log.d(
+                    "ALPR_TERMINAL_PLATE",
+                    "raw_plates="
+                            + countKind(result.overlayItems, OverlayItem.Kind.PLATE)
+                            + " observations=" + result.plateObservations.size()
+                            + " allowed=" + allowedPlateTrackIds.size()
+                            + " release_revision=" + scan.directive.revision
+            );
+        }
         List<OverlayItem> filtered = filterScanOverlayItems(
                 result.overlayItems,
                 allowedPlateTrackIds
@@ -5768,6 +5956,61 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
         return filtered;
+    }
+
+    /**
+     * RELEASE blokuje pamięć temporalną, ale nie może skasować świeżej ramki
+     * wyprodukowanej przez MT w tym samym PipelineResult. Zgodność pełnego
+     * stempla źródłowego oraz rewizji sprzed RELEASE odróżnia taki wynik od
+     * historycznej obserwacji, która mogłaby przeskoczyć na kolejną encję.
+     */
+    static Set<Long> terminalFreshReleasePlateTrackIds(
+            ScanAcquisitionSnapshot scan,
+            PipelineResult result
+    ) {
+        if (scan == null
+                || result == null
+                || scan.directive.action
+                != AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET
+                || scan.directive.revision <= 0L
+                || result.plateObservations.isEmpty()
+                || result.overlayItems.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+
+        Set<Long> freshObservationTracks = new HashSet<>();
+        for (PlateObservation observation : result.plateObservations) {
+            if (observation == null
+                    || observation.entityId <= 0L
+                    || observation.plateTrackId <= 0L
+                    || observation.acquisitionDirectiveRevision <= 0L
+                    || observation.acquisitionDirectiveRevision
+                    >= scan.directive.revision
+                    || observation.sceneGeneration != result.sceneGeneration
+                    || observation.visualEpoch != result.visualEpoch
+                    || observation.cameraTransformGeneration
+                    != result.cameraTransformGeneration
+                    || observation.sourceSequence != result.sourceSequence
+                    || observation.sourceTimestampNanos
+                    != result.sourceTimestampNanos) {
+                continue;
+            }
+            freshObservationTracks.add(observation.plateTrackId);
+        }
+        if (freshObservationTracks.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+
+        Set<Long> visibleFreshTracks = new HashSet<>();
+        for (OverlayItem item : result.overlayItems) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.PLATE
+                    && !item.carriedPrediction
+                    && freshObservationTracks.contains(item.trackId)) {
+                visibleFreshTracks.add(item.trackId);
+            }
+        }
+        return java.util.Collections.unmodifiableSet(visibleFreshTracks);
     }
 
     static List<OverlayItem> filterScanOverlayItems(
@@ -5811,6 +6054,53 @@ public final class MainActivity extends AppCompatActivity {
                 0L,
                 details
         );
+    }
+
+    private void presentScanMtStage(
+            List<OverlayItem> overlayItems,
+            int sourceWidth,
+            int sourceHeight,
+            ContinuityStamp sourceStamp
+    ) {
+        if (overlayItems == null
+                || sourceWidth <= 0
+                || sourceHeight <= 0
+                || pipeline == null
+                || !pipeline.isCurrentContinuityStamp(sourceStamp)
+                || !containsPlate(overlayItems)) return;
+        ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
+        if (!shouldPresentScanMtStage(scan)) return;
+
+        List<OverlayItem> freshStage = activeTrackingOverlayItems(overlayItems);
+        latestOverlaySourceWidth = sourceWidth;
+        latestOverlaySourceHeight = sourceHeight;
+        latestPipelinePlateEntityId = scan.activeEntityId;
+        plateOverlayFreshness.recordFresh(
+                freshStage,
+                android.os.SystemClock.elapsedRealtimeNanos()
+        );
+        applyVisibleOverlay(freshStage, sourceWidth, sourceHeight);
+        overlayView.setActiveVehicleEntityId(0L);
+        previewPlateTracker.anchor(freshStage, sourceWidth, sourceHeight);
+        livePresentation.showState(
+                LivePresentationController.State.TRACKING,
+                ""
+        );
+        android.util.Log.d(
+                "ALPR_MT_STAGE",
+                "presented entity=" + scan.activeEntityId
+                        + " plates="
+                        + countKind(freshStage, OverlayItem.Kind.PLATE)
+                        + " directive_revision=" + scan.directive.revision
+        );
+    }
+
+    static boolean shouldPresentScanMtStage(ScanAcquisitionSnapshot scan) {
+        return scan != null
+                && scan.runState.active()
+                && scan.activeEntityId > 0L
+                && scan.directive.requestsMt()
+                && scan.directive.entityId == scan.activeEntityId;
     }
 
     static long scanPresentationEntityId(
@@ -8464,10 +8754,11 @@ public final class MainActivity extends AppCompatActivity {
          */
         modelRegistry.reload();
         pipeline.invalidateModels();
+        invalidatePresentationAfterSettingsChange(revision);
 
-        syncMissingModelsStatus();
-
-        lastCaptureByTrack.clear();
+        if (!syncMissingModelsStatus() && cameraStarted) {
+            showSearchingStatusForCurrentPipeline();
+        }
 
         scheduleMissingAutotuning();
     }

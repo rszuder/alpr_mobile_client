@@ -602,8 +602,17 @@ public final class SettingsActivity extends AppCompatActivity {
                         ).show();
                         return;
                     }
+                    boolean changed = false;
                     if (active == null || !active.storageId().equals(selectedModel.storageId())) {
                         modelRegistry.activate(selectedModel);
+                        changed = true;
+                    }
+                    if (role == ModelRole.VEHICLE
+                            && !preferences.getBoolean("vehicle_cascade_enabled", false)) {
+                        setVehicleCascadeEnabled(true);
+                        changed = true;
+                    }
+                    if (changed) {
                         markChanged();
                         refreshModelStatus();
                     }
@@ -666,6 +675,10 @@ public final class SettingsActivity extends AppCompatActivity {
         autoTuneManager.clearPinnedVariant(base.plateModel());
         autoTuneManager.clearPinnedVariant(base.characterModel());
         modelRegistry.restoreBasePackage();
+        setVehicleCascadeEnabled(
+                base.vehicleModel() != null
+                        && ModelRegistry.isExecutable(base.vehicleModel())
+        );
         markChanged();
         refreshModelStatus();
         Toast.makeText(this, R.string.settings_composition_restored, Toast.LENGTH_LONG).show();
@@ -708,6 +721,9 @@ public final class SettingsActivity extends AppCompatActivity {
                         ));
                     }
                     modelRegistry.activate(model);
+                    if (expectedRole == ModelRole.VEHICLE) {
+                        setVehicleCascadeEnabled(true);
+                    }
                     name = model.manifest().name();
                     successMessage = getString(
                             R.string.settings_node_imported,
@@ -717,6 +733,10 @@ public final class SettingsActivity extends AppCompatActivity {
                 } else if (result.isCompletePackage()) {
                     InstalledAlprPackage completePackage = result.completePackage();
                     modelRegistry.activate(completePackage);
+                    setVehicleCascadeEnabled(
+                            completePackage.vehicleModel() != null
+                                    && ModelRegistry.isExecutable(completePackage.vehicleModel())
+                    );
                     name = completePackage.manifest().name();
                     int message = completePackage.vehicleModel() != null
                             && !ModelRegistry.isExecutable(completePackage.vehicleModel())
@@ -725,8 +745,14 @@ public final class SettingsActivity extends AppCompatActivity {
                     successMessage = getString(message, name);
                 } else {
                     InstalledModel model = result.singleModel();
-                    if (ModelRegistry.isExecutable(model)) modelRegistry.activate(model);
-                    else modelRegistry.reload();
+                    if (ModelRegistry.isExecutable(model)) {
+                        modelRegistry.activate(model);
+                        if (model.manifest().role() == ModelRole.VEHICLE) {
+                            setVehicleCascadeEnabled(true);
+                        }
+                    } else {
+                        modelRegistry.reload();
+                    }
                     name = model.manifest().name();
                     successMessage = getString(R.string.settings_import_partial, name);
                 }
