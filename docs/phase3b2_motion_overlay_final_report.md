@@ -6,7 +6,7 @@ Gałąź: `phase3b2-motion-overlay-final-hardening`
 
 Baza audytu: `682461c4c17a57854e22cad2ef9ae83c95eacfe1`
 
-Zwalidowany SHA implementacji: `77f40c25b719a737461053db65d05002dd5f95ac`
+Zwalidowany SHA implementacji: `7d708f38e1fdad25596f606b8e7339755314787f`
 
 Commit utworzenia raportu: `0a80b215ba7084bf9fb0f9b2326c051a825a5a8f`
 
@@ -19,7 +19,8 @@ Status: **PASS**
 Blokady B2-01–B2-07 oraz wymaganie świeżości aktywnego markera zostały
 zamknięte. Dodatkowo test live ujawnił i doprowadził do naprawy pętli
 `SOFT_REACQUIRE`, w której historyczne encje blokowały publikację poprawnych
-wyników MP.
+wyników MP. Finalny HEAD zawiera również spokojny, nadrzędny stan konfiguracji
+dla aplikacji bez aktywnych modeli MT/MZ.
 
 ## 2. Zrealizowany zakres
 
@@ -99,14 +100,28 @@ oraz aktywny cel. Po poprawce świeże trzy detekcje kończą recovery i wracaj�
 prezentacji. Regresję pokrywa
 `MobileAlprEngineContinuityApiTest.reacquireSnapshotContainsVisiblePoolNotHistoricalRepository`.
 
+### Spokojny stan brakujących modeli
+
+- Dodano osobny stan `SETUP_REQUIRED` prezentowany jako
+  „Brak wymaganych modeli”.
+- Stan ma wyższy priorytet niż `SEARCHING`, `TRACKING`, `RECOGNIZING` i
+  `RECOVERING`, dlatego callbacki kamery i Scan nie mogą wywołać migania copy.
+- Pasek używa neutralnej, szarej kolorystyki i stałej instrukcji importu modeli
+  w Opcjach; komunikat nie jest transientem.
+- Wynik `models_missing` nie uruchamia już powtarzanego eventu ani nie wraca na
+  końcu dispatch do statusu Scan.
+- Blokada jest zdejmowana dopiero po ponownym załadowaniu kompletnego pipeline'u
+  MT+MZ. Rzeczywisty błąd kamery nadal może przebić stan konfiguracji.
+- Regresję priorytetu pokrywa `LivePresentationControllerStateTest`.
+
 ## 3. Walidacja automatyczna
 
 Wszystkie kontrole wykonano ponownie dla SHA
-`77f40c25b719a737461053db65d05002dd5f95ac`.
+`7d708f38e1fdad25596f606b8e7339755314787f`.
 
 | Kontrola | Wynik |
 |---|---|
-| `testDebugUnitTest` | PASS — 412/412, 0 failures, 0 errors, 0 skipped |
+| `testDebugUnitTest` | PASS — 414/414, 0 failures, 0 errors, 0 skipped |
 | `assembleDebug` | PASS |
 | `assembleDebugAndroidTest` | PASS |
 | `lintDebug` | PASS |
@@ -222,6 +237,22 @@ Dowody:
 - `app/build/alpr_s7_marker_freshness_log.txt`;
 - `app/build/alpr_s7_marker_end.png`.
 
+### UX-MISSING — brak modeli bez migania: PASS
+
+Na finalnym APK usunięto aktywne modele MT/MZ i uruchomiono analizę. Po 3 s oraz
+po kolejnych 15 s pasek pozostawał identyczny:
+
+```text
+Brak wymaganych modeli
+```
+
+Kolor pozostał neutralny, nie pojawiły się statusy „Szukam…”, „Odczytuję…” ani
+powtarzany transient. Podgląd kamery pozostał dostępny. Dowody:
+
+- `app/build/alpr_models_missing_3s.png`;
+- `app/build/model_status_now.png`;
+- `app/build/model_status_stable_15s.png`.
+
 ## 5. Kryteria odbioru
 
 | Obszar | Kryterium | Wynik |
@@ -238,6 +269,7 @@ Dowody:
 | Marker | brak ghosta po geometry TTL | PASS |
 | Dynamic UI | ciągłość ramek przy pan i ruchu foreground | PASS |
 | Recovery | świeża widoczna pula kończy soft reacquire | PASS |
+| Konfiguracja | brak MT/MZ daje stały neutralny status bez migania | PASS |
 
 ## 6. Ograniczenia metodologiczne
 
