@@ -51,6 +51,38 @@ public final class LumaSceneChangeDetectorTest {
         );
 
         assertFalse(result.changed);
+        assertFalse(result.globalChanged);
+    }
+
+    @Test
+    public void largeCutHiddenUnderVehicleMaskIsVisibleToGlobalChannel() {
+        int width = 160;
+        int height = 120;
+        byte[] first = filled(width, height, 30);
+        byte[] second = first.clone();
+        for (int y = 10; y < 110; y++) {
+            for (int x = 15; x < 145; x++) {
+                second[y * width + x] = (byte) 220;
+            }
+        }
+        LumaSceneChangeDetector detector = new LumaSceneChangeDetector();
+        NormalizedBounds oldVehicle = new NormalizedBounds(
+                0.05f, 0.05f, 0.95f, 0.95f
+        );
+
+        detector.update(first, width, height,
+                Collections.singletonList(oldVehicle));
+        LumaSceneChangeDetector.Result result = detector.update(
+                second,
+                width,
+                height,
+                Collections.singletonList(oldVehicle)
+        );
+
+        assertFalse(result.changed);
+        assertTrue(result.globalChanged);
+        assertTrue(result.globalChangedFraction > 0.60f);
+        assertTrue(result.globalMeanDelta > 30f);
     }
 
     @Test

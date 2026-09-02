@@ -12,41 +12,60 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class TemporalCharacterAggregatorTest {
-    private static final java.util.List<String> LABELS = Arrays.asList("A", "B", "1", "2");
+    private static final java.util.List<String> LABELS =
+            Arrays.asList("A", "B", "1", "2", "3");
 
     @Test
     public void becomesStableAfterEveryPositionAgreesTwice() {
         TemporalCharacterAggregator aggregator = new TemporalCharacterAggregator();
 
-        TemporalCharacterAggregator.Result first = aggregator.accept(sequence(0, 1, 2), LABELS);
+        TemporalCharacterAggregator.Result first = aggregator.accept(
+                sequence(0, 1, 2, 3, 4), LABELS
+        );
         assertEquals(0, aggregator.expectedCount());
-        TemporalCharacterAggregator.Result second = aggregator.accept(sequence(0, 1, 2), LABELS);
+        TemporalCharacterAggregator.Result second = aggregator.accept(
+                sequence(0, 1, 2, 3, 4), LABELS
+        );
 
         assertFalse(first.stable);
         assertTrue(second.stable);
-        assertEquals("AB1", second.text);
-        assertEquals(3, aggregator.expectedCount());
+        assertEquals("AB123", second.text);
+        assertEquals(5, aggregator.expectedCount());
     }
 
     @Test
     public void doesNotConfirmDisputedCharacterAfterTwoFrames() {
         TemporalCharacterAggregator aggregator = new TemporalCharacterAggregator();
-        aggregator.accept(sequence(0, 1, 2), LABELS);
+        aggregator.accept(sequence(0, 1, 2, 3, 4), LABELS);
 
-        TemporalCharacterAggregator.Result result = aggregator.accept(sequence(0, 3, 2), LABELS);
+        TemporalCharacterAggregator.Result result = aggregator.accept(
+                sequence(0, 3, 2, 3, 4), LABELS
+        );
 
         assertFalse(result.stable);
     }
 
     @Test
-    public void selectsLengthSupportedByMoreFrames() {
+    public void plausibleLengthSupersedesRepeatedShortFragment() {
         TemporalCharacterAggregator aggregator = new TemporalCharacterAggregator();
         aggregator.accept(sequence(0, 1), LABELS);
-        aggregator.accept(sequence(0, 1, 2), LABELS);
-        aggregator.accept(sequence(0, 1, 2), LABELS);
+        TemporalCharacterAggregator.Result partial = aggregator.accept(
+                sequence(0, 1), LABELS
+        );
+        TemporalCharacterAggregator.Result full = aggregator.accept(
+                sequence(0, 1, 2, 3, 4), LABELS
+        );
 
-        assertEquals(3, aggregator.expectedCount());
-        assertEquals("AB1", aggregator.current().text);
+        assertFalse(partial.stable);
+        assertEquals(0, aggregator.expectedCount());
+        assertEquals("AB123", full.text);
+        assertFalse(full.stable);
+
+        TemporalCharacterAggregator.Result confirmed = aggregator.accept(
+                sequence(0, 1, 2, 3, 4), LABELS
+        );
+        assertTrue(confirmed.stable);
+        assertEquals(5, aggregator.expectedCount());
     }
 
     @Test
@@ -69,15 +88,15 @@ public class TemporalCharacterAggregatorTest {
          */
         aggregator.accept(
                 sequence(
-                        0, 1, 2, 3
+                        0, 1, 2, 3, 4, 0
                 ),
                 LABELS
         );
 
         aggregator.accept(
                 twoRowSequence(
-                        0, 1,
-                        2, 3
+                        0, 1, 2,
+                        3, 4, 0
                 ),
                 LABELS
         );
@@ -85,8 +104,8 @@ public class TemporalCharacterAggregatorTest {
         TemporalCharacterAggregator.Result result =
                 aggregator.accept(
                         twoRowSequence(
-                                0, 1,
-                                2, 3
+                                0, 1, 2,
+                                3, 4, 0
                         ),
                         LABELS
                 );
@@ -103,8 +122,8 @@ public class TemporalCharacterAggregatorTest {
 
         assertEquals(
                 Arrays.asList(
-                        2,
-                        2
+                        3,
+                        3
                 ),
                 result.rowCounts
         );
@@ -127,8 +146,8 @@ public class TemporalCharacterAggregatorTest {
 
         aggregator.accept(
                 twoRowSequence(
-                        0, 1,
-                        2, 3
+                        0, 1, 2,
+                        3, 4, 0
                 ),
                 LABELS
         );
@@ -140,14 +159,14 @@ public class TemporalCharacterAggregatorTest {
 
         aggregator.accept(
                 twoRowSequence(
-                        0, 1,
-                        2, 3
+                        0, 1, 2,
+                        3, 4, 0
                 ),
                 LABELS
         );
 
         assertEquals(
-                4,
+                6,
                 aggregator.expectedCount()
         );
 
@@ -158,8 +177,8 @@ public class TemporalCharacterAggregatorTest {
 
         assertEquals(
                 Arrays.asList(
-                        2,
-                        2
+                        3,
+                        3
                 ),
                 aggregator.expectedRowCounts()
         );
@@ -178,8 +197,10 @@ public class TemporalCharacterAggregatorTest {
 
     private static java.util.List<Detection> twoRowSequence(
             int topLeft,
+            int topCenter,
             int topRight,
             int bottomLeft,
+            int bottomCenter,
             int bottomRight
     ) {
         return Arrays.asList(
@@ -193,11 +214,20 @@ public class TemporalCharacterAggregatorTest {
                         Collections.emptyList()
                 ),
                 new Detection(
-                        topRight,
+                        topCenter,
                         0.9f,
                         40,
                         10,
                         55,
+                        40,
+                        Collections.emptyList()
+                ),
+                new Detection(
+                        topRight,
+                        0.9f,
+                        70,
+                        10,
+                        85,
                         40,
                         Collections.emptyList()
                 ),
@@ -211,11 +241,20 @@ public class TemporalCharacterAggregatorTest {
                         Collections.emptyList()
                 ),
                 new Detection(
-                        bottomRight,
+                        bottomCenter,
                         0.9f,
                         40,
                         70,
                         55,
+                        100,
+                        Collections.emptyList()
+                ),
+                new Detection(
+                        bottomRight,
+                        0.9f,
+                        70,
+                        70,
+                        85,
                         100,
                         Collections.emptyList()
                 )

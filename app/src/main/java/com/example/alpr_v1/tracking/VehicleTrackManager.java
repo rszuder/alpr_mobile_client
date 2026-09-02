@@ -216,6 +216,13 @@ public final class VehicleTrackManager {
         boolean[] usedTracks = new boolean[tracks.size()];
         boolean[] usedObservations = new boolean[observations.size()];
 
+        assignCoherentOrderedGroup(
+                observations,
+                usedTracks,
+                usedObservations,
+                safeNow
+        );
+
         List<Assignment> assignments = new ArrayList<>();
         float[] bestByObservation = new float[observations.size()];
         float[] secondByObservation = new float[observations.size()];
@@ -587,6 +594,89 @@ public final class VehicleTrackManager {
             usedTracks[assignment.trackIndex] = true;
             usedObservations[assignment.observationIndex] = true;
             entityDuplicatePreventions++;
+        }
+    }
+
+    /**
+     * Konserwatywny fallback dla panoramowania kamery. Przy kilku podobnych
+     * pojazdach brak pełnej transformacji klatki może sprawić, że geometria
+     * sąsiada uzyska lepszy wynik niż właściwa encja. Zachowujemy wtedy porządek
+     * grupy, ale wyłączamy fallback, gdy wygląd jednoznacznie wskazuje faktyczne
+     * przecięcie torów.
+     */
+    private void assignCoherentOrderedGroup(
+            List<Observation> observations,
+            boolean[] usedTracks,
+            boolean[] usedObservations,
+            long nowNanos
+    ) {
+        if (tracks.size() != observations.size() || tracks.size() < 2) return;
+        List<Integer> trackOrder = new ArrayList<>(tracks.size());
+        List<Integer> observationOrder = new ArrayList<>(observations.size());
+        for (int index = 0; index < tracks.size(); index++) trackOrder.add(index);
+        for (int index = 0; index < observations.size(); index++) {
+            observationOrder.add(index);
+        }
+        trackOrder.sort(Comparator.comparingDouble(
+                index -> tracks.get(index).predicted(nowNanos).centerX()
+        ));
+        observationOrder.sort(Comparator.comparingDouble(
+                index -> observations.get(index).bounds.centerX()
+        ));
+
+        float minimumDx = Float.POSITIVE_INFINITY;
+        float maximumDx = Float.NEGATIVE_INFINITY;
+        for (int rank = 0; rank < trackOrder.size(); rank++) {
+            Track track = tracks.get(trackOrder.get(rank));
+            Observation observation = observations.get(observationOrder.get(rank));
+            NormalizedBounds predicted = track.predicted(nowNanos);
+            float sizeSimilarity = Math.min(
+                    ratio(predicted.width(), observation.bounds.width()),
+                    ratio(predicted.height(), observation.bounds.height())
+            );
+            if (sizeSimilarity < 0.30f
+                    || Math.abs(predicted.centerY() - observation.bounds.centerY())
+                    > 0.20f) return;
+            float dx = observation.bounds.centerX() - predicted.centerX();
+            minimumDx = Math.min(minimumDx, dx);
+            maximumDx = Math.max(maximumDx, dx);
+
+            if (track.appearance != null && track.appearance.available()
+                    && observation.appearance.available()) {
+                float orderedAppearance = similarity(
+                        track.appearance, observation.appearance
+                );
+                if (orderedAppearance < 0.40f) return;
+                for (Observation alternative : observations) {
+                    if (alternative == observation
+                            || !alternative.appearance.available()) continue;
+                    float alternativeAppearance = similarity(
+                            track.appearance, alternative.appearance
+                    );
+                    if (alternativeAppearance >= 0.72f
+                            && alternativeAppearance - orderedAppearance > 0.18f) {
+                        return;
+                    }
+                }
+            }
+        }
+        if (maximumDx - minimumDx > 0.24f) return;
+
+        for (int rank = 0; rank < trackOrder.size(); rank++) {
+            int trackIndex = trackOrder.get(rank);
+            int observationIndex = observationOrder.get(rank);
+            Track track = tracks.get(trackIndex);
+            Observation observation = observations.get(observationIndex);
+            track.update(observation, nowNanos);
+            repository.updateFromMp(
+                    track.trackId,
+                    track.predicted(nowNanos),
+                    track.motion(),
+                    track.appearance,
+                    nowNanos
+            );
+            usedTracks[trackIndex] = true;
+            usedObservations[observationIndex] = true;
         }
     }
 

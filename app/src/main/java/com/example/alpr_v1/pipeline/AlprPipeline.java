@@ -2499,6 +2499,44 @@ public final class AlprPipeline {
         applySceneTransition(decision);
     }
 
+    /**
+     * Converts an authoritative stationary direct-luma cut into a real scene
+     * generation boundary. A stale callback cannot reset a newer scene.
+     */
+    public synchronized SceneTransitionDecision requestAbruptSceneReset(
+            SourceFrameStamp sourceFrameStamp,
+            float changedFraction,
+            float meanDelta
+    ) {
+        if (sourceFrameStamp == null
+                || !isCurrentContinuityStamp(
+                sourceFrameStamp.continuityStamp()
+        )) {
+            return null;
+        }
+        SceneTransitionDecision decision =
+                sceneTransitionCoordinator.requestStructuralReset(
+                        "abrupt_unexplained_direct_luma_change",
+                        SystemClock.elapsedRealtimeNanos()
+                );
+        lastSceneDecision = decision;
+        lastSceneEvidence = null;
+        applySceneTransition(decision);
+        android.util.Log.d(
+                "ALPR_SCENE_EVIDENCE",
+                String.format(
+                        java.util.Locale.ROOT,
+                        "source=direct_luma fraction=%.3f mean_delta=%.1f "
+                                + "action=%s reason=%s",
+                        changedFraction,
+                        meanDelta,
+                        decision.action,
+                        decision.reason
+                )
+        );
+        return decision;
+    }
+
 
     public synchronized void setRecognitionProfile(RecognitionProfile profile) {
         recognitionProfile = profile == null ? RecognitionProfile.BALANCED : profile;

@@ -39,10 +39,7 @@ public class PlateTrackCoordinatorTest {
                 0.8f,
                 1,
                 characters(),
-                Arrays.asList(
-                        "A",
-                        "1"
-                )
+                labels()
         );
 
 
@@ -64,10 +61,7 @@ public class PlateTrackCoordinatorTest {
                 0.8f,
                 2,
                 characters(),
-                Arrays.asList(
-                        "A",
-                        "1"
-                )
+                labels()
         );
 
 
@@ -145,7 +139,7 @@ public class PlateTrackCoordinatorTest {
                 0.8f,
                 1,
                 characters(),
-                Arrays.asList("A", "1")
+                labels()
         );
 
         PlateTrackCoordinator.Decision second = update(coordinator, 2, 0.8f);
@@ -155,7 +149,7 @@ public class PlateTrackCoordinatorTest {
                 0.8f,
                 2,
                 characters(),
-                Arrays.asList("A", "1")
+                labels()
         );
 
         assertFalse(update(coordinator, 3, 0.8f).recognize);
@@ -178,7 +172,7 @@ public class PlateTrackCoordinatorTest {
         PlateTrackCoordinator.Decision resumed = update(coordinator, 3, 0.8f);
 
         assertTrue(resumed.currentResult.stable);
-        assertEquals("A1", resumed.currentResult.text);
+        assertEquals("AB123", resumed.currentResult.text);
     }
 
     @Test
@@ -194,7 +188,7 @@ public class PlateTrackCoordinatorTest {
 
         PlateTrackCoordinator.Decision resumed = update(coordinator, 4, 0.8f);
         assertTrue(resumed.currentResult.stable);
-        assertEquals("A1", resumed.currentResult.text);
+        assertEquals("AB123", resumed.currentResult.text);
     }
 
     @Test
@@ -215,15 +209,59 @@ public class PlateTrackCoordinatorTest {
         assertEquals(0, coordinator.retainedStateCount());
     }
 
+    @Test
+    public void scanEntityKeepsOcrConsensusAcrossRoundRobinPlateTracks() {
+        PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
+
+        PlateTrackCoordinator.Decision firstEntityOne = updateEntity(
+                coordinator, 1, 11L, 0.10f
+        );
+        coordinator.bindEntityState(firstEntityOne.trackId, 11L);
+        coordinator.recordRecognition(
+                firstEntityOne.trackId,
+                0.8f,
+                1,
+                characters(),
+                labels()
+        );
+
+        PlateTrackCoordinator.Decision entityTwo = updateEntity(
+                coordinator, 2, 22L, 0.70f
+        );
+        coordinator.bindEntityState(entityTwo.trackId, 22L);
+        coordinator.recordRecognition(
+                entityTwo.trackId,
+                0.8f,
+                2,
+                characters(),
+                labels()
+        );
+
+        PlateTrackCoordinator.Decision secondEntityOne = updateEntity(
+                coordinator, 4, 11L, 0.10f
+        );
+        assertTrue(secondEntityOne.recognize);
+        coordinator.bindEntityState(secondEntityOne.trackId, 11L);
+        TemporalCharacterAggregator.Result confirmed = coordinator.recordRecognition(
+                secondEntityOne.trackId,
+                0.8f,
+                4,
+                characters(),
+                labels()
+        );
+        assertTrue(confirmed.stable);
+        assertEquals("AB123", confirmed.text);
+    }
+
     private static PlateTrackCoordinator stableCoordinator() {
         PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
         PlateTrackCoordinator.Decision first = update(coordinator, 1, 0.8f);
         coordinator.recordRecognition(
-                first.trackId, 0.8f, 1, characters(), Arrays.asList("A", "1")
+                first.trackId, 0.8f, 1, characters(), labels()
         );
         PlateTrackCoordinator.Decision second = update(coordinator, 2, 0.8f);
         coordinator.recordRecognition(
-                second.trackId, 0.8f, 2, characters(), Arrays.asList("A", "1")
+                second.trackId, 0.8f, 2, characters(), labels()
         );
         return coordinator;
     }
@@ -243,10 +281,35 @@ public class PlateTrackCoordinatorTest {
         ).get(0);
     }
 
+    private static PlateTrackCoordinator.Decision updateEntity(
+            PlateTrackCoordinator coordinator,
+            long frame,
+            long entityId,
+            float left
+    ) {
+        return coordinator.update(
+                Collections.singletonList(new PlateTrackCoordinator.Observation(
+                        0,
+                        new MotionBoxTracker.Box(left, 0.2f, left + 0.2f, 0.3f),
+                        0.8f,
+                        true
+                )),
+                frame,
+                frame * 100_000_000L
+        ).get(0);
+    }
+
     private static List<Detection> characters() {
         return Arrays.asList(
                 new Detection(0, 0.9f, 0, 0, 10, 20, Collections.emptyList()),
-                new Detection(1, 0.9f, 15, 0, 25, 20, Collections.emptyList())
+                new Detection(1, 0.9f, 15, 0, 25, 20, Collections.emptyList()),
+                new Detection(2, 0.9f, 30, 0, 40, 20, Collections.emptyList()),
+                new Detection(3, 0.9f, 45, 0, 55, 20, Collections.emptyList()),
+                new Detection(4, 0.9f, 60, 0, 70, 20, Collections.emptyList())
         );
+    }
+
+    private static List<String> labels() {
+        return Arrays.asList("A", "B", "1", "2", "3");
     }
 }

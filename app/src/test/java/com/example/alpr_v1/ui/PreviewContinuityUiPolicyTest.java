@@ -193,6 +193,66 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
+    public void abruptStationaryDirectLumaCutForcesDomainSceneBoundary() {
+        assertTrue(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        true, 0.67f, false, false
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        true, 0.67f, true, false
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        true, 0.30f, false, false
+                ));
+        assertTrue(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        false,
+                        0.05f,
+                        2f,
+                        true,
+                        0.67f,
+                        44.4f,
+                        false,
+                        false
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        false,
+                        0.05f,
+                        2f,
+                        true,
+                        0.50f,
+                        44.4f,
+                        false,
+                        false
+                ));
+        assertTrue(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        false,
+                        0.16f,
+                        16f,
+                        false,
+                        0.40f,
+                        28f,
+                        false,
+                        false
+                ));
+        assertFalse(PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        false,
+                        0.02f,
+                        3f,
+                        false,
+                        0.40f,
+                        28f,
+                        false,
+                        false
+                ));
+    }
+
+    @Test
     public void dynamicMotionKeepsBoundedVehiclesUntilHardReset() {
         assertEquals(
                 PreviewContinuityUiPolicy.DynamicOverlayDisposition
@@ -388,8 +448,8 @@ public final class PreviewContinuityUiPolicyTest {
     }
 
     @Test
-    public void freshPlateGeometryReplacesAnalysisMarkerForSameEntity() {
-        assertEquals(0L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+    public void analysisMarkerRemainsForWholeActiveVehicleSession() {
+        assertEquals(7L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
                 7L, 7L, true
         ));
         assertEquals(7L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
@@ -397,6 +457,22 @@ public final class PreviewContinuityUiPolicyTest {
         ));
         assertEquals(8L, PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
                 8L, 7L, true
+        ));
+    }
+
+    @Test
+    public void trackedPlateMustStillBelongToActiveScanSession() {
+        assertTrue(PreviewContinuityUiPolicy.acceptsTrackedScanPlate(
+                true, 7L, 7L, true
+        ));
+        assertFalse(PreviewContinuityUiPolicy.acceptsTrackedScanPlate(
+                true, 0L, 7L, true
+        ));
+        assertFalse(PreviewContinuityUiPolicy.acceptsTrackedScanPlate(
+                true, 8L, 7L, true
+        ));
+        assertTrue(PreviewContinuityUiPolicy.acceptsTrackedScanPlate(
+                false, 0L, 0L, false
         ));
     }
 }

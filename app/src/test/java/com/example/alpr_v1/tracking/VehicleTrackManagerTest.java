@@ -172,6 +172,48 @@ public class VehicleTrackManagerTest {
     }
 
     @Test
+    public void coherentPanAndReturnDoNotShiftIdsToNeighboringVehicles() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        AppearanceDescriptor similar = new AppearanceDescriptor(
+                new float[]{0.8f, 0.2f, 0.1f}
+        );
+        List<VehicleTrackManager.Snapshot> initial = manager.update(
+                Arrays.asList(
+                        observation(0.02f, 0.2f, 0.28f, 0.5f, similar, 0),
+                        observation(0.40f, 0.2f, 0.60f, 0.5f, similar, 1),
+                        observation(0.75f, 0.2f, 0.95f, 0.5f, similar, 2)
+                ),
+                1_000_000_000L
+        );
+        long left = bySource(initial, 0).entityId;
+        long center = bySource(initial, 1).entityId;
+        long right = bySource(initial, 2).entityId;
+
+        manager.update(
+                Arrays.asList(
+                        observation(0.00f, 0.2f, 0.12f, 0.5f, similar, 0),
+                        observation(0.18f, 0.2f, 0.38f, 0.5f, similar, 1),
+                        observation(0.53f, 0.2f, 0.73f, 0.5f, similar, 2)
+                ),
+                1_300_000_000L
+        );
+        List<VehicleTrackManager.Snapshot> returned = manager.update(
+                Arrays.asList(
+                        observation(0.02f, 0.2f, 0.28f, 0.5f, similar, 0),
+                        observation(0.40f, 0.2f, 0.60f, 0.5f, similar, 1),
+                        observation(0.75f, 0.2f, 0.95f, 0.5f, similar, 2)
+                ),
+                1_600_000_000L
+        );
+
+        assertEquals(left, bySource(returned, 0).entityId);
+        assertEquals(center, bySource(returned, 1).entityId);
+        assertEquals(right, bySource(returned, 2).entityId);
+        assertEquals(3, repository.size());
+    }
+
+    @Test
     public void predictsMotionDuringShortMpGapAndDropsTechnicalTrackAfterTtl() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         VehicleTrackManager manager = manager(repository);

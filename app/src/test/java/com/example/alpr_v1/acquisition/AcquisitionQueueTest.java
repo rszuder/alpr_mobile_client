@@ -195,6 +195,21 @@ public final class AcquisitionQueueTest {
     }
 
     @Test
+    public void readingRegistrationEntityReturnsForAnotherOcrAttempt() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        VehicleCandidate reading = candidateWithState(
+                1L,
+                11L,
+                EntityAcquisitionState.READING_REGISTRATION
+        );
+
+        queue.update(frame(1L, reading), 0L, 100L);
+
+        assertNotNull(queue.snapshot(100L).find(1L));
+        assertEquals(1L, queue.selectNext(100L).candidate.entityId);
+    }
+
+    @Test
     public void activeEntityIsNotQueuedOrSelected() {
         AcquisitionQueue queue = new AcquisitionQueue();
         queue.update(frame(
@@ -261,6 +276,33 @@ public final class AcquisitionQueueTest {
         queue.defer(second, 101L, 0L);
 
         assertEquals(3L, queue.selectNext(102L).candidate.entityId);
+    }
+
+    @Test
+    public void repeatedRetriesStayBalancedAcrossAllQueuedEntities() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(
+                1L,
+                candidate(1L, 11L, 0.95f, 0f, false, 0L),
+                candidate(2L, 12L, 0.70f, 0f, false, 0L),
+                candidate(3L, 13L, 0.55f, 0f, false, 0L)
+        ), 0L, 100L);
+
+        long[] order = new long[6];
+        for (int index = 0; index < order.length; index++) {
+            long now = 100L + index;
+            AcquisitionQueue.Selection selection = queue.selectNext(now);
+            order[index] = selection.candidate.entityId;
+            queue.recordMtAttempt(order[index], now);
+            queue.defer(order[index], now, 0L);
+        }
+
+        assertEquals(1L, order[0]);
+        assertEquals(2L, order[1]);
+        assertEquals(3L, order[2]);
+        assertEquals(1L, order[3]);
+        assertEquals(2L, order[4]);
+        assertEquals(3L, order[5]);
     }
 
     @Test
@@ -363,6 +405,27 @@ public final class AcquisitionQueueTest {
                 snapshot,
                 0,
                 EntityAcquisitionState.NEW
+        );
+    }
+
+    private static VehicleCandidate candidateWithState(
+            long entityId,
+            long trackId,
+            EntityAcquisitionState state
+    ) {
+        return new VehicleCandidate(
+                entityId,
+                trackId,
+                new NormalizedBounds(0.25f, 0.20f, 0.75f, 0.80f),
+                0.8f,
+                0.8f,
+                0f,
+                false,
+                0,
+                1_000_000_000L,
+                1_000_000_000L,
+                0,
+                state
         );
     }
 }

@@ -1,6 +1,7 @@
 package com.example.alpr_v1.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -9,6 +10,8 @@ import android.graphics.RectF;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.example.alpr_v1.acquisition.EntityRecognitionSnapshot;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -20,6 +23,182 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test
+    public void vehicleFrameAndEntityNumberAreVisibleWithoutDiagnosticHud() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<Integer> vehicleCount = new AtomicReference<>();
+        AtomicReference<Integer> roiCount = new AtomicReference<>();
+        AtomicReference<String> vehicleLabel = new AtomicReference<>();
+        AtomicReference<String> transferVehicleLabel = new AtomicReference<>();
+        AtomicReference<String> recognitionVehicleLabel = new AtomicReference<>();
+        AtomicReference<String> completedVehicleLabel = new AtomicReference<>();
+        AtomicReference<Boolean> recognized = new AtomicReference<>();
+        AtomicReference<Boolean> recognizedAfterRead = new AtomicReference<>();
+        AtomicReference<RectF> vehicleBadge = new AtomicReference<>();
+        AtomicReference<RectF> vehicleBounds = new AtomicReference<>();
+        AtomicReference<Long> absorptionEntity = new AtomicReference<>();
+        AtomicReference<Boolean> absorbedPlate = new AtomicReference<>();
+        AtomicReference<Integer> remainingPlateCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setItems(Arrays.asList(
+                    item(
+                            OverlayItem.Kind.VEHICLE,
+                            new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.VEHICLE_ROI,
+                            new RectF(0.15f, 0.25f, 0.65f, 0.60f),
+                            7L
+                    ),
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.34f, 0.47f, 0.46f, 0.51f),
+                            77L
+                    )
+            ), 1920, 1080);
+            view.setVehicleEntityProgress(
+                    Collections.singleton(7L),
+                    Collections.emptySet()
+            );
+
+            vehicleCount.set(view.renderedKindCountForTesting(
+                    OverlayItem.Kind.VEHICLE
+            ));
+            roiCount.set(view.renderedKindCountForTesting(
+                    OverlayItem.Kind.VEHICLE_ROI
+            ));
+            vehicleLabel.set(view.vehicleLabelForTesting(7L));
+            recognized.set(view.recognizedVehicleForTesting(7L));
+            EntityRecognitionSnapshot recognition = new EntityRecognitionSnapshot(
+                    7L, 77L, "WX1234", 0.82, true, 2
+            );
+            view.setVehicleEntityStates(
+                    Collections.singleton(7L),
+                    Collections.emptySet(),
+                    Collections.singletonMap(7L, recognition)
+            );
+            // Terminalny fade nie może przejąć ramki konsumowanej przez transfer.
+            view.fadeOutPlateItems();
+            transferVehicleLabel.set(view.vehicleLabelForTesting(7L));
+            recognizedAfterRead.set(view.recognizedVehicleForTesting(7L));
+            vehicleBadge.set(view.vehicleBadgeForTesting(7L));
+            vehicleBounds.set(view.vehicleBoundsForTesting(7L));
+            absorptionEntity.set(view.plateAbsorptionEntityForTesting());
+            absorbedPlate.set(view.absorbedPlateTrackForTesting(77L));
+            remainingPlateCount.set(view.renderedKindCountForTesting(
+                    OverlayItem.Kind.PLATE
+            ));
+            view.finishPlateAbsorptionForTesting();
+            recognitionVehicleLabel.set(view.vehicleLabelForTesting(7L));
+            recognizedAfterRead.set(view.recognizedVehicleForTesting(7L));
+            view.setVehicleEntityStates(
+                    Collections.singleton(7L),
+                    Collections.singleton(7L),
+                    Collections.singletonMap(7L, recognition)
+            );
+            completedVehicleLabel.set(view.vehicleLabelForTesting(7L));
+        });
+
+        assertEquals(1, (int) vehicleCount.get());
+        assertEquals(0, (int) roiCount.get());
+        assertEquals("Pojazd 7 · czeka na odczyt", vehicleLabel.get());
+        assertEquals("Pojazd 7: WX1234 · 82%", transferVehicleLabel.get());
+        assertEquals(
+                "Pojazd 7: WX1234 · 82%",
+                recognitionVehicleLabel.get()
+        );
+        assertEquals(7L, (long) absorptionEntity.get());
+        assertTrue(absorbedPlate.get());
+        assertEquals(0, (int) remainingPlateCount.get());
+        assertEquals("Pojazd 7: WX1234 · 82%", completedVehicleLabel.get());
+        assertFalse(recognized.get());
+        assertTrue(recognizedAfterRead.get());
+        assertTrue(vehicleBadge.get().centerY() < vehicleBounds.get().centerY());
+    }
+
+    @Test
+    public void provisionalTransferIsNotRepeatedWhenRecognitionBecomesConfirmed() {
+        Context context = InstrumentationRegistry.getInstrumentation()
+                .getTargetContext();
+        AtomicReference<String> provisionalLabel = new AtomicReference<>();
+        AtomicReference<String> confirmedLabel = new AtomicReference<>();
+        AtomicReference<Long> secondAbsorptionEntity = new AtomicReference<>();
+        AtomicReference<Boolean> provisionalConfirmed = new AtomicReference<>();
+        AtomicReference<Boolean> provisionalRecognized = new AtomicReference<>();
+        AtomicReference<Boolean> finalConfirmed = new AtomicReference<>();
+        AtomicReference<Integer> remainingPlateCount = new AtomicReference<>();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            OverlayItem vehicle = item(
+                    OverlayItem.Kind.VEHICLE,
+                    new RectF(0.20f, 0.30f, 0.60f, 0.55f),
+                    7L
+            );
+            view.setItems(Arrays.asList(
+                    vehicle,
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.34f, 0.47f, 0.46f, 0.51f),
+                            77L
+                    )
+            ), 1920, 1080);
+            EntityRecognitionSnapshot provisional = new EntityRecognitionSnapshot(
+                    7L, 77L, "WX1234", 0.60, false, 1
+            );
+            view.setVehicleEntityStates(
+                    Collections.singleton(7L),
+                    Collections.emptySet(),
+                    Collections.singletonMap(7L, provisional)
+            );
+            view.fadeOutPlateItems();
+            view.finishPlateAbsorptionForTesting();
+            provisionalLabel.set(view.vehicleLabelForTesting(7L));
+            provisionalConfirmed.set(view.confirmedVehicleForTesting(7L));
+            provisionalRecognized.set(view.recognizedVehicleForTesting(7L));
+
+            view.setItems(Arrays.asList(
+                    vehicle,
+                    item(
+                            OverlayItem.Kind.PLATE,
+                            new RectF(0.35f, 0.47f, 0.47f, 0.51f),
+                            88L
+                    )
+            ), 1920, 1080);
+            EntityRecognitionSnapshot confirmed = new EntityRecognitionSnapshot(
+                    7L, 88L, "WX1234", 0.82, true, 2
+            );
+            view.setVehicleEntityStates(
+                    Collections.singleton(7L),
+                    Collections.singleton(7L),
+                    Collections.singletonMap(7L, confirmed)
+            );
+            secondAbsorptionEntity.set(view.plateAbsorptionEntityForTesting());
+            confirmedLabel.set(view.vehicleLabelForTesting(7L));
+            finalConfirmed.set(view.confirmedVehicleForTesting(7L));
+            remainingPlateCount.set(view.renderedKindCountForTesting(
+                    OverlayItem.Kind.PLATE
+            ));
+        });
+
+        assertEquals(
+                "Pojazd 7: WX1234 \u00b7 60%",
+                provisionalLabel.get()
+        );
+        assertFalse(provisionalConfirmed.get());
+        assertTrue(provisionalRecognized.get());
+        assertEquals(0L, (long) secondAbsorptionEntity.get());
+        assertEquals("Pojazd 7: WX1234 \u00b7 82%", confirmedLabel.get());
+        assertTrue(finalConfirmed.get());
+        assertEquals(0, (int) remainingPlateCount.get());
+    }
+
     @Test
     public void previewUpdateReplacesOnlyPlateAndPreservesMpGeometry() {
         Context context = InstrumentationRegistry.getInstrumentation()
@@ -503,8 +682,8 @@ public final class DetectionOverlayViewInstrumentedTest {
             ), 1920, 1080);
             view.setActiveVehicleEntityId(7L);
 
-            // Domyślnie VEHICLE nie jest rysowany, ale jego geometria nadal kotwiczy marker.
-            assertEquals(1, view.snapshotRenderBoundsForTesting().size());
+            // Domyślna ramka VEHICLE i tablica są widoczne, a geometria kotwiczy marker.
+            assertEquals(2, view.snapshotRenderBoundsForTesting().size());
             cachedBounds.set(view.snapshotActiveVehicleBoundsForTesting());
             awayTip.set(view.activeVehicleMarkerTipForTesting(0f));
             touchingTip.set(view.activeVehicleMarkerTipForTesting(1f));

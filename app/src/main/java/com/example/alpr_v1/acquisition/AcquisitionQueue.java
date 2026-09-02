@@ -123,11 +123,12 @@ public final class AcquisitionQueue {
                 changed |= entries.remove(source.entityId) != null;
                 continue;
             }
-            if (source.acquisitionState != EntityAcquisitionState.NEW
-                    && source.acquisitionState != EntityAcquisitionState.QUEUED) {
-                changed |= entries.remove(source.entityId) != null;
-                continue;
-            }
+            /*
+             * PLATE_LOCALIZED / READING_REGISTRATION opisują postęp domenowy,
+             * nie zakończenie pracy. Po zwolnieniu krótkiej sesji Scan taka
+             * encja nadal musi wrócić do kolejki i zebrać następne obserwacje
+             * OCR. Wyżej odrzuciliśmy już wszystkie stany terminalne.
+             */
             QueueEntry entry = entries.get(source.entityId);
             if (entry == null) {
                 entry = new QueueEntry(
@@ -196,14 +197,19 @@ public final class AcquisitionQueue {
         if (ranked.isEmpty()) return null;
         Ranked selected = ranked.get(0);
         /*
-         * Bariera pierwszego przejścia: większy i centralny pojazd nie może
-         * rozpoczynać kolejnych retry, dopóki inna kwalifikująca się encja nie
-         * dostała ani jednej próby. W obrębie tej grupy nadal obowiązuje pełny
-         * ranking Phase 3B i deterministyczny tie-break.
+         * Najpierw wyrównujemy liczbę prób MT pomiędzy kwalifikującymi się
+         * encjami, a dopiero w tej grupie stosujemy ranking jakości. Sam scoring
+         * nie może pozwolić dużemu, czytelnemu pojazdowi zagłodzić sąsiadów.
          */
+        int minimumMtAttempts = Integer.MAX_VALUE;
         for (Ranked candidate : ranked) {
-            if (candidate.candidate.mtAttempts == 0
-                    && candidate.candidate.freshMzAttempts == 0) {
+            minimumMtAttempts = Math.min(
+                    minimumMtAttempts,
+                    candidate.candidate.mtAttempts
+            );
+        }
+        for (Ranked candidate : ranked) {
+            if (candidate.candidate.mtAttempts == minimumMtAttempts) {
                 selected = candidate;
                 break;
             }

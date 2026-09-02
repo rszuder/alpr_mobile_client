@@ -108,6 +108,33 @@ public final class VehicleOverlayIdentityTest {
         );
     }
 
+    @Test
+    public void trackerOrderedFramesKeepCandidateIdentityAfterDetectionReorder() {
+        VehicleCandidate entityA = candidate(
+                91L,
+                new NormalizedBounds(0.10f, 0.10f, 0.40f, 0.60f),
+                1
+        );
+        VehicleCandidate entityB = candidate(
+                92L,
+                new NormalizedBounds(0.55f, 0.10f, 0.85f, 0.60f),
+                0
+        );
+
+        assertEquals(
+                Arrays.asList(92L, 91L),
+                MobileAlprEngine.vehicleOverlayIds(
+                        Arrays.asList(
+                                detection(550f, 100f, 850f, 600f),
+                                detection(100f, 100f, 400f, 600f)
+                        ),
+                        Arrays.asList(entityB, entityA),
+                        1000,
+                        1000
+                )
+        );
+    }
+
     private static VehicleCandidate candidate(
             long entityId,
             NormalizedBounds bounds

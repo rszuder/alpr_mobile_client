@@ -9,6 +9,7 @@ import com.example.alpr_v1.continuity.SceneTransitionCoordinator;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.continuity.SceneTransitionDecision;
 import com.example.alpr_v1.continuity.SoftReacquireResult;
+import com.example.alpr_v1.continuity.SourceFrameStamp;
 
 import org.junit.Test;
 
@@ -69,6 +70,15 @@ public final class AlprPipelineContinuityApiTest {
                 TargetSnapshot.class,
                 ContinuityStamp.class
         ));
+        assertEquals(
+                SceneTransitionDecision.class,
+                AlprPipeline.class.getMethod(
+                        "requestAbruptSceneReset",
+                        SourceFrameStamp.class,
+                        float.class,
+                        float.class
+                ).getReturnType()
+        );
     }
 
     @Test

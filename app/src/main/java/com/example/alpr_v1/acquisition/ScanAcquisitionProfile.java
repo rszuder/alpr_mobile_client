@@ -12,8 +12,8 @@ public final class ScanAcquisitionProfile {
             0.28f, 0.22f, 0.18f, 0.12f, 0.10f, 0.10f,
             0.16f, 0.12f, 1.0f,
             2, 2,
-            5_000_000_000L,
-            3_000_000_000L
+            15_000_000_000L,
+            8_000_000_000L
     );
 
     public final int maximumQueueSize;

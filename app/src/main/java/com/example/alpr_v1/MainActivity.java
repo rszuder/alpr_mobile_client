@@ -63,6 +63,7 @@ import com.example.alpr_v1.camera.AutoZoomController;
 import com.example.alpr_v1.camera.AutoZoomRecognitionMemory;
 //do usuniecia po migracji
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
+import com.example.alpr_v1.camera.AnalysisResolutionPolicy;
 //--------------------------------------------------------------
 import com.example.alpr_v1.camera.CameraResolutionCatalog;
 import com.example.alpr_v1.camera.CameraResolutionSelection;
@@ -84,6 +85,7 @@ import com.example.alpr_v1.pipeline.AlprPipeline;
 import com.example.alpr_v1.acquisition.PlateAnchor;
 import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
 import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
+import com.example.alpr_v1.domain.RegistrationTextPolicy;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.pipeline.PipelineResult;
 import com.example.alpr_v1.pipeline.PipelineResultDispatchGate;
@@ -360,6 +362,8 @@ public final class MainActivity extends AppCompatActivity {
      */
     private List<OverlayItem> latestPipelinePlateItems =
             java.util.Collections.emptyList();
+    private Set<Long> latestFreshMzPlateTrackIds =
+            java.util.Collections.emptySet();
     private List<OverlayItem> latestPreviewMotionItems =
             java.util.Collections.emptyList();
     private long latestPipelinePlateEntityId;
@@ -981,12 +985,20 @@ public final class MainActivity extends AppCompatActivity {
             latestDiagnosticOverlayItems = java.util.Collections.emptyList();
             latestDiagnosticOverlayAnchorTimestampNanos = 0L;
             latestPipelinePlateItems = java.util.Collections.emptyList();
+            latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
             latestPreviewMotionItems = java.util.Collections.emptyList();
             latestPipelinePlateEntityId = 0L;
             overlayView.setFocusedTrackId(0L);
             overlayView.setActiveVehicleEntityId(0L);
             overlayView.clearPlateItems();
+            overlayView.setItems(java.util.Collections.emptyList());
             overlayView.setPreviewItems(java.util.Collections.emptyList());
+            overlayView.setVehicleEntityStates(
+                    java.util.Collections.emptySet(),
+                    java.util.Collections.emptySet(),
+                    java.util.Collections.emptyMap()
+            );
+            livePresentation.clearResult();
             livePresentation.showState(
                     LivePresentationController.State.RECOVERING,
                     "Zmiana widoku — weryfikacja sceny"
@@ -995,8 +1007,13 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void processDirectLumaFrame(LumaFrame frame) {
+        /*
+         * Direct-luma comes from the camera stream, not from PreviewView. UI
+         * overlay holds and post-return validation therefore cannot suppress
+         * scene-cut evidence. Only a real optical transform or an already
+         * active presentation barrier is allowed to pause this channel.
+         */
         if (frame == null || !cameraStarted || cameraTransformInProgress
-                || isAutoZoomHoldingMemory() || autoZoomReturnValidationPending
                 || previewPresentationBarrier.active()) return;
         final long presentationGeneration = previewPresentationBarrier.capture();
         if (!previewPresentationBarrier.permits(presentationGeneration)) return;
@@ -1043,25 +1060,84 @@ public final class MainActivity extends AppCompatActivity {
                 visualMotionEvidenceDecay.snapshot(
                         android.os.SystemClock.elapsedRealtimeNanos()
                 );
-        if (PreviewContinuityUiPolicy.shouldActivatePresentationBarrier(
+        if (motionSample.sceneChange.globalChangedFraction >= 0.20f
+                || motionSample.sceneChange.changedFraction >= 0.08f) {
+            android.util.Log.d(
+                    "ALPR_LUMA_AUDIT",
+                    String.format(
+                            Locale.ROOT,
+                            "masked_fraction=%.3f masked_delta=%.1f "
+                                    + "global_fraction=%.3f global_delta=%.1f "
+                                    + "sensor_motion=%s visual_motion=%s settling=%s",
+                            motionSample.sceneChange.changedFraction,
+                            motionSample.sceneChange.meanDelta,
+                            motionSample.sceneChange.globalChangedFraction,
+                            motionSample.sceneChange.globalMeanDelta,
+                            earlySensorMotion,
+                            isVisualCameraMotion(frameMotion),
+                            earlyVisualMotion.settling
+                    )
+            );
+        }
+        if (PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
                 motionSample.sceneChange.changed,
                 motionSample.sceneChange.changedFraction,
+                motionSample.sceneChange.meanDelta,
+                motionSample.sceneChange.globalChanged,
+                motionSample.sceneChange.globalChangedFraction,
+                motionSample.sceneChange.globalMeanDelta,
                 earlySensorMotion || isVisualCameraMotion(frameMotion),
                 earlyVisualMotion.settling
         )) {
+            boolean maskedBoundary = motionSample.sceneChange.changed;
+            float boundaryFraction = maskedBoundary
+                    ? motionSample.sceneChange.changedFraction
+                    : motionSample.sceneChange.globalChangedFraction;
+            float boundaryMeanDelta = maskedBoundary
+                    ? motionSample.sceneChange.meanDelta
+                    : motionSample.sceneChange.globalMeanDelta;
             android.util.Log.d(
                     "ALPR_LUMA_SCENE_CHANGE",
                     String.format(
                             Locale.ROOT,
-                            "changed_fraction=%.3f mean_delta=%.1f samples=%d",
+                            "masked_fraction=%.3f masked_delta=%.1f samples=%d "
+                                    + "global_fraction=%.3f global_delta=%.1f "
+                                    + "global_samples=%d authority=%s",
                             motionSample.sceneChange.changedFraction,
                             motionSample.sceneChange.meanDelta,
-                            motionSample.sceneChange.samples
+                            motionSample.sceneChange.samples,
+                            motionSample.sceneChange.globalChangedFraction,
+                            motionSample.sceneChange.globalMeanDelta,
+                            motionSample.sceneChange.globalSamples,
+                            maskedBoundary ? "masked" : "unmasked"
                     )
             );
             activateAbruptScenePresentationBarrier(
-                    motionSample.sceneChange.changedFraction
+                    boundaryFraction
             );
+            AlprPipeline activePipeline = pipeline;
+            SceneTransitionDecision resetDecision = activePipeline == null
+                    ? null : activePipeline.requestAbruptSceneReset(
+                    lumaSourceFrame,
+                    boundaryFraction,
+                    boundaryMeanDelta
+            );
+            if (resetDecision != null) {
+                float resetScore = Math.max(
+                        boundaryFraction,
+                        Math.min(
+                                1f,
+                                boundaryMeanDelta / 255f
+                        )
+                );
+                runOnUiThread(() -> renderPreviewContinuityDecision(
+                        resetDecision,
+                        resetScore,
+                        boundaryFraction,
+                        java.util.Collections.emptyList()
+                ));
+            }
             return;
         }
         boolean acceptedCameraMotion = isVisualCameraMotion(frameMotion)
@@ -2325,6 +2401,11 @@ public final class MainActivity extends AppCompatActivity {
         pendingPreviewCoordination.set(null);
         pendingDirectLumaFrame.set(null);
         long generation = uiSceneGeneration.incrementAndGet();
+        pendingPreviewCoordination.set(null);
+        pendingDirectLumaFrame.set(null);
+        previewPresentationBarrier.reset();
+        previewSceneRecoveryRebaseRevision.set(0L);
+        previewSceneRecoveryRebaseAppliedRevision = 0L;
         previewPresentationBarrier.reset();
 
         pipeline.resetTracking();
@@ -2343,6 +2424,7 @@ public final class MainActivity extends AppCompatActivity {
         latestDiagnosticOverlayItems = java.util.Collections.emptyList();
         latestDiagnosticOverlayAnchorTimestampNanos = 0L;
         latestPipelinePlateItems = java.util.Collections.emptyList();
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         lastCaptureByTrack.clear();
@@ -2754,6 +2836,7 @@ public final class MainActivity extends AppCompatActivity {
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
@@ -2767,6 +2850,11 @@ public final class MainActivity extends AppCompatActivity {
 
         overlayView.setItems(
                 java.util.Collections.emptyList()
+        );
+        overlayView.setVehicleEntityStates(
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptyMap()
         );
 
         livePresentation.stop();
@@ -3177,6 +3265,7 @@ public final class MainActivity extends AppCompatActivity {
                 previewPlateTracker.reset();
                 overlayTracker.reset();
                 latestPipelinePlateItems = java.util.Collections.emptyList();
+                latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
                 latestPipelinePlateEntityId = 0L;
                 plateOverlayFreshness.reset();
                 lastCaptureByTrack.clear();
@@ -3301,16 +3390,18 @@ public final class MainActivity extends AppCompatActivity {
         previewVehicleTracker.reset();
         resetGlobalPreviewMotionState();
 
+        previewSceneDetector.reset();
         previewSceneAnchorGuard.reset();
 
         previewSceneAnchorPending =
-                false;
+                true;
 
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
@@ -3324,6 +3415,11 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.clearPlateItems();
         overlayView.setItems(
                 java.util.Collections.emptyList()
+        );
+        overlayView.setVehicleEntityStates(
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptyMap()
         );
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(true);
@@ -3513,6 +3609,7 @@ public final class MainActivity extends AppCompatActivity {
 
         latestPipelinePlateItems =
                 java.util.Collections.emptyList();
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         latestPreviewMotionItems = java.util.Collections.emptyList();
         latestPipelinePlateEntityId = 0L;
         plateOverlayFreshness.reset();
@@ -3527,6 +3624,11 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.clearPlateItems();
         overlayView.setItems(
                 java.util.Collections.emptyList()
+        );
+        overlayView.setVehicleEntityStates(
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptyMap()
         );
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(true);
@@ -4011,18 +4113,12 @@ public final class MainActivity extends AppCompatActivity {
                         * 1024L;
 
 
-        Size target =
-                constrained
-
-                        ? new Size(
-                        640,
-                        480
-                )
-
-                        : new Size(
-                        1280,
-                        720
-                );
+        boolean scanActive = pipeline != null
+                && pipeline.scanAcquisitionSnapshot().runState.active();
+        Size target = new Size(
+                AnalysisResolutionPolicy.autoWidth(constrained, scanActive),
+                AnalysisResolutionPolicy.autoHeight(constrained, scanActive)
+        );
 
 
         Size resolved =
@@ -4239,17 +4335,31 @@ public final class MainActivity extends AppCompatActivity {
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
         if (syncMissingModelsStatus()) return;
+        overlayView.setVehicleEntityProgress(
+                scan.identifiedEntityIds,
+                java.util.Collections.emptySet()
+        );
+        if (scan.entityRecognitions.isEmpty()
+                && scan.completedEntityIds.isEmpty()) {
+            livePresentation.clearResult();
+        }
         overlayView.setActiveVehicleGeometryMaximumAgeNanos(
                 PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                 )
         );
-        overlayView.setActiveVehicleEntityId(
-                PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
-                        scan.activeEntityId,
-                        latestPipelinePlateEntityId,
-                        !latestPipelinePlateItems.isEmpty()
-                )
+        long markerEntityId = PreviewContinuityUiPolicy.activeVehicleMarkerEntityId(
+                scan.activeEntityId,
+                latestPipelinePlateEntityId,
+                !latestPipelinePlateItems.isEmpty()
+        );
+        overlayView.setActiveVehicleEntityId(markerEntityId);
+        android.util.Log.d(
+                "ALPR_ACTIVE_MARKER",
+                "scan_entity=" + scan.activeEntityId
+                        + " marker_entity=" + markerEntityId
+                        + " session=" + scan.activeSessionId
+                        + " directive_revision=" + scan.directive.revision
         );
         if (scan.activeSessionState
                 == com.example.alpr_v1.domain.TargetSessionState.RECOVERING) {
@@ -4649,6 +4759,19 @@ public final class MainActivity extends AppCompatActivity {
 
 
         long freshPlateEntityId = plateEntityId(result, pipelinePlateItems);
+        Set<Long> freshMzPlateTracks = new HashSet<>();
+        for (PlateObservation observation : result.plateObservations) {
+            if (!observation.freshMzAttempted) continue;
+            for (OverlayItem plate : pipelinePlateItems) {
+                if (plate.trackId == observation.plateTrackId
+                        || plate.trackId == observation.trackId) {
+                    freshMzPlateTracks.add(plate.trackId);
+                }
+            }
+        }
+        latestFreshMzPlateTrackIds = java.util.Collections.unmodifiableSet(
+                freshMzPlateTracks
+        );
         if (!pipelinePlateItems.isEmpty()) {
             latestPipelinePlateItems =
                     java.util.Collections.unmodifiableList(
@@ -4675,6 +4798,19 @@ public final class MainActivity extends AppCompatActivity {
                     preserved
             );
         }
+        ScanAcquisitionSnapshot presentationScan = pipeline == null
+                ? null : pipeline.scanAcquisitionSnapshot();
+        boolean scanPresentationActive = presentationScan != null
+                && (presentationScan.runState.active()
+                || presentationScan.directive.action
+                == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET);
+        presentationSourceItems = preserveFreshScanVehicleItems(
+                presentationSourceItems,
+                latestPreviewMotionItems,
+                scanPresentationActive,
+                previewVehicleGeometryAgeNanos
+                        <= vehiclePresentationMaximumAgeNanos
+        );
         /*
          * scanScopedOverlayItems() jest jedynym właścicielem bariery encji.
          * Przy RELEASE może przepuścić wyłącznie świeżą geometrię z bieżącego
@@ -4709,6 +4845,26 @@ public final class MainActivity extends AppCompatActivity {
                 result.sourceWidth,
                 result.sourceHeight
         );
+        if (pipeline != null) {
+            ScanAcquisitionSnapshot recognitionScan =
+                    pipeline.scanAcquisitionSnapshot();
+            if (recognitionScan.runState.active()
+                    || recognitionScan.directive.action
+                    == AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET) {
+                // Jedyna ścieżka publikacji wyniku encji: świeża geometria
+                // PLATE jest już w View, więc może stać się źródłem transferu.
+                overlayView.setVehicleEntityStates(
+                        recognitionScan.identifiedEntityIds,
+                        recognitionScan.completedEntityIds,
+                        recognitionScan.entityRecognitions
+                );
+            }
+        }
+        if (scanReleaseBarrierActive) {
+            // RELEASE kończy własność sesji, ale świeża migawka MT z tego
+            // samego wyniku znika spokojnie zamiast błysnąć i zgasnąć.
+            overlayView.fadeOutPlateItems();
+        }
         latestPreviewMotionItems = java.util.Collections.unmodifiableList(
                 new ArrayList<>(presentedOverlayItems)
         );
@@ -4789,8 +4945,17 @@ public final class MainActivity extends AppCompatActivity {
             livePresentation.showTransient(result.message);
         } else {
             PlateObservation bestObservation = null;
+            ScanAcquisitionSnapshot resultScan = pipeline == null
+                    ? null : pipeline.scanAcquisitionSnapshot();
+            boolean scanOwnsResults = resultScan != null
+                    && resultScan.runState.active();
             for (PlateObservation observation : result.plateObservations) {
-                if (observation.text.isEmpty()) continue;
+                if (!observation.confirmed
+                        || !RegistrationTextPolicy.displayable(observation.text)) continue;
+                if (scanOwnsResults
+                        && !resultScan.entityRecognitions.containsKey(
+                        observation.entityId
+                )) continue;
                 if (bestObservation == null
                         || observation.confirmed && !bestObservation.confirmed
                         || observation.confirmed == bestObservation.confirmed
@@ -5385,14 +5550,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean hasPresentedFreshMzForAutoZoomTarget() {
         long targetTrackId = autoZoomController.targetTrackId();
-        for (OverlayItem item : latestPipelinePlateItems) {
-            if (item.trackId == targetTrackId
-                    && !item.carriedPrediction
-                    && item.label.contains("· MZ")) {
-                return true;
-            }
-        }
-        return false;
+        return targetTrackId > 0L
+                && latestFreshMzPlateTrackIds.contains(targetTrackId);
     }
 
     private void beginControlledCameraTransform() {
@@ -5515,7 +5674,7 @@ public final class MainActivity extends AppCompatActivity {
                 releaseDetails
         );
         targetStateMachine.reset();
-        clearScanPlateVisualState();
+        setScanOverlayPresentationEntity(0L);
         overlayView.setFocusedTrackId(0L);
         overlayView.setActiveVehicleEntityId(0L);
         /*
@@ -5528,17 +5687,25 @@ public final class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    private void clearScanPlateVisualState() {
+    private void resetScanPlateVisualState(boolean fadeVisiblePlate) {
         previewPlateTracker.reset();
         overlayTracker.reset();
         plateOverlayFreshness.reset();
         latestPipelinePlateItems = java.util.Collections.emptyList();
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         latestPipelinePlateEntityId = 0L;
         latestPreviewMotionItems = java.util.Collections.unmodifiableList(
                 new ArrayList<>(nonPlateOverlayItems(latestPreviewMotionItems))
         );
-        // RELEASE/switch jest twardą barierą i anuluje również osobną warstwę fade.
-        overlayView.clearPlateItems();
+        if (fadeVisiblePlate) {
+            overlayView.fadeOutPlateItems();
+        } else {
+            overlayView.clearPlateItems();
+        }
+    }
+
+    private void clearScanPlateVisualState() {
+        resetScanPlateVisualState(false);
     }
 
     private void refreshPipelineCameraMotionEvidence() {
@@ -5727,7 +5894,7 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> result = new ArrayList<>(items.size());
         String rememberedLabel = String.format(
                 Locale.ROOT,
-                "%s · pamięć MZ %.0f%%",
+                "%s %.0f%%",
                 autoZoomBestText,
                 autoZoomBestConfidence * 100.0
         );
@@ -5801,6 +5968,8 @@ public final class MainActivity extends AppCompatActivity {
                 java.util.Collections.unmodifiableList(diagnostics);
         latestPipelinePlateItems =
                 java.util.Collections.unmodifiableList(plates);
+        // Ten callback publikuje geometrię MT przed próbą OCR.
+        latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
         overlayView.setItems(items, sourceWidth, sourceHeight);
         latestPreviewMotionItems = java.util.Collections.unmodifiableList(
                 new ArrayList<>(items)
@@ -5813,19 +5982,11 @@ public final class MainActivity extends AppCompatActivity {
     ) {
         List<OverlayItem> memory = new ArrayList<>(items.size());
         for (OverlayItem item : items) {
-            String label = item.label;
-            if (item.kind == OverlayItem.Kind.PLATE) {
-                if (zoomResult) {
-                    label = zoomMemoryLabel(label);
-                } else if (!label.contains("pamięć")) {
-                    label = label + " · pamięć";
-                }
-            }
             memory.add(new OverlayItem(
                     item.kind,
                     item.normalizedBounds,
                     item.normalizedKeypoints,
-                    label,
+                    item.label,
                     item.trackId,
                     item.kind == OverlayItem.Kind.PLATE || item.carriedPrediction
             ));
@@ -5917,13 +6078,20 @@ public final class MainActivity extends AppCompatActivity {
         );
         setScanOverlayPresentationEntity(presentationEntityId);
 
-        Set<Long> allowedPlateTrackIds = releaseBarrier
+        Set<Long> scopedPlateTrackIds = releaseBarrier
                 ? terminalFreshReleasePlateTrackIds(scan, result)
                 : scanPlateTrackIds(
                         presentationEntityId,
                         scan.plateAnchor,
                         result.plateObservations
                 );
+        Set<Long> allowedPlateTrackIds = new HashSet<>(scopedPlateTrackIds);
+        // Pełnoklatkowy fallback może potwierdzić inną encję niż bieżący cel.
+        // Dopuszczamy wyłącznie jej potwierdzoną ramkę, aby transfer miał
+        // widoczne źródło; robocze ramki innych pojazdów nadal są blokowane.
+        allowedPlateTrackIds.addAll(
+                confirmedScanPlateTrackIds(result.plateObservations)
+        );
         if (releaseBarrier) {
             android.util.Log.d(
                     "ALPR_TERMINAL_PLATE",
@@ -6013,6 +6181,25 @@ public final class MainActivity extends AppCompatActivity {
         return java.util.Collections.unmodifiableSet(visibleFreshTracks);
     }
 
+    static Set<Long> confirmedScanPlateTrackIds(
+            List<PlateObservation> observations
+    ) {
+        if (observations == null || observations.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        Set<Long> tracks = new HashSet<>();
+        for (PlateObservation observation : observations) {
+            if (observation != null
+                    && observation.entityId > 0L
+                    && observation.plateTrackId > 0L
+                    && observation.confirmed
+                    && RegistrationTextPolicy.displayable(observation.text)) {
+                tracks.add(observation.plateTrackId);
+            }
+        }
+        return java.util.Collections.unmodifiableSet(tracks);
+    }
+
     static List<OverlayItem> filterScanOverlayItems(
             List<OverlayItem> items,
             Set<Long> allowedPlateTrackIds
@@ -6040,7 +6227,7 @@ public final class MainActivity extends AppCompatActivity {
 
         long previousEntityId = scanOverlayPresentationEntityId;
         scanOverlayPresentationEntityId = safeEntityId;
-        clearScanPlateVisualState();
+        resetScanPlateVisualState(safeEntityId == 0L && previousEntityId > 0L);
         JSONObject details = new JSONObject();
         try {
             details.put("previous_entity_id", previousEntityId);
@@ -6071,7 +6258,23 @@ public final class MainActivity extends AppCompatActivity {
         ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
         if (!shouldPresentScanMtStage(scan)) return;
 
-        List<OverlayItem> freshStage = activeTrackingOverlayItems(overlayItems);
+        setScanOverlayPresentationEntity(scan.activeEntityId);
+        List<OverlayItem> scopedStage = scanScopedMtStageItems(
+                overlayItems,
+                scan.activeEntityId
+        );
+        if (!containsPlate(scopedStage)) {
+            android.util.Log.d(
+                    "ALPR_MT_STAGE",
+                    "blocked entity=" + scan.activeEntityId
+                            + " raw_plates="
+                            + countKind(overlayItems, OverlayItem.Kind.PLATE)
+                            + " reason=no_plate_inside_active_vehicle"
+                            + " directive_revision=" + scan.directive.revision
+            );
+            return;
+        }
+        List<OverlayItem> freshStage = activeTrackingOverlayItems(scopedStage);
         latestOverlaySourceWidth = sourceWidth;
         latestOverlaySourceHeight = sourceHeight;
         latestPipelinePlateEntityId = scan.activeEntityId;
@@ -6080,7 +6283,7 @@ public final class MainActivity extends AppCompatActivity {
                 android.os.SystemClock.elapsedRealtimeNanos()
         );
         applyVisibleOverlay(freshStage, sourceWidth, sourceHeight);
-        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.setActiveVehicleEntityId(scan.activeEntityId);
         previewPlateTracker.anchor(freshStage, sourceWidth, sourceHeight);
         livePresentation.showState(
                 LivePresentationController.State.TRACKING,
@@ -6089,7 +6292,9 @@ public final class MainActivity extends AppCompatActivity {
         android.util.Log.d(
                 "ALPR_MT_STAGE",
                 "presented entity=" + scan.activeEntityId
-                        + " plates="
+                        + " raw_plates="
+                        + countKind(overlayItems, OverlayItem.Kind.PLATE)
+                        + " scoped_plates="
                         + countKind(freshStage, OverlayItem.Kind.PLATE)
                         + " directive_revision=" + scan.directive.revision
         );
@@ -6101,6 +6306,100 @@ public final class MainActivity extends AppCompatActivity {
                 && scan.activeEntityId > 0L
                 && scan.directive.requestsMt()
                 && scan.directive.entityId == scan.activeEntityId;
+    }
+
+    /**
+     * Pośredni callback MT nie ma jeszcze PlateObservation z przypisaną encją.
+     * Wiążemy geometrię z aktywnym pojazdem przestrzennie i publikujemy najwyżej
+     * jedną ramkę. Kandydaty innych pojazdów mogą znaleźć się w rozszerzonym
+     * cropie MT, ale nie należą do bieżącej sesji Scan.
+     */
+    static List<OverlayItem> scanScopedMtStageItems(
+            List<OverlayItem> items,
+            long activeEntityId
+    ) {
+        if (items == null || items.isEmpty() || activeEntityId <= 0L) {
+            return java.util.Collections.emptyList();
+        }
+
+        RectF activeVehicle = null;
+        for (OverlayItem item : items) {
+            if (item != null
+                    && item.kind == OverlayItem.Kind.VEHICLE
+                    && item.trackId == activeEntityId) {
+                activeVehicle = item.normalizedBounds;
+                break;
+            }
+        }
+        if (activeVehicle == null) {
+            for (OverlayItem item : items) {
+                if (item != null
+                        && item.kind == OverlayItem.Kind.VEHICLE_ROI
+                        && item.trackId == activeEntityId) {
+                    activeVehicle = item.normalizedBounds;
+                    break;
+                }
+            }
+        }
+        if (activeVehicle == null) return java.util.Collections.emptyList();
+
+        OverlayItem selectedPlate = null;
+        float selectedConfidence = -1f;
+        float selectedDistance = Float.MAX_VALUE;
+        float vehicleWidth = Math.max(0f, activeVehicle.right - activeVehicle.left);
+        float vehicleHeight = Math.max(0f, activeVehicle.bottom - activeVehicle.top);
+        float expectedX = (activeVehicle.left + activeVehicle.right) * 0.5f;
+        float expectedY = activeVehicle.top + vehicleHeight * 0.78f;
+        for (OverlayItem item : items) {
+            if (item == null || item.kind != OverlayItem.Kind.PLATE) continue;
+            float centerX = (item.normalizedBounds.left
+                    + item.normalizedBounds.right) * 0.5f;
+            float centerY = (item.normalizedBounds.top
+                    + item.normalizedBounds.bottom) * 0.5f;
+            if (centerX < activeVehicle.left || centerX > activeVehicle.right
+                    || centerY < activeVehicle.top || centerY > activeVehicle.bottom) {
+                continue;
+            }
+
+            float confidence = overlayLabelConfidence(item.label);
+            float dx = (centerX - expectedX) / Math.max(0.01f, vehicleWidth);
+            float dy = (centerY - expectedY) / Math.max(0.01f, vehicleHeight);
+            float distance = dx * dx + dy * dy;
+            if (selectedPlate == null
+                    || confidence > selectedConfidence + 0.0001f
+                    || (Math.abs(confidence - selectedConfidence) <= 0.0001f
+                    && distance < selectedDistance)) {
+                selectedPlate = item;
+                selectedConfidence = confidence;
+                selectedDistance = distance;
+            }
+        }
+        if (selectedPlate == null) return java.util.Collections.emptyList();
+
+        List<OverlayItem> scoped = new ArrayList<>(items.size());
+        for (OverlayItem item : items) {
+            if (item != null && item.kind != OverlayItem.Kind.PLATE) {
+                scoped.add(item);
+            }
+        }
+        scoped.add(selectedPlate);
+        return java.util.Collections.unmodifiableList(scoped);
+    }
+
+    private static float overlayLabelConfidence(String label) {
+        String safe = label == null ? "" : label;
+        int percent = safe.lastIndexOf('%');
+        if (percent <= 0) return 0f;
+        int start = percent - 1;
+        while (start >= 0 && Character.isDigit(safe.charAt(start))) start--;
+        try {
+            return Math.max(0f, Math.min(
+                    1f,
+                    Float.parseFloat(safe.substring(start + 1, percent)) / 100f
+            ));
+        } catch (RuntimeException ignored) {
+            return 0f;
+        }
     }
 
     static long scanPresentationEntityId(
@@ -6215,16 +6514,6 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         return active;
-    }
-
-    private static String zoomMemoryLabel(String label) {
-        String value = label == null ? "" : label.trim();
-        int separator = value.lastIndexOf(' ');
-        if (separator > 0 && value.substring(separator + 1).matches("\\d{1,3}%")) {
-            return value.substring(0, separator) + " · zoom "
-                    + value.substring(separator + 1);
-        }
-        return value + " · zoom";
     }
 
     private void clearAutoZoomRecognitionMemory() {
@@ -6496,16 +6785,17 @@ public final class MainActivity extends AppCompatActivity {
             List<OverlayItem> locallyTrackedVehicles,
             FrameMotionTransform frameMotion
     ) {
+        List<OverlayItem> ownedTrackedItems = scanOwnedTrackedPlateItems(trackedItems);
         overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
         boolean dynamicCameraMotion = isDynamicCameraMotion()
                 || frameMotion != null && frameMotion.significant();
         long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
         plateOverlayFreshness.recordFresh(
-                trackedItems,
+                ownedTrackedItems,
                 nowNanos
         );
         List<OverlayItem> displayableTrackedItems =
-                plateOverlayFreshness.retainDisplayable(trackedItems, nowNanos);
+                plateOverlayFreshness.retainDisplayable(ownedTrackedItems, nowNanos);
 
         if (displayableTrackedItems.isEmpty()) {
             expireStalePlateOverlayIfNeeded();
@@ -6545,6 +6835,41 @@ public final class MainActivity extends AppCompatActivity {
                 && cameraMotionMonitor.isMoving();
     }
 
+    private List<OverlayItem> scanOwnedTrackedPlateItems(List<OverlayItem> trackedItems) {
+        if (trackedItems == null || trackedItems.isEmpty() || pipeline == null) {
+            return trackedItems == null
+                    ? java.util.Collections.emptyList()
+                    : trackedItems;
+        }
+        ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
+        boolean accepted = PreviewContinuityUiPolicy.acceptsTrackedScanPlate(
+                scan.runState.active(),
+                scan.activeEntityId,
+                latestPipelinePlateEntityId,
+                !latestPipelinePlateItems.isEmpty()
+        );
+        if (!accepted) return java.util.Collections.emptyList();
+        if (!scan.runState.active()) return trackedItems;
+
+        Set<Long> allowedTrackIds = new HashSet<>();
+        for (OverlayItem plate : latestPipelinePlateItems) {
+            if (plate != null
+                    && plate.kind == OverlayItem.Kind.PLATE
+                    && plate.trackId > 0L) {
+                allowedTrackIds.add(plate.trackId);
+            }
+        }
+        List<OverlayItem> owned = new ArrayList<>();
+        for (OverlayItem plate : trackedItems) {
+            if (plate != null
+                    && plate.kind == OverlayItem.Kind.PLATE
+                    && allowedTrackIds.contains(plate.trackId)) {
+                owned.add(plate);
+            }
+        }
+        return java.util.Collections.unmodifiableList(owned);
+    }
+
     private List<OverlayItem> dynamicCameraMotionOverlayItems(
             List<OverlayItem> trackedPlates
     ) {
@@ -6570,6 +6895,7 @@ public final class MainActivity extends AppCompatActivity {
             List<OverlayItem> locallyTrackedVehicles,
             FrameMotionTransform frameMotion
     ) {
+        trackedPlates = scanOwnedTrackedPlateItems(trackedPlates);
         long nowNanos = android.os.SystemClock.elapsedRealtimeNanos();
         plateOverlayFreshness.recordFresh(
                 trackedPlates,
@@ -6627,6 +6953,15 @@ public final class MainActivity extends AppCompatActivity {
                 candidateMotion = diagnosticMotion;
             }
         }
+        List<OverlayItem> platesForProjection = displayableTrackedPlates;
+        boolean holdingScanPlate = platesForProjection.isEmpty()
+                && shouldHoldScanPlateGeometry();
+        if (holdingScanPlate) {
+            platesForProjection = entityOverlayMotionProjector.compensateInferenceLatency(
+                    latestPipelinePlateItems,
+                    diagnosticMotion
+            );
+        }
         List<OverlayItem> motionTrackedVehicles = locallyTrackedVehicles;
         long globalGeometryAgeNanos = previewVehicleGeometryFreshAtNanos <= 0L
                 ? Long.MAX_VALUE
@@ -6662,7 +6997,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         List<OverlayItem> projected = entityOverlayMotionProjector.project(
                 projectionBase,
-                plateOnlyOverlayItems(displayableTrackedPlates),
+                plateOnlyOverlayItems(platesForProjection),
                 motionTrackedVehicles,
                 focusedEntityId,
                 focusedPlateTrackId,
@@ -6676,7 +7011,9 @@ public final class MainActivity extends AppCompatActivity {
                 ? "overlay_dynamic_projection_applied"
                 : "overlay_dynamic_projection_skipped_no_identity";
         recordOverlaySnapshot(
-                displayableTrackedPlates.isEmpty() ? "KALMAN" : "KLT",
+                holdingScanPlate
+                        ? "SCAN_HOLD"
+                        : displayableTrackedPlates.isEmpty() ? "KALMAN" : "KLT",
                 projected,
                 vehicleFrame == null ? 0L : vehicleFrame.sourceFrameId,
                 vehicleFrame == null ? 0L : vehicleFrame.sourceSequence,
@@ -6727,11 +7064,12 @@ public final class MainActivity extends AppCompatActivity {
                     String.format(
                             Locale.ROOT,
                             "anchor_ns=%d diagnostic_dx=%.5f candidate_dx=%.5f "
-                                    + "vehicles=%d tracked_vehicles=%d source=%s",
+                                    + "vehicles=%d plates=%d tracked_vehicles=%d source=%s",
                             latestDiagnosticOverlayAnchorTimestampNanos,
                             diagnosticMotion.mapX(0.5f, 0.5f) - 0.5f,
                             candidateMotion.mapX(0.5f, 0.5f) - 0.5f,
                             countKind(projected, OverlayItem.Kind.VEHICLE),
+                            countKind(projected, OverlayItem.Kind.PLATE),
                             countKind(motionTrackedVehicles, OverlayItem.Kind.VEHICLE),
                             freshGlobalVehicleGeometry
                                     ? "GLOBAL_FRAME_MOTION" : "LOCAL_KLT"
@@ -6873,6 +7211,35 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         return java.util.Collections.unmodifiableList(retained);
+    }
+
+    static List<OverlayItem> preserveFreshScanVehicleItems(
+            List<OverlayItem> current,
+            List<OverlayItem> previous,
+            boolean scanActive,
+            boolean previousGeometryFresh
+    ) {
+        List<OverlayItem> safeCurrent = current == null
+                ? java.util.Collections.emptyList() : current;
+        if (!scanActive || !previousGeometryFresh
+                || previous == null || previous.isEmpty()) {
+            return safeCurrent;
+        }
+        List<OverlayItem> merged = new ArrayList<>(safeCurrent);
+        Set<String> present = new HashSet<>();
+        for (OverlayItem item : safeCurrent) {
+            if (item != null && (item.kind == OverlayItem.Kind.VEHICLE
+                    || item.kind == OverlayItem.Kind.VEHICLE_ROI)) {
+                present.add(item.kind.name() + ":" + item.trackId);
+            }
+        }
+        for (OverlayItem item : previous) {
+            if (item == null || (item.kind != OverlayItem.Kind.VEHICLE
+                    && item.kind != OverlayItem.Kind.VEHICLE_ROI)) continue;
+            String key = item.kind.name() + ":" + item.trackId;
+            if (present.add(key)) merged.add(item);
+        }
+        return java.util.Collections.unmodifiableList(merged);
     }
 
     private void recordOverlaySnapshot(

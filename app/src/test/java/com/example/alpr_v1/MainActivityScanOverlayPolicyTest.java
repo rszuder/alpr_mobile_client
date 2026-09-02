@@ -27,6 +27,7 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 public final class MainActivityScanOverlayPolicyTest {
@@ -150,6 +151,40 @@ public final class MainActivityScanOverlayPolicyTest {
     }
 
     @Test
+    public void mtResultCannotEraseFreshScanVehicleFrames() {
+        OverlayItem plate = overlay(OverlayItem.Kind.PLATE, 701L);
+        OverlayItem vehicleOne = overlay(OverlayItem.Kind.VEHICLE, 1L);
+        OverlayItem vehicleTwo = overlay(OverlayItem.Kind.VEHICLE, 2L);
+
+        List<OverlayItem> merged = MainActivity.preserveFreshScanVehicleItems(
+                Collections.singletonList(plate),
+                Arrays.asList(vehicleOne, vehicleTwo),
+                true,
+                true
+        );
+
+        assertEquals(3, merged.size());
+        assertEquals(2, count(merged, OverlayItem.Kind.VEHICLE));
+        assertEquals(1, count(merged, OverlayItem.Kind.PLATE));
+    }
+
+    @Test
+    public void staleVehicleGeometryIsNotPreserved() {
+        OverlayItem plate = overlay(OverlayItem.Kind.PLATE, 701L);
+
+        List<OverlayItem> result = MainActivity.preserveFreshScanVehicleItems(
+                Collections.singletonList(plate),
+                Collections.singletonList(
+                        overlay(OverlayItem.Kind.VEHICLE, 1L)
+                ),
+                true,
+                false
+        );
+
+        assertEquals(Collections.singletonList(plate), result);
+    }
+
+    @Test
     public void releaseKeepsOnlyFreshPlateFromSameTerminalPipelineResult() {
         ContinuityStamp currentStamp = new ContinuityStamp(
                 1L, 8L, 0L, 359L, 123_000L,
@@ -233,6 +268,24 @@ public final class MainActivityScanOverlayPolicyTest {
     }
 
     @Test
+    public void confirmedBackgroundPlateIsAllowedOnlyForResultTransfer() {
+        assertEquals(
+                Collections.singleton(101L),
+                MainActivity.confirmedScanPlateTrackIds(
+                        Collections.singletonList(
+                                confirmedObservation(1L, 101L, 20L)
+                        )
+                )
+        );
+        assertEquals(
+                Collections.emptySet(),
+                MainActivity.confirmedScanPlateTrackIds(
+                        Collections.singletonList(observation(1L, 101L, 20L))
+                )
+        );
+    }
+
+    @Test
     public void activeAnchorIsTheSingleAllowedPlateTrack() {
         PlateAnchor anchor = new PlateAnchor(
                 7L, 70L, 777L, null, null,
@@ -260,6 +313,48 @@ public final class MainActivityScanOverlayPolicyTest {
         assertEquals(false, MainActivity.shouldPresentScanMtStage(
                 snapshot(51L, 0L)
         ));
+    }
+
+    @Test
+    public void intermediateMtStageShowsOnlyBestPlateInsideActiveVehicle() {
+        List<OverlayItem> scoped = MainActivity.scanScopedMtStageItems(
+                Arrays.asList(
+                        overlay(OverlayItem.Kind.VEHICLE, 1L,
+                                rect(0.02f, 0.20f, 0.30f, 0.70f), "vehicle 1"),
+                        overlay(OverlayItem.Kind.VEHICLE, 2L,
+                                rect(0.35f, 0.20f, 0.65f, 0.70f), "vehicle 2"),
+                        overlay(OverlayItem.Kind.VEHICLE, 3L,
+                                rect(0.70f, 0.20f, 0.98f, 0.70f), "vehicle 3"),
+                        overlay(OverlayItem.Kind.PLATE, 101L,
+                                rect(0.12f, 0.55f, 0.21f, 0.60f), "tablica · MT 92%"),
+                        overlay(OverlayItem.Kind.PLATE, 201L,
+                                rect(0.44f, 0.54f, 0.55f, 0.60f), "tablica · MT 71%"),
+                        overlay(OverlayItem.Kind.PLATE, 202L,
+                                rect(0.45f, 0.55f, 0.56f, 0.61f), "tablica · MT 88%"),
+                        overlay(OverlayItem.Kind.PLATE, 301L,
+                                rect(0.80f, 0.55f, 0.90f, 0.60f), "tablica · MT 95%")
+                ),
+                2L
+        );
+
+        assertEquals(4, scoped.size());
+        assertEquals(1, count(scoped, OverlayItem.Kind.PLATE));
+        assertEquals(202L, plate(scoped).trackId);
+    }
+
+    @Test
+    public void intermediateMtStageRejectsPlateOutsideActiveVehicle() {
+        List<OverlayItem> scoped = MainActivity.scanScopedMtStageItems(
+                Arrays.asList(
+                        overlay(OverlayItem.Kind.VEHICLE, 2L,
+                                rect(0.35f, 0.20f, 0.65f, 0.70f), "vehicle 2"),
+                        overlay(OverlayItem.Kind.PLATE, 301L,
+                                rect(0.80f, 0.55f, 0.90f, 0.60f), "tablica · MT 95%")
+                ),
+                2L
+        );
+
+        assertEquals(0, scoped.size());
     }
 
     private static ScanAcquisitionSnapshot snapshot(
@@ -349,6 +444,44 @@ public final class MainActivityScanOverlayPolicyTest {
         );
     }
 
+    private static PlateObservation confirmedObservation(
+            long entityId,
+            long plateTrackId,
+            long directiveRevision
+    ) {
+        return new PlateObservation(
+                plateTrackId,
+                PlateVehicleAssociation.direct(entityId, entityId + 1000L, "test"),
+                MtWorkKind.FULL_FRAME,
+                MtReason.SCAN_RETRY_ENTITY,
+                1L,
+                null,
+                "YUA355",
+                0.9,
+                0.42,
+                true,
+                2,
+                Collections.emptyList(),
+                0L,
+                1L,
+                0.5f,
+                null,
+                null,
+                PlateGeometry.unavailable(),
+                true,
+                true,
+                "YUA355",
+                true,
+                2,
+                TemporalCharacterAggregator.LAYOUT_SINGLE_ROW,
+                Collections.emptyList(),
+                "YUA355",
+                "YUA355",
+                ContinuityStamp.initial(1L),
+                directiveRevision
+        );
+    }
+
     private static PlateObservation observation(
             long entityId,
             long plateTrackId,
@@ -389,13 +522,54 @@ public final class MainActivityScanOverlayPolicyTest {
     }
 
     private static OverlayItem overlay(OverlayItem.Kind kind, long trackId) {
-        return new OverlayItem(
+        return overlay(
                 kind,
+                trackId,
                 new RectF(0.1f, 0.1f, 0.4f, 0.4f),
+                "test"
+        );
+    }
+
+    private static OverlayItem overlay(
+            OverlayItem.Kind kind,
+            long trackId,
+            RectF bounds,
+            String label
+    ) {
+        OverlayItem item = new OverlayItem(
+                kind,
+                bounds,
                 Collections.emptyList(),
-                "test",
+                label,
                 trackId,
                 false
         );
+        item.normalizedBounds.left = bounds.left;
+        item.normalizedBounds.top = bounds.top;
+        item.normalizedBounds.right = bounds.right;
+        item.normalizedBounds.bottom = bounds.bottom;
+        return item;
+    }
+
+    private static RectF rect(float left, float top, float right, float bottom) {
+        RectF bounds = new RectF();
+        bounds.left = left;
+        bounds.top = top;
+        bounds.right = right;
+        bounds.bottom = bottom;
+        return bounds;
+    }
+
+    private static int count(List<OverlayItem> items, OverlayItem.Kind kind) {
+        int count = 0;
+        for (OverlayItem item : items) if (item.kind == kind) count++;
+        return count;
+    }
+
+    private static OverlayItem plate(List<OverlayItem> items) {
+        for (OverlayItem item : items) {
+            if (item.kind == OverlayItem.Kind.PLATE) return item;
+        }
+        throw new AssertionError("Brak ramki tablicy");
     }
 }

@@ -25,6 +25,7 @@ final class PlateTrackCoordinator {
         final MotionBoxTracker.Box box;
         final float quality;
         final boolean validGeometry;
+        final long entityId;
 
         Observation(
                 int sourceIndex,
@@ -32,10 +33,21 @@ final class PlateTrackCoordinator {
                 float quality,
                 boolean validGeometry
         ) {
+            this(sourceIndex, box, quality, validGeometry, 0L);
+        }
+
+        Observation(
+                int sourceIndex,
+                MotionBoxTracker.Box box,
+                float quality,
+                boolean validGeometry,
+                long entityId
+        ) {
             this.sourceIndex = sourceIndex;
             this.box = box;
             this.quality = quality;
             this.validGeometry = validGeometry;
+            this.entityId = Math.max(0L, entityId);
         }
     }
 
@@ -127,6 +139,14 @@ final class PlateTrackCoordinator {
 
     private final MotionBoxTracker tracker = new MotionBoxTracker();
     private final Map<Long, State> states = new HashMap<>();
+    /*
+     * Scan przełącza MT pomiędzy pojazdami. Sam track tablicy jest wtedy
+     * krótkotrwały, ale encja pojazdu pozostaje ta sama. Konsensus OCR i budżet
+     * prób muszą więc należeć do encji, inaczej każda rotacja kolejki zaczyna
+     * odczyt od zera.
+     */
+    private final Map<Long, State> entityStates = new HashMap<>();
+    private final Map<Long, State> activeStateByTrack = new HashMap<>();
     private RecognitionProfile profile = RecognitionProfile.BALANCED;
     private boolean zoomRetryPendingForNewTracks;
 
@@ -161,12 +181,19 @@ final class PlateTrackCoordinator {
             if (track.sourceIndex < 0) continue;
             Observation observation = byIndex.get(track.sourceIndex);
             if (observation == null) continue;
-            State state = states.get(track.trackId);
+            State state = observation.entityId > 0L
+                    ? entityStates.get(observation.entityId)
+                    : states.get(track.trackId);
             if (state == null) {
                 state = new State();
                 state.zoomRetryPending = zoomRetryPendingForNewTracks;
-                states.put(track.trackId, state);
+                if (observation.entityId > 0L) {
+                    entityStates.put(observation.entityId, state);
+                } else {
+                    states.put(track.trackId, state);
+                }
             }
+            activeStateByTrack.put(track.trackId, state);
             state.lastSeenNanos = nowNanos;
             state.missingSinceNanos = 0L;
             TemporalCharacterAggregator.Result current =
@@ -213,7 +240,7 @@ final class PlateTrackCoordinator {
     }
 
     synchronized int retainedStateCount() {
-        return states.size();
+        return states.size() + entityStates.size();
     }
 
     synchronized TemporalCharacterAggregator.Result recordRecognition(
@@ -223,7 +250,8 @@ final class PlateTrackCoordinator {
             List<Detection> characters,
             List<String> labels
     ) {
-        State state = states.computeIfAbsent(trackId, ignored -> new State());
+        State state = activeStateByTrack.get(trackId);
+        if (state == null) state = states.computeIfAbsent(trackId, ignored -> new State());
         state.zoomRetryPending = false;
         state.attempts++;
         state.bestAttemptQuality = Math.max(state.bestAttemptQuality, quality);
@@ -231,8 +259,23 @@ final class PlateTrackCoordinator {
         return state.aggregator.accept(characters, labels);
     }
 
+    /**
+     * Po walidacji skojarzenia tablicy z pojazdem przełącza zapis OCR na
+     * pamięć tej encji. Jest to konieczne dla pełnoklatkowego fallbacku, gdzie
+     * jedna inferencja MT może zwrócić tablice kilku różnych pojazdów.
+     */
+    synchronized void bindEntityState(long trackId, long entityId) {
+        if (trackId <= 0L || entityId <= 0L) return;
+        State entityState = entityStates.computeIfAbsent(
+                entityId,
+                ignored -> new State()
+        );
+        activeStateByTrack.put(trackId, entityState);
+    }
+
     synchronized void recordFailedAttempt(long trackId, float quality, long frameId) {
-        State state = states.computeIfAbsent(trackId, ignored -> new State());
+        State state = activeStateByTrack.get(trackId);
+        if (state == null) state = states.computeIfAbsent(trackId, ignored -> new State());
         state.zoomRetryPending = false;
         state.attempts++;
         state.bestAttemptQuality = Math.max(state.bestAttemptQuality, quality);
@@ -242,6 +285,8 @@ final class PlateTrackCoordinator {
     synchronized void reset() {
         tracker.reset();
         states.clear();
+        entityStates.clear();
+        activeStateByTrack.clear();
         zoomRetryPendingForNewTracks = false;
     }
 
@@ -268,6 +313,9 @@ final class PlateTrackCoordinator {
     synchronized void requestFreshRecognitionAfterZoom() {
         zoomRetryPendingForNewTracks = true;
         for (State state : states.values()) {
+            state.zoomRetryPending = true;
+        }
+        for (State state : entityStates.values()) {
             state.zoomRetryPending = true;
         }
     }

@@ -10,6 +10,12 @@ import com.example.alpr_v1.pipeline.TargetSnapshot;
 public final class PreviewContinuityUiPolicy {
     private static final float DYNAMIC_OVERLAY_INVALIDATION_FRACTION = 0.12f;
     private static final float ABRUPT_UNEXPLAINED_CHANGE_FRACTION = 0.45f;
+    private static final float UNMASKED_HARD_CUT_FRACTION = 0.60f;
+    private static final float UNMASKED_HARD_CUT_MEAN_DELTA = 30f;
+    private static final float SUPPORTED_GLOBAL_CUT_FRACTION = 0.30f;
+    private static final float SUPPORTED_GLOBAL_CUT_MEAN_DELTA = 18f;
+    private static final float BACKGROUND_SUPPORT_FRACTION = 0.10f;
+    private static final float BACKGROUND_SUPPORT_MEAN_DELTA = 12f;
     private static final long MINIMUM_VEHICLE_OVERLAY_AGE_NANOS = 500_000_000L;
     private static final long MAXIMUM_VEHICLE_OVERLAY_AGE_NANOS = 1_500_000_000L;
     public enum Authority { COORDINATOR, LEGACY_FALLBACK }
@@ -140,6 +146,67 @@ public final class PreviewContinuityUiPolicy {
                 && !motionSettling;
     }
 
+    /**
+     * Direct-luma is authoritative for an abrupt stationary cut. Unlike a
+     * regular preview change this signal cannot be left for a later bitmap to
+     * confirm, because that bitmap may already use the new scene as reference.
+     */
+    public static boolean shouldForceHardSceneBoundaryFromDirectLuma(
+            boolean sceneChanged,
+            float changedFraction,
+            boolean cameraMotion,
+            boolean motionSettling
+    ) {
+        return shouldActivatePresentationBarrier(
+                sceneChanged,
+                changedFraction,
+                cameraMotion,
+                motionSettling
+        );
+    }
+
+    /**
+     * A second unmasked channel protects scene cuts hidden under a large old
+     * vehicle ROI. Its stricter thresholds keep ordinary foreground motion on
+     * the masked continuity path.
+     */
+    public static boolean shouldForceHardSceneBoundaryFromDirectLuma(
+            boolean maskedSceneChanged,
+            float maskedChangedFraction,
+            float maskedMeanDelta,
+            boolean globalSceneChanged,
+            float globalChangedFraction,
+            float globalMeanDelta,
+            boolean cameraMotion,
+            boolean motionSettling
+    ) {
+        boolean maskedCut = maskedSceneChanged
+                && Float.isFinite(maskedChangedFraction)
+                && maskedChangedFraction
+                >= ABRUPT_UNEXPLAINED_CHANGE_FRACTION;
+        boolean unmaskedCut = globalSceneChanged
+                && Float.isFinite(globalChangedFraction)
+                && Float.isFinite(globalMeanDelta)
+                && globalChangedFraction >= UNMASKED_HARD_CUT_FRACTION
+                && globalMeanDelta >= UNMASKED_HARD_CUT_MEAN_DELTA;
+        boolean backgroundSupportedCut =
+                Float.isFinite(globalChangedFraction)
+                        && Float.isFinite(globalMeanDelta)
+                        && Float.isFinite(maskedChangedFraction)
+                        && Float.isFinite(maskedMeanDelta)
+                        && globalChangedFraction
+                        >= SUPPORTED_GLOBAL_CUT_FRACTION
+                        && globalMeanDelta
+                        >= SUPPORTED_GLOBAL_CUT_MEAN_DELTA
+                        && maskedChangedFraction
+                        >= BACKGROUND_SUPPORT_FRACTION
+                        && maskedMeanDelta
+                        >= BACKGROUND_SUPPORT_MEAN_DELTA;
+        return (maskedCut || unmaskedCut || backgroundSupportedCut)
+                && !cameraMotion
+                && !motionSettling;
+    }
+
     /** Jawna decyzja warstwy UI, niezależna od życia encji domenowej. */
     public static DynamicOverlayDisposition dynamicOverlayDisposition(
             SceneHandlingMode mode,
@@ -207,21 +274,30 @@ public final class PreviewContinuityUiPolicy {
                 && "VEHICLE_POOL_RECOVERED".equals(recoveryResult);
     }
 
-    /**
-     * Znalezienie tablicy kończy wizualny etap „analizuję ten pojazd”.
-     * Ramka PLATE przejmuje wtedy uwagę, więc oscylujący marker nie może
-     * sugerować, że ta sama analiza nadal trwa.
-     */
+    /** Marker należy do całej aktywnej sesji pojazdu, nie tylko etapu MT. */
     public static long activeVehicleMarkerEntityId(
             long activeEntityId,
             long presentedPlateEntityId,
             boolean plateGeometryVisible
     ) {
-        long safeActiveEntityId = Math.max(0L, activeEntityId);
-        boolean plateBelongsToActiveEntity = plateGeometryVisible
-                && safeActiveEntityId > 0L
-                && presentedPlateEntityId == safeActiveEntityId;
-        return plateBelongsToActiveEntity ? 0L : safeActiveEntityId;
+        return Math.max(0L, activeEntityId);
+    }
+
+    /**
+     * Opóźniona klatka KLT nie może ponownie opublikować tablicy po zwolnieniu
+     * lub zmianie aktywnej sesji Scan.
+     */
+    public static boolean acceptsTrackedScanPlate(
+            boolean scanRunActive,
+            long activeEntityId,
+            long presentedPlateEntityId,
+            boolean presentedPlateAvailable
+    ) {
+        if (!scanRunActive) return true;
+        long active = Math.max(0L, activeEntityId);
+        return presentedPlateAvailable
+                && active > 0L
+                && presentedPlateEntityId == active;
     }
 
     public static boolean isEstablishedFocusedTarget(

@@ -7,6 +7,7 @@ import com.example.alpr_v1.continuity.SoftReacquireResult;
 import com.example.alpr_v1.domain.ApplicationMode;
 import com.example.alpr_v1.domain.EntityAcquisitionState;
 import com.example.alpr_v1.domain.ModeController;
+import com.example.alpr_v1.domain.RegistrationTextPolicy;
 import com.example.alpr_v1.domain.TargetPurpose;
 import com.example.alpr_v1.domain.TargetSession;
 import com.example.alpr_v1.domain.TargetSessionState;
@@ -17,12 +18,17 @@ import com.example.alpr_v1.ui.OverlayItem;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Single owner of the Phase 3B queue, short session and attempt budgets. */
 public final class ScanAcquisitionController {
+    /** Lets an already-started OCR job finish just after its vehicle session is released. */
+    private static final long RELEASED_RESULT_GRACE_NANOS = 5_000_000_000L;
+
     private final ModeController modeController;
     private final ScanAcquisitionProfile profile;
     private final AcquisitionQueue queue;
@@ -39,8 +45,15 @@ public final class ScanAcquisitionController {
     private PlateAnchor plateAnchor;
     private boolean continuityPaused;
     private boolean recoveryPaused;
+    private long recentlyReleasedEntityId;
+    private long recentlyReleasedDirectiveRevision;
+    private long recentlyReleasedAtRuntimeNanos;
     private final Set<Long> vehiclesSeen = new HashSet<>();
     private final Set<Long> vehiclesQueued = new HashSet<>();
+    private final Set<Long> identifiedEntityIds = new HashSet<>();
+    private final Set<Long> completedEntityIds = new HashSet<>();
+    private final Map<Long, EntityRecognitionSnapshot> entityRecognitions =
+            new HashMap<>();
     private final List<Long> queueWaitNanos = new ArrayList<>();
     private final List<Long> activeSessionNanos = new ArrayList<>();
     private int vehiclesSelected;
@@ -212,7 +225,7 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         rememberRuntime(nowRuntimeNanos);
-        if (!running() || activeSession == null || result == null) {
+        if (!running() || result == null) {
             return ignored("scan_has_no_active_session");
         }
         if (continuity == null
@@ -221,6 +234,10 @@ public final class ScanAcquisitionController {
                 || result.cameraTransformGeneration
                 != continuity.cameraTransformGeneration) {
             return ignored("stale_scan_pipeline_result");
+        }
+        rememberCurrentEntityRecognitions(result);
+        if (activeSession == null) {
+            return ignored("scan_has_no_active_session");
         }
         if ("candidate_missing".equals(result.status)) {
             return deferActive(
@@ -270,6 +287,8 @@ public final class ScanAcquisitionController {
             return ignored("stale_scan_mt_directive_revision");
         }
 
+        identifiedEntityIds.add(matching.entityId);
+        rememberEntityRecognition(matching);
         if (activeSession.state() == TargetSessionState.ACQUIRING_PLATE) {
             activeSession.transitionTo(
                     TargetSessionState.READING_REGISTRATION,
@@ -293,7 +312,7 @@ public final class ScanAcquisitionController {
         }
         if (matching.confirmed
                 && matching.cropSupportsConsensus
-                && !matching.text.trim().isEmpty()) {
+                && RegistrationTextPolicy.displayable(matching.text)) {
             long entityId = activeSession.entityId();
             long sessionId = activeSession.sessionId();
             modeController.finishSession(
@@ -303,6 +322,7 @@ public final class ScanAcquisitionController {
             );
             activeSession = null;
             queue.complete(entityId);
+            completedEntityIds.add(entityId);
             recordActiveSessionDuration(nowRuntimeNanos);
             entitiesReadyToFinalize++;
             resetSessionBudgets();
@@ -386,6 +406,9 @@ public final class ScanAcquisitionController {
             if (activeSession != null) vehiclesLost++;
             recordActiveSessionDuration(nowRuntimeNanos);
             cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
+            identifiedEntityIds.clear();
+            completedEntityIds.clear();
+            entityRecognitions.clear();
             queue.hardReset(Math.max(0L,
                     decision.incrementSceneGeneration
                             ? queue.snapshot(nowRuntimeNanos).sceneGeneration + 1L
@@ -399,6 +422,52 @@ public final class ScanAcquisitionController {
                     0L, 0L,
                     "scan_scene_hard_reset"
             );
+            return;
+        }
+        if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET
+                && recoveryPaused) {
+            recoveryPaused = false;
+            continuityPaused = false;
+            if (activeSession != null) {
+                deferActive(
+                        AcquisitionDeferReason.CONTINUITY_TARGET_LOST,
+                        nowRuntimeNanos
+                );
+            } else {
+                setDirective(
+                        AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                        0L, 0L,
+                        "scan_recovery_release_finished"
+                );
+            }
+            return;
+        }
+        if (decision.nextState
+                == com.example.alpr_v1.continuity.SceneContinuityState.STABLE
+                && recoveryPaused) {
+            recoveryPaused = false;
+            continuityPaused = false;
+            if (activeSession != null) {
+                if (activeSession.state() == TargetSessionState.RECOVERING) {
+                    activeSession.transitionTo(
+                            TargetSessionState.TRACKING,
+                            nowRuntimeNanos
+                    );
+                }
+                resumeSessionBudgets(nowRuntimeNanos);
+                setDirective(
+                        AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                        activeSession.sessionId(),
+                        activeSession.entityId(),
+                        "scan_recovery_stable_finished"
+                );
+            } else {
+                setDirective(
+                        AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                        0L, 0L,
+                        "scan_recovery_stable_refresh"
+                );
+            }
             return;
         }
         if (decision.nextState
@@ -518,7 +587,10 @@ public final class ScanAcquisitionController {
                 directive,
                 false,
                 plateAnchor,
-                statistics()
+                statistics(),
+                identifiedEntityIds,
+                completedEntityIds,
+                entityRecognitions
         );
     }
 
@@ -552,6 +624,9 @@ public final class ScanAcquisitionController {
         if (activeSession == null) return ignored("no_active_session_to_defer");
         long entityId = activeSession.entityId();
         long sessionId = activeSession.sessionId();
+        recentlyReleasedEntityId = entityId;
+        recentlyReleasedDirectiveRevision = directive.revision;
+        recentlyReleasedAtRuntimeNanos = nowRuntimeNanos;
         modeController.finishSession(sessionId, TargetSessionState.LOST,
                 nowRuntimeNanos);
         activeSession = null;
@@ -688,6 +763,12 @@ public final class ScanAcquisitionController {
     private void resetStatistics() {
         vehiclesSeen.clear();
         vehiclesQueued.clear();
+        identifiedEntityIds.clear();
+        completedEntityIds.clear();
+        entityRecognitions.clear();
+        recentlyReleasedEntityId = 0L;
+        recentlyReleasedDirectiveRevision = 0L;
+        recentlyReleasedAtRuntimeNanos = 0L;
         queueWaitNanos.clear();
         activeSessionNanos.clear();
         vehiclesSelected = 0;
@@ -696,6 +777,54 @@ public final class ScanAcquisitionController {
         entitiesReadyToFinalize = 0;
         totalMtAttempts = 0;
         totalFreshMzAttempts = 0;
+    }
+
+    private void rememberEntityRecognition(PlateObservation observation) {
+        if (observation == null
+                || observation.entityId <= 0L
+                || !RegistrationTextPolicy.displayable(observation.text)) return;
+        EntityRecognitionSnapshot candidate = new EntityRecognitionSnapshot(
+                observation.entityId,
+                observation.plateTrackId,
+                observation.text,
+                observation.recognitionConfidence,
+                observation.confirmed,
+                observation.observations
+        );
+        EntityRecognitionSnapshot previous = entityRecognitions.get(
+                observation.entityId
+        );
+        boolean replace = previous == null
+                || candidate.confirmed && !previous.confirmed
+                || candidate.confirmed == previous.confirmed
+                && (candidate.observations > previous.observations
+                || candidate.observations == previous.observations
+                && candidate.confidence >= previous.confidence);
+        if (replace) entityRecognitions.put(observation.entityId, candidate);
+    }
+
+    private void rememberCurrentEntityRecognitions(PipelineResult result) {
+        if (result == null) return;
+        for (PlateObservation observation : result.plateObservations) {
+            if (observation == null
+                    || observation.entityId <= 0L
+                    || !vehiclesSeen.contains(observation.entityId)) continue;
+            identifiedEntityIds.add(observation.entityId);
+            boolean activeOwner = activeSession != null
+                    && activeSession.entityId() == observation.entityId;
+            boolean recentlyReleasedOwner = observation.entityId
+                    == recentlyReleasedEntityId
+                    && recentlyReleasedAtRuntimeNanos > 0L
+                    && lastRuntimeNanos >= recentlyReleasedAtRuntimeNanos
+                    && lastRuntimeNanos - recentlyReleasedAtRuntimeNanos
+                    <= RELEASED_RESULT_GRACE_NANOS
+                    && (observation.acquisitionDirectiveRevision <= 0L
+                    || observation.acquisitionDirectiveRevision
+                    <= recentlyReleasedDirectiveRevision);
+            if (observation.confirmed || activeOwner || recentlyReleasedOwner) {
+                rememberEntityRecognition(observation);
+            }
+        }
     }
 
     private ScanAcquisitionStats statistics() {

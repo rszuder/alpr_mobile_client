@@ -1,5 +1,6 @@
 package com.example.alpr_v1.pipeline;
 
+import com.example.alpr_v1.domain.RegistrationTextPolicy;
 import com.example.alpr_v1.vision.Detection;
 import com.example.alpr_v1.vision.ReadingOrderResolver;
 
@@ -403,7 +404,10 @@ public final class TemporalCharacterAggregator {
 
 
         if (dominant == null
-                || dominant.getValue().observations < 2) {
+                || dominant.getValue().observations < 2
+                || !RegistrationTextPolicy.plausibleLength(
+                        dominant.getValue().totalLength()
+                )) {
 
             return 0;
         }
@@ -429,7 +433,10 @@ public final class TemporalCharacterAggregator {
 
 
         if (dominant == null
-                || dominant.getValue().observations < 2) {
+                || dominant.getValue().observations < 2
+                || !RegistrationTextPolicy.plausibleLength(
+                        dominant.getValue().totalLength()
+                )) {
 
             return Collections.emptyList();
         }
@@ -452,7 +459,10 @@ public final class TemporalCharacterAggregator {
 
 
         if (dominant == null
-                || dominant.getValue().observations < 2) {
+                || dominant.getValue().observations < 2
+                || !RegistrationTextPolicy.plausibleLength(
+                        dominant.getValue().totalLength()
+                )) {
 
             return LAYOUT_UNKNOWN;
         }
@@ -479,15 +489,25 @@ public final class TemporalCharacterAggregator {
         for (Map.Entry<String, StructureState> entry :
                 states.entrySet()) {
 
+            boolean entryPlausible = RegistrationTextPolicy.plausibleLength(
+                    entry.getValue().totalLength()
+            );
+            boolean bestPlausible = best != null
+                    && RegistrationTextPolicy.plausibleLength(
+                            best.getValue().totalLength()
+                    );
+
             if (best == null
-                    || entry.getValue().observations
-                    > best.getValue().observations
-                    || (
-                    entry.getValue().observations
-                            == best.getValue().observations
-                            && entry.getValue().sequenceConfidenceSum
-                            > best.getValue().sequenceConfidenceSum
-            )) {
+                    || entryPlausible && !bestPlausible
+                    || entryPlausible == bestPlausible && (
+                            entry.getValue().observations
+                                    > best.getValue().observations
+                            || (
+                            entry.getValue().observations
+                                    == best.getValue().observations
+                                    && entry.getValue().sequenceConfidenceSum
+                                    > best.getValue().sequenceConfidenceSum
+                    ))) {
 
                 best =
                         entry;
@@ -522,7 +542,8 @@ public final class TemporalCharacterAggregator {
 
 
         boolean stable =
-                state.observations >= 2;
+                state.observations >= 2
+                        && RegistrationTextPolicy.plausibleLength(length);
 
 
         for (int i = 0;

@@ -145,7 +145,7 @@ public final class ScanAcquisitionControllerTest {
         ScanAcquisitionController controller = startedWithCandidate(4L);
 
         AcquisitionDecision decision = controller.onPipelineResult(
-                result(observation(4L, 44L, false, true, "WX")),
+                result(observation(4L, 44L, false, true, "WX12")),
                 continuity(),
                 100L
         );
@@ -154,8 +154,30 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(EntityAcquisitionState.READING_REGISTRATION,
                 decision.entityState);
         assertEquals(1, controller.snapshot(100L).freshMzAttempts);
+        assertTrue(controller.snapshot(100L).identifiedEntityIds.contains(4L));
+        assertTrue(controller.snapshot(100L).completedEntityIds.isEmpty());
+        EntityRecognitionSnapshot recognition =
+                controller.snapshot(100L).entityRecognitions.get(4L);
+        assertEquals("WX12", recognition.text);
+        assertFalse(recognition.confirmed);
         assertEquals(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
                 decision.nextDirective.action);
+    }
+
+    @Test
+    public void plausibleFirstReadIsPublishedAsProvisionalEntityRecognition() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "WX1234")),
+                continuity(),
+                100L
+        );
+
+        EntityRecognitionSnapshot recognition =
+                controller.snapshot(100L).entityRecognitions.get(4L);
+        assertEquals("WX1234", recognition.text);
+        assertFalse(recognition.confirmed);
     }
 
     @Test
@@ -179,6 +201,98 @@ public final class ScanAcquisitionControllerTest {
                 1,
                 controller.snapshot(100L).stats.entitiesReadyToFinalize
         );
+        assertTrue(controller.snapshot(100L).completedEntityIds.contains(4L));
+        assertTrue(controller.snapshot(100L).identifiedEntityIds.contains(4L));
+        assertEquals(
+                "WX1234",
+                controller.snapshot(100L).entityRecognitions.get(4L).text
+        );
+        assertTrue(controller.snapshot(100L).entityRecognitions.get(4L).confirmed);
+    }
+
+    @Test
+    public void partialOcrFragmentDoesNotBecomeGreenVehicleRecognition() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        controller.onPipelineResult(
+                result(observation(4L, 44L, false, true, "A")),
+                continuity(),
+                100L
+        );
+
+        assertTrue(controller.snapshot(100L).identifiedEntityIds.contains(4L));
+        assertTrue(controller.snapshot(100L).entityRecognitions.isEmpty());
+    }
+
+    @Test
+    public void stablePartialOcrDoesNotCompleteVehicle() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+
+        AcquisitionDecision decision = controller.onPipelineResult(
+                result(observation(4L, 44L, true, true, "A")),
+                continuity(),
+                100L
+        );
+
+        assertEquals(AcquisitionSessionOutcome.PROGRESS, decision.outcome);
+        assertEquals(EntityAcquisitionState.READING_REGISTRATION,
+                decision.entityState);
+        assertFalse(controller.snapshot(100L).completedEntityIds.contains(4L));
+        assertEquals(4L, controller.snapshot(100L).activeEntityId);
+    }
+
+    @Test
+    public void lateCurrentRecognitionUpdatesVehicleAfterSessionRelease() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long sourceDirectiveRevision = controller.currentDirective().revision;
+        long timeout = ScanAcquisitionProfile.DEFAULT.maximumActiveSessionNanos + 1L;
+        controller.onVehicleFrame(
+                frame(candidate(4L, 14L)),
+                continuity(),
+                timeout
+        );
+        assertEquals(0L, controller.snapshot(timeout).activeSessionId);
+
+        AcquisitionDecision late = controller.onPipelineResult(
+                result(observation(
+                        4L, 14L, true, true, "WX9876", sourceDirectiveRevision
+                )),
+                continuity(),
+                timeout + 1L
+        );
+
+        assertFalse(late.accepted);
+        assertEquals(
+                "WX9876",
+                controller.snapshot(timeout + 1L).entityRecognitions.get(4L).text
+        );
+    }
+
+    @Test
+    public void lateProvisionalFromJustReleasedSessionIsStillPublished() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long sourceDirectiveRevision = controller.currentDirective().revision;
+        long timeout = ScanAcquisitionProfile.DEFAULT.maximumActiveSessionNanos + 1L;
+        controller.onVehicleFrame(
+                frame(candidate(4L, 14L)),
+                continuity(),
+                timeout
+        );
+        assertEquals(0L, controller.snapshot(timeout).activeSessionId);
+
+        controller.onPipelineResult(
+                result(observation(
+                        4L, 14L, false, true, "WX9876", sourceDirectiveRevision
+                )),
+                continuity(),
+                timeout + 1L
+        );
+
+        EntityRecognitionSnapshot recognition = controller.snapshot(
+                timeout + 1L
+        ).entityRecognitions.get(4L);
+        assertEquals("WX9876", recognition.text);
+        assertFalse(recognition.confirmed);
     }
 
     @Test
@@ -368,6 +482,76 @@ public final class ScanAcquisitionControllerTest {
     }
 
     @Test
+    public void coordinatorDeadlineReleaseCannotLeaveScanPausedWithNoneDirective() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.SOFT_REACQUIRE,
+                        SceneContinuityState.REACQUIRING,
+                        false
+                ),
+                100L
+        );
+        assertEquals(
+                AcquisitionDirectiveAction.NONE,
+                controller.currentDirective().action
+        );
+
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                200L
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(200L);
+        assertEquals(0L, snapshot.activeSessionId);
+        assertEquals(
+                AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                snapshot.directive.action
+        );
+        assertFalse("scan_continuity_reacquire".equals(
+                snapshot.directive.reason
+        ));
+    }
+
+    @Test
+    public void stableCoordinatorDecisionResumesPausedRecoverySession() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long sessionId = controller.snapshot(1L).activeSessionId;
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.SOFT_REACQUIRE,
+                        SceneContinuityState.REACQUIRING,
+                        false
+                ),
+                100L
+        );
+
+        controller.onContinuityDecision(
+                transition(
+                        SceneTransitionAction.NONE,
+                        SceneContinuityState.STABLE,
+                        false
+                ),
+                200L
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(200L);
+        assertEquals(sessionId, snapshot.activeSessionId);
+        assertEquals(
+                AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                snapshot.directive.action
+        );
+        assertEquals(
+                "scan_recovery_stable_finished",
+                snapshot.directive.reason
+        );
+    }
+
+    @Test
     public void activeTargetLostDefersOnlySessionAndKeepsQueuePool() {
         ScanAcquisitionController controller = new ScanAcquisitionController();
         controller.startRun(1L, 0L);
@@ -448,11 +632,17 @@ public final class ScanAcquisitionControllerTest {
     }
 
     @Test
-    public void observationFromEntityADoesNotAdvanceActiveEntityB() {
-        ScanAcquisitionController controller = startedWithCandidate(4L);
+    public void backgroundRecognitionIsStoredButDoesNotAdvanceActiveEntity() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(4L, 44L), candidate(8L, 88L)),
+                continuity(),
+                1L
+        );
 
         AcquisitionDecision decision = controller.onPipelineResult(
-                result(observation(8L, 88L, true, true, "BAD")),
+                result(observation(8L, 88L, true, true, "BAD999")),
                 continuity(),
                 100L
         );
@@ -461,6 +651,10 @@ public final class ScanAcquisitionControllerTest {
         assertEquals("pipeline_result_belongs_to_another_entity", decision.reason);
         assertEquals(4L, controller.snapshot(100L).activeEntityId);
         assertEquals(0, controller.snapshot(100L).freshMzAttempts);
+        assertEquals(
+                "BAD999",
+                controller.snapshot(100L).entityRecognitions.get(8L).text
+        );
     }
 
     @Test
