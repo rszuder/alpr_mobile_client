@@ -6,6 +6,8 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
+import com.example.alpr_v1.experiment.ResearchStageExecutionConfig;
 import com.example.alpr_v1.acquisition.AcquisitionDirective;
 import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
 import com.example.alpr_v1.continuity.ContinuityStamp;
@@ -186,6 +188,7 @@ final class MobileAlprEngine implements AutoCloseable {
             MtExecutionPolicy mtExecutionPolicy,
             MtFallbackPolicy mtFallbackPolicy,
             VehicleTrackingPolicy vehicleTrackingPolicy,
+            ResearchExecutionConfig researchExecutionConfig,
             VehicleTrackingCoordinator vehicleTrackingCoordinator
     ) {
         if (vehicleTrackingCoordinator == null) {
@@ -202,6 +205,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 ? MtFallbackPolicy.DEFERRED : mtFallbackPolicy;
         this.vehicleTrackingPolicy = vehicleTrackingPolicy == null
                 ? VehicleTrackingPolicy.TRACKED_MP : vehicleTrackingPolicy;
+        if (researchExecutionConfig != null
+                && researchExecutionConfig.roiBudgetPolicy != this.roiBudgetPolicy) {
+            throw new IllegalArgumentException(
+                    "Polityka ROI nie odpowiada zamrożonej konfiguracji badawczej"
+            );
+        }
 
         vehicleModel = this.roiBudgetPolicy.usesVehicleCascade()
                 ? registry.getActive(ModelRole.VEHICLE)
@@ -213,8 +222,16 @@ final class MobileAlprEngine implements AutoCloseable {
                 ? Collections.emptySet()
                 : resolveVehicleClassIds(vehicleModel.manifest().labels());
 
-        ModelVariant plateVariant = autoTuneManager.chosenVariant(plateModel);
-        ModelVariant characterVariant = autoTuneManager.chosenVariant(characterModel);
+        ResearchStageExecutionConfig frozenPlate = researchExecutionConfig == null
+                ? null : researchExecutionConfig.plate;
+        ResearchStageExecutionConfig frozenCharacter = researchExecutionConfig == null
+                ? null : researchExecutionConfig.character;
+        ModelVariant plateVariant = frozenPlate == null
+                ? autoTuneManager.chosenVariant(plateModel)
+                : frozenPlate.requireVariant(plateModel);
+        ModelVariant characterVariant = frozenCharacter == null
+                ? autoTuneManager.chosenVariant(characterModel)
+                : frozenCharacter.requireVariant(characterModel);
         plateInputSpec = plateVariant.input(plateModel.manifest().input());
         characterInputSpec = characterVariant.input(characterModel.manifest().input());
         plateOutputSpec = plateVariant.output(plateModel.manifest().output());
@@ -223,10 +240,14 @@ final class MobileAlprEngine implements AutoCloseable {
         validateDecoder(characterOutputSpec);
 
         ModelVariant vehicleVariant = null;
+        ResearchStageExecutionConfig frozenVehicle = researchExecutionConfig == null
+                ? null : researchExecutionConfig.vehicle;
         ModelInputSpec resolvedVehicleInput = null;
         ModelOutputSpec resolvedVehicleOutput = null;
         if (vehicleModel != null) {
-            vehicleVariant = autoTuneManager.chosenVariant(vehicleModel);
+            vehicleVariant = frozenVehicle == null
+                    ? autoTuneManager.chosenVariant(vehicleModel)
+                    : frozenVehicle.requireVariant(vehicleModel);
             resolvedVehicleInput = vehicleVariant.input(vehicleModel.manifest().input());
             resolvedVehicleOutput = vehicleVariant.output(vehicleModel.manifest().output());
             validateDecoder(resolvedVehicleOutput);
@@ -240,14 +261,26 @@ final class MobileAlprEngine implements AutoCloseable {
         try {
             if (vehicleModel != null) {
                 openedVehicle = RuntimeBackendFactory.create(
-                        vehicleModel, vehicleVariant, autoTuneManager.chosenProfile(vehicleModel)
+                        vehicleModel,
+                        vehicleVariant,
+                        frozenVehicle == null
+                                ? autoTuneManager.chosenProfile(vehicleModel)
+                                : frozenVehicle.executionProfile()
                 );
             }
             openedPlate = RuntimeBackendFactory.create(
-                    plateModel, plateVariant, autoTuneManager.chosenProfile(plateModel)
+                    plateModel,
+                    plateVariant,
+                    frozenPlate == null
+                            ? autoTuneManager.chosenProfile(plateModel)
+                            : frozenPlate.executionProfile()
             );
             openedCharacter = RuntimeBackendFactory.create(
-                    characterModel, characterVariant, autoTuneManager.chosenProfile(characterModel)
+                    characterModel,
+                    characterVariant,
+                    frozenCharacter == null
+                            ? autoTuneManager.chosenProfile(characterModel)
+                            : frozenCharacter.executionProfile()
             );
         } catch (RuntimeException error) {
             closeQuietly(openedCharacter);

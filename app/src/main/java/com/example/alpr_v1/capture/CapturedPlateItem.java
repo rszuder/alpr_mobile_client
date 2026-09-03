@@ -31,7 +31,10 @@ public final class CapturedPlateItem {
     public final String sessionId;
     public final long trackId;
     public final Bitmap bitmap;
+    /** Odczyt dokładnie z inferencji narysowanej na tym cropie. */
     public final String text;
+    /** Konsensus tracka w chwili wykonania cropa; może różnić się od {@link #text}. */
+    public final String consensusText;
     public final double plateConfidence;
     public final double recognitionConfidence;
     public final boolean confirmed;
@@ -154,11 +157,18 @@ public final class CapturedPlateItem {
         this.sessionId = sessionId;
         this.trackId = trackId;
         this.bitmap = bitmap;
-        this.text = text == null ? "" : text;
+        this.consensusText = text == null ? "" : text;
         this.plateConfidence = plateConfidence;
         this.recognitionConfidence = recognitionConfidence;
         this.confirmed = confirmed;
-        this.characters = Collections.unmodifiableList(new ArrayList<>(characters));
+        this.characters = Collections.unmodifiableList(new ArrayList<>(
+                characters == null ? Collections.emptyList() : characters
+        ));
+        this.text = textForCrop(
+                consensusText,
+                freshPrediction,
+                this.characters
+        );
         this.capturedAtMillis = capturedAtMillis;
         this.capturedElapsedNanos = capturedElapsedNanos;
         this.sharpness = sharpness;
@@ -179,6 +189,26 @@ public final class CapturedPlateItem {
                 rowCounts == null ? Collections.emptyList() : rowCounts
         ));
         this.freshPrediction = freshPrediction == null ? "" : freshPrediction;
+    }
+
+    static String textForCrop(
+            String consensusText,
+            String freshPrediction,
+            List<PlateCharacter> characters
+    ) {
+        StringBuilder labels = new StringBuilder();
+        if (characters != null) {
+            for (PlateCharacter character : characters) {
+                if (character != null && character.label != null) {
+                    labels.append(character.label);
+                }
+            }
+        }
+        if (labels.length() > 0) return labels.toString();
+        if (freshPrediction != null && !freshPrediction.isEmpty()) {
+            return freshPrediction;
+        }
+        return consensusText == null ? "" : consensusText;
     }
 
     public boolean isProtectedFromEviction() {

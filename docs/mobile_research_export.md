@@ -31,7 +31,16 @@ bez zmian strukturalnych dla zgodności wstecznej.
 Sekcja `report.json/experiment` przechowuje zamrożone przy starcie:
 `series_id`, `scenario_id`, `variant`, `replicate_index`, notatkę operatora,
 timer, warunek termiczny oraz konfigurację autozoomu. `app_build` dodaje SHA
-commita, typ buildu i czas zbudowania aplikacji.
+commita, stan `clean/dirty/unknown`, typ buildu i czas zbudowania aplikacji.
+`git_commit` bez równoczesnego sprawdzenia `source_state` nie jest wystarczającą
+identyfikacją APK roboczego.
+
+`experiment.effective_execution_config` pozwala odtworzyć wykonanie bez
+odwoływania się do aktualnych preferencji telefonu. Dla MP/MT/MZ zawiera
+`model_id`, fingerprint, `variant_id`, runtime, precyzję, liczbę wątków,
+CPU/GPU/delegata i efektywne wejście. Globalnie zapisuje żądaną rozdzielczość,
+R0/R1/R2, profil rozpoznawania oraz flagi lock, autozoom i mechanizmów
+tracking/temporal. Konfiguracja nie może zmienić się do STOP.
 
 `data_retention` raportuje pojemność ring buffera, całkowitą liczbę trace'ów,
 liczbę zachowaną i usuniętą oraz zakres czasu zachowanych rekordów. Utrata
@@ -95,5 +104,8 @@ tabel. Generator escapuje znaki specjalne TeX. Paczka zawiera:
 `protocol.json` opisuje założenia benchmarku inspirowanego MLPerf Mobile:
 single-stream, cel 1024 próbek i 60 sekund, p90 jako percentyl główny. Pole
 `mlperf_compliant` ma wartość `false`, ponieważ aplikacja nie korzysta z
-oficjalnego LoadGena. Bieżący eksport opisuje sesję live; kontrolowany replay
-cropów pozostaje osobnym trybem wykonawczym do wdrożenia.
+oficjalnego LoadGena. `research-v1` opisuje wyłącznie sesję
+`camera-in-the-loop`. Kontrolowany replay nie jest częścią tej wersji i nie
+wolno przedstawiać wyników live jako czystego benchmarku runtime na identycznym
+wejściu. Jeżeli replay stanie się wymaganiem pracy, będzie osobnym runnerem i
+nowym checkpointem po zakończeniu bieżącej kampanii.

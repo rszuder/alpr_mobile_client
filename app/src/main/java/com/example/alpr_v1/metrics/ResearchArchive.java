@@ -249,15 +249,16 @@ public final class ResearchArchive {
 
     private static String cropIndexCsv(List<CapturedPlateItem> crops) {
         StringBuilder csv = new StringBuilder(
-                "capture_id,session_id,track_id,captured_at_ms,prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms\n"
+                "capture_id,session_id,track_id,captured_at_ms,prediction,consensus_prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms\n"
         );
         for (CapturedPlateItem item : crops) {
             csv.append(csv(item.captureId)).append(',')
                     .append(csv(item.sessionId)).append(',')
                     .append(item.trackId).append(',')
-                    .append(item.capturedAtMillis).append(',')
-                    .append(csv(item.text)).append(',')
-                    .append(item.verificationStatus.wireName()).append(',')
+                     .append(item.capturedAtMillis).append(',')
+                     .append(csv(item.text)).append(',')
+                     .append(csv(item.consensusText)).append(',')
+                     .append(item.verificationStatus.wireName()).append(',')
                     .append(csv(item.groundTruthText)).append(',')
                     .append(format(item.plateConfidence)).append(',')
                     .append(format(item.recognitionConfidence)).append(',')
@@ -299,6 +300,7 @@ public final class ResearchArchive {
             record.put("track_id", item.trackId);
             record.put("captured_at_ms", item.capturedAtMillis);
             record.put("prediction", item.text);
+            record.put("consensus_prediction", item.consensusText);
             record.put("plate_confidence", item.plateConfidence);
             record.put("recognition_confidence", item.recognitionConfidence);
             record.put("sharpness", item.sharpness);

@@ -211,6 +211,52 @@ public final class ScanAcquisitionControllerTest {
     }
 
     @Test
+    public void finalizationCreatesDurableRecordAndSuppressesNormalizedDuplicate() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(5L, 0L);
+        controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                1L
+        );
+        long firstEntity = controller.snapshot(1L).activeEntityId;
+        controller.onPipelineResult(
+                result(observation(firstEntity, firstEntity + 10L,
+                        true, true, "WX-1234")),
+                continuity(),
+                10L * SECOND
+        );
+        controller.onVehicleFrame(
+                frame(candidate(1L, 11L), candidate(2L, 12L)),
+                continuity(),
+                11L * SECOND
+        );
+        long secondEntity = controller.snapshot(11L * SECOND).activeEntityId;
+        assertTrue(secondEntity != firstEntity);
+        controller.onPipelineResult(
+                result(observation(secondEntity, secondEntity + 10L,
+                        true, true, "wx 1234")),
+                continuity(),
+                20L * SECOND
+        );
+
+        ScanAcquisitionSnapshot snapshot = controller.snapshot(60L * SECOND);
+        assertEquals(2, snapshot.acquisitionRecords.size());
+        AcquisitionRecord first = snapshot.acquisitionRecords.get(0);
+        AcquisitionRecord duplicate = snapshot.acquisitionRecords.get(1);
+        assertEquals("WX1234", first.normalizedText);
+        assertTrue(first.uniqueSaved);
+        assertFalse(duplicate.uniqueSaved);
+        assertEquals(first.recordId, duplicate.duplicateOfRecordId);
+        assertTrue(!first.bestCropId.isEmpty());
+        assertEquals(2, snapshot.stats.acquisitionsFinalized);
+        assertEquals(1, snapshot.stats.uniquePlatesSaved);
+        assertEquals(1, snapshot.stats.duplicateAcquisitionsSuppressed);
+        assertEquals(0.5, snapshot.stats.duplicateCaptureRate, 0.0001);
+        assertEquals(1.0, snapshot.stats.uniquePlatesPerWallMinute, 0.0001);
+    }
+
+    @Test
     public void partialOcrFragmentDoesNotBecomeGreenVehicleRecognition() {
         ScanAcquisitionController controller = startedWithCandidate(4L);
 

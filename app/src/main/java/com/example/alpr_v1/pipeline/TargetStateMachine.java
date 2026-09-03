@@ -32,6 +32,7 @@ public final class TargetStateMachine {
     private int lockReassociations;
     private float[] currentAppearance;
     private float[] lockedAppearance;
+    private boolean enabled = true;
 
     public TargetStateMachine() {
         this(new TargetSelector());
@@ -46,6 +47,16 @@ public final class TargetStateMachine {
         return snapshot;
     }
 
+    public synchronized void setEnabled(boolean enabled) {
+        if (this.enabled == enabled) return;
+        this.enabled = enabled;
+        reset();
+    }
+
+    public synchronized boolean enabled() {
+        return enabled;
+    }
+
     public synchronized TargetSnapshot onMtAnchor(List<OverlayItem> items) {
         return onMtAnchor(items, Collections.emptyMap());
     }
@@ -54,6 +65,7 @@ public final class TargetStateMachine {
             List<OverlayItem> items,
             Map<Long, float[]> appearanceByTrack
     ) {
+        if (!enabled) return TargetSnapshot.searching();
         List<OverlayItem> plates = plateOverlays(items);
         List<TargetSelector.Candidate> candidates = overlayCandidates(
                 plates,
@@ -160,6 +172,7 @@ public final class TargetStateMachine {
     }
 
     public synchronized TargetSnapshot onTrackingFrame(PreviewTrackingFrame frame) {
+        if (!enabled) return TargetSnapshot.searching();
         List<TrackedPlate> plates = frame == null
                 ? Collections.emptyList() : frame.trackedPlates;
         TargetSelector.Selection selection = targetSelector.select(
@@ -247,6 +260,7 @@ public final class TargetStateMachine {
     }
 
     public synchronized TargetSnapshot onTrackingLost() {
+        if (!enabled) return TargetSnapshot.searching();
         return onTrackingLost("tracking_lost");
     }
 

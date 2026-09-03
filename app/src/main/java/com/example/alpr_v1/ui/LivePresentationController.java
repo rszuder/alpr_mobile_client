@@ -19,6 +19,7 @@ public final class LivePresentationController {
     }
     public enum State {
         STOPPED,
+        PREVIEW,
         SEARCHING,
         TRACKING,
         RECOGNIZING,
@@ -270,6 +271,7 @@ public final class LivePresentationController {
 
     private int primaryText(State value) {
         switch (value) {
+            case PREVIEW: return R.string.live_state_preview;
             case TRACKING: return R.string.live_state_tracking;
             case RECOGNIZING: return R.string.live_state_recognizing;
             case CONFIRMED: return R.string.live_state_confirmed;
@@ -283,6 +285,7 @@ public final class LivePresentationController {
 
     private int hintText(State value) {
         switch (value) {
+            case PREVIEW: return R.string.live_hint_preview;
             case TRACKING: return R.string.live_hint_tracking;
             case RECOGNIZING: return R.string.live_hint_recognizing;
             case CONFIRMED: return R.string.live_hint_confirmed;
@@ -298,6 +301,10 @@ public final class LivePresentationController {
         int accentColor;
         int backgroundColor;
         switch (value) {
+            case PREVIEW:
+                accentColor = R.color.alpr_primary;
+                backgroundColor = R.color.alpr_status_searching;
+                break;
             case CONFIRMED:
             case TRACKING:
                 accentColor = R.color.alpr_success;
@@ -341,6 +348,7 @@ public final class LivePresentationController {
         State safe = requested == null ? State.SEARCHING : requested;
         if (missingModels
                 && safe != State.STOPPED
+                && safe != State.PREVIEW
                 && safe != State.ERROR) {
             return State.SETUP_REQUIRED;
         }

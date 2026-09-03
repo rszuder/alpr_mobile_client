@@ -23,8 +23,10 @@ import androidx.core.view.WindowInsetsCompat;
 
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.experiment.ResearchExecutionChoice;
 import com.example.alpr_v1.camera.AnalysisResolutionProfile;
 import com.example.alpr_v1.capture.CropCapacityPolicy;
+import com.example.alpr_v1.capture.CaptureDirectoryStore;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.inference.RuntimeBackendFactory;
 import com.example.alpr_v1.model.AlprPackageImporter;
@@ -67,6 +69,13 @@ public final class SettingsActivity extends AppCompatActivity {
 
     public static final String KEY_EXPERIMENT_ROI_POLICY =
             "experiment_roi_budget_policy";
+    public static final String KEY_EXPERIMENT_TYPE = "experiment_type";
+    public static final String KEY_EXPERIMENT_VARIANT = "experiment_variant";
+    public static final String KEY_RESEARCH_MP_EXECUTION = "research_mp_execution";
+    public static final String KEY_RESEARCH_MT_EXECUTION = "research_mt_execution";
+    public static final String KEY_RESEARCH_MZ_EXECUTION = "research_mz_execution";
+    public static final String KEY_RESEARCH_LOCK_ENABLED = "research_lock_enabled";
+    public static final String KEY_RESEARCH_AUTOZOOM_ENABLED = "research_autozoom_enabled";
     public static final String KEY_EXPERIMENT_SERIES_ID = "experiment_series_id";
     public static final String KEY_EXPERIMENT_SCENARIO_ID = "experiment_scenario_id";
     public static final String KEY_EXPERIMENT_REPLICATE_INDEX = "experiment_replicate_index";
@@ -98,6 +107,8 @@ public final class SettingsActivity extends AppCompatActivity {
     private TextInputEditText experimentScenarioId;
     private TextInputEditText experimentReplicateIndex;
     private TextInputEditText experimentNotes;
+    private MaterialAutoCompleteTextView experimentType;
+    private TextInputEditText experimentVariant;
     private ModelRole pendingImportRole;
     private boolean importInProgress;
 
@@ -107,25 +118,6 @@ public final class SettingsActivity extends AppCompatActivity {
                 ModelRole expectedRole = pendingImportRole;
                 pendingImportRole = null;
                 if (uri != null) importModel(uri, expectedRole);
-            }
-    );
-
-    private final ActivityResultLauncher<Uri> directoryPicker = registerForActivityResult(
-            new ActivityResultContracts.OpenDocumentTree(),
-            uri -> {
-                if (uri == null) return;
-                try {
-                    getContentResolver().takePersistableUriPermission(
-                            uri,
-                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    );
-                    preferences.edit().putString("capture_directory_uri", uri.toString()).apply();
-                    markChanged();
-                    refreshStoragePath();
-                } catch (SecurityException error) {
-                    Toast.makeText(this, R.string.capture_directory_error, Toast.LENGTH_LONG).show();
-                }
             }
     );
 
@@ -170,6 +162,8 @@ public final class SettingsActivity extends AppCompatActivity {
         experimentScenarioId = findViewById(R.id.settings_experiment_scenario_id);
         experimentReplicateIndex = findViewById(R.id.settings_experiment_replicate_index);
         experimentNotes = findViewById(R.id.settings_experiment_notes);
+        experimentType = findViewById(R.id.settings_experiment_type);
+        experimentVariant = findViewById(R.id.settings_experiment_variant);
 
         configureProfileControls();
         configureResolutionControls();
@@ -193,6 +187,45 @@ public final class SettingsActivity extends AppCompatActivity {
                 ? R.id.settings_profile_accurate
                 : R.id.settings_profile_balanced;
         group.check(selectedId);
+
+        com.google.android.material.materialswitch.MaterialSwitch lockSwitch =
+                findViewById(R.id.settings_research_lock_switch);
+        com.google.android.material.materialswitch.MaterialSwitch autoZoomSwitch =
+                findViewById(R.id.settings_research_autozoom_switch);
+        lockSwitch.setChecked(preferences.getBoolean(
+                KEY_RESEARCH_LOCK_ENABLED,
+                true
+        ));
+        autoZoomSwitch.setChecked(preferences.getBoolean(
+                KEY_RESEARCH_AUTOZOOM_ENABLED,
+                false
+        ));
+        lockSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            preferences.edit().putBoolean(
+                    KEY_RESEARCH_LOCK_ENABLED,
+                    enabled
+            ).apply();
+            if (!enabled && autoZoomSwitch.isChecked()) {
+                autoZoomSwitch.setChecked(false);
+            }
+            markChanged();
+        });
+        autoZoomSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (enabled && !lockSwitch.isChecked()) {
+                button.setChecked(false);
+                Toast.makeText(
+                        this,
+                        R.string.research_autozoom_requires_lock,
+                        Toast.LENGTH_LONG
+                ).show();
+                return;
+            }
+            preferences.edit().putBoolean(
+                    KEY_RESEARCH_AUTOZOOM_ENABLED,
+                    enabled
+            ).apply();
+            markChanged();
+        });
         group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
             if (!isChecked) return;
             RecognitionProfile profile = checkedId == R.id.settings_profile_fast
@@ -520,11 +553,6 @@ public final class SettingsActivity extends AppCompatActivity {
         plateNode.setOnClickListener(view -> showNodeActions(ModelRole.PLATE));
         characterNode.setOnClickListener(view -> showNodeActions(ModelRole.CHARACTER));
         restoreBaseButton.setOnClickListener(view -> restoreBaseComposition());
-        findViewById(R.id.settings_select_storage).setOnClickListener(view -> {
-            String stored = preferences.getString("capture_directory_uri", "");
-            Uri initial = stored.isEmpty() ? null : Uri.parse(stored);
-            directoryPicker.launch(initial);
-        });
     }
 
     private void launchModelImport(ModelRole expectedRole) {
@@ -824,6 +852,7 @@ public final class SettingsActivity extends AppCompatActivity {
                 modelRegistry.getBasePackage() != null
                         && (modelRegistry.canRestoreBaseModels() || hasPinnedVariant())
         );
+        refreshResearchExecutionControls();
     }
 
     private void refreshNodeBadges() {
@@ -995,16 +1024,9 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void refreshStoragePath() {
-        String stored = preferences.getString("capture_directory_uri", "");
-        if (stored.isEmpty()) {
-            storagePath.setText(R.string.settings_storage_unset);
-            return;
-        }
-        Uri uri = Uri.parse(stored);
-        String label = uri.getLastPathSegment();
         storagePath.setText(getString(
                 R.string.settings_storage_selected,
-                label == null || label.isEmpty() ? uri.toString() : label
+                CaptureDirectoryStore.RELATIVE_PATH
         ));
     }
 
@@ -1062,6 +1084,45 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void configureExperimentIdentity() {
+        String[] typeWires = {
+                "roi_budget",
+                "runtime",
+                "consensus",
+                "continuity",
+                "end_to_end"
+        };
+        String[] typeLabels = {
+                "ROI / budżet obszarów",
+                "Runtime / kwantyzacja",
+                "Konsensus",
+                "Ciągłość i recovery",
+                "End-to-end"
+        };
+        String selectedType = preferences.getString(
+                KEY_EXPERIMENT_TYPE,
+                "roi_budget"
+        );
+        int selectedTypeIndex = 0;
+        for (int index = 0; index < typeWires.length; index++) {
+            if (typeWires[index].equals(selectedType)) selectedTypeIndex = index;
+        }
+        experimentType.setAdapter(new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_dropdown_item_1line,
+                typeLabels
+        ));
+        experimentType.setText(typeLabels[selectedTypeIndex], false);
+        experimentType.setOnItemClickListener((parent, view, position, id) -> {
+            preferences.edit().putString(
+                    KEY_EXPERIMENT_TYPE,
+                    typeWires[position]
+            ).apply();
+            markChanged();
+        });
+        experimentVariant.setText(preferences.getString(
+                KEY_EXPERIMENT_VARIANT,
+                ""
+        ));
         experimentSeriesId.setText(preferences.getString(
                 KEY_EXPERIMENT_SERIES_ID,
                 defaultExperimentSeriesId()
@@ -1082,6 +1143,7 @@ public final class SettingsActivity extends AppCompatActivity {
         String series = normalizedText(experimentSeriesId, defaultExperimentSeriesId());
         String scenario = normalizedText(experimentScenarioId, "live_camera");
         String notes = normalizedText(experimentNotes, "");
+        String variant = normalizedText(experimentVariant, "");
         int replicate = 1;
         try {
             replicate = Math.max(1, Integer.parseInt(
@@ -1094,7 +1156,8 @@ public final class SettingsActivity extends AppCompatActivity {
         boolean changed = !series.equals(preferences.getString(KEY_EXPERIMENT_SERIES_ID, ""))
                 || !scenario.equals(preferences.getString(KEY_EXPERIMENT_SCENARIO_ID, ""))
                 || replicate != preferences.getInt(KEY_EXPERIMENT_REPLICATE_INDEX, 1)
-                || !notes.equals(preferences.getString(KEY_EXPERIMENT_NOTES, ""));
+                || !notes.equals(preferences.getString(KEY_EXPERIMENT_NOTES, ""))
+                || !variant.equals(preferences.getString(KEY_EXPERIMENT_VARIANT, ""));
         experimentSeriesId.setText(series);
         experimentScenarioId.setText(scenario);
         experimentReplicateIndex.setText(String.valueOf(replicate));
@@ -1103,6 +1166,7 @@ public final class SettingsActivity extends AppCompatActivity {
                 .putString(KEY_EXPERIMENT_SCENARIO_ID, scenario)
                 .putInt(KEY_EXPERIMENT_REPLICATE_INDEX, replicate)
                 .putString(KEY_EXPERIMENT_NOTES, notes)
+                .putString(KEY_EXPERIMENT_VARIANT, variant)
                 .apply();
         if (changed) markChanged();
     }
@@ -1119,6 +1183,129 @@ public final class SettingsActivity extends AppCompatActivity {
                 "yyyyMMdd",
                 java.util.Locale.ROOT
         ).format(new java.util.Date());
+    }
+
+    private void refreshResearchExecutionControls() {
+        configureResearchStageControl(
+                ModelRole.VEHICLE,
+                "MP",
+                R.id.settings_research_mp_summary,
+                R.id.settings_research_mp_execution,
+                KEY_RESEARCH_MP_EXECUTION
+        );
+        configureResearchStageControl(
+                ModelRole.PLATE,
+                "MT",
+                R.id.settings_research_mt_summary,
+                R.id.settings_research_mt_execution,
+                KEY_RESEARCH_MT_EXECUTION
+        );
+        configureResearchStageControl(
+                ModelRole.CHARACTER,
+                "MZ",
+                R.id.settings_research_mz_summary,
+                R.id.settings_research_mz_execution,
+                KEY_RESEARCH_MZ_EXECUTION
+        );
+    }
+
+    private void configureResearchStageControl(
+            ModelRole role,
+            String stageName,
+            int summaryId,
+            int dropdownId,
+            String preferenceKey
+    ) {
+        TextView summary = findViewById(summaryId);
+        MaterialAutoCompleteTextView dropdown = findViewById(dropdownId);
+        RoiBudgetPolicy roiPolicy = RoiBudgetPolicy.fromWireName(
+                preferences.getString(
+                        KEY_EXPERIMENT_ROI_POLICY,
+                        RoiBudgetPolicy.TWO_ROI.wireName()
+                )
+        );
+        if (role == ModelRole.VEHICLE && !roiPolicy.usesVehicleCascade()) {
+            summary.setText(getString(
+                    R.string.settings_research_stage_disabled,
+                    stageName,
+                    roiPolicy.wireName()
+            ));
+            dropdown.setEnabled(false);
+            dropdown.setText(ResearchExecutionChoice.AUTO.label(), false);
+            return;
+        }
+
+        InstalledModel model = modelRegistry.getActive(role);
+        if (model == null) {
+            summary.setText(getString(
+                    R.string.settings_research_stage_missing,
+                    stageName
+            ));
+            dropdown.setEnabled(false);
+            dropdown.setText(ResearchExecutionChoice.AUTO.label(), false);
+            return;
+        }
+
+        ModelVariant variant;
+        try {
+            variant = autoTuneManager.chosenVariant(model);
+        } catch (RuntimeException error) {
+            summary.setText(getString(
+                    R.string.settings_research_stage_missing,
+                    stageName
+            ));
+            dropdown.setEnabled(false);
+            return;
+        }
+        summary.setText(getString(
+                R.string.settings_research_stage_summary,
+                stageName,
+                model.manifest().modelId(),
+                variant.id(),
+                variant.runtime().wireName()
+        ));
+
+        List<ResearchExecutionChoice> choices = new java.util.ArrayList<>(
+                ResearchExecutionChoice.supportedFor(variant.runtime())
+        );
+        ResearchExecutionChoice selected;
+        try {
+            selected = ResearchExecutionChoice.fromWireName(
+                    preferences.getString(
+                            preferenceKey,
+                            ResearchExecutionChoice.AUTO.wireName()
+                    )
+            );
+        } catch (IllegalArgumentException ignored) {
+            selected = ResearchExecutionChoice.AUTO;
+        }
+        boolean selectedUnsupported = !choices.contains(selected);
+        List<String> labels = new java.util.ArrayList<>();
+        for (ResearchExecutionChoice choice : choices) labels.add(choice.label());
+        dropdown.setAdapter(new ArrayAdapter<>(
+                this,
+                android.R.layout.simple_dropdown_item_1line,
+                labels
+        ));
+        dropdown.setText(
+                selectedUnsupported
+                        ? getString(
+                                R.string.research_execution_unavailable,
+                                selected.label(),
+                                variant.runtime().wireName()
+                        )
+                        : selected.label(),
+                false
+        );
+        dropdown.setEnabled(true);
+        dropdown.setOnItemClickListener((parent, view, position, id) -> {
+            ResearchExecutionChoice choice = choices.get(position);
+            preferences.edit().putString(
+                    preferenceKey,
+                    choice.wireName()
+            ).apply();
+            markChanged();
+        });
     }
 
     private void configureRoiBudgetControls() {
@@ -1241,6 +1428,7 @@ public final class SettingsActivity extends AppCompatActivity {
 
                     markChanged();
                     refreshNodeBadges();
+                    refreshResearchExecutionControls();
                 }
         );
     }

@@ -89,6 +89,23 @@ public final class TargetStateMachineInstrumentedTest {
         assertEquals(2L, relocked.lockRevision);
     }
 
+    @Test
+    public void disabledLockNeverAcquiresOrTracksATarget() {
+        TargetStateMachine machine = new TargetStateMachine();
+        machine.setEnabled(false);
+        OverlayItem candidate = plate(101L, 0.40f, 0.42f, 0.60f, 0.50f);
+
+        TargetSnapshot first = machine.onMtAnchor(Collections.singletonList(candidate));
+        TargetSnapshot second = machine.onMtAnchor(Collections.singletonList(candidate));
+        TargetSnapshot third = machine.onMtAnchor(Collections.singletonList(candidate));
+
+        assertEquals(TargetSnapshot.State.SEARCHING, first.state);
+        assertEquals(TargetSnapshot.State.SEARCHING, second.state);
+        assertEquals(TargetSnapshot.State.SEARCHING, third.state);
+        assertEquals(0L, third.trackId);
+        assertEquals(0L, third.lockedTrackId);
+    }
+
     private static OverlayItem plate(
             long trackId,
             float left,

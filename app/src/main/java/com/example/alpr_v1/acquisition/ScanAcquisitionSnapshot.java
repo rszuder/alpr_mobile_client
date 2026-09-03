@@ -5,6 +5,7 @@ import com.example.alpr_v1.domain.TargetSessionState;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -29,6 +30,7 @@ public final class ScanAcquisitionSnapshot {
     public final Set<Long> identifiedEntityIds;
     public final Set<Long> completedEntityIds;
     public final Map<Long, EntityRecognitionSnapshot> entityRecognitions;
+    public final List<AcquisitionRecord> acquisitionRecords;
 
     public ScanAcquisitionSnapshot(
             long scanRunId,
@@ -54,7 +56,7 @@ public final class ScanAcquisitionSnapshot {
                 mtAttempts, freshMzAttempts, activeSessionDurationNanos,
                 noProgressDurationNanos, directive, autoZoomAllowed, plateAnchor,
                 stats, Collections.emptySet(), Collections.emptySet(),
-                Collections.emptyMap()
+                Collections.emptyMap(), Collections.emptyList()
         );
     }
 
@@ -78,6 +80,38 @@ public final class ScanAcquisitionSnapshot {
             Set<Long> identifiedEntityIds,
             Set<Long> completedEntityIds,
             Map<Long, EntityRecognitionSnapshot> entityRecognitions
+    ) {
+        this(
+                scanRunId, runState, runWallDurationNanos, runActiveDurationNanos,
+                queue, activeSessionId, activeEntityId, activeSessionState,
+                mtAttempts, freshMzAttempts, activeSessionDurationNanos,
+                noProgressDurationNanos, directive, autoZoomAllowed, plateAnchor,
+                stats, identifiedEntityIds, completedEntityIds,
+                entityRecognitions, Collections.emptyList()
+        );
+    }
+
+    public ScanAcquisitionSnapshot(
+            long scanRunId,
+            ScanRunState runState,
+            long runWallDurationNanos,
+            long runActiveDurationNanos,
+            AcquisitionQueueSnapshot queue,
+            long activeSessionId,
+            long activeEntityId,
+            TargetSessionState activeSessionState,
+            int mtAttempts,
+            int freshMzAttempts,
+            long activeSessionDurationNanos,
+            long noProgressDurationNanos,
+            AcquisitionDirective directive,
+            boolean autoZoomAllowed,
+            PlateAnchor plateAnchor,
+            ScanAcquisitionStats stats,
+            Set<Long> identifiedEntityIds,
+            Set<Long> completedEntityIds,
+            Map<Long, EntityRecognitionSnapshot> entityRecognitions,
+            List<AcquisitionRecord> acquisitionRecords
     ) {
         this.scanRunId = Math.max(0L, scanRunId);
         this.runState = runState == null ? ScanRunState.IDLE : runState;
@@ -108,5 +142,19 @@ public final class ScanAcquisitionSnapshot {
                 entityRecognitions == null
                         ? Collections.emptyMap() : entityRecognitions
         ));
+        this.acquisitionRecords = Collections.unmodifiableList(
+                new java.util.ArrayList<>(
+                        acquisitionRecords == null
+                                ? Collections.emptyList() : acquisitionRecords
+                )
+        );
+    }
+
+    public AcquisitionRecord latestAcquisitionForEntity(long entityId) {
+        for (int index = acquisitionRecords.size() - 1; index >= 0; index--) {
+            AcquisitionRecord record = acquisitionRecords.get(index);
+            if (record.entityId == entityId) return record;
+        }
+        return null;
     }
 }

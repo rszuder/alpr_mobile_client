@@ -46,6 +46,7 @@ public final class CropMiniReport {
         ) / 1_000_000.0);
         json.put("track_id", item.trackId);
         json.put("text", item.text);
+        json.put("consensus_text", item.consensusText);
         json.put("confirmed", item.confirmed);
         json.put("track_confirmed", item.trackConfirmed);
         json.put("fresh_mz_successful", item.freshMzSuccessful);

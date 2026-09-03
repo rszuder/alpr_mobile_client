@@ -3,7 +3,6 @@ package com.example.alpr_v1;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.Manifest;
-import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
@@ -13,7 +12,6 @@ import android.graphics.Bitmap;
 import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
-import android.provider.DocumentsContract;
 import android.util.Size;
 import android.view.MenuItem;
 import android.view.View;
@@ -69,10 +67,12 @@ import com.example.alpr_v1.camera.CameraResolutionCatalog;
 import com.example.alpr_v1.camera.CameraResolutionSelection;
 import com.example.alpr_v1.camera.CameraMotionMonitor;
 import com.example.alpr_v1.capture.CapturedPlateItem;
+import com.example.alpr_v1.capture.CaptureDirectoryStore;
 import com.example.alpr_v1.capture.CaptureGalleryViewModel;
 import com.example.alpr_v1.capture.CropCapacityPolicy;
 import com.example.alpr_v1.capture.CropSamplingPolicy;
 import com.example.alpr_v1.logging.AppLog;
+import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.metrics.DeviceProfile;
 import com.example.alpr_v1.metrics.CropMiniReport;
 import com.example.alpr_v1.metrics.MetricsCollector;
@@ -80,6 +80,8 @@ import com.example.alpr_v1.metrics.ReportArchive;
 import com.example.alpr_v1.metrics.ResearchArchive;
 import com.example.alpr_v1.metrics.ImageDifficultyMetrics;
 import com.example.alpr_v1.model.InstalledModel;
+import com.example.alpr_v1.model.ModelRole;
+import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.AlprPipeline;
 import com.example.alpr_v1.acquisition.PlateAnchor;
@@ -115,6 +117,10 @@ import com.example.alpr_v1.ui.SceneModeHudPolicy;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.ExperimentIdentity;
+import com.example.alpr_v1.experiment.CrashSessionMarker;
+import com.example.alpr_v1.experiment.ResearchExecutionChoice;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
+import com.example.alpr_v1.experiment.ResearchStageExecutionConfig;
 import com.example.alpr_v1.experiment.TimerConfig;
 import com.example.alpr_v1.experiment.ThermalConfig;
 import com.example.alpr_v1.experiment.ThermalMonitor;
@@ -1551,6 +1557,7 @@ public final class MainActivity extends AppCompatActivity {
             new TargetStateMachine();
     private final ExperimentSession experimentSession =
             new ExperimentSession();
+    private CrashSessionMarker crashSessionMarker;
     private final Set<Long> telemetryActiveTrackIds = new HashSet<>();
     private final Set<Long> telemetryConfirmedTrackIds = new HashSet<>();
     private final Map<Long, String> telemetryConsensusByTrack = new HashMap<>();
@@ -1648,6 +1655,7 @@ public final class MainActivity extends AppCompatActivity {
     private LivePresentationController livePresentation;
     private MaterialButton collectionToggle;
     private MaterialButton galleryOpenButton;
+    private MaterialButton cameraPreviewButton;
     private MaterialButton analysisStartButton;
     private MaterialButton exportReportButton;
 
@@ -1689,6 +1697,8 @@ public final class MainActivity extends AppCompatActivity {
     private CameraController cameraController;
     private CameraMotionMonitor cameraMotionMonitor;
     private volatile boolean cameraStarted;
+    private volatile boolean cameraPreviewActive;
+    private boolean pendingPreviewPermissionRequest;
     /*
      * true:
      * HUD czeka na pierwszy wynik ciężkiego pipeline'u
@@ -1719,6 +1729,8 @@ public final class MainActivity extends AppCompatActivity {
     private boolean experimentModeEnabled;
     private RoiBudgetPolicy experimentRoiBudgetPolicy =
             RoiBudgetPolicy.TWO_ROI;
+    private boolean experimentLockEnabled = true;
+    private boolean experimentAutoZoomEnabled;
     private TimerConfig experimentTimerConfig =
             TimerConfig.disabled();
     private ThermalConfig experimentThermalConfig =
@@ -1738,8 +1750,6 @@ public final class MainActivity extends AppCompatActivity {
     private int collectionSequence;
     private String cropLimitSetting = CropCapacityPolicy.AUTO;
     private int resolvedCropLimit = 10;
-    private Uri captureDirectoryUri;
-    private boolean pendingBatchDirectorySelection;
     private int pendingBatchWrites;
     private int successfulBatchWrites;
     private int failedBatchWrites;
@@ -1757,8 +1767,15 @@ public final class MainActivity extends AppCompatActivity {
                     new ActivityResultContracts.RequestPermission(),
                     granted -> {
                         if (granted) {
-                            requestAnalysisStart();
+                            boolean previewRequested = pendingPreviewPermissionRequest;
+                            pendingPreviewPermissionRequest = false;
+                            if (previewRequested) {
+                                startCameraPreview();
+                            } else {
+                                requestAnalysisStart();
+                            }
                         } else {
+                            pendingPreviewPermissionRequest = false;
                             livePresentation.showTransient(
                                     getString(R.string.camera_permission_required)
                             );
@@ -1779,33 +1796,6 @@ public final class MainActivity extends AppCompatActivity {
                 ResearchArchive.Kind kind = pendingExportKind;
                 pendingExportKind = null;
                 if (uri != null && kind != null) writeResearchExport(uri, kind);
-            }
-    );
-
-    private final ActivityResultLauncher<Uri> captureDirectoryPicker = registerForActivityResult(
-            new ActivityResultContracts.OpenDocumentTree(),
-            uri -> {
-                if (uri == null) {
-                    pendingBatchDirectorySelection = false;
-                    renderCapturedCrops();
-                    return;
-                }
-                try {
-                    getContentResolver().takePersistableUriPermission(
-                            uri,
-                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    );
-                    captureDirectoryUri = uri;
-                    uiPreferences.edit().putString("capture_directory_uri", uri.toString()).apply();
-                    boolean continueBatch = pendingBatchDirectorySelection;
-                    pendingBatchDirectorySelection = false;
-                    if (continueBatch) saveSelectedCrops();
-                } catch (SecurityException error) {
-                    pendingBatchDirectorySelection = false;
-                    renderCapturedCrops();
-                    Toast.makeText(this, R.string.capture_directory_error, Toast.LENGTH_LONG).show();
-                }
             }
     );
 
@@ -1861,6 +1851,7 @@ public final class MainActivity extends AppCompatActivity {
         recordInfo("Uruchomiono aplikację");
 
         uiPreferences = getSharedPreferences("alpr_ui", MODE_PRIVATE);
+        crashSessionMarker = new CrashSessionMarker(this);
         knownSettingsRevision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         autoZoomController.setEnabled(
                 uiPreferences.getBoolean(
@@ -1907,6 +1898,14 @@ public final class MainActivity extends AppCompatActivity {
                                 legacyRoiPolicy
                         )
                 );
+        experimentLockEnabled = uiPreferences.getBoolean(
+                SettingsActivity.KEY_RESEARCH_LOCK_ENABLED,
+                true
+        );
+        experimentAutoZoomEnabled = uiPreferences.getBoolean(
+                SettingsActivity.KEY_RESEARCH_AUTOZOOM_ENABLED,
+                false
+        );
 
         applyDebugBaselineProfile();
 
@@ -1981,6 +1980,7 @@ public final class MainActivity extends AppCompatActivity {
                 findViewById(
                         R.id.analysis_start_button
                 );
+        cameraPreviewButton = findViewById(R.id.camera_preview_button);
 
         liveStatus =
                 findViewById(
@@ -2107,6 +2107,14 @@ public final class MainActivity extends AppCompatActivity {
     private boolean handleMenuItem(MenuItem item) {
         int id = item.getItemId();
         if (id == R.id.menu_settings) {
+            if (experimentSession.isRunning()) {
+                Toast.makeText(
+                        this,
+                        R.string.research_settings_locked,
+                        Toast.LENGTH_LONG
+                ).show();
+                return true;
+            }
             startActivity(new Intent(this, SettingsActivity.class));
         } else if (id == R.id.menu_diagnostics) {
             openDiagnostics();
@@ -2297,7 +2305,7 @@ public final class MainActivity extends AppCompatActivity {
         lastCaptureByTrack.clear();
 
 
-        if (cameraStarted
+        if ((cameraStarted || cameraPreviewActive)
                 && ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
@@ -2308,13 +2316,15 @@ public final class MainActivity extends AppCompatActivity {
              *
              * ExperimentSession i timer pozostają bez zmian.
              */
+            boolean restartAnalysis = cameraStarted;
             cameraController.stop();
-
             cameraStarted = false;
-
-            startCamera(
-                    false
-            );
+            cameraPreviewActive = false;
+            if (restartAnalysis) {
+                startCamera(false);
+            } else {
+                startCameraPreview();
+            }
         }
 
 
@@ -2436,7 +2446,9 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.clearPlateItems();
         overlayView.setPreviewItems(java.util.Collections.emptyList());
         overlayView.setItems(java.util.Collections.emptyList());
-        overlayView.setAnalysisViewportEnabled(cameraStarted);
+        overlayView.setAnalysisViewportEnabled(
+                cameraStarted || cameraPreviewActive
+        );
         livePresentation.clearResult();
 
         android.util.Log.i(
@@ -2508,6 +2520,9 @@ public final class MainActivity extends AppCompatActivity {
                     ExperimentSession.CompletionReason.MANUAL
             );
         } else {
+            if (cameraPreviewActive) {
+                stopCameraPreview(false);
+            }
             if (collectionActive) {
                 pauseCropCollectionForStoppedAnalysis();
             }
@@ -2588,6 +2603,15 @@ public final class MainActivity extends AppCompatActivity {
         });
         updateAutoZoomButton();
 
+        cameraPreviewButton.setOnClickListener(view -> {
+            if (cameraStarted || waitingForThermalStart) return;
+            if (cameraPreviewActive) {
+                stopCameraPreview(true);
+            } else {
+                ensureCameraPermission(true);
+            }
+        });
+
 
         /*
          * Jeden przycisk obsługuje cały lifecycle analizy.
@@ -2604,14 +2628,16 @@ public final class MainActivity extends AppCompatActivity {
                         cancelThermalStartWaiting();
 
                     } else {
-
-                        ensureCameraPermission();
+                        if (cameraPreviewActive) {
+                            stopCameraPreview(false);
+                        }
+                        ensureCameraPermission(false);
                     }
                 }
         );
 
 
-        if (!cameraStarted) {
+        if (!cameraStarted && !cameraPreviewActive) {
 
             previewView.setVisibility(
                     View.INVISIBLE
@@ -2633,6 +2659,22 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderAnalysisControls() {
+
+        if (cameraPreviewButton != null) {
+            cameraPreviewButton.setText(
+                    cameraPreviewActive
+                            ? R.string.camera_preview_stop
+                            : R.string.camera_preview_start
+            );
+            cameraPreviewButton.setIconResource(
+                    cameraPreviewActive
+                            ? R.drawable.ic_visibility_off_24
+                            : R.drawable.ic_visibility_24
+            );
+            cameraPreviewButton.setEnabled(
+                    !cameraStarted && !waitingForThermalStart
+            );
+        }
 
         analysisStartButton.setText(
                 cameraStarted
@@ -2774,6 +2816,7 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setAnalysisViewportEnabled(false);
         resetAutoZoomForStoppedCamera();
         cameraStarted = false;
+        cameraPreviewActive = false;
         liveHudAwaitingFreshResult =
                 true;
         stopPreviewSceneMonitor();
@@ -2911,13 +2954,51 @@ public final class MainActivity extends AppCompatActivity {
 
         experimentTimerDeadlineElapsedMillis = -1L;
     }
-    private void beginAnalysisMeasurement() {
+    private boolean beginAnalysisMeasurement() {
         synchronized (this) {
             telemetryActiveTrackIds.clear();
             telemetryConfirmedTrackIds.clear();
             telemetryConsensusByTrack.clear();
         }
+        ResearchExecutionConfig frozenConfig = null;
+        if (experimentModeEnabled) {
+            try {
+                frozenConfig = buildResearchExecutionConfig();
+            } catch (RuntimeException error) {
+                pipeline.setResearchExecutionConfig(null);
+                livePresentation.showState(
+                        LivePresentationController.State.ERROR,
+                        error.getMessage()
+                );
+                Toast.makeText(
+                        this,
+                        getString(
+                                R.string.research_configuration_invalid,
+                                error.getMessage()
+                        ),
+                        Toast.LENGTH_LONG
+                ).show();
+                recordWarning("Nieprawidłowa konfiguracja badawcza: " + error.getMessage());
+                return false;
+            }
+        }
+        targetStateMachine.setEnabled(
+                frozenConfig == null || frozenConfig.lockEnabled
+        );
+        autoZoomController.setEnabled(
+                frozenConfig == null
+                        ? uiPreferences.getBoolean(KEY_AUTO_ZOOM_ENABLED, false)
+                        : frozenConfig.autoZoomEnabled
+        );
+        pipeline.setResearchExecutionConfig(frozenConfig);
         metricsCollector.startMeasurementSession();
+        CrashSessionMarker.Recovery recoveredCrash = crashSessionMarker.consumeRecovery();
+        metricsCollector.setCrashMeasurement(
+                true,
+                recoveredCrash.count,
+                recoveredCrash.lastSessionId,
+                recoveredCrash.lastSessionStartedAtMillis
+        );
 
         if (experimentModeEnabled) {
 
@@ -2953,17 +3034,18 @@ public final class MainActivity extends AppCompatActivity {
                             SettingsActivity.KEY_EXPERIMENT_NOTES,
                             ""
                     ),
-                    autoZoomController.enabled(),
+                    frozenConfig.autoZoomEnabled,
                     cameraController == null ? 1.0 : cameraController.maximumZoomRatio()
             );
 
             boolean started =
                     experimentSession.start(
-                            "roi_budget",
-                            experimentRoiBudgetPolicy.wireName(),
+                            frozenConfig.experimentType,
+                            frozenConfig.variant,
                             timerForSession,
                             experimentThermalConfig,
-                            identity
+                            identity,
+                            frozenConfig
                     );
 
             if (started) {
@@ -3015,6 +3097,90 @@ public final class MainActivity extends AppCompatActivity {
                 metricsCollector.recordThermalSample(latestThermalSnapshot);
             }
         }
+        crashSessionMarker.markStarted(
+                experimentSession.isRunning()
+                        ? experimentSession.sessionId()
+                        : "measurement-" + System.currentTimeMillis()
+        );
+        return true;
+    }
+
+    private ResearchExecutionConfig buildResearchExecutionConfig() {
+        String experimentType = uiPreferences.getString(
+                SettingsActivity.KEY_EXPERIMENT_TYPE,
+                "roi_budget"
+        );
+        if (experimentType == null || experimentType.trim().isEmpty()) {
+            experimentType = "roi_budget";
+        }
+        String experimentVariant = uiPreferences.getString(
+                SettingsActivity.KEY_EXPERIMENT_VARIANT,
+                ""
+        );
+        if (experimentVariant == null || experimentVariant.trim().isEmpty()) {
+            experimentVariant = "roi_budget".equals(experimentType.trim())
+                    ? experimentRoiBudgetPolicy.wireName()
+                    : "default";
+        }
+        return new ResearchExecutionConfig(
+                experimentType,
+                experimentVariant,
+                experimentRoiBudgetPolicy,
+                recognitionProfile,
+                cameraResolutionSelection.wireName(),
+                experimentLockEnabled,
+                experimentAutoZoomEnabled,
+                experimentRoiBudgetPolicy.usesVehicleCascade(),
+                true,
+                true,
+                true,
+                resolveResearchStage(
+                        ModelRole.VEHICLE,
+                        experimentRoiBudgetPolicy.usesVehicleCascade(),
+                        SettingsActivity.KEY_RESEARCH_MP_EXECUTION
+                ),
+                resolveResearchStage(
+                        ModelRole.PLATE,
+                        true,
+                        SettingsActivity.KEY_RESEARCH_MT_EXECUTION
+                ),
+                resolveResearchStage(
+                        ModelRole.CHARACTER,
+                        true,
+                        SettingsActivity.KEY_RESEARCH_MZ_EXECUTION
+                )
+        );
+    }
+
+    private ResearchStageExecutionConfig resolveResearchStage(
+            ModelRole role,
+            boolean enabled,
+            String preferenceKey
+    ) {
+        if (!enabled) return ResearchStageExecutionConfig.disabled(role);
+        InstalledModel model = modelRegistry.getActive(role);
+        if (model == null) {
+            throw new IllegalStateException(
+                    "Brak aktywnego modelu etapu " + role.wireName()
+            );
+        }
+        ModelVariant variant = autoTuneManager.chosenVariant(model);
+        ResearchExecutionChoice choice = ResearchExecutionChoice.fromWireName(
+                uiPreferences.getString(
+                        preferenceKey,
+                        ResearchExecutionChoice.AUTO.wireName()
+                )
+        );
+        ExecutionProfile profile = choice.resolve(
+                variant,
+                autoTuneManager.chosenProfile(model)
+        );
+        return ResearchStageExecutionConfig.enabled(
+                role,
+                model,
+                variant,
+                profile
+        );
     }
 
 
@@ -3042,6 +3208,13 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         metricsCollector.finishMeasurementSession();
+        crashSessionMarker.markFinished();
+        pipeline.setResearchExecutionConfig(null);
+        targetStateMachine.setEnabled(true);
+        autoZoomController.setEnabled(uiPreferences.getBoolean(
+                KEY_AUTO_ZOOM_ENABLED,
+                false
+        ));
 
         /*
          * Kończymy aktywne odliczanie, ale zachowujemy
@@ -3058,13 +3231,19 @@ public final class MainActivity extends AppCompatActivity {
 
 
     }
-    private void ensureCameraPermission() {
+    private void ensureCameraPermission(boolean previewOnly) {
+        pendingPreviewPermissionRequest = previewOnly;
         if (ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED) {
 
-            requestAnalysisStart();
+            pendingPreviewPermissionRequest = false;
+            if (previewOnly) {
+                startCameraPreview();
+            } else {
+                requestAnalysisStart();
+            }
             return;
         }
 
@@ -3106,7 +3285,7 @@ public final class MainActivity extends AppCompatActivity {
                 .setTitle("Dostęp do kamery")
                 .setMessage(
                         "Dostęp do kamery został wyłączony. "
-                                + "Aby uruchomić analizę, nadaj aplikacji "
+                                + "Aby uruchomić podgląd lub analizę, nadaj aplikacji "
                                 + "uprawnienie do kamery w ustawieniach Androida."
                 )
                 .setNegativeButton(
@@ -3563,8 +3742,69 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private void startCameraPreview() {
+        if (cameraStarted || cameraPreviewActive) return;
+        cameraPreviewActive = true;
+        pendingPreviewPermissionRequest = false;
+        previewView.setVisibility(View.VISIBLE);
+        overlayView.setFocusedTrackId(0L);
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.clearPlateItems();
+        overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setItems(java.util.Collections.emptyList());
+        overlayView.setAnalysisViewportEnabled(true);
+        livePresentation.clearResult();
+        livePresentation.showUserStatus(
+                LivePresentationController.State.PREVIEW,
+                getString(R.string.live_state_preview),
+                getString(R.string.live_hint_preview)
+        );
+        renderAnalysisControls();
+
+        Size requestedCameraSize = choosePreviewSize();
+        boolean allowHighResolution = cameraResolutionCatalog != null
+                && cameraResolutionCatalog.isHighResolution(requestedCameraSize);
+        cameraController.startPreview(
+                error -> runOnUiThread(() -> {
+                    if (!cameraPreviewActive) return;
+                    cameraPreviewActive = false;
+                    previewView.setVisibility(View.INVISIBLE);
+                    overlayView.setAnalysisViewportEnabled(false);
+                    renderAnalysisControls();
+                    livePresentation.showState(
+                            LivePresentationController.State.ERROR,
+                            ""
+                    );
+                    livePresentation.showTransient(
+                            getString(R.string.camera_error, error.getMessage())
+                    );
+                    recordError("Błąd podglądu kamery: " + error.getMessage(), error);
+                }),
+                requestedCameraSize,
+                allowHighResolution
+        );
+        recordInfo("Uruchomiono podgląd kadru bez analizy");
+    }
+
+    private void stopCameraPreview(boolean reportToUser) {
+        if (!cameraPreviewActive) return;
+        cameraPreviewActive = false;
+        pendingPreviewPermissionRequest = false;
+        if (cameraController != null) cameraController.stop();
+        previewView.setVisibility(View.INVISIBLE);
+        overlayView.setAnalysisViewportEnabled(false);
+        overlayView.setFocusedTrackId(0L);
+        overlayView.setActiveVehicleEntityId(0L);
+        overlayView.clearPlateItems();
+        overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setItems(java.util.Collections.emptyList());
+        livePresentation.stop();
+        renderAnalysisControls();
+        if (reportToUser) recordInfo("Wyłączono podgląd kadru");
+    }
+
     private void startCamera(boolean beginNewMeasurement) {
-        if (cameraStarted) return;
+        if (cameraStarted || cameraPreviewActive) return;
         lastRenderedContinuityState =
                 com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
         if (beginNewMeasurement) {
@@ -3576,7 +3816,7 @@ public final class MainActivity extends AppCompatActivity {
             pipeline.finishCameraTransform();
         }
         if (beginNewMeasurement) {
-            beginAnalysisMeasurement();
+            if (!beginAnalysisMeasurement()) return;
         }
         previewView.setVisibility(View.VISIBLE);
 
@@ -4029,6 +4269,7 @@ public final class MainActivity extends AppCompatActivity {
                 },
                 error -> runOnUiThread(() -> {
                     cameraStarted = false;
+                    cameraPreviewActive = false;
                     stopPreviewSceneMonitor();
 
                     uiSceneGeneration.incrementAndGet();
@@ -4055,6 +4296,19 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private Size chooseAnalysisSize() {
+        boolean scanActive = pipeline != null
+                && pipeline.scanAcquisitionSnapshot().runState.active();
+        return chooseAnalysisSize(scanActive);
+    }
+
+    private Size choosePreviewSize() {
+        boolean scanWillBeActive = vehicleCascadeEnabled
+                && !experimentModeEnabled
+                && requiredRecognitionModelsAvailable();
+        return chooseAnalysisSize(scanWillBeActive);
+    }
+
+    private Size chooseAnalysisSize(boolean scanActive) {
 
         /*
          * Ręczny wybór:
@@ -4113,8 +4367,6 @@ public final class MainActivity extends AppCompatActivity {
                         * 1024L;
 
 
-        boolean scanActive = pipeline != null
-                && pipeline.scanAcquisitionSnapshot().runState.active();
         Size target = new Size(
                 AnalysisResolutionPolicy.autoWidth(constrained, scanActive),
                 AnalysisResolutionPolicy.autoHeight(constrained, scanActive)
@@ -5057,6 +5309,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void toggleAutoZoom() {
+        if (experimentSession.isRunning()) {
+            livePresentation.showTransient(getString(R.string.research_settings_locked));
+            return;
+        }
         boolean enable = !autoZoomController.enabled();
         uiPreferences.edit()
                 .putBoolean(KEY_AUTO_ZOOM_ENABLED, enable)
@@ -5135,7 +5391,11 @@ public final class MainActivity extends AppCompatActivity {
                         ? R.string.auto_zoom_disable
                         : R.string.auto_zoom_enable)
         );
-        autoZoomButton.setEnabled(cameraStarted && !cameraTransformInProgress);
+        autoZoomButton.setEnabled(
+                cameraStarted
+                        && !cameraTransformInProgress
+                        && !experimentSession.isRunning()
+        );
         if (autoZoomControl != null) {
             autoZoomControl.setVisibility(cameraStarted ? View.VISIBLE : View.GONE);
         }
@@ -7430,30 +7690,6 @@ public final class MainActivity extends AppCompatActivity {
                 );
 
 
-        String directory =
-                uiPreferences.getString(
-                        "capture_directory_uri",
-                        ""
-                );
-
-
-        if (!directory.isEmpty()) {
-
-            try {
-
-                captureDirectoryUri =
-                        Uri.parse(
-                                directory
-                        );
-
-            } catch (RuntimeException ignored) {
-
-                captureDirectoryUri =
-                        null;
-            }
-        }
-
-
         /*
          * Adapter istnieje niezależnie od tego,
          * czy Bottom Sheet jest aktualnie otwarty.
@@ -8526,11 +8762,6 @@ public final class MainActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.crop_save_none_selected, Toast.LENGTH_SHORT).show();
             return;
         }
-        if (captureDirectoryUri == null) {
-            pendingBatchDirectorySelection = true;
-            captureDirectoryPicker.launch(null);
-            return;
-        }
         pendingBatchWrites = selected.size();
         successfulBatchWrites = 0;
         failedBatchWrites = 0;
@@ -8575,23 +8806,24 @@ public final class MainActivity extends AppCompatActivity {
         }
         item.saveState = CapturedPlateItem.SaveState.SAVING;
         renderCapturedCrops();
-        Uri directory = captureDirectoryUri;
         backgroundExecutor.execute(() -> {
             Uri imageUri = null;
             Uri reportUri = null;
             try {
                 String baseName = captureFileBaseName(item);
-                imageUri = createDocument(directory, "image/jpeg", baseName + ".jpg");
+                imageUri = createDocument("image/jpeg", baseName + ".jpg");
                 try (OutputStream output = getContentResolver().openOutputStream(imageUri, "wt")) {
                     if (output == null || !bitmap.compress(Bitmap.CompressFormat.JPEG, 94, output)) {
                         throw new IllegalStateException("Nie udało się zapisać obrazu JPEG");
                     }
                 }
-                reportUri = createDocument(directory, "application/json", baseName + ".json");
+                reportUri = createDocument("application/json", baseName + ".json");
                 try (OutputStream output = getContentResolver().openOutputStream(reportUri, "wt")) {
                     if (output == null) throw new IllegalStateException("Nie można otworzyć raportu");
                     output.write(report.getBytes(StandardCharsets.UTF_8));
                 }
+                CaptureDirectoryStore.publish(getContentResolver(), imageUri);
+                CaptureDirectoryStore.publish(getContentResolver(), reportUri);
                 item.savedImageUri = imageUri;
                 item.savedReportUri = reportUri;
                 item.saveState = CapturedPlateItem.SaveState.SAVED;
@@ -8646,18 +8878,18 @@ public final class MainActivity extends AppCompatActivity {
     private void deleteCreatedDocument(Uri uri) {
         if (uri == null) return;
         try {
-            DocumentsContract.deleteDocument(getContentResolver(), uri);
+            getContentResolver().delete(uri, null, null);
         } catch (Exception ignored) {
             // Plik był tworzony wyłącznie przez bieżącą próbę; provider mógł już go usunąć.
         }
     }
 
-    private Uri createDocument(Uri treeUri, String mimeType, String name) throws Exception {
-        ContentResolver resolver = getContentResolver();
-        Uri parent = DocumentsContract.buildDocumentUriUsingTree(
-                treeUri, DocumentsContract.getTreeDocumentId(treeUri)
+    private Uri createDocument(String mimeType, String name) {
+        Uri created = CaptureDirectoryStore.createDocument(
+                getContentResolver(),
+                mimeType,
+                name
         );
-        Uri created = DocumentsContract.createDocument(resolver, parent, mimeType, name);
         if (created == null) throw new IllegalStateException("Dostawca plików odrzucił zapis");
         return created;
     }
@@ -8965,6 +9197,13 @@ public final class MainActivity extends AppCompatActivity {
 
         knownSettingsRevision = revision;
 
+        if (experimentSession.isRunning()) {
+            recordWarning(
+                    "Pominięto zmianę ustawień podczas aktywnej sesji badawczej"
+            );
+            return;
+        }
+
 
         /*
          * NORMALNA KONFIGURACJA:
@@ -9053,6 +9292,14 @@ public final class MainActivity extends AppCompatActivity {
                     requestedExperimentRoi
             );
         }
+        experimentLockEnabled = uiPreferences.getBoolean(
+                SettingsActivity.KEY_RESEARCH_LOCK_ENABLED,
+                true
+        );
+        experimentAutoZoomEnabled = uiPreferences.getBoolean(
+                SettingsActivity.KEY_RESEARCH_AUTOZOOM_ENABLED,
+                false
+        );
 
         /*
          * NORMALNA KONFIGURACJA:
@@ -9091,27 +9338,6 @@ public final class MainActivity extends AppCompatActivity {
             applyCropLimitSetting(
                     requestedLimit
             );
-        }
-
-
-        /*
-         * NORMALNA KONFIGURACJA:
-         * katalog zapisu.
-         */
-        String directory =
-                uiPreferences.getString(
-                        "capture_directory_uri",
-                        ""
-                );
-
-        try {
-            captureDirectoryUri =
-                    directory.isEmpty()
-                            ? null
-                            : Uri.parse(directory);
-
-        } catch (RuntimeException ignored) {
-            captureDirectoryUri = null;
         }
 
 

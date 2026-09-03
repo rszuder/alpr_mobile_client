@@ -11,6 +11,7 @@ public final class LivePresentationControllerStateTest {
                 : LivePresentationController.State.values()) {
             LivePresentationController.State expected =
                     requested == LivePresentationController.State.STOPPED
+                            || requested == LivePresentationController.State.PREVIEW
                             || requested == LivePresentationController.State.ERROR
                             ? requested
                             : LivePresentationController.State.SETUP_REQUIRED;

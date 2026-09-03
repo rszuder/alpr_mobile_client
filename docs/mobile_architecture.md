@@ -50,6 +50,13 @@ track przestaje uruchamiać MZ.
 
 ## Prezentacja wyników
 
+Dolny panel rozdziela teraz `Podgląd` od `Uruchom analizę`. Podgląd wiąże
+CameraX z tym samym formatem i proporcjami kadru, które zostaną użyte przez
+nadchodzący przebieg (w tym wyższym celem AUTO dla Scan), ale zamyka klatki bez
+uruchamiania MP/MT/MZ, trackingu, Scan ani sesji metryk. HUD pokazuje spokojny
+stan `Podgląd kadru`, a piktogram oka zmienia się na przekreślone oko. Start
+analizy przejmuje kamerę z podglądu i dopiero wtedy rozpoczyna pomiar.
+
 Inferencja i bieżący overlay działają niezależnie od kolektora. Przycisk
 `Start/Stop` steruje wyłącznie rejestrowaniem cropów w sesji; po zatrzymaniu
 detekcje nadal są rysowane, lecz nie trafiają do galerii. `MobileAlprEngine`
@@ -138,12 +145,13 @@ przyjmując 160 KiB na element, z zakresem 10–100 i maksimum 25 dla urządzeni
 nie jest właśnie zapisywany. Sesja i każdy crop mają osobne identyfikatory.
 
 Checkbox karty jedynie zaznacza crop. Zbiorcze CTA zapisuje JPEG i sąsiedni
-miniraport JSON do katalogu wybranego przez systemowy selektor dokumentów.
+miniraport JSON przez MediaStore do stałego katalogu
+`Download/Mobilny ALPR - cropy/`, tworzonego automatycznie przez aplikację.
 Raport ma schemat
 `alpr.mobile.crop_report.v1` i zawiera czas UTC, strefę czasową, tekst,
 confidence, sharpness, znaki, profile, modele i czasy etapów. Nieudana próba
-usuwa oba pliki utworzone przez tę próbę. Dostęp do katalogu jest zapamiętywany
-przez trwałe uprawnienie URI, bez szerokiego dostępu do pamięci urządzenia.
+usuwa oba pliki utworzone przez tę próbę. Aplikacja nie wymaga ręcznego wyboru
+katalogu ani szerokiego dostępu do pamięci urządzenia.
 
 Import modelu znajduje się w Opcjach, a wybór eksportu w Diagnostyce. Dolny
 panel jest przeznaczony na sesję, zaznaczanie i wyniki.
@@ -171,9 +179,15 @@ benchmarku zgodności kolorów.
 
 - LiteRT/TFLite: CPU 1/2/4 wątki oraz delegat GPU, jeżeli urządzenie i model go obsługują.
 - ONNX Runtime Android: CPU 1/2/4 wątki.
-- NCNN: pakiet jest walidowany i przechowywany; wykonanie wymaga adaptera JNI oraz bibliotek dla ABI ARM.
+- NCNN: aktywny backend JNI (`NcnnBackend` + `alpr_ncnn`) dla ABI ARM; import, otwarcie modelu i inferencja są objęte testem instrumentacyjnym.
 
-Autotuning jest wykonywany osobno po imporcie każdego modelu. Wynik jest powiązany z SHA-256 manifestu, więc zmiana pakietu wymusza nowy pomiar. Regulator działający podczas sesji zmniejsza liczbę analizowanych klatek przy małej pamięci lub throttlingu termicznym.
+W trybie użytkowym autotuning jest wykonywany osobno po imporcie każdego modelu.
+Wynik jest powiązany z SHA-256 manifestu, więc zmiana pakietu wymusza nowy
+pomiar. W trybie badawczym `ResearchExecutionConfig` zamraża przy START osobno
+dla MP/MT/MZ: model i fingerprint, wariant, runtime, precyzję, CPU 1/2/4 albo
+GPU oraz wejście modelu. `MobileAlprEngine` korzysta wtedy wyłącznie z tego
+snapshotu i nie pyta `AutoTuneManager` o nowy profil podczas sesji. Regulator
+klatek nadal może chronić urządzenie, ale nie zmienia liczby wątków ani delegata.
 
 ## Raportowanie
 
@@ -195,6 +209,12 @@ oraz dostępność żyroskopu. CSV zawiera rozmiar źródła i licznik klatek sz
 ruchu.
 Sekcja `crop_session` zawiera identyfikator, stan Start/Stop, limit i rekordy
 wszystkich zebranych cropów wraz z datami, znakami i czasami per crop.
+
+Sekcja `scan_acquisition` zawiera trwałe rekordy finalizacji Scan. Stabilny
+wynik przechodzi przez deduplikację tekstu w obrębie jednego runu. Raport
+rozróżnia wszystkie finalizacje, unikalne zapisy oraz stłumione duplikaty,
+zachowuje `entity_id`, `session_id`, `plate_track_id`, tekst znormalizowany,
+confidence, liczbę obserwacji i identyfikator najlepszego cropu źródłowego.
 
 `report.json` używa schematu `alpr.mobile_benchmark_report.v1`. Pole `execution`
 zawiera osobne rekordy `vehicle`, `plate` i `character`, w tym model, fingerprint, wybrany

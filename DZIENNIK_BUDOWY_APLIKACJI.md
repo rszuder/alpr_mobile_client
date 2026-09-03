@@ -2298,6 +2298,82 @@ Pozostało:
 - nie traktować mniejszego pliku ani krótszego czasu jako wystarczającej
   bramki jakości bez porównania detekcji, keypointów, CER i exact match.
 
+### 2026-09-03 — domknięcie Research Mode i finalizacji Scan przed freeze
+
+Problem:
+- profil wykonania MP/MT/MZ mógł nadal zależeć od `AutoTuneManager`, więc samo
+  przypięcie wariantu nie gwarantowało liczby wątków ani CPU/GPU;
+- konfiguracja sesji nie zawierała kompletnego, niezmiennego snapshotu;
+- `crash_count=0` udawał pomiar, którego aplikacja nie wykonywała;
+- `READY_TO_FINALIZE` nie tworzyło rekordu akwizycji ani nie umożliwiało
+  policzenia unikalnych tablic na minutę;
+- opis NCNN i ręcznego katalogu cropów był nieaktualny.
+
+Rozwiązanie:
+- dodano `ResearchExecutionConfig`, `ResearchStageExecutionConfig` i jawne
+  profile AUTO/CPU 1/CPU 2/CPU 4/GPU;
+- konfiguracja jest zamrażana przy START, przekazywana do pipeline'u i używana
+  bez ponownego wyboru profilu przez autotuning;
+- ustawienia badawcze obejmują typ i wariant eksperymentu, wykonanie MP/MT/MZ,
+  R0/R1/R2, lock i autozoom; zmiany są blokowane podczas aktywnej sesji;
+- `report.json` zawiera pełne `effective_execution_config` wraz z modelami,
+  fingerprintami, backendami, wejściami i flagami;
+- trwały marker procesu wykrywa poprzednią niedomkniętą sesję i nadaje
+  `crash_count` jawną semantykę pomiarową;
+- dodano `AcquisitionRecord` i deduplikację numeru w obrębie runu Scan,
+  metryki finalizacji/przepustowości oraz rekordy i eventy audytowe;
+- crop galerii używa tego samego ciągu znaków co ramki znaków, a pliki JPEG/JSON
+  trafiają automatycznie do `Download/Mobilny ALPR - cropy/`.
+
+Decyzje:
+- USER zachowuje autotuning; RESEARCH korzysta z immutable snapshotu;
+- AUTO w Research oznacza zamrożenie profilu wybranego dokładnie przy START;
+- GPU bez wsparcia runtime'u blokuje start zamiast wykonywać fallback;
+- deduplikacja Scan jest dokładna po normalizacji `[A-Z0-9]` i resetuje się
+  przy nowym `scan_run_id`;
+- kontrolowany replay nie należy do `research-v1`; wyniki mobilne są jawnie
+  `camera-in-the-loop`;
+- C2, Pick UI i Search pozostają poza zakresem freeze.
+
+Weryfikacja:
+- 457/457 testów JVM;
+- 67/67 testów instrumentacyjnych na Samsung SM-A125F;
+- test deterministycznych profili CPU/GPU;
+- test round-trip zamrożonej konfiguracji przez `report.json`;
+- test lock OFF;
+- test finalizacji i deduplikacji Scan oraz eksportu obu rekordów;
+- fizycznie potwierdzono wcześniejszy zapis pary JPEG+JSON w dedykowanym
+  katalogu MediaStore;
+- pełne `lintDebug`, `assembleDebug` i 457/457 testów JVM przeszły po
+  domknięciu dokumentacji;
+- pilot `PILOT_001 / STATIC_SINGLE_VEHICLE / R0 / replicate 1` trwał 73,1 s:
+  18 trace'ów, 12 wyników potwierdzonych, 6 wstępnych, 0 błędów, kompletne dane
+  i 17/17 zgodnych sum SHA-256 archiwum;
+- snapshot pilota zachował TFLite INT8 CPU×2 dla MT/MZ, R0, lock OFF,
+  autozoom OFF, rzeczywistą rozdzielczość 480×640 oraz commit `99e66b1`;
+- fizyczny smoke Scan na dwóch pojazdach utworzył 2 `AcquisitionRecord`,
+  2 unikalne zapisy, 0 duplikatów, średnią 4,62 s, p95 4,79 s i przeszedł
+  z pierwszej encji do drugiej;
+- dodano osobny przycisk `Podgląd` z piktogramem oka: CameraX używa proporcji
+  docelowego przebiegu, ale nie uruchamia inferencji ani metryk; test na SM-A125F
+  potwierdził brak eventów pipeline'u i przejście podgląd → Scan;
+- `app_build` zapisuje teraz `git_dirty`, dostępność pomiaru i jednoznaczny
+  `source_state=clean/dirty/unknown`, aby roboczego APK nie przypisać błędnie
+  do samego SHA `HEAD`; wygenerowany debug poprawnie raportuje `dirty=true`;
+- końcowy smoke trwał 633 s: 386 klatek odebranych, 377 przetworzonych,
+  377/377 zachowanych trace'ów, 0 błędów, 0 crashy, 0 ewikcji i kompletne dane;
+- PSS w raporcie osiągnął 382,7 MB, a monitoring zewnętrzny chwilowo około
+  407 MB bez monotonicznego wzrostu; temperatura baterii wzrosła 32,2→34,6°C;
+- Android osiągnął thermal status 4 przy ładowaniu i 100% baterii, ale pipeline
+  pozostał stabilny; właściwe serie muszą używać warunku termicznego startu;
+- po najnowszych zmianach pełne 68/68 testów instrumentacyjnych przeszło na
+  SM-A125F; dane i 41 MB modeli zabezpieczono, a następnie odtworzono i
+  potwierdzono jako aktywny komplet MP+MT+MZ.
+
+Pozostało:
+- utworzyć czysty commit/checkpoint `research-v1` i budować kampanię wyłącznie
+  ze stanem `app_build.source_state=clean`.
+
 ## 9. Zasady aktualizowania dziennika
 
 Po większej zmianie należy dopisać wpis zawierający:
@@ -2333,6 +2409,7 @@ być rozróżniane.
   MP+MT+MZ;
 - `docs/mobile_architecture.md` — potok wykonawczy i raportowanie;
 - `docs/mobile_research_export.md` — kontrakt pełnego eksportu i TeX;
+- `docs/research_mode_v1.md` — zamrożona konfiguracja Research Mode i ograniczenia freeze;
 - `docs/alpr-mobile-research-bundle-v1.schema.json` — schemat manifestu
   eksportu badawczego;
 - `docs/model_package_test_strategy.md` — strategia fixture, parytetu,

@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">Mobilny ALPR</string>
-    <string name="camera_permission_required">Do analizy obrazu potrzebny jest dostęp do kamery.</string>
+    <string name="camera_permission_required">Do podglądu i analizy potrzebny jest dostęp do kamery.</string>
     <string name="import_model">Importuj .alprmodel</string>
     <string name="export_report">Eksportuj raport</string>
     <string name="export_choose_title">Eksport badawczy</string>
@@ -106,6 +106,10 @@
     <string name="camera_error">Błąd kamery: %1$s</string>
     <string name="analysis_start">Uruchom analizę</string>
     <string name="analysis_stop">Zatrzymaj analizę</string>
+    <string name="camera_preview_start">Podgląd</string>
+    <string name="camera_preview_stop">Wyłącz podgląd</string>
+    <string name="live_state_preview">Podgląd kadru</string>
+    <string name="live_hint_preview">Analiza jest wyłączona — ustaw scenę i uruchom ją, gdy kadr będzie gotowy</string>
     <string name="analysis_idle">Analiza zatrzymana</string>
     <string name="analysis_idle_hint">Naciśnij „Uruchom analizę”, aby rozpocząć pracę kamery i pipeline’u.</string>
     <string name="persistent_log_label">Dziennik aplikacji</string>
@@ -113,9 +117,9 @@
     <string name="menu_recognition_profile">Tryb rozpoznawania</string>
     <string name="menu_resolution_profile">Rozdzielczość kamery</string>
     <string name="menu_crop_limit">Limit cropów sesji</string>
-    <string name="menu_capture_directory">Katalog trwałego zapisu</string>
+    <string name="menu_capture_directory">Katalog cropów</string>
     <string name="crop_limit_changed">Nowy limit galerii: %1$d</string>
-    <string name="capture_directory_error">Nie udało się zachować dostępu do wybranego katalogu</string>
+    <string name="capture_directory_error">Nie udało się utworzyć lub otworzyć katalogu „Mobilny ALPR - cropy”</string>
     <string name="resolution_profile_changed">Wybrano jakość obrazu: %1$s</string>
     <string name="vehicle_cascade_enabled">Włączono kaskadę pojazd → ROI → MT → MZ</string>
     <string name="vehicle_cascade_disabled">Wyłączono kaskadę pojazdu; MT analizuje pełną klatkę</string>
@@ -200,7 +204,7 @@
     <string name="settings_composition_restored">Przywrócono modele z pakietu bazowego</string>
     <string name="settings_storage_unset">Katalog nie został jeszcze wybrany</string>
     <string name="settings_choose_directory">Wybierz katalog zapisu</string>
-    <string name="settings_storage_selected">Wybrany katalog: %1$s</string>
+    <string name="settings_storage_selected">Automatyczny zapis: %1$s</string>
     <string name="settings_crop_10_short">10</string>
     <string name="settings_crop_25_short">25</string>
     <string name="settings_crop_50_short">50</string>
@@ -300,9 +304,23 @@
         <string name="experiment_mode_disabled_status">
         Tryb eksperymentalny wyłączony · przywrócono normalną konfigurację
     </string>
+    <string name="research_configuration_invalid">Nie można rozpocząć eksperymentu: %1$s</string>
+    <string name="research_settings_locked">Zakończ aktywny eksperyment, aby zmienić jego konfigurację</string>
     <string name="settings_roi_budget_title">Strategia ROI · eksperyment</string>
     <string name="settings_roi_budget_description">R0: MT na pełnej klatce · R1: MP i maks. 1 ROI · R2: MP i maks. 2 ROI</string>
     <string name="settings_experiment_identity_title">Identyfikacja kampanii</string>
+    <string name="settings_experiment_type">Typ eksperymentu</string>
+    <string name="settings_experiment_variant">Wariant eksperymentu</string>
+    <string name="settings_research_mp_execution">MP · profil wykonania</string>
+    <string name="settings_research_mt_execution">MT · profil wykonania</string>
+    <string name="settings_research_mz_execution">MZ · profil wykonania</string>
+    <string name="settings_research_stage_summary">%1$s · %2$s · %3$s/%4$s</string>
+    <string name="settings_research_stage_missing">%1$s · brak aktywnego modelu</string>
+    <string name="settings_research_stage_disabled">%1$s · wyłączony przez %2$s</string>
+    <string name="settings_research_lock">Lock celu</string>
+    <string name="settings_research_autozoom">Autozoom</string>
+    <string name="research_autozoom_requires_lock">Autozoom w eksperymencie wymaga włączonego locka</string>
+    <string name="research_execution_unavailable">%1$s · niedostępne dla %2$s — wybierz nowy profil</string>
     <string name="settings_experiment_identity_description">Wartości zostaną zamrożone przy starcie przebiegu. Numer powtórzenia zwiększa się automatycznie po uruchomieniu.</string>
     <string name="settings_experiment_series_id">Seria, np. ROI-202608-A</string>
     <string name="settings_experiment_scenario_id">Scenariusz, np. single_static</string>

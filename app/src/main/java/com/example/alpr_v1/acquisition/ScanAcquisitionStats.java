@@ -8,6 +8,13 @@ public final class ScanAcquisitionStats {
     public final int vehiclesDeferred;
     public final int vehiclesLost;
     public final int entitiesReadyToFinalize;
+    public final int acquisitionsFinalized;
+    public final int uniquePlatesSaved;
+    public final int duplicateAcquisitionsSuppressed;
+    public final double duplicateCaptureRate;
+    public final double meanAcquisitionMillis;
+    public final double p95AcquisitionMillis;
+    public final double uniquePlatesPerWallMinute;
     public final double meanQueueWaitMillis;
     public final double p95QueueWaitMillis;
     public final double meanActiveSessionMillis;
@@ -22,6 +29,13 @@ public final class ScanAcquisitionStats {
             int vehiclesDeferred,
             int vehiclesLost,
             int entitiesReadyToFinalize,
+            int acquisitionsFinalized,
+            int uniquePlatesSaved,
+            int duplicateAcquisitionsSuppressed,
+            double duplicateCaptureRate,
+            double meanAcquisitionMillis,
+            double p95AcquisitionMillis,
+            double uniquePlatesPerWallMinute,
             double meanQueueWaitMillis,
             double p95QueueWaitMillis,
             double meanActiveSessionMillis,
@@ -35,6 +49,15 @@ public final class ScanAcquisitionStats {
         this.vehiclesDeferred = Math.max(0, vehiclesDeferred);
         this.vehiclesLost = Math.max(0, vehiclesLost);
         this.entitiesReadyToFinalize = Math.max(0, entitiesReadyToFinalize);
+        this.acquisitionsFinalized = Math.max(0, acquisitionsFinalized);
+        this.uniquePlatesSaved = Math.max(0, uniquePlatesSaved);
+        this.duplicateAcquisitionsSuppressed = Math.max(
+                0, duplicateAcquisitionsSuppressed
+        );
+        this.duplicateCaptureRate = finite(duplicateCaptureRate);
+        this.meanAcquisitionMillis = finite(meanAcquisitionMillis);
+        this.p95AcquisitionMillis = finite(p95AcquisitionMillis);
+        this.uniquePlatesPerWallMinute = finite(uniquePlatesPerWallMinute);
         this.meanQueueWaitMillis = finite(meanQueueWaitMillis);
         this.p95QueueWaitMillis = finite(p95QueueWaitMillis);
         this.meanActiveSessionMillis = finite(meanActiveSessionMillis);
@@ -46,6 +69,8 @@ public final class ScanAcquisitionStats {
     public static ScanAcquisitionStats empty() {
         return new ScanAcquisitionStats(
                 0, 0, 0, 0, 0, 0,
+                0, 0, 0,
+                0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         );
     }

@@ -27,11 +27,16 @@ formaty archiwów zachowują dotychczasową semantykę.
 | `experiment.variant` | string | tak | Główna zmienna niezależna |
 | `experiment.replicate_index` | int >= 1 | tak dla starych | Numer powtórzenia |
 | `app_build.git_commit` | string | tak dla starych | SHA źródeł aplikacji |
+| `app_build.git_dirty` | bool | tak dla starych | Czy APK zbudowano z modyfikacjami poza wskazanym SHA |
+| `app_build.source_state` | string | tak dla starych | `clean`, `dirty` albo `unknown` |
 | `app_build.build_type` | string | tak dla starych | debug/release/research |
 | `data_retention.trace_total_seen` | int | tak dla starych | Wszystkie utworzone trace'y |
 | `data_retention.trace_records_retained` | int | tak dla starych | Trace'y obecne w eksporcie |
 | `data_retention.trace_records_evicted` | int | tak dla starych | Usunięte najstarsze trace'y |
 | `data_completeness.status` | string | tak dla starych | `complete` albo `incomplete` |
+| `experiment.effective_execution_config` | object | tak dla starych | Zamrożona efektywna konfiguracja MP/MT/MZ, ROI, rozdzielczości i flag |
+| `errors.crash_measurement_available` | bool | nie | Czy działa trwały marker niedomkniętej sesji |
+| `errors.crash_count` | int/null | nie | Odzyskane niedomknięte sesje poprzedniego procesu; null bez pomiaru |
 
 Konfiguracja eksperymentu jest zamrażana przy starcie. Zmiana ustawień po stopie
 nie może zmienić identyfikacji zakończonego przebiegu.
@@ -113,8 +118,27 @@ Raport `scan_acquisition` rozdziela czas ścienny runu od aktywnego czasu
 przetwarzania i zawiera: `vehicles_seen`, `vehicles_queued`,
 `vehicles_selected`, `vehicles_deferred`, `vehicles_lost`,
 `entities_ready_to_finalize`, średnie i p95 czasu oczekiwania oraz sesji,
-a także liczbę prób MT/MZ na wybraną encję. `READY_TO_FINALIZE` nie oznacza
-jeszcze trwałego, unikalnego rekordu akwizycji.
+a także liczbę prób MT/MZ na wybraną encję.
+
+`READY_TO_FINALIZE` uruchamia teraz atomową warstwę finalizacji. Powstaje
+`AcquisitionRecord`, po czym tekst po normalizacji `[A-Z0-9]` jest sprawdzany
+w deduplikatorze bieżącego `scan_run_id`. Pierwszy wynik jest unikalnym zapisem;
+każdy następny o tym samym tekście pozostaje rekordem audytowym ze wskazaniem
+`duplicate_of_record_id`, ale nie zwiększa przepustowości unikalnych tablic.
+
+Summary zawiera:
+
+- `acquisitions_finalized`;
+- `unique_plates_saved`;
+- `duplicate_acquisitions_suppressed`;
+- `duplicate_capture_rate`;
+- `mean_acquisition_ms` i `p95_acquisition_ms`;
+- `unique_plates_per_wall_minute`.
+
+`acquisition_records[]` zachowuje run, sesję, encję, track tablicy, tekst,
+confidence, obserwacje konsensusu, czasy, decyzję deduplikacji oraz
+`best_crop_id`. Identyfikator cropu wskazuje najlepszą obserwację pipeline'u;
+nie oznacza automatycznego pliku JPEG poza archiwum badawczym.
 
 Każda klatka zapisuje stan runu, rozmiar kolejki, aktywne `session_id` i
 `entity_id`, dyrektywę, budżety prób oraz czasy aktywne. Eventy kolejki i sesji
@@ -122,6 +146,8 @@ używają typów `candidate_queued`, `candidate_updated`, `candidate_selected`,
 `candidate_deferred`, `candidate_expired`, `scan_session_started`,
 `scan_session_progress`, `scan_session_ready_to_finalize`,
 `scan_session_lost`, `scan_session_deferred` i `scan_target_released`.
+Finalizacja dodaje `acquisition_finalized` oraz dokładnie jedno z
+`unique_plate_saved` / `duplicate_acquisition_suppressed`.
 Ranking zawiera `priority`, `readability`, `waiting_age`, `exit_urgency`,
 `freshness` oraz `prediction_age_ms`.
 

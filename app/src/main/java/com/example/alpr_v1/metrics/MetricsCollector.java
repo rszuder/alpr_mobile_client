@@ -5,6 +5,7 @@ import android.os.SystemClock;
 import com.example.alpr_v1.BuildConfig;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
+import com.example.alpr_v1.acquisition.AcquisitionRecord;
 import com.example.alpr_v1.capture.CapturedPlateItem;
 import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.model.InstalledAlprPackage;
@@ -15,6 +16,7 @@ import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.experiment.ExperimentSession;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
 import com.example.alpr_v1.experiment.ThermalMonitor;
 
 import org.json.JSONArray;
@@ -112,6 +114,10 @@ public final class MetricsCollector {
     public static final String REPORT_SCHEMA = "alpr.mobile_benchmark_report.v1";
     private static final int MAX_TRACES = 5_000;
     private long sessionStartedMillis = System.currentTimeMillis();
+    private boolean crashMeasurementAvailable;
+    private int recoveredCrashCount;
+    private String recoveredCrashSessionId = "";
+    private long recoveredCrashSessionStartedAtMillis;
     private long sessionStartedNanos = System.nanoTime();
     private long sessionStartedElapsedNanos = SystemClock.elapsedRealtimeNanos();
 
@@ -191,6 +197,10 @@ public final class MetricsCollector {
         thermalSamples.clear();
         eventRecords.clear();
         scanAcquisitionSnapshot = null;
+        crashMeasurementAvailable = false;
+        recoveredCrashCount = 0;
+        recoveredCrashSessionId = "";
+        recoveredCrashSessionStartedAtMillis = 0L;
 
         droppedFrames = 0L;
         traceTotalSeen = 0L;
@@ -268,6 +278,28 @@ public final class MetricsCollector {
 
     public synchronized boolean isMeasurementSessionActive() {
         return measurementSessionActive;
+    }
+
+    public synchronized void setCrashMeasurement(
+            boolean available,
+            int recoveredCrashes
+    ) {
+        setCrashMeasurement(available, recoveredCrashes, "", 0L);
+    }
+
+    public synchronized void setCrashMeasurement(
+            boolean available,
+            int recoveredCrashes,
+            String lastRecoveredSessionId,
+            long lastRecoveredSessionStartedAtMillis
+    ) {
+        crashMeasurementAvailable = available;
+        recoveredCrashCount = Math.max(0, recoveredCrashes);
+        recoveredCrashSessionId = lastRecoveredSessionId == null
+                ? "" : lastRecoveredSessionId.trim();
+        recoveredCrashSessionStartedAtMillis = Math.max(
+                0L, lastRecoveredSessionStartedAtMillis
+        );
     }
 
     public synchronized void add(InferenceTrace trace) {
@@ -692,6 +724,7 @@ public final class MetricsCollector {
             record.put("captured_at_ms", item.capturedAtMillis);
             record.put("track_id", item.trackId);
             record.put("text", item.text);
+            record.put("consensus_text", item.consensusText);
             record.put("confirmed", item.confirmed);
             record.put("track_confirmed", item.trackConfirmed);
             record.put("fresh_mz_successful", item.freshMzSuccessful);
@@ -782,10 +815,18 @@ public final class MetricsCollector {
         InstalledModel vehicle = registry.getActive(ModelRole.VEHICLE);
         InstalledAlprPackage activePackage = registry.getActivePackage();
         InstalledAlprPackage basePackage = registry.getBasePackage();
+        ResearchExecutionConfig researchConfig = experimentSession == null
+                ? null : experimentSession.frozenExecutionConfig;
 
-        JSONObject plateExecution = executionJson(plate, autoTuneManager);
-        JSONObject characterExecution = executionJson(character, autoTuneManager);
-        JSONObject vehicleExecution = executionJson(vehicle, autoTuneManager);
+        JSONObject plateExecution = researchConfig == null
+                ? executionJson(plate, autoTuneManager)
+                : researchConfig.plate.toJson();
+        JSONObject characterExecution = researchConfig == null
+                ? executionJson(character, autoTuneManager)
+                : researchConfig.character.toJson();
+        JSONObject vehicleExecution = researchConfig == null
+                ? executionJson(vehicle, autoTuneManager)
+                : researchConfig.vehicle.toJson();
         String packageId = packageId(basePackage == null ? activePackage : basePackage, plate, character);
         String variantId = combinedVariantId(vehicleExecution, plateExecution, characterExecution);
 
@@ -804,6 +845,14 @@ public final class MetricsCollector {
         report.put("app_version", device.appVersion);
         JSONObject appBuild = new JSONObject();
         appBuild.put("git_commit", BuildConfig.GIT_COMMIT);
+        appBuild.put("git_dirty", BuildConfig.GIT_DIRTY);
+        appBuild.put("git_dirty_available", BuildConfig.GIT_DIRTY_AVAILABLE);
+        appBuild.put(
+                "source_state",
+                BuildConfig.GIT_DIRTY_AVAILABLE
+                        ? (BuildConfig.GIT_DIRTY ? "dirty" : "clean")
+                        : "unknown"
+        );
         appBuild.put("build_type", BuildConfig.BUILD_TYPE);
         appBuild.put("built_at_utc", BuildConfig.BUILT_AT_UTC);
         appBuild.put("version_name", BuildConfig.VERSION_NAME);
@@ -834,13 +883,23 @@ public final class MetricsCollector {
                 measurementSessionActive
         );
         report.put("dropped_frames", droppedFrames);
-        report.put("recognition_profile", frozenRecognitionProfile);
+        report.put(
+                "recognition_profile",
+                researchConfig == null
+                        ? frozenRecognitionProfile
+                        : researchConfig.recognitionProfile.wireName()
+        );
 
         /*
          * Zachowujemy efektywną politykę również na najwyższym poziomie
          * dla zgodności z wcześniejszymi raportami.
          */
-        report.put("roi_budget_policy", frozenRoiBudgetPolicy);
+        report.put(
+                "roi_budget_policy",
+                researchConfig == null
+                        ? frozenRoiBudgetPolicy
+                        : researchConfig.roiBudgetPolicy.wireName()
+        );
         report.put("scene_handling_mode", frozenSceneHandlingMode);
         report.put("scene_continuity_profile", frozenSceneContinuityProfile);
         report.put("camera_timestamp_source", frozenCameraTimestampSource);
@@ -873,21 +932,13 @@ public final class MetricsCollector {
                         ? experimentSession.experimentType
                         : "roi_budget";
 
-        String reportedExperimentRoiPolicy =
-                hasExperimentSession
-                        && "roi_budget".equals(
-                        experimentSession.experimentType
-                )
-                        ? experimentSession.variant
-                        : frozenExperimentRoiBudgetPolicy;
+        String reportedExperimentRoiPolicy = researchConfig == null
+                ? frozenExperimentRoiBudgetPolicy
+                : researchConfig.roiBudgetPolicy.wireName();
 
-        String reportedEffectiveRoiPolicy =
-                hasExperimentSession
-                        && "roi_budget".equals(
-                        experimentSession.experimentType
-                )
-                        ? experimentSession.variant
-                        : frozenRoiBudgetPolicy;
+        String reportedEffectiveRoiPolicy = researchConfig == null
+                ? frozenRoiBudgetPolicy
+                : researchConfig.roiBudgetPolicy.wireName();
 
 
         /*
@@ -925,6 +976,9 @@ public final class MetricsCollector {
             experiment.put("scenario_id", experimentSession.scenarioId);
             experiment.put("variant", experimentSession.variant);
             experiment.put("replicate_index", experimentSession.replicateIndex);
+            if (researchConfig != null) {
+                experiment.put("effective_execution_config", researchConfig.toJson());
+            }
             if (!experimentSession.notes.isEmpty()) {
                 experiment.put("notes", experimentSession.notes);
             }
@@ -1231,9 +1285,17 @@ public final class MetricsCollector {
         report.put("execution", execution);
 
         JSONObject modelIds = new JSONObject();
-        if (vehicle != null) modelIds.put("vehicle", vehicle.manifest().modelId());
-        if (plate != null) modelIds.put("plate", plate.manifest().modelId());
-        if (character != null) modelIds.put("character", character.manifest().modelId());
+        if (researchConfig != null) {
+            if (researchConfig.vehicle.enabled) {
+                modelIds.put("vehicle", researchConfig.vehicle.modelId);
+            }
+            modelIds.put("plate", researchConfig.plate.modelId);
+            modelIds.put("character", researchConfig.character.modelId);
+        } else {
+            if (vehicle != null) modelIds.put("vehicle", vehicle.manifest().modelId());
+            if (plate != null) modelIds.put("plate", plate.manifest().modelId());
+            if (character != null) modelIds.put("character", character.manifest().modelId());
+        }
         report.put("model_ids", modelIds);
         report.put("models", execution);
         report.put("autotune_profiles", autoTuneManager.exportProfiles());
@@ -1326,6 +1388,19 @@ public final class MetricsCollector {
                     "entities_ready_to_finalize",
                     scanStats.entitiesReadyToFinalize
             );
+            scan.put("acquisitions_finalized", scanStats.acquisitionsFinalized);
+            scan.put("unique_plates_saved", scanStats.uniquePlatesSaved);
+            scan.put(
+                    "duplicate_acquisitions_suppressed",
+                    scanStats.duplicateAcquisitionsSuppressed
+            );
+            scan.put("duplicate_capture_rate", scanStats.duplicateCaptureRate);
+            scan.put("mean_acquisition_ms", scanStats.meanAcquisitionMillis);
+            scan.put("p95_acquisition_ms", scanStats.p95AcquisitionMillis);
+            scan.put(
+                    "unique_plates_per_wall_minute",
+                    scanStats.uniquePlatesPerWallMinute
+            );
             scan.put("mean_queue_wait_ms", scanStats.meanQueueWaitMillis);
             scan.put("p95_queue_wait_ms", scanStats.p95QueueWaitMillis);
             scan.put(
@@ -1341,6 +1416,37 @@ public final class MetricsCollector {
                     "fresh_mz_attempts_per_entity",
                     scanStats.freshMzAttemptsPerEntity
             );
+            JSONArray acquisitionRecords = new JSONArray();
+            for (AcquisitionRecord record : scanAcquisitionSnapshot.acquisitionRecords) {
+                JSONObject entry = new JSONObject();
+                entry.put("record_id", record.recordId);
+                entry.put("scan_run_id", record.scanRunId);
+                entry.put("session_id", record.sessionId);
+                entry.put("entity_id", record.entityId);
+                entry.put("plate_track_id", record.plateTrackId);
+                entry.put("text", record.text);
+                entry.put("normalized_text", record.normalizedText);
+                entry.put("confidence", record.confidence);
+                entry.put("consensus_observations", record.consensusObservations);
+                entry.put(
+                        "first_observation_elapsed_nanos",
+                        record.firstObservationRuntimeNanos
+                );
+                entry.put("finalized_elapsed_nanos", record.finalizedRuntimeNanos);
+                entry.put(
+                        "acquisition_duration_ms",
+                        record.acquisitionDurationNanos / 1_000_000.0
+                );
+                entry.put("best_crop_id", record.bestCropId);
+                entry.put("best_crop_reference_kind", "pipeline_observation");
+                entry.put("unique_saved", record.uniqueSaved);
+                entry.put("duplicate_suppressed", record.duplicateSuppressed());
+                if (record.duplicateSuppressed()) {
+                    entry.put("duplicate_of_record_id", record.duplicateOfRecordId);
+                }
+                acquisitionRecords.put(entry);
+            }
+            scan.put("acquisition_records", acquisitionRecords);
             report.put("scan_acquisition", scan);
         }
 
@@ -1456,7 +1562,24 @@ public final class MetricsCollector {
         report.put("quality", quality);
 
         JSONObject errors = new JSONObject();
-        errors.put("crash_count", 0);
+        errors.put("crash_measurement_available", crashMeasurementAvailable);
+        errors.put(
+                "crash_count",
+                crashMeasurementAvailable ? recoveredCrashCount : JSONObject.NULL
+        );
+        errors.put(
+                "crash_semantics",
+                "previous_uncontrolled_measurement_sessions_recovered_on_next_process_start"
+        );
+        if (!recoveredCrashSessionId.isEmpty()) {
+            errors.put("last_recovered_session_id", recoveredCrashSessionId);
+        }
+        if (recoveredCrashSessionStartedAtMillis > 0L) {
+            errors.put(
+                    "last_recovered_session_started_at_ms",
+                    recoveredCrashSessionStartedAtMillis
+            );
+        }
         errors.put("pipeline_error_count", statuses.getOrDefault("pipeline_error", 0));
         errors.put("runtime_failure_count", statuses.getOrDefault("pipeline_error", 0));
         errors.put("status_counts", new JSONObject(statuses));

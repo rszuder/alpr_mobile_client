@@ -51,6 +51,7 @@ public final class ExperimentSession {
 
         public final boolean timerEnabled;
         public final long timerDurationMillis;
+        public final ResearchExecutionConfig frozenExecutionConfig;
 
         private Snapshot(
                 String sessionId,
@@ -73,7 +74,8 @@ public final class ExperimentSession {
                 String completionReason,
                 String completionStatus,
                 boolean timerEnabled,
-                long timerDurationMillis
+                long timerDurationMillis,
+                ResearchExecutionConfig frozenExecutionConfig
         ) {
             this.sessionId = sessionId;
             this.state = state;
@@ -96,6 +98,7 @@ public final class ExperimentSession {
             this.completionStatus = completionStatus;
             this.timerEnabled = timerEnabled;
             this.timerDurationMillis = timerDurationMillis;
+            this.frozenExecutionConfig = frozenExecutionConfig;
         }
 
         public boolean hasSession() {
@@ -112,6 +115,7 @@ public final class ExperimentSession {
     private String variant = "";
     private ExperimentIdentity identity = ExperimentIdentity.defaults();
     private ThermalConfig thermalConfig = ThermalConfig.disabled();
+    private ResearchExecutionConfig frozenExecutionConfig;
 
     private long startedAtMillis = -1L;
     private long finishedAtMillis = -1L;
@@ -164,6 +168,24 @@ public final class ExperimentSession {
             ThermalConfig thermalConfig,
             ExperimentIdentity identity
     ) {
+        return start(
+                experimentType,
+                variant,
+                timerConfig,
+                thermalConfig,
+                identity,
+                null
+        );
+    }
+
+    public synchronized boolean start(
+            String experimentType,
+            String variant,
+            TimerConfig timerConfig,
+            ThermalConfig thermalConfig,
+            ExperimentIdentity identity,
+            ResearchExecutionConfig frozenExecutionConfig
+    ) {
         if (state == State.RUNNING) {
             return false;
         }
@@ -190,6 +212,7 @@ public final class ExperimentSession {
         this.thermalConfig = thermalConfig == null
                 ? ThermalConfig.disabled()
                 : thermalConfig;
+        this.frozenExecutionConfig = frozenExecutionConfig;
 
         TimerConfig effectiveTimer =
                 timerConfig == null
@@ -250,6 +273,7 @@ public final class ExperimentSession {
         variant = "";
         identity = ExperimentIdentity.defaults();
         thermalConfig = ThermalConfig.disabled();
+        frozenExecutionConfig = null;
 
         startedAtMillis = -1L;
         finishedAtMillis = -1L;
@@ -285,6 +309,10 @@ public final class ExperimentSession {
 
     public synchronized String variant() {
         return variant;
+    }
+
+    public synchronized ResearchExecutionConfig frozenExecutionConfig() {
+        return frozenExecutionConfig;
     }
 
     public synchronized long startedAtMillis() {
@@ -331,7 +359,8 @@ public final class ExperimentSession {
                 completionReasonWireName(),
                 completionStatusWireName(),
                 timerEnabled,
-                timerDurationMillis
+                timerDurationMillis,
+                frozenExecutionConfig
         );
     }
 

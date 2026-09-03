@@ -8,6 +8,7 @@ import android.content.Context;
 import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
 import com.example.alpr_v1.autotune.AdaptiveFrameGate;
 import com.example.alpr_v1.acquisition.AcquisitionDecision;
 import com.example.alpr_v1.acquisition.AcquisitionDirective;
@@ -203,6 +204,7 @@ public final class AlprPipeline {
     private boolean experimentModeEnabled;
     private RoiBudgetPolicy experimentRoiBudgetPolicy =
             RoiBudgetPolicy.TWO_ROI;
+    private ResearchExecutionConfig frozenResearchExecutionConfig;
 
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraMoving;
@@ -495,11 +497,12 @@ public final class AlprPipeline {
                                     effectiveMtExecutionPolicy(),
                                     effectiveMtFallbackPolicy(),
                                     effectiveVehicleTrackingPolicy(),
+                                    frozenResearchExecutionConfig,
                                     vehicleTrackingCoordinator
                             );
 
                     engine.setRecognitionProfile(
-                            recognitionProfile
+                            effectiveRecognitionProfile()
                     );
 
                     engine.setRapidCameraMotion(
@@ -819,9 +822,10 @@ public final class AlprPipeline {
                             effectiveMtExecutionPolicy(),
                             effectiveMtFallbackPolicy(),
                             effectiveVehicleTrackingPolicy(),
+                            frozenResearchExecutionConfig,
                             vehicleTrackingCoordinator
                     );
-                    engine.setRecognitionProfile(recognitionProfile);
+                    engine.setRecognitionProfile(effectiveRecognitionProfile());
                     engine.setRapidCameraMotion(rapidCameraMotion);
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
                     engine.setSoftReacquireResultListener(
@@ -1905,10 +1909,42 @@ public final class AlprPipeline {
                     details.put("session_outcome", decision.outcome.name());
                     details.put("defer_reason", decision.deferReason.name());
                     details.put("reason", decision.reason);
+                    com.example.alpr_v1.acquisition.AcquisitionRecord record =
+                            scan.latestAcquisitionForEntity(decision.entityId);
+                    if (record != null) {
+                        details.put("acquisition_record_id", record.recordId);
+                        details.put("normalized_text", record.normalizedText);
+                        details.put("confidence", record.confidence);
+                        details.put("consensus_observations", record.consensusObservations);
+                        details.put("best_crop_id", record.bestCropId);
+                        details.put("unique_saved", record.uniqueSaved);
+                        details.put("duplicate_suppressed", record.duplicateSuppressed());
+                        if (record.duplicateSuppressed()) {
+                            details.put("duplicate_of_record_id", record.duplicateOfRecordId);
+                        }
+                    }
                 } catch (JSONException ignored) {
                     // Best-effort telemetry.
                 }
                 metrics.recordEvent(event, 0L, decision.entityId, details);
+                if (decision.outcome
+                        == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.READY_TO_FINALIZE) {
+                    metrics.recordEvent(
+                            "acquisition_finalized", 0L, decision.entityId, details
+                    );
+                    com.example.alpr_v1.acquisition.AcquisitionRecord record =
+                            scan.latestAcquisitionForEntity(decision.entityId);
+                    if (record != null) {
+                        metrics.recordEvent(
+                                record.uniqueSaved
+                                        ? "unique_plate_saved"
+                                        : "duplicate_acquisition_suppressed",
+                                0L,
+                                decision.entityId,
+                                details
+                        );
+                    }
+                }
                 if (decision.outcome
                         == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.DEFERRED
                         || decision.outcome
@@ -2540,7 +2576,27 @@ public final class AlprPipeline {
 
     public synchronized void setRecognitionProfile(RecognitionProfile profile) {
         recognitionProfile = profile == null ? RecognitionProfile.BALANCED : profile;
-        if (engine != null) engine.setRecognitionProfile(recognitionProfile);
+        if (frozenResearchExecutionConfig == null && engine != null) {
+            engine.setRecognitionProfile(recognitionProfile);
+        }
+    }
+
+    public synchronized void setResearchExecutionConfig(
+            ResearchExecutionConfig config
+    ) {
+        if (config == frozenResearchExecutionConfig) return;
+        frozenResearchExecutionConfig = config;
+        reloadRequested = true;
+    }
+
+    public synchronized ResearchExecutionConfig researchExecutionConfig() {
+        return frozenResearchExecutionConfig;
+    }
+
+    private RecognitionProfile effectiveRecognitionProfile() {
+        return frozenResearchExecutionConfig == null
+                ? recognitionProfile
+                : frozenResearchExecutionConfig.recognitionProfile;
     }
 
     public synchronized void resetTracking() {
@@ -2559,6 +2615,9 @@ public final class AlprPipeline {
 
 
     private RoiBudgetPolicy effectiveRoiBudgetPolicy() {
+        if (frozenResearchExecutionConfig != null) {
+            return frozenResearchExecutionConfig.roiBudgetPolicy;
+        }
         if (experimentModeEnabled) {
             return experimentRoiBudgetPolicy;
         }
@@ -2569,15 +2628,21 @@ public final class AlprPipeline {
     }
 
     private MtExecutionPolicy effectiveMtExecutionPolicy() {
-        return MtExecutionPolicy.forExperiment(experimentModeEnabled);
+        return MtExecutionPolicy.forExperiment(
+                experimentModeEnabled || frozenResearchExecutionConfig != null
+        );
     }
 
     private MtFallbackPolicy effectiveMtFallbackPolicy() {
-        return MtFallbackPolicy.forExperiment(experimentModeEnabled);
+        return MtFallbackPolicy.forExperiment(
+                experimentModeEnabled || frozenResearchExecutionConfig != null
+        );
     }
 
     private VehicleTrackingPolicy effectiveVehicleTrackingPolicy() {
-        return VehicleTrackingPolicy.forExperiment(experimentModeEnabled);
+        return VehicleTrackingPolicy.forExperiment(
+                experimentModeEnabled || frozenResearchExecutionConfig != null
+        );
     }
     public synchronized void setVehicleCascadeEnabled(boolean enabled) {
         RoiBudgetPolicy previousEffective =

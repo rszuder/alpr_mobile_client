@@ -3,11 +3,20 @@ plugins {
 }
 
 def resolvedGitCommit = "unknown"
+def resolvedGitDirty = false
+def resolvedGitDirtyAvailable = false
 try {
     def gitProcess = ["git", "rev-parse", "HEAD"].execute(null, rootDir)
     gitProcess.waitFor()
     if (gitProcess.exitValue() == 0) {
         resolvedGitCommit = gitProcess.in.text.trim()
+    }
+    def statusProcess = ["git", "status", "--porcelain", "--untracked-files=normal"]
+            .execute(null, rootDir)
+    statusProcess.waitFor()
+    if (statusProcess.exitValue() == 0) {
+        resolvedGitDirtyAvailable = true
+        resolvedGitDirty = !statusProcess.in.text.trim().isEmpty()
     }
 } catch (Exception ignored) {
     // Archiwum źródłowe bez katalogu .git pozostaje budowalne.
@@ -28,6 +37,8 @@ android {
         versionCode 1
         versionName "1.0"
         buildConfigField "String", "GIT_COMMIT", "\"${resolvedGitCommit}\""
+        buildConfigField "boolean", "GIT_DIRTY", "${resolvedGitDirty}"
+        buildConfigField "boolean", "GIT_DIRTY_AVAILABLE", "${resolvedGitDirtyAvailable}"
         buildConfigField "String", "BUILT_AT_UTC", "\"${resolvedBuiltAtUtc}\""
 
         // Urządzeniem docelowym jest smartfon ARM. Pominięcie bibliotek x86

@@ -64,6 +64,7 @@ public final class CameraController implements AutoCloseable {
     private final CameraSourceTimeline sourceTimeline = new CameraSourceTimeline();
     private ProcessCameraProvider cameraProvider;
     private Camera camera;
+    private int bindingGeneration;
     private final Handler cameraControlHandler = new Handler(Looper.getMainLooper());
     private int cameraControlGeneration;
 
@@ -85,23 +86,48 @@ public final class CameraController implements AutoCloseable {
             Size analysisSize,
             boolean allowHighResolution
     ) {
+        final int requestedGeneration = ++bindingGeneration;
         ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(context);
         providerFuture.addListener(() -> {
             try {
+                if (requestedGeneration != bindingGeneration) return;
                 cameraProvider = providerFuture.get();
-                bind(frameHandler, lumaFrameHandler, analysisSize, allowHighResolution);
+                bind(
+                        frameHandler,
+                        lumaFrameHandler,
+                        analysisSize,
+                        allowHighResolution,
+                        requestedGeneration
+                );
             } catch (Exception e) {
                 errorHandler.onError(e);
             }
         }, ContextCompat.getMainExecutor(context));
     }
 
+    /** Wiąże kamerę z PreviewView, ale każdą klatkę zamyka bez inferencji i kopii luma. */
+    public void startPreview(
+            ErrorHandler errorHandler,
+            Size analysisSize,
+            boolean allowHighResolution
+    ) {
+        start(
+                (image, sourceFrameStamp) -> { },
+                null,
+                errorHandler,
+                analysisSize,
+                allowHighResolution
+        );
+    }
+
     private void bind(
             FrameHandler frameHandler,
             LumaFrameHandler lumaFrameHandler,
             Size analysisSize,
-            boolean allowHighResolution
+            boolean allowHighResolution,
+            int requestedGeneration
     ) {
+        if (requestedGeneration != bindingGeneration) return;
 
         Preview preview =
                 new Preview.Builder()
@@ -473,6 +499,7 @@ public final class CameraController implements AutoCloseable {
     }
 
     public void stop() {
+        bindingGeneration++;
         cameraControlGeneration++;
         cameraControlHandler.removeCallbacksAndMessages(null);
         if (cameraProvider != null) cameraProvider.unbindAll();

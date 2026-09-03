@@ -32,6 +32,7 @@ public final class ScanAcquisitionController {
     private final ModeController modeController;
     private final ScanAcquisitionProfile profile;
     private final AcquisitionQueue queue;
+    private final ScanAcquisitionFinalizer finalizer = new ScanAcquisitionFinalizer();
     private ScanRun run;
     private TargetSession activeSession;
     private ActiveTimeBudget activeSessionBudget;
@@ -54,6 +55,8 @@ public final class ScanAcquisitionController {
     private final Set<Long> completedEntityIds = new HashSet<>();
     private final Map<Long, EntityRecognitionSnapshot> entityRecognitions =
             new HashMap<>();
+    private final Map<Long, Long> firstObservationRuntimeNanos = new HashMap<>();
+    private final Map<Long, BestCropReference> bestCropByEntityId = new HashMap<>();
     private final List<Long> queueWaitNanos = new ArrayList<>();
     private final List<Long> activeSessionNanos = new ArrayList<>();
     private int vehiclesSelected;
@@ -315,6 +318,26 @@ public final class ScanAcquisitionController {
                 && RegistrationTextPolicy.displayable(matching.text)) {
             long entityId = activeSession.entityId();
             long sessionId = activeSession.sessionId();
+            long sessionStartedRuntimeNanos = activeSession.startedAtNanos();
+            BestCropReference bestCrop = bestCropByEntityId.get(entityId);
+            finalizer.finalizeAcquisition(
+                    scanRunId(),
+                    sessionId,
+                    entityId,
+                    matching.plateTrackId,
+                    matching.text,
+                    matching.recognitionConfidence,
+                    matching.observations,
+                    firstObservationRuntimeNanos.getOrDefault(
+                            entityId,
+                            observationRuntimeNanos(matching, nowRuntimeNanos)
+                    ),
+                    sessionStartedRuntimeNanos,
+                    nowRuntimeNanos,
+                    bestCrop == null
+                            ? observationCropId(scanRunId(), matching)
+                            : bestCrop.cropId
+            );
             modeController.finishSession(
                     sessionId,
                     TargetSessionState.COMPLETED,
@@ -587,10 +610,11 @@ public final class ScanAcquisitionController {
                 directive,
                 false,
                 plateAnchor,
-                statistics(),
+                statistics(nowRuntimeNanos),
                 identifiedEntityIds,
                 completedEntityIds,
-                entityRecognitions
+                entityRecognitions,
+                finalizer.records()
         );
     }
 
@@ -766,6 +790,9 @@ public final class ScanAcquisitionController {
         identifiedEntityIds.clear();
         completedEntityIds.clear();
         entityRecognitions.clear();
+        firstObservationRuntimeNanos.clear();
+        bestCropByEntityId.clear();
+        finalizer.reset();
         recentlyReleasedEntityId = 0L;
         recentlyReleasedDirectiveRevision = 0L;
         recentlyReleasedAtRuntimeNanos = 0L;
@@ -783,6 +810,19 @@ public final class ScanAcquisitionController {
         if (observation == null
                 || observation.entityId <= 0L
                 || !RegistrationTextPolicy.displayable(observation.text)) return;
+        firstObservationRuntimeNanos.putIfAbsent(
+                observation.entityId,
+                observationRuntimeNanos(observation, lastRuntimeNanos)
+        );
+        BestCropReference crop = new BestCropReference(
+                observationCropId(scanRunId(), observation),
+                observation.sharpness,
+                observation.recognitionConfidence
+        );
+        BestCropReference previousCrop = bestCropByEntityId.get(observation.entityId);
+        if (crop.betterThan(previousCrop)) {
+            bestCropByEntityId.put(observation.entityId, crop);
+        }
         EntityRecognitionSnapshot candidate = new EntityRecognitionSnapshot(
                 observation.entityId,
                 observation.plateTrackId,
@@ -827,8 +867,19 @@ public final class ScanAcquisitionController {
         }
     }
 
-    private ScanAcquisitionStats statistics() {
+    private ScanAcquisitionStats statistics(long nowRuntimeNanos) {
         double divisor = Math.max(1, vehiclesSelected);
+        int finalized = finalizer.finalizedCount();
+        int unique = finalizer.uniqueSavedCount();
+        int duplicates = finalizer.duplicateSuppressedCount();
+        List<Long> acquisitionNanos = new ArrayList<>();
+        for (AcquisitionRecord record : finalizer.records()) {
+            acquisitionNanos.add(record.acquisitionDurationNanos);
+        }
+        long wallNanos = run == null ? 0L : run.wallDurationNanos(nowRuntimeNanos);
+        double uniquePerWallMinute = wallNanos <= 0L
+                ? 0.0
+                : unique * 60_000_000_000.0 / wallNanos;
         return new ScanAcquisitionStats(
                 vehiclesSeen.size(),
                 vehiclesQueued.size(),
@@ -836,6 +887,13 @@ public final class ScanAcquisitionController {
                 vehiclesDeferred,
                 vehiclesLost,
                 entitiesReadyToFinalize,
+                finalized,
+                unique,
+                duplicates,
+                finalized == 0 ? 0.0 : duplicates / (double) finalized,
+                meanMillis(acquisitionNanos),
+                p95Millis(acquisitionNanos),
+                uniquePerWallMinute,
                 meanMillis(queueWaitNanos),
                 p95Millis(queueWaitNanos),
                 meanMillis(activeSessionNanos),
@@ -843,6 +901,48 @@ public final class ScanAcquisitionController {
                 totalMtAttempts / divisor,
                 totalFreshMzAttempts / divisor
         );
+    }
+
+    private static long observationRuntimeNanos(
+            PlateObservation observation,
+            long fallbackRuntimeNanos
+    ) {
+        if (observation != null && observation.capturedElapsedNanos > 0L) {
+            return observation.capturedElapsedNanos;
+        }
+        return Math.max(0L, fallbackRuntimeNanos);
+    }
+
+    private static String observationCropId(
+            long scanRunId,
+            PlateObservation observation
+    ) {
+        return "scan-" + Math.max(0L, scanRunId)
+                + "-e" + Math.max(0L, observation.entityId)
+                + "-f" + Math.max(0L, observation.frameId)
+                + "-p" + Math.max(0L, observation.plateTrackId);
+    }
+
+    private static final class BestCropReference {
+        final String cropId;
+        final float sharpness;
+        final double recognitionConfidence;
+
+        BestCropReference(
+                String cropId,
+                float sharpness,
+                double recognitionConfidence
+        ) {
+            this.cropId = cropId == null ? "" : cropId;
+            this.sharpness = sharpness;
+            this.recognitionConfidence = recognitionConfidence;
+        }
+
+        boolean betterThan(BestCropReference other) {
+            if (other == null) return true;
+            if (sharpness != other.sharpness) return sharpness > other.sharpness;
+            return recognitionConfidence > other.recognitionConfidence;
+        }
     }
 
     private static double meanMillis(List<Long> values) {
