@@ -31,6 +31,7 @@ public final class ResearchExecutionConfig {
     public final String basePackageSourceSha256;
     public final String basePackageManifestJson;
     public final boolean compositionModified;
+    public final long packageSizeBytes;
 
     public ResearchExecutionConfig(
             String experimentType,
@@ -52,7 +53,33 @@ public final class ResearchExecutionConfig {
                 experimentType, variant, roiBudgetPolicy, recognitionProfile,
                 cameraRequestedResolution, lockEnabled, autoZoomEnabled,
                 vehicleTrackingEnabled, plateTrackingEnabled, temporalMzEnabled,
-                adaptiveFrameGateEnabled, vehicle, plate, character, null, false
+                adaptiveFrameGateEnabled, vehicle, plate, character, null, false, 0L
+        );
+    }
+
+    public ResearchExecutionConfig(
+            String experimentType,
+            String variant,
+            RoiBudgetPolicy roiBudgetPolicy,
+            RecognitionProfile recognitionProfile,
+            String cameraRequestedResolution,
+            boolean lockEnabled,
+            boolean autoZoomEnabled,
+            boolean vehicleTrackingEnabled,
+            boolean plateTrackingEnabled,
+            boolean temporalMzEnabled,
+            boolean adaptiveFrameGateEnabled,
+            ResearchStageExecutionConfig vehicle,
+            ResearchStageExecutionConfig plate,
+            ResearchStageExecutionConfig character,
+            long packageSizeBytes
+    ) {
+        this(
+                experimentType, variant, roiBudgetPolicy, recognitionProfile,
+                cameraRequestedResolution, lockEnabled, autoZoomEnabled,
+                vehicleTrackingEnabled, plateTrackingEnabled, temporalMzEnabled,
+                adaptiveFrameGateEnabled, vehicle, plate, character, null, false,
+                packageSizeBytes
         );
     }
 
@@ -72,7 +99,8 @@ public final class ResearchExecutionConfig {
             ResearchStageExecutionConfig plate,
             ResearchStageExecutionConfig character,
             InstalledAlprPackage basePackage,
-            boolean compositionModified
+            boolean compositionModified,
+            long packageSizeBytes
     ) {
         this.experimentType = required(experimentType, "experimentType");
         this.variant = required(variant, "variant");
@@ -100,6 +128,7 @@ public final class ResearchExecutionConfig {
         this.basePackageSourceSha256 = basePackage == null ? "" : basePackage.sourceSha256();
         this.basePackageManifestJson = basePackage == null ? "" : basePackage.manifest().rawJson();
         this.compositionModified = basePackage != null && compositionModified;
+        this.packageSizeBytes = Math.max(0L, packageSizeBytes);
         if (this.roiBudgetPolicy.usesVehicleCascade() && !this.vehicle.enabled) {
             throw new IllegalArgumentException("R1/R2 wymagają aktywnego etapu MP");
         }
@@ -139,6 +168,7 @@ public final class ResearchExecutionConfig {
         stages.put("mz", character.toJson());
         json.put("stages", stages);
         if (!basePackageId.isEmpty()) json.put("composition", compositionJson());
+        json.put("package_size_bytes", packageSizeBytes);
         return json;
     }
 

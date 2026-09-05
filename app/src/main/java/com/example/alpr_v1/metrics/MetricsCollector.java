@@ -837,11 +837,13 @@ public final class MetricsCollector {
         report.put("schema", REPORT_SCHEMA);
         report.put("report_id", safeId("r-" + finishedMillis + "-" + packageId));
         report.put("package_id", packageId);
-        if (researchConfig != null && !researchConfig.basePackageId.isEmpty()) {
-            report.put("package_version", researchConfig.basePackageVersion);
-            report.put("package_created_at", researchConfig.basePackageCreatedAt);
-            report.put("package_source_sha256", researchConfig.basePackageSourceSha256);
-            report.put("base_package_fingerprint", researchConfig.basePackageFingerprint);
+        if (researchConfig != null) {
+            if (!researchConfig.basePackageId.isEmpty()) {
+                report.put("package_version", researchConfig.basePackageVersion);
+                report.put("package_created_at", researchConfig.basePackageCreatedAt);
+                report.put("package_source_sha256", researchConfig.basePackageSourceSha256);
+                report.put("base_package_fingerprint", researchConfig.basePackageFingerprint);
+            }
         } else if (basePackage != null) {
             report.put("package_version", basePackage.manifest().version());
             report.put("package_created_at", basePackage.manifest().createdAt());
@@ -1571,7 +1573,9 @@ public final class MetricsCollector {
 
         JSONObject memory = new JSONObject();
         if (peakPssKb >= 0L) memory.put("ram_peak_mb", peakPssKb / 1024.0);
-        long packageBytes = packageSizeBytes(activePackage, vehicle, plate, character);
+        long packageBytes = researchConfig == null
+                ? capturePackageSizeBytes(activePackage, vehicle, plate, character)
+                : researchConfig.packageSizeBytes;
         if (packageBytes > 0L) memory.put("package_size_mb", packageBytes / (1024.0 * 1024.0));
         report.put("memory", memory);
 
@@ -2102,7 +2106,7 @@ public final class MetricsCollector {
         return safe.length() > 80 ? safe.substring(0, 80) : safe;
     }
 
-    private static long packageSizeBytes(
+    public static long capturePackageSizeBytes(
             InstalledAlprPackage activePackage,
             InstalledModel vehicle,
             InstalledModel plate,

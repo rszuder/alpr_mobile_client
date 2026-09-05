@@ -3150,7 +3150,13 @@ public final class MainActivity extends AppCompatActivity {
                         SettingsActivity.KEY_RESEARCH_MZ_EXECUTION
                 ),
                 modelRegistry.getBasePackage(),
-                modelRegistry.isCompositionModified()
+                modelRegistry.isCompositionModified(),
+                MetricsCollector.capturePackageSizeBytes(
+                        modelRegistry.getActivePackage(),
+                        modelRegistry.getActive(ModelRole.VEHICLE),
+                        modelRegistry.getActive(ModelRole.PLATE),
+                        modelRegistry.getActive(ModelRole.CHARACTER)
+                )
         );
     }
 

@@ -89,6 +89,9 @@ nie odczytuje ich ponownie z aktualnego `ModelRegistry`, dlatego późniejsza
 aktywacja innego modelu nie zmienia opisu zakończonej sesji. Dla składanej
 konfiguracji `model_refs` opisuje faktycznie użyte MP/MT/MZ, natomiast
 `pipeline/package_manifest.json` pozostaje manifestem pakietu bazowego.
+Przy START zamrażane są również metadane pakietu bazowego i rozmiar kompozycji
+raportowany jako `memory.package_size_mb`. Eksperyment uruchomiony bez pakietu
+bazowego nie przejmuje metadanych pakietu aktywowanego dopiero po STOP.
 
 Manifest lekkiego bundle'a zapisuje `model_artifacts_embedded: false`,
 `self_contained: false` i `exact_source_package_embedded: false`.
