@@ -53,6 +53,48 @@ public final class AlprPackageManifestInstrumentedTest {
         assertInvalidCompleteManifest(completeManifest(false, true));
     }
 
+    @Test
+    public void modelRefsPreservePortableProvenanceAndNulls() throws Exception {
+        JSONObject manifestJson = completeManifest(false, false);
+        JSONObject training = new JSONObject()
+                .put("run_epochs_completed", 10)
+                .put("lineage_total_epochs", JSONObject.NULL)
+                .put("lineage_total_epochs_known", false)
+                .put("known_epochs_minimum", 10)
+                .put("known_sample_presentations_minimum", 9000)
+                .put("provenance_status", "partial");
+        JSONObject plateRef = new JSONObject()
+                .put("model_id", "plate-instrumented")
+                .put("installed_model_fingerprint", "portable-plate")
+                .put("checkpoint_sha256", HASH)
+                .put("package_sha256", HASH)
+                .put("training", training);
+        manifestJson.put("model_refs", new JSONObject().put("plate", plateRef));
+
+        AlprPackageManifest manifest = AlprPackageManifest.parse(manifestJson.toString());
+        JSONObject parsed = manifest.modelRef(ModelRole.PLATE);
+
+        assertTrue(manifest.hasModelRefs());
+        assertEquals("portable-plate", parsed.getString("installed_model_fingerprint"));
+        assertEquals(HASH, parsed.getString("checkpoint_sha256"));
+        assertTrue(parsed.getJSONObject("training").isNull("lineage_total_epochs"));
+        assertEquals("partial", parsed.getJSONObject("training").getString("provenance_status"));
+    }
+
+    @Test
+    public void mismatchedModelRefIsRejected() throws Exception {
+        JSONObject manifest = completeManifest(false, false);
+        manifest.put("model_refs", new JSONObject().put(
+                "plate", new JSONObject().put("model_id", "different-model")
+        ));
+        try {
+            AlprPackageManifest.parse(manifest.toString());
+            fail("Niezgodny model_id powinien zostać odrzucony");
+        } catch (JSONException expected) {
+            assertTrue(expected.getMessage().contains("model_refs.plate"));
+        }
+    }
+
     private static void assertInvalidCompleteManifest(JSONObject json) throws Exception {
         try {
             AlprPackageManifest.parse(json.toString());

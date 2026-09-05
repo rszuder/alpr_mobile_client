@@ -2,6 +2,7 @@ package com.example.alpr_v1.metrics;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -34,7 +35,11 @@ public final class ResearchArchiveInstrumentedTest {
         String report = "{"
                 + "\"schema\":\"alpr.mobile_benchmark_report.v1\","
                 + "\"report_id\":\"telemetry-report\","
-                + "\"package_id\":\"test\",\"variant_id\":\"test\",\"device\":{}"
+                + "\"package_id\":\"test\",\"variant_id\":\"test\",\"device\":{},"
+                + "\"model_refs\":{\"plate\":{\"model_id\":\"mt-a\","
+                + "\"package_sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
+                + "\"character\":{\"model_id\":\"mz-a\","
+                + "\"checkpoint_sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}"
                 + "}";
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
@@ -54,12 +59,27 @@ public final class ResearchArchiveInstrumentedTest {
         assertTrue(entries.containsKey("thermal.csv"));
         assertTrue(entries.containsKey("frame_flow.csv"));
         assertTrue(entries.containsKey("events.jsonl"));
+        assertTrue(entries.containsKey("pipeline/model_refs.json"));
+        for (String name : entries.keySet()) {
+            assertFalse(name.matches(".*\\.(alprmodel|tflite|onnx|param|bin|pt)$"));
+        }
+        JSONObject refs = new JSONObject(new String(
+                entries.get("pipeline/model_refs.json"), StandardCharsets.UTF_8
+        ));
+        assertEquals(
+                new JSONObject(report).getJSONObject("model_refs").toString(),
+                refs.getJSONObject("models").toString()
+        );
         JSONObject manifest = new JSONObject(new String(
                 entries.get("manifest.json"), StandardCharsets.UTF_8
         ));
         assertTrue(manifest.getJSONObject("entry_sha256").has("thermal.csv"));
         assertTrue(manifest.getJSONObject("entry_sha256").has("frame_flow.csv"));
         assertTrue(manifest.getJSONObject("entry_sha256").has("events.jsonl"));
+        assertFalse(manifest.getBoolean("model_artifacts_embedded"));
+        assertFalse(manifest.getBoolean("self_contained"));
+        assertFalse(manifest.getBoolean("exact_source_package_embedded"));
+        assertTrue(manifest.getBoolean("reproducible_by_model_hash"));
     }
 
     @Test

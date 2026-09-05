@@ -3,6 +3,7 @@ package com.example.alpr_v1.metrics;
 import android.graphics.Bitmap;
 
 import com.example.alpr_v1.capture.CapturedPlateItem;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
 import com.example.alpr_v1.model.InstalledAlprPackage;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelRegistry;
@@ -13,11 +14,8 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -25,7 +23,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -41,7 +38,6 @@ public final class ResearchArchive {
 
     public static final String RESEARCH_SCHEMA = "alpr.mobile_research_bundle.v1";
     public static final String THESIS_SCHEMA = "alpr.mobile_thesis_bundle.v1";
-    private static final int BUFFER_SIZE = 64 * 1024;
     private static final int MAX_TEX_CROPS = 12;
 
     private ResearchArchive() {}
@@ -63,7 +59,8 @@ public final class ResearchArchive {
                 "",
                 applicationLog,
                 crops,
-                registry
+                registry,
+                null
         );
     }
 
@@ -78,9 +75,26 @@ public final class ResearchArchive {
             List<CapturedPlateItem> crops,
             ModelRegistry registry
     ) throws Exception {
+        writeResearchSession(
+                destination, reportJson, tracesCsv, thermalCsv, frameFlowCsv,
+                eventsJsonl, applicationLog, crops, registry, null
+        );
+    }
+
+    public static void writeResearchSession(
+            OutputStream destination,
+            String reportJson,
+            String tracesCsv,
+            String thermalCsv,
+            String frameFlowCsv,
+            String eventsJsonl,
+            String applicationLog,
+            List<CapturedPlateItem> crops,
+            ModelRegistry registry,
+            ResearchExecutionConfig frozenConfig
+    ) throws Exception {
         JSONObject report = new JSONObject(reportJson);
         ArchiveWriter archive = new ArchiveWriter(destination);
-        boolean exactSource = false;
         try {
             archive.writeText("report.json", reportJson);
             archive.writeText("traces.csv", tracesCsv);
@@ -95,37 +109,31 @@ public final class ResearchArchive {
                     : report.getJSONObject("device").toString(2));
             archive.writeText("environment/software.json", softwareJson(report).toString(2));
 
-            InstalledAlprPackage activePackage = registry.getActivePackage();
-            InstalledAlprPackage basePackage = registry.getBasePackage();
-            InstalledAlprPackage provenancePackage = activePackage == null
-                    ? basePackage
-                    : activePackage;
-            if (provenancePackage != null) {
+            InstalledAlprPackage currentPackage = registry == null
+                    ? null : registry.getBasePackage();
+            String packageManifest = frozenConfig != null
+                    ? frozenConfig.basePackageManifestJson
+                    : currentPackage == null ? "" : currentPackage.manifest().rawJson();
+            if (!packageManifest.isEmpty()) {
                 archive.writeText(
                         "pipeline/package_manifest.json",
-                        provenancePackage.manifest().rawJson()
+                        packageManifest
                 );
-                if (provenancePackage.sourceArchive().isFile()) {
-                    archive.writeFile(
-                            activePackage == null
-                                    ? "pipeline/base_pipeline.alprmodel"
-                                    : "pipeline/pipeline.alprmodel",
-                            provenancePackage.sourceArchive()
-                    );
-                    exactSource = activePackage != null;
-                }
             }
-            boolean vehicleInExactPackage = exactSource
-                    && activePackage != null
-                    && activePackage.vehicleModel() != null;
-            writeModel(
-                    archive,
-                    registry.getActive(ModelRole.VEHICLE),
-                    "vehicle",
-                    !vehicleInExactPackage
-            );
-            writeModel(archive, registry.getActive(ModelRole.PLATE), "plate", !exactSource);
-            writeModel(archive, registry.getActive(ModelRole.CHARACTER), "character", !exactSource);
+            writeModelManifest(archive, frozenConfig, registry, ModelRole.VEHICLE, "vehicle");
+            writeModelManifest(archive, frozenConfig, registry, ModelRole.PLATE, "plate");
+            writeModelManifest(archive, frozenConfig, registry, ModelRole.CHARACTER, "character");
+
+            JSONObject modelRefsFile = new JSONObject();
+            modelRefsFile.put("schema", "alpr.mobile_model_refs.v1");
+            JSONObject reportModelRefs = report.optJSONObject("model_refs");
+            modelRefsFile.put("models", reportModelRefs == null
+                    ? new JSONObject() : new JSONObject(reportModelRefs.toString()));
+            JSONObject composition = report.optJSONObject("composition");
+            if (composition != null) {
+                modelRefsFile.put("composition", new JSONObject(composition.toString()));
+            }
+            archive.writeText("pipeline/model_refs.json", modelRefsFile.toString(2));
 
             archive.writeText("samples/index.csv", cropIndexCsv(crops));
             archive.writeText("samples/annotations.jsonl", annotationsJsonl(crops));
@@ -136,8 +144,10 @@ public final class ResearchArchive {
 
             JSONObject manifest = baseManifest(RESEARCH_SCHEMA, report, archive.hashes());
             manifest.put("telemetry_schema", "alpr.mobile_experiment_telemetry.v1");
-            manifest.put("self_contained", hasRequiredModels(registry));
-            manifest.put("exact_source_package_embedded", exactSource);
+            manifest.put("model_artifacts_embedded", false);
+            manifest.put("self_contained", false);
+            manifest.put("exact_source_package_embedded", false);
+            manifest.put("reproducible_by_model_hash", reproducibleByModelHash(reportModelRefs));
             manifest.put("crop_count", crops.size());
             manifest.put("entry_sha256", new JSONObject(archive.hashes()));
             archive.writeManifest(manifest.toString(2));
@@ -181,21 +191,29 @@ public final class ResearchArchive {
         }
     }
 
-    private static void writeModel(
+    private static void writeModelManifest(
             ArchiveWriter archive,
-            InstalledModel model,
-            String role,
-            boolean includeArtifact
+            ResearchExecutionConfig frozenConfig,
+            ModelRegistry registry,
+            ModelRole role,
+            String name
     )
             throws Exception {
-        if (model == null) return;
-        archive.writeText("pipeline/" + role + "_manifest.json", model.manifest().rawJson());
-        if (!includeArtifact) return;
-        if (model.sourceArchive().isFile()) {
-            archive.writeFile("pipeline/models/" + role + "/model.alprmodel", model.sourceArchive());
-        } else {
-            archive.writeDirectory(model.directory(), "pipeline/installed/" + role + "/");
+        if (frozenConfig != null) {
+            com.example.alpr_v1.experiment.ResearchStageExecutionConfig stage =
+                    frozenConfig.stage(role);
+            if (stage.enabled && stage.modelRef != null
+                    && !stage.modelRef.modelManifestJson().isEmpty()) {
+                archive.writeText(
+                        "pipeline/" + name + "_manifest.json",
+                        stage.modelRef.modelManifestJson()
+                );
+            }
+            return;
         }
+        InstalledModel model = registry == null ? null : registry.getActive(role);
+        if (model == null) return;
+        archive.writeText("pipeline/" + name + "_manifest.json", model.manifest().rawJson());
     }
 
     private static JSONObject protocolJson(JSONObject report) throws JSONException {
@@ -242,9 +260,28 @@ public final class ResearchArchive {
         return manifest;
     }
 
-    private static boolean hasRequiredModels(ModelRegistry registry) {
-        return registry.getActive(ModelRole.PLATE) != null
-                && registry.getActive(ModelRole.CHARACTER) != null;
+    private static boolean reproducibleByModelHash(JSONObject modelRefs) {
+        if (modelRefs == null) return false;
+        JSONObject plate = modelRefs.optJSONObject("plate");
+        JSONObject character = modelRefs.optJSONObject("character");
+        return hasPortableHash(plate) && hasPortableHash(character)
+                && (!modelRefs.has("vehicle") || hasPortableHash(modelRefs.optJSONObject("vehicle")));
+    }
+
+    private static boolean hasPortableHash(JSONObject modelRef) {
+        if (modelRef == null) return false;
+        if (isSha256(modelRef.optString("package_sha256", ""))
+                || isSha256(modelRef.optString("checkpoint_sha256", ""))) return true;
+        JSONArray hashes = modelRef.optJSONArray("variant_artifact_sha256");
+        if (hashes == null || hashes.length() == 0) return false;
+        for (int index = 0; index < hashes.length(); index++) {
+            if (!isSha256(hashes.optString(index, ""))) return false;
+        }
+        return true;
+    }
+
+    private static boolean isSha256(String value) {
+        return value != null && value.matches("[0-9a-fA-F]{64}");
     }
 
     private static String cropIndexCsv(List<CapturedPlateItem> crops) {
@@ -490,7 +527,8 @@ public final class ResearchArchive {
         return "# Mobilny ALPR -- pakiet badawczy\n\n"
                 + "Schemat: " + RESEARCH_SCHEMA + ". Archiwum zawiera raport, surowe ślady, "
                 + "termikę 1 Hz, przepływ klatek w bucketach 1 s, zdarzenia track/MZ/konsensusu, "
-                + "cropy z geometrią, adnotacje człowieka, aktywne modele i SHA-256 wpisów. "
+                + "cropy z geometrią, adnotacje człowieka, model refs i SHA-256 wpisów. "
+                + "Archiwum nie zawiera wag ani pakietów .alprmodel. "
                 + "protocol.json opisuje metodykę inspirowaną MLPerf Mobile; wynik nie jest "
                 + "oficjalnym wynikiem MLPerf. Exact match i CER są liczone wyłącznie dla "
                 + "rekordów accepted/corrected z ground truth.\n";
@@ -588,48 +626,8 @@ public final class ResearchArchive {
             hashes.put(name, hex(digest.digest()));
         }
 
-        void writeFile(String name, File file) throws IOException {
-            MessageDigest digest = digest();
-            zip.putNextEntry(new ZipEntry(name));
-            byte[] buffer = new byte[BUFFER_SIZE];
-            try (InputStream input = new FileInputStream(file)) {
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    if (read == 0) continue;
-                    digest.update(buffer, 0, read);
-                    zip.write(buffer, 0, read);
-                }
-            }
-            zip.closeEntry();
-            hashes.put(name, hex(digest.digest()));
-        }
-
-        void writeDirectory(File root, String prefix) throws IOException {
-            List<File> files = new ArrayList<>();
-            collect(root, files);
-            files.sort(Comparator.comparing(File::getAbsolutePath));
-            String rootPath = root.getAbsolutePath();
-            for (File file : files) {
-                String relative = file.getAbsolutePath().substring(rootPath.length())
-                        .replace(File.separatorChar, '/');
-                if (relative.startsWith("/")) relative = relative.substring(1);
-                writeFile(prefix + relative, file);
-            }
-        }
-
         @Override
         public void close() throws IOException { zip.close(); }
-
-        private static void collect(File value, List<File> destination) {
-            if (value == null || !value.exists()) return;
-            if (value.isFile()) {
-                destination.add(value);
-                return;
-            }
-            File[] children = value.listFiles();
-            if (children == null) return;
-            for (File child : children) collect(child, destination);
-        }
     }
 
     private static final class DigestSink extends FilterOutputStream {

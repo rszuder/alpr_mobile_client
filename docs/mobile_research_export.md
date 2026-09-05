@@ -75,10 +75,25 @@ Raport zawiera też średnią znormalizowaną odległość edycyjną per próbka
 
 ## Modele
 
-Importer zachowuje od tej wersji dokładny plik `source.alprmodel` obok
-zainstalowanego modelu lub kompletnego pipeline'u. Pełny eksport preferuje
-oryginalny kompletny pakiet. Dla starszej instalacji, która nie ma źródłowego
-archiwum, dołącza manifesty i pełne katalogi plików aktywnych modeli.
+Standardowy `.alprsession` jest lekkim archiwum i nie osadza pakietów ani wag
+(`.alprmodel`, `.tflite`, `.onnx`, `.param`, `.bin`, `.pt`). Kanoniczne portable
+identity znajduje się w `report.json/model_refs` i `pipeline/model_refs.json`.
+Małe manifesty JSON pozostają w `pipeline/` do celów audytowych.
+
+Referencje są zamrażane przy START razem z efektywnym wariantem. Eksport po STOP
+nie odczytuje ich ponownie z aktualnego `ModelRegistry`, dlatego późniejsza
+aktywacja innego modelu nie zmienia opisu zakończonej sesji. Dla składanej
+konfiguracji `model_refs` opisuje faktycznie użyte MP/MT/MZ, natomiast
+`pipeline/package_manifest.json` pozostaje manifestem pakietu bazowego.
+
+Manifest lekkiego bundle'a zapisuje `model_artifacts_embedded: false`,
+`self_contained: false` i `exact_source_package_embedded: false`.
+`reproducible_by_model_hash` jest prawdziwe tylko wtedy, gdy wszystkie wymagane
+modele mają wystarczającą tożsamość opartą na SHA-256.
+
+Importer nadal zachowuje dokładny plik `source.alprmodel` w instalacji lokalnej,
+aby umożliwić audyt i zarządzanie modelem. Plik źródłowy nie jest jednak
+kopiowany do standardowego eksportu badawczego.
 
 `report.json/execution` wiąże osobno MP, MT i MZ z:
 

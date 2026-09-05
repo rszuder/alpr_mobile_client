@@ -7,6 +7,8 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 public final class AlprPackageManifest {
@@ -21,6 +23,7 @@ public final class AlprPackageManifest {
     private final AlprPackageModelEntry plate;
     private final AlprPackageModelEntry character;
     private final List<PipelineStage> pipeline;
+    private final Map<ModelRole, String> modelRefs;
     private final String rawJson;
 
     private AlprPackageManifest(
@@ -31,6 +34,7 @@ public final class AlprPackageManifest {
             AlprPackageModelEntry plate,
             AlprPackageModelEntry character,
             List<PipelineStage> pipeline,
+            Map<ModelRole, String> modelRefs,
             String rawJson
     ) {
         this.packageId = packageId;
@@ -40,6 +44,7 @@ public final class AlprPackageManifest {
         this.plate = plate;
         this.character = character;
         this.pipeline = Collections.unmodifiableList(new ArrayList<>(pipeline));
+        this.modelRefs = Collections.unmodifiableMap(new EnumMap<>(modelRefs));
         this.rawJson = rawJson;
     }
 
@@ -74,6 +79,9 @@ public final class AlprPackageManifest {
             pipeline.add(PipelineStage.fromJson(pipelineJson.getJSONObject(i)));
         }
         validatePipeline(pipeline, vehicle != null);
+        Map<ModelRole, String> modelRefs = parseModelRefs(
+                json.optJSONObject("model_refs"), vehicle, plate, character
+        );
         return new AlprPackageManifest(
                 packageId,
                 json.optString("name", packageId),
@@ -82,8 +90,34 @@ public final class AlprPackageManifest {
                 plate,
                 character,
                 pipeline,
+                modelRefs,
                 json.toString()
         );
+    }
+
+    private static Map<ModelRole, String> parseModelRefs(
+            JSONObject json,
+            AlprPackageModelEntry vehicle,
+            AlprPackageModelEntry plate,
+            AlprPackageModelEntry character
+    ) throws JSONException {
+        Map<ModelRole, String> result = new EnumMap<>(ModelRole.class);
+        if (json == null) return result;
+        for (ModelRole role : ModelRole.values()) {
+            JSONObject value = json.optJSONObject(role.wireName());
+            if (value == null) continue;
+            AlprPackageModelEntry entry = role == ModelRole.VEHICLE
+                    ? vehicle : role == ModelRole.PLATE ? plate : character;
+            if (entry == null) {
+                throw new JSONException("model_refs zawiera brakującą rolę: " + role.wireName());
+            }
+            if (value.has("model_id") && !value.isNull("model_id")
+                    && !entry.modelId().equals(value.optString("model_id").trim())) {
+                throw new JSONException("Niezgodny model_id w model_refs." + role.wireName());
+            }
+            result.put(role, new JSONObject(value.toString()).toString());
+        }
+        return result;
     }
 
     private static void validatePipeline(List<PipelineStage> pipeline, boolean hasVehicle)
@@ -152,6 +186,16 @@ public final class AlprPackageManifest {
     public AlprPackageModelEntry plate() { return plate; }
     public AlprPackageModelEntry character() { return character; }
     public List<PipelineStage> pipeline() { return pipeline; }
+    public JSONObject modelRef(ModelRole role) {
+        String value = modelRefs.get(role);
+        if (value == null) return null;
+        try {
+            return new JSONObject(value);
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
+        }
+    }
+    public boolean hasModelRefs() { return !modelRefs.isEmpty(); }
     public String createdAt() {
         try {
             return new JSONObject(rawJson).optString("created_at", "");

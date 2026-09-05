@@ -30,8 +30,10 @@
     "variant_id": { "type": "string" },
     "hash_algorithm": { "const": "SHA-256" },
     "telemetry_schema": { "const": "alpr.mobile_experiment_telemetry.v1" },
+    "model_artifacts_embedded": { "type": "boolean" },
     "self_contained": { "type": "boolean" },
     "exact_source_package_embedded": { "type": "boolean" },
+    "reproducible_by_model_hash": { "type": "boolean" },
     "crop_count": { "type": "integer", "minimum": 0 },
     "tex_preview_crop_limit": { "type": "integer", "minimum": 0 },
     "entry_sha256": {

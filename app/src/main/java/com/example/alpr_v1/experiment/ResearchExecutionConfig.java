@@ -1,6 +1,7 @@
 package com.example.alpr_v1.experiment;
 
 import com.example.alpr_v1.model.ModelRole;
+import com.example.alpr_v1.model.InstalledAlprPackage;
 import com.example.alpr_v1.pipeline.RecognitionProfile;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 
@@ -23,6 +24,13 @@ public final class ResearchExecutionConfig {
     public final ResearchStageExecutionConfig vehicle;
     public final ResearchStageExecutionConfig plate;
     public final ResearchStageExecutionConfig character;
+    public final String basePackageId;
+    public final String basePackageFingerprint;
+    public final String basePackageVersion;
+    public final String basePackageCreatedAt;
+    public final String basePackageSourceSha256;
+    public final String basePackageManifestJson;
+    public final boolean compositionModified;
 
     public ResearchExecutionConfig(
             String experimentType,
@@ -39,6 +47,32 @@ public final class ResearchExecutionConfig {
             ResearchStageExecutionConfig vehicle,
             ResearchStageExecutionConfig plate,
             ResearchStageExecutionConfig character
+    ) {
+        this(
+                experimentType, variant, roiBudgetPolicy, recognitionProfile,
+                cameraRequestedResolution, lockEnabled, autoZoomEnabled,
+                vehicleTrackingEnabled, plateTrackingEnabled, temporalMzEnabled,
+                adaptiveFrameGateEnabled, vehicle, plate, character, null, false
+        );
+    }
+
+    public ResearchExecutionConfig(
+            String experimentType,
+            String variant,
+            RoiBudgetPolicy roiBudgetPolicy,
+            RecognitionProfile recognitionProfile,
+            String cameraRequestedResolution,
+            boolean lockEnabled,
+            boolean autoZoomEnabled,
+            boolean vehicleTrackingEnabled,
+            boolean plateTrackingEnabled,
+            boolean temporalMzEnabled,
+            boolean adaptiveFrameGateEnabled,
+            ResearchStageExecutionConfig vehicle,
+            ResearchStageExecutionConfig plate,
+            ResearchStageExecutionConfig character,
+            InstalledAlprPackage basePackage,
+            boolean compositionModified
     ) {
         this.experimentType = required(experimentType, "experimentType");
         this.variant = required(variant, "variant");
@@ -59,6 +93,13 @@ public final class ResearchExecutionConfig {
         this.vehicle = requireRole(vehicle, ModelRole.VEHICLE);
         this.plate = requireRole(plate, ModelRole.PLATE);
         this.character = requireRole(character, ModelRole.CHARACTER);
+        this.basePackageId = basePackage == null ? "" : basePackage.manifest().packageId();
+        this.basePackageFingerprint = basePackage == null ? "" : basePackage.fingerprint();
+        this.basePackageVersion = basePackage == null ? "" : basePackage.manifest().version();
+        this.basePackageCreatedAt = basePackage == null ? "" : basePackage.manifest().createdAt();
+        this.basePackageSourceSha256 = basePackage == null ? "" : basePackage.sourceSha256();
+        this.basePackageManifestJson = basePackage == null ? "" : basePackage.manifest().rawJson();
+        this.compositionModified = basePackage != null && compositionModified;
         if (this.roiBudgetPolicy.usesVehicleCascade() && !this.vehicle.enabled) {
             throw new IllegalArgumentException("R1/R2 wymagają aktywnego etapu MP");
         }
@@ -97,6 +138,24 @@ public final class ResearchExecutionConfig {
         stages.put("mt", plate.toJson());
         stages.put("mz", character.toJson());
         json.put("stages", stages);
+        if (!basePackageId.isEmpty()) json.put("composition", compositionJson());
+        return json;
+    }
+
+    public JSONObject modelRefsJson() throws JSONException {
+        JSONObject refs = new JSONObject();
+        if (vehicle.enabled) refs.put("vehicle", vehicle.modelRef.toJson());
+        refs.put("plate", plate.modelRef.toJson());
+        refs.put("character", character.modelRef.toJson());
+        return refs;
+    }
+
+    public JSONObject compositionJson() throws JSONException {
+        JSONObject json = new JSONObject();
+        json.put("base_package_id", basePackageId);
+        json.put("base_package_fingerprint", basePackageFingerprint);
+        json.put("base_package_sha256", basePackageSourceSha256);
+        json.put("modified", compositionModified);
         return json;
     }
 

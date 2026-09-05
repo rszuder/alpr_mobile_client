@@ -3148,7 +3148,9 @@ public final class MainActivity extends AppCompatActivity {
                         ModelRole.CHARACTER,
                         true,
                         SettingsActivity.KEY_RESEARCH_MZ_EXECUTION
-                )
+                ),
+                modelRegistry.getBasePackage(),
+                modelRegistry.isCompositionModified()
         );
     }
 
@@ -3179,7 +3181,8 @@ public final class MainActivity extends AppCompatActivity {
                 role,
                 model,
                 variant,
-                profile
+                profile,
+                modelRegistry
         );
     }
 
@@ -9029,7 +9032,8 @@ public final class MainActivity extends AppCompatActivity {
                                 eventsJsonl,
                                 log,
                                 cropSnapshot,
-                                modelRegistry
+                                modelRegistry,
+                                experimentSnapshot.frozenExecutionConfig
                         );
                     } else if (kind == ResearchArchive.Kind.THESIS_BUNDLE) {
                         ResearchArchive.writeThesisBundle(output, json, csv, cropSnapshot);

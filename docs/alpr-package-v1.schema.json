@@ -25,6 +25,15 @@
         "character": { "$ref": "#/$defs/characterModel" }
       }
     },
+    "model_refs": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "vehicle": { "$ref": "#/$defs/modelRef" },
+        "plate": { "$ref": "#/$defs/modelRef" },
+        "character": { "$ref": "#/$defs/modelRef" }
+      }
+    },
     "pipeline": {
       "type": "array",
       "items": { "type": "object", "additionalProperties": true }
@@ -71,6 +80,28 @@
     }
   ],
   "$defs": {
+    "modelRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "role": { "enum": ["vehicle", "plate", "character"] },
+        "model_id": { "type": "string", "minLength": 1 },
+        "model_display_id": { "type": ["string", "null"] },
+        "installed_model_fingerprint": { "type": ["string", "null"] },
+        "checkpoint_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$" },
+        "package_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$" },
+        "variant_id": { "type": ["string", "null"] },
+        "variant_ids": { "type": "array", "items": { "type": "string" } },
+        "variant_artifact_sha256": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+        },
+        "runtime": { "type": ["string", "null"] },
+        "precision": { "type": ["string", "null"] },
+        "task": { "type": ["string", "null"] },
+        "training": { "type": ["object", "null"], "additionalProperties": true }
+      }
+    },
     "modelBase": {
       "type": "object",
       "additionalProperties": true,

@@ -12,6 +12,7 @@ import com.example.alpr_v1.model.InstalledAlprPackage;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelInputSpec;
 import com.example.alpr_v1.model.ModelOutputSpec;
+import com.example.alpr_v1.model.ModelRefResolver;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
@@ -827,14 +828,21 @@ public final class MetricsCollector {
         JSONObject vehicleExecution = researchConfig == null
                 ? executionJson(vehicle, autoTuneManager)
                 : researchConfig.vehicle.toJson();
-        String packageId = packageId(basePackage == null ? activePackage : basePackage, plate, character);
+        String packageId = researchConfig != null && !researchConfig.basePackageId.isEmpty()
+                ? researchConfig.basePackageId
+                : packageId(basePackage == null ? activePackage : basePackage, plate, character);
         String variantId = combinedVariantId(vehicleExecution, plateExecution, characterExecution);
 
         JSONObject report = new JSONObject();
         report.put("schema", REPORT_SCHEMA);
         report.put("report_id", safeId("r-" + finishedMillis + "-" + packageId));
         report.put("package_id", packageId);
-        if (basePackage != null) {
+        if (researchConfig != null && !researchConfig.basePackageId.isEmpty()) {
+            report.put("package_version", researchConfig.basePackageVersion);
+            report.put("package_created_at", researchConfig.basePackageCreatedAt);
+            report.put("package_source_sha256", researchConfig.basePackageSourceSha256);
+            report.put("base_package_fingerprint", researchConfig.basePackageFingerprint);
+        } else if (basePackage != null) {
             report.put("package_version", basePackage.manifest().version());
             report.put("package_created_at", basePackage.manifest().createdAt());
             report.put("package_source_sha256", basePackage.sourceSha256());
@@ -1284,6 +1292,14 @@ public final class MetricsCollector {
         if (characterExecution != null) execution.put("character", characterExecution);
         report.put("execution", execution);
 
+        JSONObject modelRefs = researchConfig == null
+                ? currentModelRefs(registry, autoTuneManager, vehicle, plate, character)
+                : researchConfig.modelRefsJson();
+        report.put("model_refs", modelRefs);
+        if (researchConfig != null && !researchConfig.basePackageId.isEmpty()) {
+            report.put("composition", researchConfig.compositionJson());
+        }
+
         JSONObject modelIds = new JSONObject();
         if (researchConfig != null) {
             if (researchConfig.vehicle.enabled) {
@@ -1301,14 +1317,16 @@ public final class MetricsCollector {
         report.put("autotune_profiles", autoTuneManager.exportProfiles());
         report.put(
                 "runtime_composition",
-                runtimeCompositionJson(
-                        registry,
-                        autoTuneManager,
-                        basePackage,
-                        vehicle,
-                        plate,
-                        character
-                )
+                researchConfig == null
+                        ? runtimeCompositionJson(
+                                registry,
+                                autoTuneManager,
+                                basePackage,
+                                vehicle,
+                                plate,
+                                character
+                        )
+                        : frozenRuntimeCompositionJson(researchConfig)
         );
 
         Map<String, List<Double>> stageValues = new LinkedHashMap<>();
@@ -1634,6 +1652,40 @@ public final class MetricsCollector {
         return json;
     }
 
+    private static JSONObject currentModelRefs(
+            ModelRegistry registry,
+            AutoTuneManager autoTuneManager,
+            InstalledModel vehicle,
+            InstalledModel plate,
+            InstalledModel character
+    ) throws JSONException {
+        JSONObject refs = new JSONObject();
+        putCurrentModelRef(refs, "vehicle", ModelRole.VEHICLE, registry, autoTuneManager, vehicle);
+        putCurrentModelRef(refs, "plate", ModelRole.PLATE, registry, autoTuneManager, plate);
+        putCurrentModelRef(refs, "character", ModelRole.CHARACTER, registry, autoTuneManager, character);
+        return refs;
+    }
+
+    private static void putCurrentModelRef(
+            JSONObject refs,
+            String key,
+            ModelRole role,
+            ModelRegistry registry,
+            AutoTuneManager autoTuneManager,
+            InstalledModel model
+    ) throws JSONException {
+        if (model == null) return;
+        refs.put(
+                key,
+                ModelRefResolver.resolve(
+                        registry,
+                        role,
+                        model,
+                        autoTuneManager.chosenVariant(model)
+                ).toJson()
+        );
+    }
+
     private static JSONObject inputJson(ModelInputSpec input) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("width", input.width());
@@ -1692,6 +1744,53 @@ public final class MetricsCollector {
         putCompositionModel(models, "character", ModelRole.CHARACTER, character, registry, autoTuneManager);
         composition.put("models", models);
         return composition;
+    }
+
+    private static JSONObject frozenRuntimeCompositionJson(ResearchExecutionConfig config)
+            throws JSONException {
+        JSONObject composition = new JSONObject();
+        composition.put("schema", "alpr.runtime_composition.v1");
+        composition.put("modified", config.compositionModified);
+        if (!config.basePackageId.isEmpty()) {
+            composition.put("base_package_id", config.basePackageId);
+            composition.put("base_package_version", config.basePackageVersion);
+            composition.put("base_package_created_at", config.basePackageCreatedAt);
+            composition.put("base_package_sha256", config.basePackageSourceSha256);
+        }
+        JSONObject models = new JSONObject();
+        putFrozenCompositionModel(models, "vehicle", config.vehicle);
+        putFrozenCompositionModel(models, "plate", config.plate);
+        putFrozenCompositionModel(models, "character", config.character);
+        composition.put("models", models);
+        composition.put(
+                "runtime_set_id",
+                safeId("runtime-"
+                        + frozenCompositionPart(config.vehicle) + "-"
+                        + frozenCompositionPart(config.plate) + "-"
+                        + frozenCompositionPart(config.character))
+        );
+        return composition;
+    }
+
+    private static void putFrozenCompositionModel(
+            JSONObject destination,
+            String key,
+            com.example.alpr_v1.experiment.ResearchStageExecutionConfig stage
+    ) throws JSONException {
+        if (!stage.enabled) return;
+        JSONObject value = new JSONObject();
+        value.put("model_id", stage.modelId);
+        value.put("fingerprint", stage.modelFingerprint);
+        value.put("variant_id", stage.variantId);
+        value.put("runtime", stage.runtime.wireName());
+        value.put("precision", stage.precision);
+        destination.put(key, value);
+    }
+
+    private static String frozenCompositionPart(
+            com.example.alpr_v1.experiment.ResearchStageExecutionConfig stage
+    ) {
+        return stage.enabled ? stage.modelFingerprint + "-" + stage.variantId : "none";
     }
 
     private static String compositionPart(

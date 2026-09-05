@@ -87,6 +87,12 @@ public final class ResearchExecutionConfigInstrumentedTest {
         assertStage(effective.getJSONObject("stages").getJSONObject("mp"), "mp-fp32", 1);
         assertStage(effective.getJSONObject("stages").getJSONObject("mt"), "mt-fp32", 2);
         assertStage(effective.getJSONObject("stages").getJSONObject("mz"), "mz-int8", 4);
+        assertEquals(
+                "mt-fp32",
+                report.getJSONObject("model_refs").getJSONObject("plate").getString("model_id")
+        );
+        assertTrue(report.getJSONObject("model_refs").getJSONObject("plate")
+                .getJSONObject("training").isNull("lineage_total_epochs"));
         assertEquals(2, report.getJSONObject("errors").getInt("crash_count"));
         assertTrue(report.getJSONObject("errors").getBoolean("crash_measurement_available"));
     }

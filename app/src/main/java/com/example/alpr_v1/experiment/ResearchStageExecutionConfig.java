@@ -3,6 +3,9 @@ package com.example.alpr_v1.experiment;
 import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelInputSpec;
+import com.example.alpr_v1.model.ModelRefResolver;
+import com.example.alpr_v1.model.ModelRefSnapshot;
+import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelRuntime;
 import com.example.alpr_v1.model.ModelVariant;
@@ -28,6 +31,7 @@ public final class ResearchStageExecutionConfig {
     public final String inputLayout;
     public final String inputColorSpace;
     public final String inputDataType;
+    public final ModelRefSnapshot modelRef;
 
     ResearchStageExecutionConfig(
             ModelRole role,
@@ -47,6 +51,33 @@ public final class ResearchStageExecutionConfig {
             String inputColorSpace,
             String inputDataType
     ) {
+        this(
+                role, enabled, modelId, modelFingerprint, variantId, runtime, precision,
+                cpuThreads, gpu, delegate, inputWidth, inputHeight, inputChannels,
+                inputLayout, inputColorSpace, inputDataType,
+                enabled ? ModelRefSnapshot.legacy(role, modelId, modelFingerprint) : null
+        );
+    }
+
+    ResearchStageExecutionConfig(
+            ModelRole role,
+            boolean enabled,
+            String modelId,
+            String modelFingerprint,
+            String variantId,
+            ModelRuntime runtime,
+            String precision,
+            int cpuThreads,
+            boolean gpu,
+            String delegate,
+            int inputWidth,
+            int inputHeight,
+            int inputChannels,
+            String inputLayout,
+            String inputColorSpace,
+            String inputDataType,
+            ModelRefSnapshot modelRef
+    ) {
         this.role = role;
         this.enabled = enabled;
         this.modelId = safe(modelId);
@@ -63,6 +94,7 @@ public final class ResearchStageExecutionConfig {
         this.inputLayout = safe(inputLayout);
         this.inputColorSpace = safe(inputColorSpace);
         this.inputDataType = safe(inputDataType);
+        this.modelRef = enabled ? requireModelRef(modelRef, role, this.modelId) : null;
     }
 
     public static ResearchStageExecutionConfig disabled(ModelRole role) {
@@ -78,6 +110,16 @@ public final class ResearchStageExecutionConfig {
             InstalledModel model,
             ModelVariant variant,
             ExecutionProfile profile
+    ) {
+        return enabled(role, model, variant, profile, null);
+    }
+
+    public static ResearchStageExecutionConfig enabled(
+            ModelRole role,
+            InstalledModel model,
+            ModelVariant variant,
+            ExecutionProfile profile,
+            ModelRegistry registry
     ) {
         if (role == null || model == null || variant == null || profile == null) {
             throw new IllegalArgumentException("Niepełna konfiguracja etapu badawczego");
@@ -108,7 +150,8 @@ public final class ResearchStageExecutionConfig {
                 input.channels(),
                 input.layout(),
                 input.colorSpace(),
-                input.dataType()
+                input.dataType(),
+                ModelRefResolver.resolve(registry, role, model, variant)
         );
     }
 
@@ -164,6 +207,17 @@ public final class ResearchStageExecutionConfig {
         input.put("data_type", inputDataType);
         json.put("input", input);
         return json;
+    }
+
+    private static ModelRefSnapshot requireModelRef(
+            ModelRefSnapshot modelRef,
+            ModelRole role,
+            String modelId
+    ) {
+        if (modelRef == null || modelRef.role() != role || !modelId.equals(modelRef.modelId())) {
+            throw new IllegalArgumentException("Niezgodny modelRef etapu " + role.wireName());
+        }
+        return modelRef;
     }
 
     private static String safe(String value) {

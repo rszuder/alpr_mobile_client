@@ -238,3 +238,17 @@ bramki jakościowej na danych z ground truth.
 Pełną strategię fixture, parytetu Python–Android, macierzy runtime, jakości,
 wydajności i bramek akceptacyjnych opisuje
 `docs/model_package_test_strategy.md`.
+
+## Portable provenance (`model_refs`)
+
+Manifest `alpr.package.v1` może opcjonalnie zawierać obiekt `model_refs` z wpisami
+`vehicle`, `plate` i `character`. Pole pozostaje opcjonalne dla zgodności ze
+starszymi pakietami. Jeśli wpis istnieje, jego `model_id` musi być zgodny z
+odpowiednim wpisem w `models`.
+
+Android zachowuje przesłane identyfikatory, hashe i blok `training` bez
+rekonstrukcji historii treningu. Jawne `null` pozostaje `null`; aplikacja nie
+sumuje epok ani nie oblicza historycznej liczby prezentacji próbek. Fakty lokalne,
+takie jak `local_manifest_fingerprint`, wybrany `variant_id` i hashe artefaktów
+wariantu, są dodawane osobno i nie zmieniają znaczenia
+`installed_model_fingerprint` dostarczonego przez Desktop.

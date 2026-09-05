@@ -203,6 +203,18 @@ public final class ModelManifest {
         }
     }
     public String rawJson() { return rawJson; }
+    public JSONObject sourceJson() { return objectCopy("source"); }
+    public JSONObject modelJson() { return objectCopy("model"); }
+    public JSONObject trainingJson() { return objectCopy("training"); }
+
+    private JSONObject objectCopy(String key) {
+        try {
+            JSONObject value = new JSONObject(rawJson).optJSONObject(key);
+            return value == null ? null : new JSONObject(value.toString());
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
+        }
+    }
 
     private static String firstNonEmpty(String... values) {
         for (String value : values) {
