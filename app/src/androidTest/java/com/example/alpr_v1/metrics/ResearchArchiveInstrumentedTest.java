@@ -15,6 +15,7 @@ import com.example.alpr_v1.capture.CapturedPlateItem;
 import com.example.alpr_v1.model.ModelRegistry;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -39,7 +40,7 @@ public final class ResearchArchiveInstrumentedTest {
                 + "\"model_refs\":{\"plate\":{\"model_id\":\"mt-a\","
                 + "\"package_sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
                 + "\"character\":{\"model_id\":\"mz-a\","
-                + "\"checkpoint_sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}"
+                + "\"variant_artifact_sha256\":[\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"]}}"
                 + "}";
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
@@ -67,9 +68,14 @@ public final class ResearchArchiveInstrumentedTest {
                 entries.get("pipeline/model_refs.json"), StandardCharsets.UTF_8
         ));
         assertEquals(
-                new JSONObject(report).getJSONObject("model_refs").toString(),
-                refs.getJSONObject("models").toString()
+                new JSONObject(report).getJSONObject("model_refs").getJSONObject("plate").toString(),
+                refs.getJSONObject("plate").toString()
         );
+        assertEquals(
+                new JSONObject(report).getJSONObject("model_refs").getJSONObject("character").toString(),
+                refs.getJSONObject("character").toString()
+        );
+        assertFalse(refs.has("models"));
         JSONObject manifest = new JSONObject(new String(
                 entries.get("manifest.json"), StandardCharsets.UTF_8
         ));
@@ -80,6 +86,24 @@ public final class ResearchArchiveInstrumentedTest {
         assertFalse(manifest.getBoolean("self_contained"));
         assertFalse(manifest.getBoolean("exact_source_package_embedded"));
         assertTrue(manifest.getBoolean("reproducible_by_model_hash"));
+    }
+
+    @Test
+    public void checkpointHashAloneIsNotMobileArtifactIdentity() throws Exception {
+        JSONObject refs = refsWith("checkpoint_sha256", HASH);
+        assertFalse(exportManifest(refs).getBoolean("reproducible_by_model_hash"));
+    }
+
+    @Test
+    public void packageHashIdentifiesEveryRequiredMobileArtifact() throws Exception {
+        JSONObject refs = refsWith("package_sha256", HASH);
+        assertTrue(exportManifest(refs).getBoolean("reproducible_by_model_hash"));
+    }
+
+    @Test
+    public void variantHashIdentifiesEveryRequiredMobileArtifact() throws Exception {
+        JSONObject refs = refsWith("variant_artifact_sha256", new JSONArray().put(HASH));
+        assertTrue(exportManifest(refs).getBoolean("reproducible_by_model_hash"));
     }
 
     @Test
@@ -185,5 +209,33 @@ public final class ResearchArchiveInstrumentedTest {
             }
         }
         return entries;
+    }
+
+    private static final String HASH =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    private static JSONObject refsWith(String key, Object value) throws Exception {
+        return new JSONObject()
+                .put("plate", new JSONObject().put(key, value))
+                .put("character", new JSONObject().put(key, value));
+    }
+
+    private static JSONObject exportManifest(JSONObject refs) throws Exception {
+        JSONObject report = new JSONObject()
+                .put("schema", "alpr.mobile_benchmark_report.v1")
+                .put("report_id", "hash-semantics")
+                .put("package_id", "test")
+                .put("variant_id", "test")
+                .put("device", new JSONObject())
+                .put("model_refs", refs);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ResearchArchive.writeResearchSession(
+                output, report.toString(), "", "", "", "", "",
+                Collections.emptyList(), null
+        );
+        return new JSONObject(new String(
+                unzip(output.toByteArray()).get("manifest.json"),
+                StandardCharsets.UTF_8
+        ));
     }
 }

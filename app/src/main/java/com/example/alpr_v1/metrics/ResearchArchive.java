@@ -127,8 +127,14 @@ public final class ResearchArchive {
             JSONObject modelRefsFile = new JSONObject();
             modelRefsFile.put("schema", "alpr.mobile_model_refs.v1");
             JSONObject reportModelRefs = report.optJSONObject("model_refs");
-            modelRefsFile.put("models", reportModelRefs == null
-                    ? new JSONObject() : new JSONObject(reportModelRefs.toString()));
+            if (reportModelRefs != null) {
+                for (String role : new String[]{"vehicle", "plate", "character"}) {
+                    JSONObject modelRef = reportModelRefs.optJSONObject(role);
+                    if (modelRef != null) {
+                        modelRefsFile.put(role, new JSONObject(modelRef.toString()));
+                    }
+                }
+            }
             JSONObject composition = report.optJSONObject("composition");
             if (composition != null) {
                 modelRefsFile.put("composition", new JSONObject(composition.toString()));
@@ -270,8 +276,7 @@ public final class ResearchArchive {
 
     private static boolean hasPortableHash(JSONObject modelRef) {
         if (modelRef == null) return false;
-        if (isSha256(modelRef.optString("package_sha256", ""))
-                || isSha256(modelRef.optString("checkpoint_sha256", ""))) return true;
+        if (isSha256(modelRef.optString("package_sha256", ""))) return true;
         JSONArray hashes = modelRef.optJSONArray("variant_artifact_sha256");
         if (hashes == null || hashes.length() == 0) return false;
         for (int index = 0; index < hashes.length(); index++) {

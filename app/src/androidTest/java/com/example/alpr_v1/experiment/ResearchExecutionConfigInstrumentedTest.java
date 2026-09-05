@@ -70,6 +70,10 @@ public final class ResearchExecutionConfigInstrumentedTest {
                 session.snapshot()
         );
         JSONObject report = new JSONObject(reportText);
+        assertEquals(
+                "unbundled-sha256-mt-fp32-sha256-mz-int8",
+                report.getString("package_id")
+        );
         JSONObject appBuild = report.getJSONObject("app_build");
         assertTrue(appBuild.has("git_dirty"));
         assertTrue(appBuild.has("git_dirty_available"));

@@ -828,9 +828,9 @@ public final class MetricsCollector {
         JSONObject vehicleExecution = researchConfig == null
                 ? executionJson(vehicle, autoTuneManager)
                 : researchConfig.vehicle.toJson();
-        String packageId = researchConfig != null && !researchConfig.basePackageId.isEmpty()
-                ? researchConfig.basePackageId
-                : packageId(basePackage == null ? activePackage : basePackage, plate, character);
+        String packageId = researchConfig == null
+                ? packageId(basePackage == null ? activePackage : basePackage, plate, character)
+                : frozenPackageId(researchConfig);
         String variantId = combinedVariantId(vehicleExecution, plateExecution, characterExecution);
 
         JSONObject report = new JSONObject();
@@ -2072,6 +2072,16 @@ public final class MetricsCollector {
         String plateId = plate == null ? "no-mt" : plate.fingerprint();
         String characterId = character == null ? "no-mz" : character.fingerprint();
         return safeId("unbundled-" + plateId + "-" + characterId);
+    }
+
+    private static String frozenPackageId(ResearchExecutionConfig config) {
+        if (!config.basePackageId.isEmpty()) return config.basePackageId;
+        return safeId(
+                "unbundled-"
+                        + config.plate.modelFingerprint
+                        + "-"
+                        + config.character.modelFingerprint
+        );
     }
 
     private static String combinedVariantId(

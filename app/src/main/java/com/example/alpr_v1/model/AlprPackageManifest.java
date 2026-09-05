@@ -115,9 +115,21 @@ public final class AlprPackageManifest {
                     && !entry.modelId().equals(value.optString("model_id").trim())) {
                 throw new JSONException("Niezgodny model_id w model_refs." + role.wireName());
             }
+            String referencedPackageSha = value.optString("package_sha256", "").trim();
+            String entryPackageSha = entry.sha256().get(entry.packageFile());
+            if (isSha256(referencedPackageSha) && isSha256(entryPackageSha)
+                    && !referencedPackageSha.equalsIgnoreCase(entryPackageSha)) {
+                throw new JSONException(
+                        "Niezgodny package_sha256 w model_refs." + role.wireName()
+                );
+            }
             result.put(role, new JSONObject(value.toString()).toString());
         }
         return result;
+    }
+
+    private static boolean isSha256(String value) {
+        return value != null && value.matches("[0-9a-fA-F]{64}");
     }
 
     private static void validatePipeline(List<PipelineStage> pipeline, boolean hasVehicle)

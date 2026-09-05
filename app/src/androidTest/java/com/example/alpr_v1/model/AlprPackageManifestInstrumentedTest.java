@@ -95,6 +95,25 @@ public final class AlprPackageManifestInstrumentedTest {
         }
     }
 
+    @Test
+    public void mismatchedPortablePackageHashIsRejected() throws Exception {
+        JSONObject manifest = completeManifest(false, false);
+        String differentHash =
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        manifest.put("model_refs", new JSONObject().put(
+                "plate",
+                new JSONObject()
+                        .put("model_id", "plate-instrumented")
+                        .put("package_sha256", differentHash)
+        ));
+        try {
+            AlprPackageManifest.parse(manifest.toString());
+            fail("Niezgodny package_sha256 powinien zostać odrzucony");
+        } catch (JSONException expected) {
+            assertTrue(expected.getMessage().contains("package_sha256"));
+        }
+    }
+
     private static void assertInvalidCompleteManifest(JSONObject json) throws Exception {
         try {
             AlprPackageManifest.parse(json.toString());

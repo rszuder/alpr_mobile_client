@@ -244,7 +244,9 @@ wydajności i bramek akceptacyjnych opisuje
 Manifest `alpr.package.v1` może opcjonalnie zawierać obiekt `model_refs` z wpisami
 `vehicle`, `plate` i `character`. Pole pozostaje opcjonalne dla zgodności ze
 starszymi pakietami. Jeśli wpis istnieje, jego `model_id` musi być zgodny z
-odpowiednim wpisem w `models`.
+odpowiednim wpisem w `models`. Jeśli oba miejsca zawierają poprawny
+`package_sha256`, importer wymaga zgodności tego hasha z SHA pliku
+`models.<role>.package_file`.
 
 Android zachowuje przesłane identyfikatory, hashe i blok `training` bez
 rekonstrukcji historii treningu. Jawne `null` pozostaje `null`; aplikacja nie

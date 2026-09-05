@@ -80,6 +80,10 @@ Standardowy `.alprsession` jest lekkim archiwum i nie osadza pakietów ani wag
 identity znajduje się w `report.json/model_refs` i `pipeline/model_refs.json`.
 Małe manifesty JSON pozostają w `pipeline/` do celów audytowych.
 
+W `pipeline/model_refs.json` role są zapisane bezpośrednio na poziomie głównym
+obok addytywnego pola `schema`; plik nie używa wrappera `models`. Dzięki temu
+Desktop odczytuje `plate`, `character` i opcjonalne `vehicle` bez normalizacji.
+
 Referencje są zamrażane przy START razem z efektywnym wariantem. Eksport po STOP
 nie odczytuje ich ponownie z aktualnego `ModelRegistry`, dlatego późniejsza
 aktywacja innego modelu nie zmienia opisu zakończonej sesji. Dla składanej
@@ -89,7 +93,9 @@ konfiguracji `model_refs` opisuje faktycznie użyte MP/MT/MZ, natomiast
 Manifest lekkiego bundle'a zapisuje `model_artifacts_embedded: false`,
 `self_contained: false` i `exact_source_package_embedded: false`.
 `reproducible_by_model_hash` jest prawdziwe tylko wtedy, gdy wszystkie wymagane
-modele mają wystarczającą tożsamość opartą na SHA-256.
+modele mają `package_sha256` albo co najmniej jeden poprawny
+`variant_artifact_sha256`. Sam `checkpoint_sha256` identyfikuje checkpoint
+treningowy, ale nie dokładny artefakt mobilny i nie wystarcza do reprodukcji wag.
 
 Importer nadal zachowuje dokładny plik `source.alprmodel` w instalacji lokalnej,
 aby umożliwić audyt i zarządzanie modelem. Plik źródłowy nie jest jednak
