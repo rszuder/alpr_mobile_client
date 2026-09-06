@@ -40,7 +40,7 @@ public final class NcnnBackendInstrumentedTest {
                 ("7767517\n"
                         + "2 2\n"
                         + "Input in0 0 1 in0\n"
-                        + "Reshape reshape 1 1 in0 out0 0=4 1=3\n")
+                        + "Reshape reshape 1 1 in0 out0 0=12 1=5\n")
                         .getBytes(StandardCharsets.UTF_8)
         );
         Files.write(weights.toPath(), new byte[0]);
@@ -55,10 +55,10 @@ public final class NcnnBackendInstrumentedTest {
                 variant,
                 new ExecutionProfile(ModelRuntime.NCNN, 1, false)
         )) {
-            assertEquals(12 * Float.BYTES, backend.inputByteSize());
+            assertEquals(60 * Float.BYTES, backend.inputByteSize());
             ByteBuffer input = ByteBuffer.allocateDirect(backend.inputByteSize())
                     .order(ByteOrder.nativeOrder());
-            float[] expected = new float[12];
+            float[] expected = new float[60];
             for (int index = 0; index < expected.length; index++) {
                 expected[index] = index - 3.5f;
                 input.putFloat(expected[index]);
@@ -67,7 +67,7 @@ public final class NcnnBackendInstrumentedTest {
 
             InferenceRunResult result = backend.run(input);
             TensorInfo info = result.tensorInfo().get(0);
-            assertArrayEquals(new int[]{1, 3, 4}, info.shape);
+            assertArrayEquals(new int[]{1, 5, 12}, info.shape);
             assertArrayEquals(
                     expected,
                     TensorDataReader.toFloatArray(result.outputs().get(0), info),
@@ -83,8 +83,8 @@ public final class NcnnBackendInstrumentedTest {
         String param = "model.param";
         String bin = "model.bin";
         JSONObject input = new JSONObject()
-                .put("width", 2)
-                .put("height", 2)
+                .put("width", 4)
+                .put("height", 5)
                 .put("channels", 3)
                 .put("layout", "NCHW")
                 .put("color", "RGB")
@@ -98,7 +98,7 @@ public final class NcnnBackendInstrumentedTest {
                 .put("nms_required", true)
                 .put("class_count", 1)
                 .put("keypoint_count", 0)
-                .put("tensor_layout", "anchors_first")
+                .put("tensor_layout", "channels_first")
                 .put("nms_in_graph", false);
         JSONObject variant = new JSONObject()
                 .put("id", "ncnn-fp32")

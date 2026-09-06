@@ -20,7 +20,7 @@ public final class ModelOutputSpec {
     private final int scoreIndex;
     private final int classIndex;
 
-    private ModelOutputSpec(
+    ModelOutputSpec(
             String decoder,
             String outputFormat,
             String boxFormat,
@@ -136,6 +136,11 @@ public final class ModelOutputSpec {
     public float iouThreshold() { return iouThreshold; }
     public int scoreIndex() { return scoreIndex; }
     public int classIndex() { return classIndex; }
+    public boolean endToEnd() { return "end2end_detections".equals(outputFormat); }
+    public String tensorLayout() {
+        if (channelsFirst) return "channels_first";
+        return endToEnd() ? "detections_first" : "anchors_first";
+    }
 
     /**
      * Ultralytics/PNNX NCNN exports expose the pre-NMS two-dimensional YOLO

@@ -21,7 +21,7 @@ public final class ModelVariant {
     private final ModelInputSpec inputOverride;
     private final ModelOutputSpec outputOverride;
 
-    private ModelVariant(
+    ModelVariant(
             String id,
             ModelRuntime runtime,
             String precision,
@@ -102,7 +102,7 @@ public final class ModelVariant {
     }
     public ModelOutputSpec output(ModelOutputSpec packageDefault) {
         ModelOutputSpec resolved = outputOverride == null ? packageDefault : outputOverride;
-        if (runtime == ModelRuntime.NCNN && outputOverride == null) {
+        if (runtime == ModelRuntime.NCNN) {
             return resolved.asNcnnRawOutput();
         }
         return resolved;

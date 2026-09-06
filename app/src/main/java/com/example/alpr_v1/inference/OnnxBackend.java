@@ -1,6 +1,8 @@
 package com.example.alpr_v1.inference;
 
 import com.example.alpr_v1.model.InstalledModel;
+import com.example.alpr_v1.model.ModelInputSpec;
+import com.example.alpr_v1.model.ModelOutputSpec;
 import com.example.alpr_v1.model.ModelVariant;
 
 import java.nio.ByteBuffer;
@@ -47,14 +49,30 @@ public final class OnnxBackend implements InferenceBackend {
                 session.close();
                 throw new IllegalArgumentException("Backend ONNX v1 wymaga wejścia FLOAT32");
             }
+            ModelInputSpec inputSpec = variant.input(model.manifest().input());
+            ModelOutputSpec outputSpec = variant.output(model.manifest().output());
             try {
                 OnnxModelCompatibilityValidator.validateSessionContract(
                         session,
-                        variant.input(model.manifest().input())
+                        inputSpec
+                );
+                Map<String, NodeInfo> outputs = session.getOutputInfo();
+                NodeInfo outputNode = outputs.values().iterator().next();
+                ModelTensorContractValidator.validateOutput(
+                        outputSpec,
+                        tensorInfo(
+                                0,
+                                (ai.onnxruntime.TensorInfo) outputNode.getInfo()
+                        )
                 );
             } catch (IllegalArgumentException error) {
                 session.close();
-                throw error;
+                throw new RuntimeModelContractException(
+                        model,
+                        variant,
+                        error.getMessage(),
+                        error
+                );
             }
             inputInfo = tensorInfo(0, info);
         } catch (OrtException e) {

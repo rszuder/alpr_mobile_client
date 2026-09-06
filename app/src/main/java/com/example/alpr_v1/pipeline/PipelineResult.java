@@ -331,6 +331,23 @@ public final class PipelineResult implements AutoCloseable {
         );
     }
 
+    public static PipelineResult runtimeContractFailed(
+            String message,
+            ContinuityStamp stamp
+    ) {
+        return new PipelineResult(
+                "runtime_contract_failed",
+                message == null ? "Model nie odpowiada manifestowi" : message,
+                "",
+                0.0,
+                Collections.emptyList(),
+                0,
+                0,
+                false,
+                stamp
+        );
+    }
+
     public PipelineResult withContinuityStamp(ContinuityStamp stamp) {
         List<PlateObservation> stampedObservations = new ArrayList<>(
                 plateObservations.size()

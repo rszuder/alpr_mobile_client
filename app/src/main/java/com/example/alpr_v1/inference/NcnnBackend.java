@@ -2,6 +2,7 @@ package com.example.alpr_v1.inference;
 
 import com.example.alpr_v1.model.InstalledModel;
 import com.example.alpr_v1.model.ModelInputSpec;
+import com.example.alpr_v1.model.ModelOutputSpec;
 import com.example.alpr_v1.model.ModelVariant;
 
 import java.io.File;
@@ -30,12 +31,18 @@ public final class NcnnBackend implements InferenceBackend {
     }
 
     private final TensorInfo inputInfo;
+    private final InstalledModel contractModel;
+    private final ModelVariant contractVariant;
+    private final ModelOutputSpec outputSpec;
     private long nativeHandle;
 
     public NcnnBackend(InstalledModel model, ModelVariant variant, ExecutionProfile profile) {
         if (!LIBRARY_AVAILABLE) {
             throw new IllegalStateException(unavailableReason());
         }
+        contractModel = model;
+        contractVariant = variant;
+        outputSpec = variant.output(model.manifest().output());
         ModelInputSpec input = variant.input(model.manifest().input());
         if (!"NCHW".equals(input.layout())) {
             throw new IllegalArgumentException("Backend NCNN v1 wymaga wejścia NCHW");
@@ -114,7 +121,11 @@ public final class NcnnBackend implements InferenceBackend {
         int elements = 1;
         for (int dimension : shape) elements = Math.multiplyExact(elements, dimension);
         if (values == null || values.length != elements) {
-            throw new IllegalStateException("Rozmiar wyjścia NCNN nie odpowiada jego kształtowi");
+            throw new IllegalStateException(
+                    "Rozmiar wyjścia NCNN nie odpowiada jego kształtowi: values="
+                            + (values == null ? "null" : values.length)
+                            + ", shape=" + java.util.Arrays.toString(shape)
+            );
         }
         ByteBuffer output = ByteBuffer.allocateDirect(
                 Math.multiplyExact(values.length, Float.BYTES)
@@ -129,6 +140,16 @@ public final class NcnnBackend implements InferenceBackend {
                 0f,
                 0
         );
+        try {
+            ModelTensorContractValidator.validateOutput(outputSpec, info);
+        } catch (IllegalArgumentException error) {
+            throw new RuntimeModelContractException(
+                    contractModel,
+                    contractVariant,
+                    error.getMessage(),
+                    error
+            );
+        }
         return new InferenceRunResult(
                 Collections.singletonMap(0, output),
                 Collections.singletonMap(0, info)

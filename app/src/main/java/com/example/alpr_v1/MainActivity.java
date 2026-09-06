@@ -4879,7 +4879,10 @@ public final class MainActivity extends AppCompatActivity {
 
 
         renderLiveHud();
-        if ("pipeline_error".equals(result.status)) refreshPersistentLogThrottled();
+        if ("pipeline_error".equals(result.status)
+                || "runtime_contract_failed".equals(result.status)) {
+            refreshPersistentLogThrottled();
+        }
         long presentationNanos = System.nanoTime();
         List<OverlayItem> scanScopedItems = scanScopedOverlayItems(result);
         FrameMotionTransform inferenceLatencyMotion =
@@ -5198,7 +5201,8 @@ public final class MainActivity extends AppCompatActivity {
             }
             collectCrops(result.plateObservations);
         }
-        if ("pipeline_error".equals(result.status)) {
+        if ("pipeline_error".equals(result.status)
+                || "runtime_contract_failed".equals(result.status)) {
             livePresentation.showState(
                     LivePresentationController.State.ERROR,
                     hudRoiLabel()

@@ -1603,7 +1603,11 @@ public final class MetricsCollector {
             );
         }
         errors.put("pipeline_error_count", statuses.getOrDefault("pipeline_error", 0));
-        errors.put("runtime_failure_count", statuses.getOrDefault("pipeline_error", 0));
+        errors.put(
+                "runtime_failure_count",
+                statuses.getOrDefault("pipeline_error", 0)
+                        + statuses.getOrDefault("runtime_contract_failed", 0)
+        );
         errors.put("status_counts", new JSONObject(statuses));
         report.put("errors", errors);
         report.put("traces", traceArray);

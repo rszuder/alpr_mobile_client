@@ -88,10 +88,13 @@ public final class RuntimeCompositionInstrumentedTest {
         String basePlateStorage = "plate-base-" + suffix;
         String replacementPlateStorage = "plate-replacement-" + suffix;
         String characterStorage = "character-base-" + suffix;
+        String vehicleStorage = "vehicle-ncnn-" + suffix;
         writeModel(ModelRole.PLATE, basePlateStorage, "plate-base-" + suffix);
         writeModel(ModelRole.PLATE, replacementPlateStorage, "plate-replacement-" + suffix);
         writeModel(ModelRole.CHARACTER, characterStorage, "character-base-" + suffix);
+        writeNcnnOnlyVehicle(vehicleStorage, "vehicle-ncnn-" + suffix);
         String packageStorage = writePackage(basePlateStorage, characterStorage);
+        addVehicleToPackage(packageStorage, vehicleStorage);
 
         ModelRegistry registry = new ModelRegistry(context);
         assertEquals(
@@ -105,6 +108,10 @@ public final class RuntimeCompositionInstrumentedTest {
         assertEquals(1, registry.getInstalledPackages().size());
         InstalledAlprPackage base = registry.findPackage(packageStorage);
         assertNotNull(base);
+        InstalledModel basePlate = base.plateModel();
+        InstalledModel baseVehicle = base.vehicleModel();
+        assertNotNull(basePlate);
+        assertNotNull(baseVehicle);
         registry.activate(base);
         assertNotNull(registry.getActivePackage());
         assertFalse(registry.isCompositionModified());
@@ -114,6 +121,18 @@ public final class RuntimeCompositionInstrumentedTest {
         );
         registry.activate(replacement);
 
+        assertEquals(
+                replacement.fingerprint(),
+                registry.getActive(ModelRole.PLATE).fingerprint()
+        );
+        assertEquals(
+                basePlate.fingerprint(),
+                registry.getBasePackage().plateModel().fingerprint()
+        );
+        assertEquals(
+                baseVehicle.fingerprint(),
+                registry.getActive(ModelRole.VEHICLE).fingerprint()
+        );
         assertNull(registry.getActivePackage());
         assertNotNull(registry.getBasePackage());
         assertTrue(registry.isCompositionModified());
@@ -126,6 +145,14 @@ public final class RuntimeCompositionInstrumentedTest {
         assertTrue(recreated.isCompositionModified());
         recreated.restoreBasePackage();
         assertNotNull(recreated.getActivePackage());
+        assertEquals(
+                basePlate.fingerprint(),
+                recreated.getActive(ModelRole.PLATE).fingerprint()
+        );
+        assertEquals(
+                baseVehicle.fingerprint(),
+                recreated.getActive(ModelRole.VEHICLE).fingerprint()
+        );
         assertFalse(recreated.isCompositionModified());
         assertFalse(recreated.canRestoreBaseModels());
     }
@@ -214,6 +241,35 @@ public final class RuntimeCompositionInstrumentedTest {
         manager.clearPinnedVariant(model);
         assertFalse(manager.isVariantPinned(model));
         assertEquals("tflite-fp32", manager.chosenVariant(model).id());
+    }
+
+    @Test
+    public void explicitNcnnEndToEndOverrideIsCanonicalizedToRaw() throws Exception {
+        JSONObject manifest = modelManifest(ModelRole.PLATE, "plate-yolo26n-" + suffix);
+        JSONObject endToEnd = new JSONObject()
+                .put("decoder", "ultralytics_pose_end2end_v1")
+                .put("output_format", "end2end_detections")
+                .put("box_format", "xyxy")
+                .put("nms_required", false)
+                .put("class_count", 1)
+                .put("keypoint_count", 4)
+                .put("keypoint_dimensions", 2)
+                .put("tensor_layout", "channels_first")
+                .put("nms_in_graph", false);
+        manifest.put("output", endToEnd);
+        manifest.getJSONArray("variants")
+                .getJSONObject(2)
+                .put("output", new JSONObject(endToEnd.toString()));
+
+        ModelManifest parsed = ModelManifest.parse(manifest.toString());
+        ModelVariant ncnn = parsed.variants().get(2);
+        ModelOutputSpec resolved = ncnn.output(parsed.output());
+
+        assertEquals("ultralytics_pose_raw_v1", resolved.decoder());
+        assertEquals("raw_yolo", resolved.outputFormat());
+        assertEquals("xywh", resolved.boxFormat());
+        assertTrue(resolved.channelsFirst());
+        assertTrue(resolved.nmsRequired());
     }
 
     @Test

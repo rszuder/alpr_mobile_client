@@ -100,6 +100,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private final ModelOutputSpec vehicleOutputSpec;
     private final ModelOutputSpec plateOutputSpec;
     private final ModelOutputSpec characterOutputSpec;
+    private final List<String> modelDiagnostics;
     private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
@@ -291,6 +292,35 @@ final class MobileAlprEngine implements AutoCloseable {
         vehicleBackend = openedVehicle;
         plateBackend = openedPlate;
         characterBackend = openedCharacter;
+        List<String> diagnostics = new ArrayList<>();
+        if (vehicleModel != null) {
+            diagnostics.add(modelDiagnostic(
+                    "MP",
+                    vehicleModel,
+                    vehicleVariant,
+                    vehicleInputSpec,
+                    vehicleOutputSpec
+            ));
+        }
+        diagnostics.add(modelDiagnostic(
+                "MT",
+                plateModel,
+                plateVariant,
+                plateInputSpec,
+                plateOutputSpec
+        ));
+        diagnostics.add(modelDiagnostic(
+                "MZ",
+                characterModel,
+                characterVariant,
+                characterInputSpec,
+                characterOutputSpec
+        ));
+        modelDiagnostics = Collections.unmodifiableList(diagnostics);
+    }
+
+    List<String> modelDiagnostics() {
+        return modelDiagnostics;
     }
 
     void setRecognitionProfile(RecognitionProfile profile) {
@@ -3483,6 +3513,38 @@ final class MobileAlprEngine implements AutoCloseable {
         return decoder.equals("ultralytics_pose_end2end_v1")
                 || decoder.equals("ultralytics_detect_end2end_v1")
                 || decoder.equals("ultralytics_yolo_end2end_v1");
+    }
+
+    private static String modelDiagnostic(
+            String stage,
+            InstalledModel model,
+            ModelVariant variant,
+            ModelInputSpec input,
+            ModelOutputSpec output
+    ) {
+        return String.format(
+                Locale.ROOT,
+                "stage=%s role=%s model_id=%s model_fingerprint=%s "
+                        + "variant_id=%s runtime=%s precision=%s "
+                        + "input_width=%d input_height=%d decoder=%s "
+                        + "output_format=%s tensor_layout=%s class_count=%d "
+                        + "keypoint_count=%d keypoint_dimensions=%d",
+                stage,
+                model.manifest().role().wireName(),
+                model.manifest().modelId(),
+                model.fingerprint(),
+                variant.id(),
+                variant.runtime().wireName(),
+                variant.precision(),
+                input.width(),
+                input.height(),
+                output.decoder(),
+                output.outputFormat(),
+                output.tensorLayout(),
+                output.classCount(),
+                output.keypointCount(),
+                output.keypointDimensions()
+        );
     }
 
     private static void closeQuietly(InferenceBackend backend) {

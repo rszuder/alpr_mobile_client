@@ -39,6 +39,7 @@ import com.example.alpr_v1.continuity.VisualChangeClassification;
 import com.example.alpr_v1.domain.VehicleEntity;
 import com.example.alpr_v1.domain.ScanAcquisitionViewport;
 import com.example.alpr_v1.logging.AppLog;
+import com.example.alpr_v1.inference.RuntimeModelContractException;
 import com.example.alpr_v1.metrics.InferenceTrace;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import com.example.alpr_v1.model.ModelRegistry;
@@ -171,6 +172,8 @@ public final class AlprPipeline {
     private final AtomicLong lastTracedPreviewTrackingUpdates = new AtomicLong();
     private volatile MobileAlprEngine engine;
     private volatile boolean reloadRequested;
+    private final RuntimeContractFailureGate runtimeContractFailureGate =
+            new RuntimeContractFailureGate();
     /*
      * Żądanie resetu może przyjść z wątku UI
      * podczas trwającej ciężkiej inferencji.
@@ -388,6 +391,10 @@ public final class AlprPipeline {
             metrics.add(trace);
             return PipelineResult.waitingForModels(processingStamp);
         }
+        if (runtimeContractFailureGate.isBlocked()) {
+            finishRuntimeContractFailureTrace(trace);
+            return null;
+        }
 
         Bitmap frame = null;
 
@@ -500,6 +507,7 @@ public final class AlprPipeline {
                                     frozenResearchExecutionConfig,
                                     vehicleTrackingCoordinator
                             );
+                    logEngineModelDiagnostics(engine);
 
                     engine.setRecognitionProfile(
                             effectiveRecognitionProfile()
@@ -666,6 +674,13 @@ public final class AlprPipeline {
             metrics.add(trace);
             frameGate.requestImmediateFrame();
             return null;
+        } catch (RuntimeModelContractException contractError) {
+            return handleRuntimeContractFailure(
+                    contractError,
+                    trace,
+                    processingStamp,
+                    frameId
+            );
         } catch (Exception e) {
             AppLog.errorRateLimited(
                     context,
@@ -805,6 +820,10 @@ public final class AlprPipeline {
             metrics.add(trace);
             return PipelineResult.waitingForModels(processingStamp);
         }
+        if (runtimeContractFailureGate.isBlocked()) {
+            finishRuntimeContractFailureTrace(trace);
+            return null;
+        }
 
         try {
             trace.start("engine_setup");
@@ -825,6 +844,7 @@ public final class AlprPipeline {
                             frozenResearchExecutionConfig,
                             vehicleTrackingCoordinator
                     );
+                    logEngineModelDiagnostics(engine);
                     engine.setRecognitionProfile(effectiveRecognitionProfile());
                     engine.setRapidCameraMotion(rapidCameraMotion);
                     engine.setCameraTransformInProgress(cameraTransformInProgress);
@@ -937,6 +957,13 @@ public final class AlprPipeline {
             metrics.add(trace);
             frameGate.requestImmediateFrame();
             return null;
+        } catch (RuntimeModelContractException contractError) {
+            return handleRuntimeContractFailure(
+                    contractError,
+                    trace,
+                    processingStamp,
+                    frameId
+            );
         } catch (Exception error) {
             AppLog.errorRateLimited(
                     context,
@@ -1219,6 +1246,43 @@ public final class AlprPipeline {
                         trace.attributes().getOrDefault("mz_state_event", "")
                 )
         );
+    }
+
+    private PipelineResult handleRuntimeContractFailure(
+            RuntimeModelContractException error,
+            InferenceTrace trace,
+            ContinuityStamp processingStamp,
+            long frameId
+    ) {
+        boolean firstFailure = runtimeContractFailureGate.record(error.getMessage());
+        if (engine != null) {
+            engine.close();
+            engine = null;
+        }
+        finishRuntimeContractFailureTrace(trace);
+        if (!firstFailure) return null;
+        AppLog.error(
+                context,
+                LOG_TAG,
+                "Niezgodny kontrakt runtime/output w klatce " + frameId
+                        + ": " + error.getMessage(),
+                error
+        );
+        return PipelineResult.runtimeContractFailed(error.getMessage(), processingStamp);
+    }
+
+    private void logEngineModelDiagnostics(MobileAlprEngine createdEngine) {
+        for (String diagnostic : createdEngine.modelDiagnostics()) {
+            AppLog.info(context, "ALPR_ENGINE_MODEL", diagnostic);
+        }
+    }
+
+    private void finishRuntimeContractFailureTrace(InferenceTrace trace) {
+        trace.stop("total");
+        appendTimingAudit(trace);
+        trace.finish("runtime_contract_failed", "");
+        trace.captureMemoryAfterMeasurement();
+        metrics.add(trace);
     }
 
 
@@ -2522,6 +2586,7 @@ public final class AlprPipeline {
     }
 
     public void invalidateModels() {
+        runtimeContractFailureGate.clear();
         reloadRequested = true;
     }
 

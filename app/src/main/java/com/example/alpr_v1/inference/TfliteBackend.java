@@ -1,6 +1,8 @@
 package com.example.alpr_v1.inference;
 
 import com.example.alpr_v1.model.InstalledModel;
+import com.example.alpr_v1.model.ModelInputSpec;
+import com.example.alpr_v1.model.ModelOutputSpec;
 import com.example.alpr_v1.model.ModelVariant;
 
 import org.tensorflow.lite.Interpreter;
@@ -53,6 +55,22 @@ public final class TfliteBackend implements InferenceBackend {
             TensorInfo info = toInfo(i, tensor);
             outputInfo.put(i, info);
             outputBuffers.put(i, directBuffer(info.byteSize));
+        }
+        try {
+            ModelInputSpec inputSpec = variant.input(model.manifest().input());
+            ModelOutputSpec outputSpec = variant.output(model.manifest().output());
+            ModelTensorContractValidator.validateInput(inputSpec, inputInfo);
+            if (outputInfo.isEmpty()) {
+                throw new IllegalArgumentException("Model TFLite nie ma wyjścia");
+            }
+            ModelTensorContractValidator.validateOutput(
+                    outputSpec,
+                    outputInfo.values().iterator().next()
+            );
+        } catch (IllegalArgumentException error) {
+            interpreter.close();
+            if (createdDelegate != null) createdDelegate.close();
+            throw new RuntimeModelContractException(model, variant, error.getMessage(), error);
         }
     }
 
