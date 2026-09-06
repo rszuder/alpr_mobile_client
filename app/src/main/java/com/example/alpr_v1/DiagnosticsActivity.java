@@ -91,7 +91,7 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         AutoTuneManager autoTune = new AutoTuneManager(this);
         SharedPreferences preferences = getSharedPreferences(SettingsActivity.PREFERENCES, Context.MODE_PRIVATE);
 
-        boolean ready = registry.hasRequiredPipeline();
+        boolean ready = registry.hasCompleteAlprComposition();
         health.setText(ready
                 ? R.string.diagnostics_health_ready
                 : R.string.diagnostics_health_partial);
@@ -395,10 +395,18 @@ public final class DiagnosticsActivity extends AppCompatActivity {
 
         if (basePackage != null
                 && registry.isCompositionModified()) {
+            if (registry.hasCompleteAlprComposition()) {
+                return getString(
+                        R.string.diagnostics_model_composition_modified,
+                        basePackage.manifest().name(),
+                        basePackage.manifest().version()
+                );
+            }
             return getString(
-                    R.string.diagnostics_model_package_modified,
+                    R.string.diagnostics_model_composition_modified_incomplete,
                     basePackage.manifest().name(),
-                    basePackage.manifest().version()
+                    basePackage.manifest().version(),
+                    missingRequiredRoles(registry)
             );
         }
 
@@ -420,11 +428,20 @@ public final class DiagnosticsActivity extends AppCompatActivity {
             );
         }
 
+        if (registry.hasCompleteAlprComposition()) {
+            return getString(R.string.diagnostics_model_composition_individual);
+        }
         return getString(
-                registry.hasRequiredPipeline()
-                        ? R.string.diagnostics_model_package_individual
-                        : R.string.diagnostics_model_package_partial
+                R.string.diagnostics_model_composition_incomplete,
+                missingRequiredRoles(registry)
         );
+    }
+
+    private static String missingRequiredRoles(ModelRegistry registry) {
+        boolean missingPlate = registry.getActive(ModelRole.PLATE) == null;
+        boolean missingCharacter = registry.getActive(ModelRole.CHARACTER) == null;
+        if (missingPlate && missingCharacter) return "MT i MZ";
+        return missingPlate ? "MT" : "MZ";
     }
 
     private CharSequence modelDetail(

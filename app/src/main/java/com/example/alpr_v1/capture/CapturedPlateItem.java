@@ -10,9 +10,10 @@ import com.example.alpr_v1.metrics.ImageDifficultyMetrics;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 
-/** Element sesji zbierania cropów i źródło danych karty galerii. */
+/** Próbka badawcza wraz z wynikiem inferencji i lekką weryfikacją człowieka. */
 public final class CapturedPlateItem {
     public enum SaveState { NOT_SAVED, SAVING, SAVED, ERROR }
     public enum VerificationStatus {
@@ -64,6 +65,10 @@ public final class CapturedPlateItem {
     public volatile String groundTruthText = "";
     public volatile long verifiedAtMillis;
     public volatile int verificationRevision;
+    public final EnumSet<VerificationIssue> verificationIssues =
+            EnumSet.noneOf(VerificationIssue.class);
+    public volatile boolean needsDesktopReview;
+    public volatile String verificationNote = "";
     public volatile boolean exportProtected;
 
     public CapturedPlateItem(
@@ -213,6 +218,13 @@ public final class CapturedPlateItem {
 
     public boolean isProtectedFromEviction() {
         return saveState == SaveState.SAVING || exportProtected;
+    }
+
+    public boolean eligibleForTextMetrics() {
+        return (verificationStatus == VerificationStatus.ACCEPTED
+                || verificationStatus == VerificationStatus.CORRECTED)
+                && groundTruthText != null
+                && !groundTruthText.trim().isEmpty();
     }
 
     public void recycle() {

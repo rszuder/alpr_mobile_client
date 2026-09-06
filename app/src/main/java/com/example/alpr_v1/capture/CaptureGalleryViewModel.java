@@ -17,6 +17,7 @@ public final class CaptureGalleryViewModel extends ViewModel {
     private final List<CapturedPlateItem> capturedCrops = new ArrayList<>();
     private final Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack = new HashMap<>();
     private final MetricsCollector metricsCollector = new MetricsCollector();
+    private final RecognitionHistoryStore recognitionHistory = new RecognitionHistoryStore();
 
     private boolean collectionActive;
     private String collectionSessionId = "";
@@ -31,6 +32,8 @@ public final class CaptureGalleryViewModel extends ViewModel {
     }
 
     public MetricsCollector metricsCollector() { return metricsCollector; }
+
+    public RecognitionHistoryStore recognitionHistory() { return recognitionHistory; }
 
     public boolean collectionActive() { return collectionActive; }
     public String collectionSessionId() { return collectionSessionId; }
@@ -58,6 +61,7 @@ public final class CaptureGalleryViewModel extends ViewModel {
         for (CapturedPlateItem item : capturedCrops) item.recycle();
         capturedCrops.clear();
         lastCaptureByTrack.clear();
+        recognitionHistory.clear();
         metricsCollector.clearCropSession();
     }
 }

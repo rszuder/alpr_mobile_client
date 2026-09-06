@@ -14,6 +14,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
+import com.example.alpr_v1.experiment.ResearchExecutionConfig;
+import com.example.alpr_v1.experiment.ResearchStageExecutionConfig;
+import com.example.alpr_v1.pipeline.RecognitionProfile;
+import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
+import com.example.alpr_v1.ui.ModelStatusFormatter;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -84,6 +89,114 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     @Test
+    public void plateOnlyIsIncomplete() throws Exception {
+        InstalledModel plate = importSingleModel(ModelRole.PLATE, "plate-only-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(plate);
+
+        assertNotNull(registry.getActive(ModelRole.PLATE));
+        assertNull(registry.getActive(ModelRole.CHARACTER));
+        assertNull(registry.getActivePackage());
+        assertFalse(registry.hasCompleteAlprComposition());
+        assertTrue(ModelStatusFormatter.presentation(
+                registry,
+                new AutoTuneManager(context)
+        ).summary.contains("Brakuje: MZ"));
+    }
+
+    @Test
+    public void characterOnlyIsIncomplete() throws Exception {
+        InstalledModel character = importSingleModel(ModelRole.CHARACTER, "character-only-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(character);
+
+        assertNull(registry.getActive(ModelRole.PLATE));
+        assertNotNull(registry.getActive(ModelRole.CHARACTER));
+        assertNull(registry.getActivePackage());
+        assertFalse(registry.hasCompleteAlprComposition());
+    }
+
+    @Test
+    public void separatePlateAndCharacterAreCompleteWithoutActivePackage() throws Exception {
+        InstalledModel plate = importSingleModel(ModelRole.PLATE, "plate-separate-");
+        InstalledModel character = importSingleModel(ModelRole.CHARACTER, "character-separate-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(plate);
+        registry.activate(character);
+
+        assertTrue(registry.hasCompleteAlprComposition());
+        assertNull(registry.getActivePackage());
+        assertNull(registry.getBasePackage());
+        assertTrue(ModelStatusFormatter.presentation(
+                registry,
+                new AutoTuneManager(context)
+        ).summary.contains("Źródło: kompozycja z modeli mobilnych"));
+    }
+
+    @Test
+    public void vehicleOnlyIsIncomplete() throws Exception {
+        InstalledModel vehicle = importSingleModel(ModelRole.VEHICLE, "vehicle-only-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(vehicle);
+
+        assertNotNull(registry.getActive(ModelRole.VEHICLE));
+        assertFalse(registry.hasCompleteAlprComposition());
+    }
+
+    @Test
+    public void vehicleAndPlateAreIncomplete() throws Exception {
+        InstalledModel vehicle = importSingleModel(ModelRole.VEHICLE, "vehicle-plate-");
+        InstalledModel plate = importSingleModel(ModelRole.PLATE, "plate-vehicle-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(vehicle);
+        registry.activate(plate);
+
+        assertNull(registry.getActive(ModelRole.CHARACTER));
+        assertFalse(registry.hasCompleteAlprComposition());
+    }
+
+    @Test
+    public void vehicleAndCharacterAreIncomplete() throws Exception {
+        InstalledModel vehicle = importSingleModel(ModelRole.VEHICLE, "vehicle-character-");
+        InstalledModel character = importSingleModel(ModelRole.CHARACTER, "character-vehicle-");
+        ModelRegistry registry = new ModelRegistry(context);
+
+        registry.activate(vehicle);
+        registry.activate(character);
+
+        assertNull(registry.getActive(ModelRole.PLATE));
+        assertFalse(registry.hasCompleteAlprComposition());
+    }
+
+    @Test
+    public void packageWithPlateAndCharacterIsComplete() throws Exception {
+        String plateStorage = "plate-base-" + suffix;
+        String characterStorage = "character-base-" + suffix;
+        writeModel(ModelRole.PLATE, plateStorage, "plate-base-" + suffix);
+        writeModel(ModelRole.CHARACTER, characterStorage, "character-base-" + suffix);
+        String packageStorage = writePackage(plateStorage, characterStorage);
+        ModelRegistry registry = new ModelRegistry(context);
+        InstalledAlprPackage completePackage = registry.findPackage(packageStorage);
+        assertNotNull(completePackage);
+
+        registry.activate(completePackage);
+
+        assertTrue(registry.hasCompleteAlprComposition());
+        assertNotNull(registry.getActivePackage());
+        assertNotNull(registry.getBasePackage());
+        assertNull(registry.getActive(ModelRole.VEHICLE));
+        assertTrue(ModelStatusFormatter.presentation(
+                registry,
+                new AutoTuneManager(context)
+        ).summary.contains("Źródło: kompletny pakiet ALPR"));
+    }
+
+    @Test
     public void replacementPreservesBasePackageAndCanBeRestored() throws Exception {
         String basePlateStorage = "plate-base-" + suffix;
         String replacementPlateStorage = "plate-replacement-" + suffix;
@@ -114,6 +227,7 @@ public final class RuntimeCompositionInstrumentedTest {
         assertNotNull(baseVehicle);
         registry.activate(base);
         assertNotNull(registry.getActivePackage());
+        assertTrue(registry.hasCompleteAlprComposition());
         assertFalse(registry.isCompositionModified());
 
         InstalledModel replacement = findStorage(
@@ -135,16 +249,64 @@ public final class RuntimeCompositionInstrumentedTest {
         );
         assertNull(registry.getActivePackage());
         assertNotNull(registry.getBasePackage());
+        assertTrue(registry.hasCompleteAlprComposition());
         assertTrue(registry.isCompositionModified());
         assertTrue(registry.canRestoreBaseModels());
         assertFalse(registry.isModelFromBase(ModelRole.PLATE));
         assertTrue(registry.isModelFromBase(ModelRole.CHARACTER));
+        assertTrue(ModelStatusFormatter.presentation(
+                registry,
+                new AutoTuneManager(context)
+        ).summary.contains("Źródło: kompozycja zmodyfikowana"));
+
+        AutoTuneManager autoTune = new AutoTuneManager(context);
+        ResearchExecutionConfig frozen = new ResearchExecutionConfig(
+                "contract",
+                "replacement-mt",
+                RoiBudgetPolicy.ONE_ROI,
+                RecognitionProfile.BALANCED,
+                "auto",
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+                frozenStage(registry, autoTune, ModelRole.VEHICLE),
+                frozenStage(registry, autoTune, ModelRole.PLATE),
+                frozenStage(registry, autoTune, ModelRole.CHARACTER),
+                registry.getBasePackage(),
+                registry.isCompositionModified(),
+                registry.getBasePackage().sourceSizeBytes()
+        );
+        JSONObject modelRefs = frozen.modelRefsJson();
+        assertEquals(
+                replacement.manifest().modelId(),
+                modelRefs.getJSONObject("plate").getString("model_id")
+        );
+        assertEquals(
+                replacement.fingerprint(),
+                modelRefs.getJSONObject("plate").getString("local_manifest_fingerprint")
+        );
+        assertEquals(
+                baseVehicle.fingerprint(),
+                modelRefs.getJSONObject("vehicle").getString("local_manifest_fingerprint")
+        );
+        assertEquals(
+                base.characterModel().fingerprint(),
+                modelRefs.getJSONObject("character").getString("local_manifest_fingerprint")
+        );
+        assertEquals(base.manifest().packageId(), frozen.basePackageId);
+        assertEquals(base.fingerprint(), frozen.basePackageFingerprint);
+        assertTrue(frozen.compositionModified);
 
         ModelRegistry recreated = new ModelRegistry(context);
         assertNotNull(recreated.getBasePackage());
         assertTrue(recreated.isCompositionModified());
+        assertTrue(recreated.hasCompleteAlprComposition());
         recreated.restoreBasePackage();
         assertNotNull(recreated.getActivePackage());
+        assertTrue(recreated.hasCompleteAlprComposition());
         assertEquals(
                 basePlate.fingerprint(),
                 recreated.getActive(ModelRole.PLATE).fingerprint()
@@ -302,8 +464,55 @@ public final class RuntimeCompositionInstrumentedTest {
         assertNotNull(registry.getActive(ModelRole.VEHICLE));
         assertNotNull(registry.getActive(ModelRole.PLATE));
         assertNotNull(registry.getActive(ModelRole.CHARACTER));
+        assertTrue(registry.hasCompleteAlprComposition());
         assertFalse(registry.isCompositionModified());
         assertFalse(registry.canRestoreBaseModels());
+    }
+
+    private InstalledModel importSingleModel(ModelRole role, String prefix) throws Exception {
+        byte[] modelBytes = new byte[]{4, 2, 1, (byte) role.ordinal()};
+        String modelId = prefix + suffix;
+        JSONObject manifest = modelManifest(role, modelId);
+        manifest.put("variants", new JSONArray().put(
+                new JSONObject()
+                        .put("id", "tflite-fp32")
+                        .put("runtime", "tflite")
+                        .put("precision", "fp32")
+                        .put("file", "variants/model.tflite")
+                        .put("sha256", new JSONObject().put(
+                                "variants/model.tflite",
+                                Hashing.sha256(modelBytes)
+                        ))
+        ));
+        File archive = new File(isolatedFiles, modelId + ".alprmodel");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive.toPath()))) {
+            zip.putNextEntry(new ZipEntry("manifest.json"));
+            zip.write(manifest.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("variants/model.tflite"));
+            zip.write(modelBytes);
+            zip.closeEntry();
+        }
+        return new ModelPackageImporter(
+                context,
+                new File(isolatedExternalFiles, "models")
+        ).importPackage(archive);
+    }
+
+    private static ResearchStageExecutionConfig frozenStage(
+            ModelRegistry registry,
+            AutoTuneManager autoTune,
+            ModelRole role
+    ) {
+        InstalledModel model = registry.getActive(role);
+        ModelVariant variant = autoTune.chosenVariant(model);
+        return ResearchStageExecutionConfig.enabled(
+                role,
+                model,
+                variant,
+                autoTune.chosenProfile(model),
+                registry
+        );
     }
 
     private void writeModel(ModelRole role, String storageId, String modelId) throws Exception {

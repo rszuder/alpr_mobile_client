@@ -3,6 +3,7 @@ package com.example.alpr_v1.metrics;
 import android.graphics.Bitmap;
 
 import com.example.alpr_v1.capture.CapturedPlateItem;
+import com.example.alpr_v1.capture.VerificationIssue;
 import com.example.alpr_v1.experiment.ResearchExecutionConfig;
 import com.example.alpr_v1.model.InstalledAlprPackage;
 import com.example.alpr_v1.model.InstalledModel;
@@ -291,7 +292,7 @@ public final class ResearchArchive {
 
     private static String cropIndexCsv(List<CapturedPlateItem> crops) {
         StringBuilder csv = new StringBuilder(
-                "capture_id,session_id,track_id,captured_at_ms,prediction,consensus_prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms\n"
+                "capture_id,session_id,track_id,captured_at_ms,prediction,consensus_prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms,eligible_for_text_metrics,issue_codes,needs_desktop_review,verification_note,verified_at_millis,verification_revision\n"
         );
         for (CapturedPlateItem item : crops) {
             csv.append(csv(item.captureId)).append(',')
@@ -327,7 +328,13 @@ public final class ResearchArchive {
                     .append(item.imageDifficulty.available ? format(item.imageDifficulty.luminanceStddev) : "").append(',')
                     .append(item.imageDifficulty.available ? format(item.imageDifficulty.underexposedRatio) : "").append(',')
                     .append(item.imageDifficulty.available ? format(item.imageDifficulty.overexposedRatio) : "").append(',')
-                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.computationMs) : "")
+                    .append(item.imageDifficulty.available ? format(item.imageDifficulty.computationMs) : "").append(',')
+                    .append(item.eligibleForTextMetrics()).append(',')
+                    .append(csv(issueCodes(item))).append(',')
+                    .append(item.needsDesktopReview).append(',')
+                    .append(csv(item.verificationNote)).append(',')
+                    .append(item.verifiedAtMillis).append(',')
+                    .append(item.verificationRevision)
                     .append('\n');
         }
         return csv.toString();
@@ -362,6 +369,7 @@ public final class ResearchArchive {
             record.put("ground_truth_text", item.groundTruthText);
             record.put("verified_at_ms", item.verifiedAtMillis);
             record.put("verification_revision", item.verificationRevision);
+            record.put("human_verification", HumanVerificationJson.from(item));
             JSONArray characters = new JSONArray();
             for (PlateCharacter character : item.characters) {
                 JSONObject value = new JSONObject();
@@ -552,6 +560,15 @@ public final class ResearchArchive {
     private static String csv(String value) {
         String safe = value == null ? "" : value.replace("\"", "\"\"");
         return '"' + safe + '"';
+    }
+
+    private static String issueCodes(CapturedPlateItem item) {
+        StringBuilder value = new StringBuilder();
+        for (VerificationIssue issue : item.verificationIssues) {
+            if (value.length() > 0) value.append(';');
+            value.append(issue.wireName());
+        }
+        return value.toString();
     }
 
     private static String corners(CapturedPlateItem item) {

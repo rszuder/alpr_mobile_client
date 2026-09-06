@@ -9,9 +9,12 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Collections;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** CPU backend for official NCNN Android static runtime. */
 public final class NcnnBackend implements InferenceBackend {
+    private static final ReentrantLock RUNTIME_LOCK = new ReentrantLock(true);
     private static final boolean LIBRARY_AVAILABLE;
     private static final String LIBRARY_ERROR;
 
@@ -75,14 +78,19 @@ public final class NcnnBackend implements InferenceBackend {
                 0f,
                 0
         );
-        nativeHandle = nativeCreate(
-                param.getAbsolutePath(),
-                weights.getAbsolutePath(),
-                profile.cpuThreads,
-                input.width(),
-                input.height(),
-                input.channels()
-        );
+        lockRuntimeInterruptibly();
+        try {
+            nativeHandle = nativeCreate(
+                    param.getAbsolutePath(),
+                    weights.getAbsolutePath(),
+                    profile.cpuThreads,
+                    input.width(),
+                    input.height(),
+                    input.channels()
+            );
+        } finally {
+            RUNTIME_LOCK.unlock();
+        }
         if (nativeHandle == 0L) {
             throw new IllegalStateException("Nie można utworzyć sesji NCNN");
         }
@@ -116,8 +124,15 @@ public final class NcnnBackend implements InferenceBackend {
             throw new IllegalArgumentException("NCNN wymaga bezpośredniego bufora o rozmiarze wejścia");
         }
         input.rewind();
-        float[] values = nativeRun(nativeHandle, input);
-        int[] shape = nativeOutputShape(nativeHandle);
+        float[] values;
+        int[] shape;
+        lockRuntimeInterruptibly();
+        try {
+            values = nativeRun(nativeHandle, input);
+            shape = nativeOutputShape(nativeHandle);
+        } finally {
+            RUNTIME_LOCK.unlock();
+        }
         int elements = 1;
         for (int dimension : shape) elements = Math.multiplyExact(elements, dimension);
         if (values == null || values.length != elements) {
@@ -164,12 +179,26 @@ public final class NcnnBackend implements InferenceBackend {
     @Override
     public synchronized void close() {
         if (nativeHandle == 0L) return;
-        nativeClose(nativeHandle);
-        nativeHandle = 0L;
+        RUNTIME_LOCK.lock();
+        try {
+            nativeClose(nativeHandle);
+            nativeHandle = 0L;
+        } finally {
+            RUNTIME_LOCK.unlock();
+        }
     }
 
     private void ensureOpen() {
         if (nativeHandle == 0L) throw new IllegalStateException("Backend NCNN został zamknięty");
+    }
+
+    private static void lockRuntimeInterruptibly() {
+        try {
+            RUNTIME_LOCK.lockInterruptibly();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("Operacja NCNN została przerwana");
+        }
     }
 
     private static native long nativeCreate(

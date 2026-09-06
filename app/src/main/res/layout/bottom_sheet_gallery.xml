@@ -1,130 +1,566 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/alpr_panel"
     android:orientation="vertical"
-    tools:ignore="Overdraw"
-    android:paddingStart="16dp"
+    android:paddingStart="14dp"
     android:paddingTop="10dp"
-    android:paddingEnd="16dp"
-    android:paddingBottom="16dp">
+    android:paddingEnd="14dp"
+    android:paddingBottom="12dp"
+    tools:ignore="Overdraw">
 
-    <com.google.android.material.card.MaterialCardView
-        android:layout_width="38dp"
+    <View
+        android:layout_width="42dp"
         android:layout_height="4dp"
         android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="14dp"
-        app:cardBackgroundColor="@color/alpr_outline"
-        app:cardCornerRadius="2dp"
-        app:cardElevation="0dp" />
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/gallery_drag_handle" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:background="@drawable/gallery_header_background"
+        android:orientation="vertical"
+        android:padding="16dp">
 
         <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/gallery_sheet_title"
-            android:textColor="@color/alpr_text_primary"
-            android:textSize="20sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/gallery_sheet_count"
+            android:id="@+id/gallery_sheet_mode_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:background="@drawable/status_pill_background"
-            android:gravity="center"
-            android:minWidth="38dp"
-            android:paddingHorizontal="10dp"
-            android:paddingVertical="5dp"
-            android:text="@string/result_count_zero"
+            android:letterSpacing="0.12"
+            android:text="@string/history_mode_label"
+            android:textAllCaps="true"
             android:textColor="@color/alpr_accent"
-            android:textSize="13sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/gallery_sheet_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/history_title"
+                android:textColor="@color/alpr_text_primary"
+                android:textSize="23sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/gallery_sheet_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/status_pill_background"
+                android:gravity="center"
+                android:minWidth="42dp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="5dp"
+                android:text="@string/result_count_zero"
+                android:textColor="@color/alpr_accent"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/gallery_sheet_collection_stats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="@string/history_subtitle"
+            android:textColor="@color/alpr_text_secondary"
+            android:textSize="12sp" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/gallery_sheet_collection_stats"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="@string/gallery_collection_ready"
-        android:textColor="@color/alpr_text_secondary"
-        android:textSize="12sp" />
-
-    <FrameLayout
+    <LinearLayout
+        android:id="@+id/gallery_recent_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="12dp"
-        android:layout_weight="1">
+        android:layout_weight="1"
+        android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/gallery_sheet_empty"
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:padding="24dp"
-            android:text="@string/gallery_empty"
-            android:textColor="@color/alpr_text_secondary"
-            android:textSize="14sp" />
+            android:layout_height="0dp"
+            android:layout_weight="1">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/gallery_sheet_list"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:overScrollMode="ifContentScrolls"
-            android:paddingBottom="12dp"
-            android:scrollbars="vertical"
-            android:visibility="gone" />
+            <LinearLayout
+                android:id="@+id/gallery_sheet_empty"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="28dp">
 
-    </FrameLayout>
+                <ImageView
+                    android:layout_width="54dp"
+                    android:layout_height="54dp"
+                    android:background="@drawable/bg_icon_blue"
+                    android:contentDescription="@null"
+                    android:padding="14dp"
+                    android:src="@drawable/ic_history_24"
+                    app:tint="@color/alpr_accent" />
 
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginTop="8dp"
-        android:background="@color/alpr_outline" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center"
+                    android:text="@string/history_empty_title"
+                    android:textColor="@color/alpr_text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="@string/history_empty_description"
+                    android:textColor="@color/alpr_text_secondary"
+                    android:textSize="13sp" />
+            </LinearLayout>
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/gallery_sheet_select_all"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:gravity="center_vertical"
-            android:text="@string/crop_select_all"
-            android:textColor="@color/alpr_text_secondary"
-            android:textSize="12sp" />
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/gallery_sheet_list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:overScrollMode="ifContentScrolls"
+                android:paddingBottom="8dp"
+                android:scrollbars="vertical"
+                android:visibility="gone" />
+        </FrameLayout>
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/gallery_sheet_save_selected"
-            style="@style/Widget.Material3.Button"
-            android:layout_width="wrap_content"
+            android:id="@+id/gallery_clear_history"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:minWidth="0dp"
-            android:text="@string/crop_save_action"
-            android:textSize="12sp"
-            app:icon="@drawable/ic_save_24"
-            app:iconPadding="6dp"
-            app:iconSize="21dp" />
+            android:text="@string/history_clear_action"
+            android:textColor="@color/alpr_text_secondary"
+            app:icon="@drawable/ic_delete_24"
+            app:iconTint="@color/alpr_text_secondary" />
+    </LinearLayout>
 
+    <LinearLayout
+        android:id="@+id/gallery_research_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="10dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+            <com.google.android.material.chip.ChipGroup
+                android:id="@+id/verification_filters"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                app:selectionRequired="true"
+                app:singleSelection="true">
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/verification_filter_all"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="@string/verification_filter_all" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/verification_filter_unreviewed"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/verification_filter_unreviewed" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/verification_filter_changed"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/verification_filter_changed" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/verification_filter_desktop"
+                    style="@style/Widget.Material3.Chip.Filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/verification_filter_desktop" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1">
+
+            <LinearLayout
+                android:id="@+id/verification_empty"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="28dp">
+
+                <ImageView
+                    android:layout_width="54dp"
+                    android:layout_height="54dp"
+                    android:background="@drawable/bg_icon_violet"
+                    android:contentDescription="@null"
+                    android:padding="14dp"
+                    android:src="@drawable/ic_verify_24"
+                    app:tint="@color/alpr_secondary" />
+
+                <TextView
+                    android:id="@+id/verification_empty_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center"
+                    android:text="@string/verification_empty"
+                    android:textColor="@color/alpr_text_secondary"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/verification_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:fillViewport="true"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="match_parent"
+                        android:layout_height="190dp"
+                        app:cardBackgroundColor="@color/black"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp"
+                        app:strokeColor="@color/alpr_outline"
+                        app:strokeWidth="1dp">
+
+                        <FrameLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent">
+
+                            <com.example.alpr_v1.ui.PlateCropView
+                                android:id="@+id/verification_crop"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:background="@drawable/gallery_preview_background"
+                                android:padding="8dp" />
+
+                            <com.google.android.material.materialswitch.MaterialSwitch
+                                android:id="@+id/verification_show_boxes"
+                                android:layout_width="wrap_content"
+                                android:layout_height="42dp"
+                                android:layout_gravity="top|end"
+                                android:layout_margin="8dp"
+                                android:background="@drawable/gallery_control_pill"
+                                android:checked="true"
+                                android:paddingHorizontal="10dp"
+                                android:text="@string/verification_show_boxes"
+                                android:textColor="@color/alpr_text_primary"
+                                android:textSize="11sp" />
+                        </FrameLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <TextView
+                        android:id="@+id/verification_status"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_horizontal"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/status_pill_background"
+                        android:paddingHorizontal="12dp"
+                        android:paddingVertical="6dp"
+                        android:text="@string/verification_not_reviewed"
+                        android:textColor="@color/alpr_text_muted"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        app:cardBackgroundColor="@color/alpr_surface"
+                        app:cardCornerRadius="14dp"
+                        app:cardElevation="0dp"
+                        app:strokeColor="@color/alpr_outline"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="14dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:baselineAligned="false"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/verification_model_reading_label"
+                                        android:textColor="@color/alpr_text_muted"
+                                        android:textSize="11sp" />
+
+                                    <TextView
+                                        android:id="@+id/verification_model_text"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:fontFamily="monospace"
+                                        android:text="@string/result_placeholder"
+                                        android:textColor="@color/alpr_primary"
+                                        android:textSize="22sp"
+                                        android:textStyle="bold" />
+                                </LinearLayout>
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:gravity="end"
+                                    android:orientation="vertical">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/verification_consensus_label"
+                                        android:textColor="@color/alpr_text_muted"
+                                        android:textSize="11sp" />
+
+                                    <TextView
+                                        android:id="@+id/verification_consensus_text"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:fontFamily="monospace"
+                                        android:text="@string/result_placeholder"
+                                        android:textColor="@color/alpr_text_primary"
+                                        android:textSize="16sp"
+                                        android:textStyle="bold" />
+                                </LinearLayout>
+                            </LinearLayout>
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginVertical="10dp"
+                                android:background="@color/alpr_outline" />
+
+                            <TextView
+                                android:id="@+id/verification_metrics"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:textColor="@color/alpr_text_secondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/verification_accept"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="50dp"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/verification_accept_short"
+                        android:textColor="@color/alpr_background"
+                        app:backgroundTint="@color/alpr_success"
+                        app:icon="@drawable/ic_check_24"
+                        app:iconTint="@color/alpr_background" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/verification_correct"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginEnd="3dp"
+                            android:layout_weight="1"
+                            android:text="@string/verification_correct_action"
+                            android:textSize="11sp"
+                            app:icon="@drawable/ic_edit_24"
+                            app:iconSize="18dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/verification_reject"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginStart="3dp"
+                            android:layout_weight="1"
+                            android:text="@string/verification_unreadable_action"
+                            android:textColor="@color/alpr_warning"
+                            android:textSize="11sp"
+                            app:icon="@drawable/ic_close_24"
+                            app:iconSize="18dp"
+                            app:iconTint="@color/alpr_warning"
+                            app:strokeColor="@color/alpr_warning" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:text="@string/verification_issues_title"
+                        android:textColor="@color/alpr_text_primary"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="@string/verification_issues_subtitle"
+                        android:textColor="@color/alpr_text_muted"
+                        android:textSize="11sp" />
+
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/verification_issues"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        app:singleLine="false">
+
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_plate_not_visible" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_plate_not_visible" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_mt_region" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_mt_region" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_mt_corners" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_mt_corners" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_rectification" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_rectification" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_mz_missing" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_mz_missing" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_mz_wrong" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_mz_wrong" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_blur" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_blur" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_occlusion" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_occlusion" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_vehicle_association" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_vehicle_association" />
+                        <com.google.android.material.chip.Chip android:id="@+id/issue_other" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/issue_other" />
+                    </com.google.android.material.chip.ChipGroup>
+
+                    <com.google.android.material.checkbox.MaterialCheckBox
+                        android:id="@+id/verification_desktop_review"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="6dp"
+                        android:text="@string/verification_desktop_review"
+                        android:textColor="@color/alpr_text_primary"
+                        android:textSize="13sp" />
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:hint="@string/verification_note_hint"
+                        app:boxBackgroundMode="outline"
+                        app:counterEnabled="true"
+                        app:counterMaxLength="160">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/verification_note"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="textCapSentences|textMultiLine"
+                            android:maxLength="160"
+                            android:maxLines="3"
+                            android:minLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/verification_save_current"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginEnd="3dp"
+                            android:layout_weight="1"
+                            android:text="@string/verification_save_current"
+                            android:textSize="11sp"
+                            app:icon="@drawable/ic_save_24"
+                            app:iconSize="18dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/gallery_sheet_save_selected"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="3dp"
+                            android:layout_weight="1"
+                            android:text="@string/verification_save_reviewed"
+                            android:textSize="11sp"
+                            app:icon="@drawable/ic_save_24"
+                            app:iconSize="18dp" />
+                    </LinearLayout>
+
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="6dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/verification_previous"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/verification_previous"
+                app:icon="@drawable/ic_arrow_back_24" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/verification_next"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/verification_next"
+                app:icon="@drawable/ic_arrow_forward_24"
+                app:iconGravity="textEnd" />
+        </LinearLayout>
     </LinearLayout>
 
 </LinearLayout>

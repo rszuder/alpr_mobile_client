@@ -110,7 +110,7 @@ public final class ModelRegistry {
 
     public synchronized void activate(InstalledModel model) {
         if (!isExecutable(model)) {
-            throw new IllegalArgumentException("Pakiet nie zawiera obsługiwanego runtime'u wykonawczego");
+            throw new IllegalArgumentException("Model nie zawiera obsługiwanego runtime'u wykonawczego");
         }
         SharedPreferences.Editor editor = preferences.edit()
                 .putString("active." + model.manifest().role().wireName(), model.storageId());
@@ -227,7 +227,7 @@ public final class ModelRegistry {
         return null;
     }
 
-    public synchronized boolean hasRequiredPipeline() {
+    public synchronized boolean hasCompleteAlprComposition() {
         return active.containsKey(ModelRole.PLATE) && active.containsKey(ModelRole.CHARACTER);
     }
 

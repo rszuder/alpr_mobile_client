@@ -62,6 +62,12 @@ public final class AlprPackageManifest {
         }
 
         JSONObject models = json.getJSONObject("models");
+        if (!models.has("plate") || models.isNull("plate")
+                || !models.has("character") || models.isNull("character")) {
+            throw new JSONException(
+                    "Nieprawidłowy pakiet ALPR: wymagane są modele MT i MZ."
+            );
+        }
         JSONObject vehicleJson = models.optJSONObject("vehicle");
         AlprPackageModelEntry vehicle = vehicleJson == null
                 ? null

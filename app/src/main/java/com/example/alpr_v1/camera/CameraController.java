@@ -34,7 +34,6 @@ import com.example.alpr_v1.continuity.SourceFrameStamp;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 public final class CameraController implements AutoCloseable {
@@ -508,19 +507,7 @@ public final class CameraController implements AutoCloseable {
 
     @Override
     public void close() {
-        close(null);
-    }
-
-    public void close(Runnable analyzerCleanup) {
         stop();
-        if (analyzerCleanup != null && !analyzerExecutor.isShutdown()) {
-            try {
-                Future<?> cleanup = analyzerExecutor.submit(analyzerCleanup);
-                cleanup.get(2, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-                // Proces kończy działanie; zasoby natywne zwolni również system.
-            }
-        }
         analyzerExecutor.shutdownNow();
     }
 }

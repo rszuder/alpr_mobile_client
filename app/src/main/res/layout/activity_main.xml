@@ -405,7 +405,7 @@
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:minWidth="0dp"
-                android:text="@string/gallery_open_zero"
+                android:text="@string/history_open_zero"
                 android:textSize="11sp"
                 app:icon="@drawable/ic_gallery_24"
                 app:iconPadding="5dp"

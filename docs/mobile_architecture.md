@@ -57,29 +57,29 @@ uruchamiania MP/MT/MZ, trackingu, Scan ani sesji metryk. HUD pokazuje spokojny
 stan `Podgląd kadru`, a piktogram oka zmienia się na przekreślone oko. Start
 analizy przejmuje kamerę z podglądu i dopiero wtedy rozpoczyna pomiar.
 
-Inferencja i bieżący overlay działają niezależnie od kolektora. Przycisk
-`Start/Stop` steruje wyłącznie rejestrowaniem cropów w sesji; po zatrzymaniu
-detekcje nadal są rysowane, lecz nie trafiają do galerii. `MobileAlprEngine`
-przekazuje `PlateObservation`: identyfikator i datę, bitmapę rektyfikacji
-utworzoną podczas MZ, pozycje znaków oraz osobne czasy konkretnego cropu.
-`MainActivity` zawsze zamyka `PipelineResult`, również dla wyniku pominiętego
-przez limiter UI, co zwalnia bitmapę należącą do pipeline'u.
+Inferencja i bieżący overlay działają niezależnie od kolektora. Interfejs
+wyników rozdziela dwa przepływy. W trybie normalnym `Ostatnie odczyty` działa
+bez aktywnej kolekcji cropów. Jeden wpis odpowiada logicznemu pojazdowi lub
+tablicy, identyfikowanemu kolejno przez `(sceneGeneration, entityId)`,
+`plateTrackId` albo `trackId`. Nowszy potwierdzony wynik aktualizuje wpis, a
+miniatura jest zastępowana tylko przez próbkę o wyższym confidence, następnie
+ostrości, a przy remisie nowszym czasie. Historia utrzymuje maksymalnie 40
+wpisów i recykluje wyparte bitmapy. Szczegóły pozwalają skopiować numer,
+zapisać obraz lub usunąć wpis.
 
-Galeria jest poziomym `RecyclerView`. Nie stosuje TTL: crop pozostaje do
-wyczyszczenia sesji albo wyparcia po osiągnięciu limitu. Kolektor nie kopiuje
-każdej klatki. Przyjmuje pierwszą obserwację tracku, przejście do stanu
-potwierdzonego, zmianę tekstu, poprawę ostrości co najmniej o 0,08 lub próbkę
-okresową po 1,5 s. Dopisanie cropu nie wywołuje przewinięcia galerii. Adapter
-przekazuje strukturalne różnice do `RecyclerView`, dzięki czemu również
-wyparcie najstarszego wpisu nie odbiera użytkownikowi kontroli nad aktualnie
-przeglądanym fragmentem. Każda karta zawiera:
+W trybie badawczym `Weryfikacja próbek` prezentuje jeden techniczny crop naraz.
+Próbki można filtrować według stanu, przełączać poprzednia/następna i oznaczać
+jako `Zgodne`, `Koryguj odczyt` albo `Nie do oceny`. Predykcyjne boxy MZ są
+read-only i można je jedynie ukryć. Niezależny zestaw kodów problemów oraz flaga
+`Do analizy w Desktop` trafiają do mini-raportu i `.alprsession`. Zapis bieżącej
+próbki oraz zbiorczy zapis wszystkich zweryfikowanych nadal korzystają z
+dotychczasowego `CaptureDirectoryStore`.
 
-- crop tablicy z ramkami znaków;
-- ciąg znaków albo informację o oczekiwaniu na MZ;
-- osobne confidence MT i MZ oraz stan wstępny/potwierdzony;
-- listę znaków z położeniem środka `(x, y)` w procentach cropu i confidence MZ.
-- lokalną datę z milisekundami oraz czas pipeline'u i samego MZ;
-- przełącznik trwałego zapisu.
+`MobileAlprEngine` przekazuje `PlateObservation`: identyfikatory encji i
+tracków, generację sceny, datę, bitmapę rektyfikacji utworzoną podczas MZ,
+pozycje znaków oraz osobne czasy konkretnego cropu. `MainActivity` zawsze
+zamyka `PipelineResult`, również dla wyniku pominiętego przez limiter UI, co
+zwalnia bitmapę należącą do pipeline'u.
 
 Warstwa graficzna rozdziela semantycznie treść detekcji: nazwa/ciąg znaków ma
 kolor niebieski, confidence zielony, a dane pomocnicze są przygaszone. Overlay
@@ -88,7 +88,7 @@ nad, pod albo obok detekcji. Kandydat kolidujący z dowolną ramką lub innym
 badge'em jest odrzucany; jeżeli nie istnieje bezpieczne miejsce, badge nie jest
 rysowany. Brak etykiety jest preferowany względem zasłonięcia obrazu.
 
-W galerii badge'e znaków nie są nanoszone na bitmapę. `PlateCropView` rezerwuje
+W weryfikacji badge'e znaków nie są nanoszone na bitmapę. `PlateCropView` rezerwuje
 pod obrazem osobny pas legendy: znak jest niebieski, a jego confidence zielone.
 Na obrazie pozostają tylko cienkie ramki znaków. Tracker używa ramki o małej
 grubości i obniżonej nieprzezroczystości, mniejszych punktów narożnych, a
@@ -96,16 +96,10 @@ jednoklatkowa predykcja bez świeżej detekcji jest przerywana i pozbawiona
 badge'a. Geometria jest przygotowywana po zmianie danych lub rozmiaru widoku;
 `onDraw()` nie tworzy kolekcji ani obiektów ramek.
 
-Checkbox karty jest wyłącznie stanem zaznaczenia — nie rozpoczyna operacji
-wejścia/wyjścia. Znajduje się obok odczytanego numeru, więc pozostaje widoczny
-niezależnie od liczby znaków. Opisy znaków są formatowane po dwa na wiersz;
-osiem znaków mieści się w czterech wierszach bez powiększania karty poza
-wysokość galerii. W wierszu sterowania sesją znajdują się `Start/Stop`,
-`Zaznacz wszystkie` i zbiorcze CTA `Zapisz (N)`. CTA zapisuje zaznaczone cropy
-sekwencyjnie przez jeden executor, blokuje ponowne uruchomienie do zakończenia
-partii i pokazuje jedno podsumowanie liczby sukcesów oraz błędów. Element z
-błędem pozostaje zaznaczony i może zostać ponowiony; zapisany element jest
-odznaczany i wyłączany z kolejnego `Zaznacz wszystkie`.
+Zbiorczy zapis zweryfikowanych cropów działa sekwencyjnie przez jeden executor,
+blokuje ponowne uruchomienie do zakończenia partii i pokazuje jedno podsumowanie
+liczby sukcesów oraz błędów. Element z błędem może zostać ponowiony, a zapisany
+element jest wyłączany z kolejnej partii.
 
 Wygładzanie trackera rozróżnia mały jitter od wyraźnego przesunięcia. Dla
 przemieszczeń do 0,012 rozmiaru znormalizowanego współczynnik korekcji wynosi

@@ -3,6 +3,8 @@ package com.example.alpr_v1;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.Manifest;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
@@ -12,6 +14,8 @@ import android.graphics.Bitmap;
 import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Size;
 import android.view.MenuItem;
 import android.view.View;
@@ -50,7 +54,9 @@ import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.checkbox.MaterialCheckBox;
+import com.google.android.material.chip.Chip;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.materialswitch.MaterialSwitch;
 //---------------------------------------------------------------
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
@@ -71,6 +77,10 @@ import com.example.alpr_v1.capture.CaptureDirectoryStore;
 import com.example.alpr_v1.capture.CaptureGalleryViewModel;
 import com.example.alpr_v1.capture.CropCapacityPolicy;
 import com.example.alpr_v1.capture.CropSamplingPolicy;
+import com.example.alpr_v1.capture.HumanVerificationEditor;
+import com.example.alpr_v1.capture.RecognitionHistoryItem;
+import com.example.alpr_v1.capture.RecognitionHistoryStore;
+import com.example.alpr_v1.capture.VerificationIssue;
 import com.example.alpr_v1.logging.AppLog;
 import com.example.alpr_v1.inference.ExecutionProfile;
 import com.example.alpr_v1.metrics.DeviceProfile;
@@ -109,11 +119,12 @@ import com.example.alpr_v1.ui.DetectionOverlayView;
 import com.example.alpr_v1.ui.EntityAwareOverlayAlignment;
 import com.example.alpr_v1.ui.EntityOverlayMotionProjector;
 import com.example.alpr_v1.ui.LivePresentationController;
-import com.example.alpr_v1.ui.PlateCaptureAdapter;
+import com.example.alpr_v1.ui.PlateCropView;
 import com.example.alpr_v1.ui.PlateOverlayFreshness;
 import com.example.alpr_v1.ui.PreviewContinuityUiPolicy;
 import com.example.alpr_v1.ui.PreviewPresentationBarrier;
 import com.example.alpr_v1.ui.SceneModeHudPolicy;
+import com.example.alpr_v1.ui.RecognitionHistoryAdapter;
 import com.example.alpr_v1.pipeline.RoiBudgetPolicy;
 import com.example.alpr_v1.experiment.ExperimentSession;
 import com.example.alpr_v1.experiment.ExperimentIdentity;
@@ -144,6 +155,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -151,13 +163,22 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class MainActivity extends AppCompatActivity {
+    private enum VerificationFilter {
+        ALL,
+        UNREVIEWED,
+        CHANGED,
+        DESKTOP
+    }
+
     private static final String LOG_TAG = "MainActivity";
     private static final String KEY_CAMERA_PERMISSION_REQUESTED =
             "camera_permission_requested";
@@ -1636,6 +1657,7 @@ public final class MainActivity extends AppCompatActivity {
             };
     private List<CapturedPlateItem> capturedCrops;
     private Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack;
+    private RecognitionHistoryStore recognitionHistory;
 
     private PreviewView previewView;
     private DetectionOverlayView overlayView;
@@ -1668,15 +1690,47 @@ public final class MainActivity extends AppCompatActivity {
 
     private RecyclerView galleryResultsList;
 
-    private TextView galleryResultsEmpty;
+    private View galleryResultsEmpty;
 
     private TextView gallerySheetCount;
 
+    private TextView gallerySheetTitle;
+
+    private TextView gallerySheetModeLabel;
+
     private TextView galleryCollectionStats;
 
-    private MaterialCheckBox gallerySelectAllCropsToggle;
-
     private MaterialButton gallerySaveSelectedCropsButton;
+    private View galleryRecentContainer;
+    private View galleryResearchContainer;
+    private MaterialButton galleryClearHistoryButton;
+    private RecognitionHistoryAdapter recognitionHistoryAdapter;
+    private boolean galleryResearchMode;
+    private View verificationEmpty;
+    private TextView verificationEmptyText;
+    private View verificationScroll;
+    private PlateCropView verificationCrop;
+    private MaterialSwitch verificationShowBoxes;
+    private TextView verificationStatus;
+    private TextView verificationModelText;
+    private TextView verificationConsensusText;
+    private TextView verificationMetrics;
+    private MaterialButton verificationAcceptButton;
+    private MaterialButton verificationCorrectButton;
+    private MaterialButton verificationRejectButton;
+    private MaterialButton verificationSaveCurrentButton;
+    private MaterialButton verificationPreviousButton;
+    private MaterialButton verificationNextButton;
+    private MaterialCheckBox verificationDesktopReview;
+    private EditText verificationNote;
+    private final Map<VerificationIssue, Chip> verificationIssueChips =
+            new EnumMap<>(VerificationIssue.class);
+    private VerificationFilter verificationFilter = VerificationFilter.ALL;
+    private final List<CapturedPlateItem> filteredVerificationItems = new ArrayList<>();
+    private String selectedVerificationCaptureId = "";
+    private CapturedPlateItem boundVerificationItem;
+    private String persistedVerificationNote = "";
+    private boolean bindingVerificationControls;
     private MaterialButton experimentTimerButton;
     private MaterialButton experimentThermalButton;
     private MaterialButton autoZoomButton;
@@ -1685,7 +1739,6 @@ public final class MainActivity extends AppCompatActivity {
     private ImageView autoZoomTarget;
     private ObjectAnimator autoZoomGlowAnimator;
     private ObjectAnimator autoZoomTargetAnimator;
-    private PlateCaptureAdapter captureAdapter;
     private ProgressBar progress;
     private MaterialToolbar topAppBar;
 
@@ -1831,6 +1884,7 @@ public final class MainActivity extends AppCompatActivity {
         captureGalleryState = new ViewModelProvider(this).get(CaptureGalleryViewModel.class);
         capturedCrops = captureGalleryState.capturedCrops();
         lastCaptureByTrack = captureGalleryState.lastCaptureByTrack();
+        recognitionHistory = captureGalleryState.recognitionHistory();
         collectionActive = captureGalleryState.collectionActive();
         collectionSessionId = captureGalleryState.collectionSessionId();
         collectionSessionStartedElapsedNanos =
@@ -4666,7 +4720,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean requiredRecognitionModelsAvailable() {
-        return modelRegistry != null && modelRegistry.hasRequiredPipeline();
+        return modelRegistry != null && modelRegistry.hasCompleteAlprComposition();
     }
 
     private boolean syncMissingModelsStatus() {
@@ -5194,6 +5248,7 @@ public final class MainActivity extends AppCompatActivity {
             }
 
         }
+        collectRecognitionHistory(result.plateObservations);
         if (collectionActive) {
             if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
                 recordStaleFinalResult("before_crop_collect", result);
@@ -7703,51 +7758,9 @@ public final class MainActivity extends AppCompatActivity {
                 );
 
 
-        /*
-         * Adapter istnieje niezależnie od tego,
-         * czy Bottom Sheet jest aktualnie otwarty.
-         */
-        captureAdapter =
-                new PlateCaptureAdapter(
-                        new PlateCaptureAdapter.SelectionListener() {
-
-                            @Override
-                            public void onSelectionChanged(
-                                    CapturedPlateItem item,
-                                    boolean selected
-                            ) {
-
-                                onCropSelectionChanged(
-                                        item,
-                                        selected
-                                );
-                            }
-
-
-                            @Override
-                            public void onVerificationChanged(
-                                    CapturedPlateItem item,
-                                    CapturedPlateItem.VerificationStatus status
-                            ) {
-
-                                applyHumanVerification(
-                                        item,
-                                        status,
-                                        ""
-                                );
-                            }
-
-
-                            @Override
-                            public void onCorrectionRequested(
-                                    CapturedPlateItem item
-                            ) {
-
-                                showCorrectionDialog(
-                                        item
-                                );
-                            }
-                        }
+        recognitionHistoryAdapter =
+                new RecognitionHistoryAdapter(
+                        this::showRecognitionHistoryDetails
                 );
 
 
@@ -7799,191 +7812,205 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showGalleryBottomSheet() {
-
-        /*
-         * Nie tworzymy drugiej instancji,
-         * jeżeli galeria już jest otwarta.
-         */
         if (galleryBottomSheet != null
                 && galleryBottomSheet.isShowing()) {
-
             return;
         }
-
-
-        View content =
-                getLayoutInflater().inflate(
-                        R.layout.bottom_sheet_gallery,
-                        (ViewGroup) findViewById(android.R.id.content),
-                        false
-                );
-
-
-        BottomSheetDialog dialog =
-                new BottomSheetDialog(
-                        this
-                );
-
-
-        dialog.setContentView(
-                content
+        galleryResearchMode = experimentModeEnabled;
+        View content = getLayoutInflater().inflate(
+                R.layout.bottom_sheet_gallery,
+                (ViewGroup) findViewById(android.R.id.content),
+                false
         );
-
-
-        galleryBottomSheet =
-                dialog;
-
-
-        galleryResultsList =
-                content.findViewById(
-                        R.id.gallery_sheet_list
-                );
-
-
-        galleryResultsEmpty =
-                content.findViewById(
-                        R.id.gallery_sheet_empty
-                );
-
-
-        gallerySheetCount =
-                content.findViewById(
-                        R.id.gallery_sheet_count
-                );
-
-
-        galleryCollectionStats =
-                content.findViewById(
-                        R.id.gallery_sheet_collection_stats
-                );
-
-
-        gallerySelectAllCropsToggle =
-                content.findViewById(
-                        R.id.gallery_sheet_select_all
-                );
-
-
-        gallerySaveSelectedCropsButton =
-                content.findViewById(
-                        R.id.gallery_sheet_save_selected
-                );
-
-
-        galleryResultsList.setLayoutManager(
-                new LinearLayoutManager(
-                        this,
-                        RecyclerView.VERTICAL,
-                        false
-                )
-        );
-
-
-        galleryResultsList.setAdapter(
-                captureAdapter
-        );
-
-
-        gallerySelectAllCropsToggle.setOnCheckedChangeListener(
-                (button, checked) ->
-                        selectAllCrops(
-                                checked
-                        )
-        );
-
-
-        gallerySaveSelectedCropsButton.setOnClickListener(
-                view ->
-                        saveSelectedCrops()
-        );
-
-
-        /*
-         * Po zamknięciu Bottom Sheeta usuwamy wyłącznie
-         * referencje do jego widoków.
-         *
-         * Adapter, cropy i sesja pozostają.
-         */
-        dialog.setOnDismissListener(
-                ignored -> {
-
-                    galleryBottomSheet =
-                            null;
-
-                    galleryResultsList =
-                            null;
-
-                    galleryResultsEmpty =
-                            null;
-
-                    gallerySheetCount =
-                            null;
-
-                    galleryCollectionStats =
-                            null;
-
-                    gallerySelectAllCropsToggle =
-                            null;
-
-                    gallerySaveSelectedCropsButton =
-                            null;
-                }
-        );
-
-
+        BottomSheetDialog dialog = new BottomSheetDialog(this);
+        dialog.setContentView(content);
+        galleryBottomSheet = dialog;
+        bindGallerySheet(content);
+        dialog.setOnDismissListener(ignored -> {
+            commitVerificationNote();
+            clearGallerySheetReferences();
+        });
         dialog.show();
-
-
-        /*
-         * Galeria otwiera się jako duży panel.
-         * Użytkownik może go przeciągnąć w dół,
-         * zamiast używać osobnych przycisków
-         * "ukryj" i "maksymalizuj".
-         */
-        View bottomSheet =
-                dialog.findViewById(
-                        com.google.android.material.R.id.design_bottom_sheet
-                );
-
-
+        View bottomSheet = dialog.findViewById(
+                com.google.android.material.R.id.design_bottom_sheet
+        );
         if (bottomSheet != null) {
-
-            ViewGroup.LayoutParams parameters =
-                    bottomSheet.getLayoutParams();
-
-
-            parameters.height =
-                    ViewGroup.LayoutParams.MATCH_PARENT;
-
-
-            bottomSheet.setLayoutParams(
-                    parameters
-            );
-
-
-            BottomSheetBehavior<View> behavior =
-                    BottomSheetBehavior.from(
-                            bottomSheet
-                    );
-
-
-            behavior.setState(
-                    BottomSheetBehavior.STATE_EXPANDED
-            );
-
-
-            behavior.setHideable(
-                    true
-            );
-
-
-            behavior.setDraggable(
-                    true
-            );
+            ViewGroup.LayoutParams parameters = bottomSheet.getLayoutParams();
+            parameters.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            bottomSheet.setLayoutParams(parameters);
+            BottomSheetBehavior<View> behavior = BottomSheetBehavior.from(bottomSheet);
+            behavior.setState(BottomSheetBehavior.STATE_EXPANDED);
+            behavior.setHideable(true);
+            behavior.setDraggable(true);
         }
-
-
         renderCapturedCrops();
+    }
+
+    private void bindGallerySheet(View content) {
+        galleryResultsList = content.findViewById(R.id.gallery_sheet_list);
+        galleryResultsEmpty = content.findViewById(R.id.gallery_sheet_empty);
+        gallerySheetCount = content.findViewById(R.id.gallery_sheet_count);
+        gallerySheetTitle = content.findViewById(R.id.gallery_sheet_title);
+        gallerySheetModeLabel = content.findViewById(R.id.gallery_sheet_mode_label);
+        galleryCollectionStats = content.findViewById(R.id.gallery_sheet_collection_stats);
+        galleryRecentContainer = content.findViewById(R.id.gallery_recent_container);
+        galleryResearchContainer = content.findViewById(R.id.gallery_research_container);
+        galleryClearHistoryButton = content.findViewById(R.id.gallery_clear_history);
+        gallerySaveSelectedCropsButton = content.findViewById(
+                R.id.gallery_sheet_save_selected
+        );
+        galleryResultsList.setLayoutManager(new LinearLayoutManager(
+                this,
+                RecyclerView.VERTICAL,
+                false
+        ));
+        galleryResultsList.setAdapter(recognitionHistoryAdapter);
+        galleryClearHistoryButton.setOnClickListener(view -> confirmClearRecognitionHistory());
+
+        verificationEmpty = content.findViewById(R.id.verification_empty);
+        verificationEmptyText = content.findViewById(R.id.verification_empty_text);
+        verificationScroll = content.findViewById(R.id.verification_scroll);
+        verificationCrop = content.findViewById(R.id.verification_crop);
+        verificationShowBoxes = content.findViewById(R.id.verification_show_boxes);
+        verificationStatus = content.findViewById(R.id.verification_status);
+        verificationModelText = content.findViewById(R.id.verification_model_text);
+        verificationConsensusText = content.findViewById(R.id.verification_consensus_text);
+        verificationMetrics = content.findViewById(R.id.verification_metrics);
+        verificationAcceptButton = content.findViewById(R.id.verification_accept);
+        verificationCorrectButton = content.findViewById(R.id.verification_correct);
+        verificationRejectButton = content.findViewById(R.id.verification_reject);
+        verificationSaveCurrentButton = content.findViewById(
+                R.id.verification_save_current
+        );
+        verificationPreviousButton = content.findViewById(R.id.verification_previous);
+        verificationNextButton = content.findViewById(R.id.verification_next);
+        verificationDesktopReview = content.findViewById(
+                R.id.verification_desktop_review
+        );
+        verificationNote = content.findViewById(R.id.verification_note);
+
+        bindVerificationFilter(content, R.id.verification_filter_all, VerificationFilter.ALL);
+        bindVerificationFilter(
+                content,
+                R.id.verification_filter_unreviewed,
+                VerificationFilter.UNREVIEWED
+        );
+        bindVerificationFilter(
+                content,
+                R.id.verification_filter_changed,
+                VerificationFilter.CHANGED
+        );
+        bindVerificationFilter(
+                content,
+                R.id.verification_filter_desktop,
+                VerificationFilter.DESKTOP
+        );
+        verificationIssueChips.clear();
+        bindVerificationIssue(content, R.id.issue_plate_not_visible, VerificationIssue.PLATE_NOT_VISIBLE);
+        bindVerificationIssue(content, R.id.issue_mt_region, VerificationIssue.MT_REGION);
+        bindVerificationIssue(content, R.id.issue_mt_corners, VerificationIssue.MT_CORNERS);
+        bindVerificationIssue(content, R.id.issue_rectification, VerificationIssue.RECTIFICATION);
+        bindVerificationIssue(content, R.id.issue_mz_missing, VerificationIssue.MZ_MISSING_CHARACTER);
+        bindVerificationIssue(content, R.id.issue_mz_wrong, VerificationIssue.MZ_WRONG_CLASS);
+        bindVerificationIssue(content, R.id.issue_blur, VerificationIssue.BLUR);
+        bindVerificationIssue(content, R.id.issue_occlusion, VerificationIssue.OCCLUSION);
+        bindVerificationIssue(
+                content,
+                R.id.issue_vehicle_association,
+                VerificationIssue.VEHICLE_ASSOCIATION
+        );
+        bindVerificationIssue(content, R.id.issue_other, VerificationIssue.OTHER);
+
+        verificationShowBoxes.setOnCheckedChangeListener(
+                (button, checked) -> verificationCrop.setBoxesVisible(checked)
+        );
+        verificationAcceptButton.setOnClickListener(view -> {
+            if (boundVerificationItem == null) return;
+            commitVerificationNote();
+            applyHumanVerification(
+                    boundVerificationItem,
+                    CapturedPlateItem.VerificationStatus.ACCEPTED,
+                    ""
+            );
+            advanceAfterVerification();
+        });
+        verificationCorrectButton.setOnClickListener(view -> {
+            if (boundVerificationItem != null) {
+                commitVerificationNote();
+                showCorrectionDialog(boundVerificationItem);
+            }
+        });
+        verificationRejectButton.setOnClickListener(view -> {
+            if (boundVerificationItem == null) return;
+            commitVerificationNote();
+            applyHumanVerification(
+                    boundVerificationItem,
+                    CapturedPlateItem.VerificationStatus.REJECTED,
+                    ""
+            );
+            advanceAfterVerification();
+        });
+        verificationDesktopReview.setOnCheckedChangeListener((button, checked) -> {
+            if (bindingVerificationControls || boundVerificationItem == null) return;
+            boundVerificationItem.needsDesktopReview = checked;
+            persistVerificationMetadata(boundVerificationItem);
+            if (verificationFilter == VerificationFilter.DESKTOP) renderResearchVerification();
+            else updateVerificationHeader();
+        });
+        verificationNote.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence value, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(Editable value) {
+                if (!bindingVerificationControls && boundVerificationItem != null) {
+                    boundVerificationItem.verificationNote = value.toString();
+                }
+            }
+        });
+        verificationNote.setOnFocusChangeListener((view, focused) -> {
+            if (!focused) commitVerificationNote();
+        });
+        verificationPreviousButton.setOnClickListener(view -> moveVerification(-1));
+        verificationNextButton.setOnClickListener(view -> moveVerification(1));
+        verificationSaveCurrentButton.setOnClickListener(view -> saveCurrentVerificationCrop());
+        gallerySaveSelectedCropsButton.setOnClickListener(view -> saveReviewedCrops());
+    }
+
+    private void clearGallerySheetReferences() {
+        galleryBottomSheet = null;
+        galleryResultsList = null;
+        galleryResultsEmpty = null;
+        gallerySheetCount = null;
+        gallerySheetTitle = null;
+        gallerySheetModeLabel = null;
+        galleryCollectionStats = null;
+        gallerySaveSelectedCropsButton = null;
+        galleryRecentContainer = null;
+        galleryResearchContainer = null;
+        galleryClearHistoryButton = null;
+        verificationEmpty = null;
+        verificationEmptyText = null;
+        verificationScroll = null;
+        verificationCrop = null;
+        verificationShowBoxes = null;
+        verificationStatus = null;
+        verificationModelText = null;
+        verificationConsensusText = null;
+        verificationMetrics = null;
+        verificationAcceptButton = null;
+        verificationCorrectButton = null;
+        verificationRejectButton = null;
+        verificationSaveCurrentButton = null;
+        verificationPreviousButton = null;
+        verificationNextButton = null;
+        verificationDesktopReview = null;
+        verificationNote = null;
+        verificationIssueChips.clear();
+        boundVerificationItem = null;
     }
 
     private void toggleCollection() {
@@ -8321,231 +8348,289 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderCapturedCrops() {
-
-        if (captureAdapter == null) {
-            return;
+        if (recognitionHistoryAdapter != null) {
+            recognitionHistoryAdapter.setItems(recognitionHistory.newestFirst());
         }
-
-
-        updateCaptureAdapterItems();
-
-
-        boolean empty =
-                capturedCrops.isEmpty();
-
-
-        /*
-         * Przycisk galerii na głównym ekranie
-         * zawsze pokazuje bieżącą liczbę cropów.
-         */
         if (galleryOpenButton != null) {
-
             galleryOpenButton.setText(
                     getString(
-                            R.string.gallery_open_count,
-                            capturedCrops.size()
+                            experimentModeEnabled
+                                    ? R.string.verification_open_count
+                                    : R.string.history_open_count,
+                            experimentModeEnabled
+                                    ? capturedCrops.size()
+                                    : recognitionHistory.size()
                     )
             );
         }
-
-
-        /*
-         * Bottom Sheet może być zamknięty,
-         * dlatego wszystkie jego widoki są opcjonalne.
-         */
-        if (galleryResultsEmpty != null) {
-
-            galleryResultsEmpty.setVisibility(
-                    empty
-                            ? View.VISIBLE
-                            : View.GONE
-            );
-        }
-
-
-        if (galleryResultsList != null) {
-
-            galleryResultsList.setVisibility(
-                    empty
-                            ? View.GONE
-                            : View.VISIBLE
-            );
-        }
-
-
-        if (gallerySheetCount != null) {
-
-            gallerySheetCount.setText(
-                    String.valueOf(
-                            capturedCrops.size()
-                    )
-            );
-        }
-
-
-        /*
-         * Główny ekran pokazuje tylko jedną prostą akcję
-         * uruchomienia / wstrzymania zbierania.
-         */
         collectionToggle.setText(
                 collectionActive
                         ? R.string.collection_stop
                         : R.string.collection_start
         );
-
-
         collectionToggle.setIconResource(
                 collectionActive
                         ? R.drawable.ic_stop_24
                         : R.drawable.ic_session_24
         );
-
-
-        updateGalleryCollectionStatus();
-
-        updateSelectionControls();
+        if (galleryRecentContainer == null || galleryResearchContainer == null) return;
+        galleryResearchMode = experimentModeEnabled;
+        galleryRecentContainer.setVisibility(galleryResearchMode ? View.GONE : View.VISIBLE);
+        galleryResearchContainer.setVisibility(galleryResearchMode ? View.VISIBLE : View.GONE);
+        if (galleryResearchMode) renderResearchVerification();
+        else renderRecognitionHistory();
     }
 
-    private void updateGalleryCollectionStatus() {
+    private void renderRecognitionHistory() {
+        List<RecognitionHistoryItem> items = recognitionHistory.newestFirst();
+        boolean empty = items.isEmpty();
+        gallerySheetModeLabel.setText(R.string.history_mode_label);
+        gallerySheetTitle.setText(R.string.history_title);
+        gallerySheetCount.setText(String.valueOf(items.size()));
+        galleryCollectionStats.setText(R.string.history_subtitle);
+        galleryResultsEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+        galleryResultsList.setVisibility(empty ? View.GONE : View.VISIBLE);
+        galleryClearHistoryButton.setVisibility(empty ? View.GONE : View.VISIBLE);
+        galleryClearHistoryButton.setEnabled(!empty);
+        recognitionHistoryAdapter.setItems(items);
+    }
 
-        if (galleryCollectionStats == null) {
-            return;
+    private void renderResearchVerification() {
+        if (verificationScroll == null) return;
+        filteredVerificationItems.clear();
+        for (int index = capturedCrops.size() - 1; index >= 0; index--) {
+            CapturedPlateItem item = capturedCrops.get(index);
+            if (matchesVerificationFilter(item)) filteredVerificationItems.add(item);
         }
-
-
-        if (collectionActive) {
-
-            galleryCollectionStats.setText(
-                    getString(
-                            R.string.gallery_collection_running,
-                            capturedCrops.size(),
-                            resolvedCropLimit
-                    )
-            );
-
-            return;
+        int selectedIndex = selectedVerificationIndex();
+        if (selectedIndex < 0 && !filteredVerificationItems.isEmpty()) {
+            selectedIndex = 0;
+            selectedVerificationCaptureId = filteredVerificationItems.get(0).captureId;
         }
-
-
-        if (collectionSessionId.isEmpty()) {
-
-            galleryCollectionStats.setText(
-                    getString(
-                            R.string.gallery_collection_ready_limit,
-                            resolvedCropLimit
-                    )
-            );
-
-            return;
-        }
-
-
-        galleryCollectionStats.setText(
-                getString(
-                        R.string.gallery_collection_paused,
-                        capturedCrops.size(),
-                        resolvedCropLimit
-                )
+        boolean empty = selectedIndex < 0;
+        verificationEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+        verificationScroll.setVisibility(empty ? View.GONE : View.VISIBLE);
+        verificationPreviousButton.setEnabled(!empty && selectedIndex > 0);
+        verificationNextButton.setEnabled(
+                !empty && selectedIndex + 1 < filteredVerificationItems.size()
+        );
+        boundVerificationItem = empty ? null : filteredVerificationItems.get(selectedIndex);
+        bindVerificationItem(boundVerificationItem);
+        updateVerificationHeader();
+        gallerySaveSelectedCropsButton.setEnabled(
+                pendingBatchWrites == 0 && hasReviewedCropToSave()
         );
     }
 
-
-
-
-    private void updateCaptureAdapterItems() {
-
-        /*
-         * Galeria może być zamknięta.
-         *
-         * Adapter nadal aktualizujemy, żeby po ponownym
-         * otwarciu od razu zawierał aktualne dane.
-         */
-        if (galleryResultsList == null) {
-
-            captureAdapter.setItems(
-                    capturedCrops
+    private void bindVerificationItem(CapturedPlateItem item) {
+        bindingVerificationControls = true;
+        try {
+            if (item == null) {
+                persistedVerificationNote = "";
+                return;
+            }
+            verificationCrop.setPlate(item.bitmap, item.characters);
+            verificationCrop.setBoxesVisible(verificationShowBoxes.isChecked());
+            verificationModelText.setText(item.text.isEmpty()
+                    ? getString(R.string.result_placeholder) : item.text);
+            verificationConsensusText.setText(item.consensusText.isEmpty()
+                    ? getString(R.string.result_placeholder) : item.consensusText);
+            verificationMetrics.setText(getString(
+                    R.string.verification_metrics_format,
+                    percent(item.plateConfidence),
+                    percent(item.recognitionConfidence),
+                    item.sharpness,
+                    item.mzAttemptIndex,
+                    item.layout,
+                    item.captureSource
+            ));
+            int statusColor = R.color.alpr_text_muted;
+            switch (item.verificationStatus) {
+                case ACCEPTED:
+                    verificationStatus.setText(R.string.verification_accepted);
+                    statusColor = R.color.alpr_success;
+                    break;
+                case CORRECTED:
+                    verificationStatus.setText(getString(
+                            R.string.verification_corrected,
+                            item.groundTruthText
+                    ));
+                    statusColor = R.color.alpr_primary;
+                    break;
+                case REJECTED:
+                    verificationStatus.setText(R.string.verification_rejected);
+                    statusColor = R.color.alpr_warning;
+                    break;
+                case NOT_REVIEWED:
+                default:
+                    verificationStatus.setText(R.string.verification_not_reviewed);
+                    break;
+            }
+            verificationStatus.setTextColor(ContextCompat.getColor(this, statusColor));
+            boolean saving = item.saveState == CapturedPlateItem.SaveState.SAVING;
+            verificationAcceptButton.setEnabled(!saving && !item.text.isEmpty());
+            verificationCorrectButton.setEnabled(!saving);
+            verificationRejectButton.setEnabled(!saving);
+            for (Map.Entry<VerificationIssue, Chip> entry : verificationIssueChips.entrySet()) {
+                entry.getValue().setEnabled(!saving);
+                entry.getValue().setChecked(item.verificationIssues.contains(entry.getKey()));
+            }
+            verificationDesktopReview.setEnabled(!saving);
+            verificationNote.setEnabled(!saving);
+            verificationDesktopReview.setChecked(item.needsDesktopReview);
+            if (!verificationNote.getText().toString().equals(item.verificationNote)) {
+                verificationNote.setText(item.verificationNote);
+            }
+            persistedVerificationNote = item.verificationNote;
+            verificationSaveCurrentButton.setEnabled(
+                    pendingBatchWrites == 0 && isSelectableForSave(item)
             );
-
-            return;
-        }
-
-
-        RecyclerView.LayoutManager manager =
-                galleryResultsList.getLayoutManager();
-
-
-        LinearLayoutManager linear =
-                manager instanceof LinearLayoutManager
-
-                        ? (LinearLayoutManager) manager
-
-                        : null;
-
-
-        int previousCount =
-                captureAdapter.getItemCount();
-
-
-        int firstVisible =
-                linear == null
-
-                        ? RecyclerView.NO_POSITION
-
-                        : linear.findFirstVisibleItemPosition();
-
-
-        View anchor =
-                firstVisible == RecyclerView.NO_POSITION
-                        ? null
-                        : linear.findViewByPosition(
-                        firstVisible
-                );
-
-
-        int anchorOffset =
-                0;
-
-
-        if (anchor != null) {
-
-            anchorOffset =
-                    anchor.getTop()
-                            - galleryResultsList.getPaddingTop();
-        }
-
-
-        captureAdapter.setItems(
-                capturedCrops
-        );
-
-
-        int addedAtFront =
-                captureAdapter.getItemCount()
-                        - previousCount;
-
-
-        /*
-         * Jeżeli użytkownik ogląda starsze cropy,
-         * nowa detekcja nie przesuwa mu gwałtownie listy.
-         */
-        if (linear != null
-                && firstVisible > 0
-                && addedAtFront > 0) {
-
-            linear.scrollToPositionWithOffset(
-                    firstVisible + addedAtFront,
-                    anchorOffset
-            );
+        } finally {
+            bindingVerificationControls = false;
         }
     }
 
+    private void updateVerificationHeader() {
+        gallerySheetModeLabel.setText(R.string.verification_mode_label);
+        gallerySheetTitle.setText(R.string.verification_title);
+        int selectedIndex = selectedVerificationIndex();
+        gallerySheetCount.setText(getString(
+                R.string.verification_progress,
+                selectedIndex < 0 ? 0 : selectedIndex + 1,
+                filteredVerificationItems.size()
+        ));
+        int reviewed = 0;
+        for (CapturedPlateItem item : capturedCrops) {
+            if (item.verificationStatus != CapturedPlateItem.VerificationStatus.NOT_REVIEWED) {
+                reviewed++;
+            }
+        }
+        galleryCollectionStats.setText(getString(
+                R.string.verification_stats,
+                reviewed,
+                capturedCrops.size(),
+                verificationFilterLabel()
+        ));
+    }
 
+    private void bindVerificationFilter(View content, int viewId, VerificationFilter filter) {
+        Chip chip = content.findViewById(viewId);
+        chip.setChecked(verificationFilter == filter);
+        chip.setOnCheckedChangeListener((button, checked) -> {
+            if (!checked) return;
+            commitVerificationNote();
+            verificationFilter = filter;
+            selectedVerificationCaptureId = "";
+            renderResearchVerification();
+        });
+    }
 
+    private void bindVerificationIssue(View content, int viewId, VerificationIssue issue) {
+        Chip chip = content.findViewById(viewId);
+        verificationIssueChips.put(issue, chip);
+        chip.setOnCheckedChangeListener((button, checked) -> {
+            if (bindingVerificationControls || boundVerificationItem == null) return;
+            if (checked) boundVerificationItem.verificationIssues.add(issue);
+            else boundVerificationItem.verificationIssues.remove(issue);
+            if (checked && issue.desktopReviewRecommended()) {
+                boundVerificationItem.needsDesktopReview = true;
+                bindingVerificationControls = true;
+                verificationDesktopReview.setChecked(true);
+                bindingVerificationControls = false;
+            }
+            persistVerificationMetadata(boundVerificationItem);
+            if (verificationFilter == VerificationFilter.DESKTOP) renderResearchVerification();
+            else updateVerificationHeader();
+        });
+    }
 
+    private boolean matchesVerificationFilter(CapturedPlateItem item) {
+        switch (verificationFilter) {
+            case UNREVIEWED:
+                return item.verificationStatus
+                        == CapturedPlateItem.VerificationStatus.NOT_REVIEWED;
+            case CHANGED:
+                return item.verificationStatus == CapturedPlateItem.VerificationStatus.CORRECTED
+                        || item.verificationStatus
+                        == CapturedPlateItem.VerificationStatus.REJECTED;
+            case DESKTOP:
+                return item.needsDesktopReview;
+            case ALL:
+            default:
+                return true;
+        }
+    }
 
-    private void onCropSelectionChanged(CapturedPlateItem item, boolean selected) {
-        item.selectedForSave = selected && isSelectableForSave(item);
-        updateSelectionControls();
+    private String verificationFilterLabel() {
+        switch (verificationFilter) {
+            case UNREVIEWED:
+                return getString(R.string.verification_filter_unreviewed);
+            case CHANGED:
+                return getString(R.string.verification_filter_changed);
+            case DESKTOP:
+                return getString(R.string.verification_filter_desktop);
+            case ALL:
+            default:
+                return getString(R.string.verification_filter_all);
+        }
+    }
+
+    private int selectedVerificationIndex() {
+        for (int index = 0; index < filteredVerificationItems.size(); index++) {
+            if (filteredVerificationItems.get(index).captureId.equals(
+                    selectedVerificationCaptureId
+            )) return index;
+        }
+        return -1;
+    }
+
+    private void moveVerification(int offset) {
+        commitVerificationNote();
+        int current = selectedVerificationIndex();
+        if (current < 0) return;
+        int next = Math.max(0, Math.min(
+                filteredVerificationItems.size() - 1,
+                current + offset
+        ));
+        selectedVerificationCaptureId = filteredVerificationItems.get(next).captureId;
+        renderResearchVerification();
+        verificationScroll.scrollTo(0, 0);
+    }
+
+    private void advanceAfterVerification() {
+        if (verificationFilter == VerificationFilter.ALL) moveVerification(1);
+    }
+
+    private void commitVerificationNote() {
+        if (boundVerificationItem == null) return;
+        String normalized = boundVerificationItem.verificationNote == null
+                ? "" : boundVerificationItem.verificationNote.trim();
+        boundVerificationItem.verificationNote = normalized;
+        if (normalized.equals(persistedVerificationNote)) return;
+        persistedVerificationNote = normalized;
+        persistVerificationMetadata(boundVerificationItem);
+    }
+
+    private void persistVerificationMetadata(CapturedPlateItem item) {
+        HumanVerificationEditor.touchMetadata(item, System.currentTimeMillis());
+        persistVerificationState(item);
+    }
+
+    private void persistVerificationState(CapturedPlateItem item) {
+        metricsCollector.markHumanVerification(item);
+        refreshPersistedVerification(item);
+    }
+
+    private boolean hasReviewedCropToSave() {
+        for (CapturedPlateItem item : capturedCrops) {
+            if (item.verificationStatus != CapturedPlateItem.VerificationStatus.NOT_REVIEWED
+                    && isSelectableForSave(item)) return true;
+        }
+        return false;
+    }
+
+    private static int percent(double confidence) {
+        return (int) Math.round(Math.max(0.0, Math.min(1.0, confidence)) * 100.0);
     }
 
     private void applyHumanVerification(
@@ -8553,22 +8638,14 @@ public final class MainActivity extends AppCompatActivity {
             CapturedPlateItem.VerificationStatus status,
             String correctedText
     ) {
-        item.verificationStatus = status;
-        item.verificationRevision++;
-        if (status == CapturedPlateItem.VerificationStatus.NOT_REVIEWED) {
-            item.groundTruthText = "";
-            item.verifiedAtMillis = 0L;
-        } else {
-            item.verifiedAtMillis = System.currentTimeMillis();
-            item.groundTruthText = status == CapturedPlateItem.VerificationStatus.ACCEPTED
-                    ? item.text
-                    : status == CapturedPlateItem.VerificationStatus.CORRECTED
-                    ? correctedText.trim().toUpperCase(Locale.ROOT)
-                    : "";
-        }
-        metricsCollector.markHumanVerification(item);
-        captureAdapter.setItems(capturedCrops);
-        refreshPersistedVerification(item);
+        HumanVerificationEditor.applyStatus(
+                item,
+                status,
+                correctedText,
+                System.currentTimeMillis()
+        );
+        persistVerificationState(item);
+        renderResearchVerification();
     }
 
     private void refreshPersistedVerification(CapturedPlateItem item) {
@@ -8592,21 +8669,28 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         if (item.savedReportUri == null) return;
-        backgroundExecutor.execute(() -> {
-            try (OutputStream output = getContentResolver().openOutputStream(
-                    item.savedReportUri, "wt"
-            )) {
-                if (output == null) throw new IllegalStateException("Brak strumienia raportu cropu");
-                output.write(refreshed.getBytes(StandardCharsets.UTF_8));
-            } catch (Exception error) {
-                AppLog.error(
-                        this,
-                        LOG_TAG,
-                        "Nie udało się zapisać manualnej walidacji cropu: " + error.getMessage(),
-                        error
-                );
-            }
-        });
+        try {
+            backgroundExecutor.execute(() -> {
+                try (OutputStream output = getContentResolver().openOutputStream(
+                        item.savedReportUri, "wt"
+                )) {
+                    if (output == null) {
+                        throw new IllegalStateException("Brak strumienia raportu cropu");
+                    }
+                    output.write(refreshed.getBytes(StandardCharsets.UTF_8));
+                } catch (Exception error) {
+                    AppLog.error(
+                            this,
+                            LOG_TAG,
+                            "Nie udało się zapisać manualnej walidacji cropu: "
+                                    + error.getMessage(),
+                            error
+                    );
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // Activity kończy pracę; odświeżony JSON pozostaje w stanie ViewModelu.
+        }
     }
 
     private void showCorrectionDialog(CapturedPlateItem item) {
@@ -8648,92 +8732,6 @@ public final class MainActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    private void selectAllCrops(boolean selected) {
-        for (CapturedPlateItem item : capturedCrops) {
-            if (isSelectableForSave(item)) item.selectedForSave = selected;
-        }
-        captureAdapter.setItems(capturedCrops);
-        updateSelectionControls();
-    }
-
-    private void updateSelectionControls() {
-
-        int selectable =
-                0;
-
-        int selected =
-                0;
-
-
-        for (CapturedPlateItem item :
-                capturedCrops) {
-
-            if (!isSelectableForSave(
-                    item
-            )) {
-                continue;
-            }
-
-
-            selectable++;
-
-
-            if (item.selectedForSave) {
-                selected++;
-            }
-        }
-
-
-        /*
-         * Kontrolki istnieją wyłącznie przy
-         * otwartym Bottom Sheecie.
-         */
-        if (gallerySelectAllCropsToggle != null) {
-
-            gallerySelectAllCropsToggle
-                    .setOnCheckedChangeListener(
-                            null
-                    );
-
-
-            gallerySelectAllCropsToggle.setChecked(
-                    selectable > 0
-                            && selected == selectable
-            );
-
-
-            gallerySelectAllCropsToggle.setEnabled(
-                    selectable > 0
-            );
-
-
-            gallerySelectAllCropsToggle
-                    .setOnCheckedChangeListener(
-                            (button, checked) ->
-                                    selectAllCrops(
-                                            checked
-                                    )
-                    );
-        }
-
-
-        if (gallerySaveSelectedCropsButton != null) {
-
-            gallerySaveSelectedCropsButton.setText(
-                    getString(
-                            R.string.crop_save_selected_count,
-                            selected
-                    )
-            );
-
-
-            gallerySaveSelectedCropsButton.setEnabled(
-                    selected > 0
-                            && pendingBatchWrites == 0
-            );
-        }
-    }
-
     private static boolean isSelectableForSave(CapturedPlateItem item) {
         return item.saveState == CapturedPlateItem.SaveState.NOT_SAVED
                 || item.saveState == CapturedPlateItem.SaveState.ERROR;
@@ -8766,20 +8764,188 @@ public final class MainActivity extends AppCompatActivity {
         renderCapturedCrops();
     }
 
-    private void saveSelectedCrops() {
-        List<CapturedPlateItem> selected = new ArrayList<>();
-        for (CapturedPlateItem item : capturedCrops) {
-            if (item.selectedForSave && isSelectableForSave(item)) selected.add(item);
+    private void collectRecognitionHistory(List<PlateObservation> observations) {
+        if (experimentModeEnabled || observations == null || observations.isEmpty()) return;
+        boolean changed = false;
+        for (PlateObservation observation : observations) {
+            if (!observation.confirmed
+                    || !RegistrationTextPolicy.displayable(observation.text)) continue;
+            changed |= recognitionHistory.upsert(
+                    observation.sceneGeneration,
+                    observation.entityId,
+                    observation.vehicleTrackId,
+                    observation.plateTrackId,
+                    observation.trackId,
+                    observation.text,
+                    observation.recognitionConfidence,
+                    observation.plateConfidence,
+                    observation.capturedAtMillis,
+                    observation.previewBitmap,
+                    observation.confirmed,
+                    observation.observations,
+                    observation.sharpness,
+                    autoZoomController.captureSource()
+            );
         }
-        if (selected.isEmpty()) {
-            Toast.makeText(this, R.string.crop_save_none_selected, Toast.LENGTH_SHORT).show();
+        if (changed) renderCapturedCrops();
+    }
+
+    private void confirmClearRecognitionHistory() {
+        if (recognitionHistory.size() == 0) return;
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.history_clear_title)
+                .setMessage(R.string.history_clear_message)
+                .setNegativeButton(R.string.menu_close, null)
+                .setPositiveButton(R.string.history_clear_action, (dialog, which) -> {
+                    recognitionHistory.clear();
+                    renderCapturedCrops();
+                })
+                .show();
+    }
+
+    private void showRecognitionHistoryDetails(RecognitionHistoryItem item) {
+        if (item == null || item.previewBitmap == null || item.previewBitmap.isRecycled()) return;
+        View content = getLayoutInflater().inflate(
+                R.layout.dialog_recognition_history_detail,
+                (ViewGroup) findViewById(android.R.id.content),
+                false
+        );
+        ImageView preview = content.findViewById(R.id.history_detail_preview);
+        TextView number = content.findViewById(R.id.history_detail_number);
+        TextView meta = content.findViewById(R.id.history_detail_meta);
+        MaterialButton copy = content.findViewById(R.id.history_detail_copy);
+        MaterialButton save = content.findViewById(R.id.history_detail_save);
+        MaterialButton delete = content.findViewById(R.id.history_detail_delete);
+        preview.setImageBitmap(item.previewBitmap);
+        number.setText(item.text);
+        meta.setText(getString(
+                R.string.history_detail_full,
+                getString(
+                        R.string.history_detail_meta,
+                        new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
+                                new Date(item.capturedAtMillis)
+                        ),
+                        percent(item.confidence)
+                ),
+                getResources().getQuantityString(
+                        R.plurals.history_observation_count,
+                        Math.max(1, item.observations),
+                        Math.max(1, item.observations)
+                )
+        ));
+        androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.history_detail_title)
+                .setView(content)
+                .setNegativeButton(R.string.menu_close, null)
+                .create();
+        copy.setOnClickListener(view -> {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(
+                    CLIPBOARD_SERVICE
+            );
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("plate_number", item.text));
+                Toast.makeText(
+                        this,
+                        getString(R.string.history_copied, item.text),
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+        save.setOnClickListener(view -> saveRecognitionHistoryImage(item));
+        delete.setOnClickListener(view -> {
+            recognitionHistory.remove(item.historyId);
+            dialog.dismiss();
+            renderCapturedCrops();
+        });
+        dialog.show();
+    }
+
+    private void saveRecognitionHistoryImage(RecognitionHistoryItem item) {
+        if (item.previewBitmap == null || item.previewBitmap.isRecycled()) return;
+        Bitmap snapshot = item.previewBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        if (snapshot == null) return;
+        try {
+            backgroundExecutor.execute(() -> {
+                Uri imageUri = null;
+                try {
+                    String timestamp = new SimpleDateFormat(
+                            "yyyyMMdd_HHmmss_SSS",
+                            Locale.ROOT
+                    ).format(new Date(item.capturedAtMillis));
+                    String text = item.text.replaceAll("[^A-Za-z0-9_-]", "");
+                    if (text.isEmpty()) text = "odczyt";
+                    imageUri = createDocument(
+                            "image/jpeg",
+                            timestamp + "_" + text + "_history.jpg"
+                    );
+                    try (OutputStream output = getContentResolver().openOutputStream(
+                            imageUri,
+                            "wt"
+                    )) {
+                        if (output == null
+                                || !snapshot.compress(Bitmap.CompressFormat.JPEG, 94, output)) {
+                            throw new IllegalStateException("Nie udało się zapisać obrazu");
+                        }
+                    }
+                    CaptureDirectoryStore.publish(getContentResolver(), imageUri);
+                    runOnUiThread(() -> Toast.makeText(
+                            this,
+                            R.string.history_saved,
+                            Toast.LENGTH_SHORT
+                    ).show());
+                } catch (Exception error) {
+                    deleteCreatedDocument(imageUri);
+                    runOnUiThread(() -> Toast.makeText(
+                            this,
+                            R.string.history_save_failed,
+                            Toast.LENGTH_LONG
+                    ).show());
+                } finally {
+                    snapshot.recycle();
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            snapshot.recycle();
+        }
+    }
+
+    private void saveCurrentVerificationCrop() {
+        commitVerificationNote();
+        if (boundVerificationItem == null || !isSelectableForSave(boundVerificationItem)) {
             return;
         }
-        pendingBatchWrites = selected.size();
+        saveCropBatch(java.util.Collections.singletonList(boundVerificationItem));
+    }
+
+    private void saveReviewedCrops() {
+        commitVerificationNote();
+        List<CapturedPlateItem> reviewed = new ArrayList<>();
+        for (CapturedPlateItem item : capturedCrops) {
+            if (item.verificationStatus != CapturedPlateItem.VerificationStatus.NOT_REVIEWED
+                    && isSelectableForSave(item)) {
+                reviewed.add(item);
+            }
+        }
+        if (reviewed.isEmpty()) {
+            Toast.makeText(
+                    this,
+                    R.string.verification_no_reviewed_to_save,
+                    Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+        saveCropBatch(reviewed);
+    }
+
+    private void saveCropBatch(List<CapturedPlateItem> items) {
+        pendingBatchWrites = items.size();
         successfulBatchWrites = 0;
         failedBatchWrites = 0;
-        for (CapturedPlateItem item : selected) saveCapturedCrop(item);
-        updateSelectionControls();
+        for (CapturedPlateItem item : items) {
+            item.selectedForSave = false;
+            saveCapturedCrop(item);
+        }
+        renderCapturedCrops();
     }
 
     private void saveCapturedCrop(CapturedPlateItem item) {
@@ -8867,7 +9033,7 @@ public final class MainActivity extends AppCompatActivity {
         if (success) successfulBatchWrites++;
         else failedBatchWrites++;
         pendingBatchWrites = Math.max(0, pendingBatchWrites - 1);
-        updateSelectionControls();
+        renderCapturedCrops();
         if (pendingBatchWrites > 0) return;
         if (failedBatchWrites == 0) {
             Toast.makeText(
@@ -8931,6 +9097,8 @@ public final class MainActivity extends AppCompatActivity {
                             ? "Autotuning zakończony: LiteRT/GPU"
                             : "Autotuning zakończony: " + result.chosenProfile.runtime.wireName()
                                     + "/CPU, " + result.chosenProfile.cpuThreads + " wątki";
+                } catch (CancellationException cancelled) {
+                    return;
                 } catch (Exception error) {
                     lastMessage = error.getMessage();
                     AppLog.error(
@@ -9418,31 +9586,24 @@ public final class MainActivity extends AppCompatActivity {
                 LOG_TAG,
                 "Zamykanie aplikacji"
         );
+        commitVerificationNote();
         stopPreviewSceneMonitor();
 
         uiSceneGeneration.incrementAndGet();
 
         /*
-         * CameraController.close() zatrzymuje CameraX,
-         * czeka na zwolnienie pipeline'u na wątku analizatora
-         * i dopiero potem zamyka executor kamery.
+         * CameraX przestaje dostarczać klatki, a zamknięcie pipeline'u trafia
+         * za ewentualną inferencję już oczekującą na jego własnym executorze.
          */
-        if (cameraController != null) {
-            cameraController.close(
-                    pipeline == null
-                            ? null
-                            : pipeline::close
-            );
-        } else if (pipeline != null) {
-            pipeline.close();
-        }
+        if (cameraController != null) cameraController.close();
+        closePipelineAfterPendingInference();
 
         backgroundExecutor.shutdownNow();
         previewTrackingExecutor.shutdownNow();
         pendingDirectLumaFrame.set(null);
         directLumaTrackingExecutor.shutdownNow();
         previewCoordinationExecutor.shutdownNow();
-        pipelineInferenceExecutor.shutdownNow();
+        pipelineInferenceExecutor.shutdown();
         cancelExperimentTimer();
 
         if (galleryBottomSheet != null) {
@@ -9452,9 +9613,7 @@ public final class MainActivity extends AppCompatActivity {
             );
 
             galleryBottomSheet.dismiss();
-
-            galleryBottomSheet =
-                    null;
+            clearGallerySheetReferences();
         }
 
         super.onDestroy();
@@ -9470,6 +9629,15 @@ public final class MainActivity extends AppCompatActivity {
             android.os.Process.killProcess(
                     android.os.Process.myPid()
             );
+        }
+    }
+
+    private void closePipelineAfterPendingInference() {
+        if (pipeline == null) return;
+        try {
+            pipelineInferenceExecutor.execute(pipeline::close);
+        } catch (RejectedExecutionException rejected) {
+            pipeline.close();
         }
     }
     private SceneHandlingMode effectiveSceneHandlingMode() {

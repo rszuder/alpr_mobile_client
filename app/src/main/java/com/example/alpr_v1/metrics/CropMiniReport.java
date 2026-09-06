@@ -139,13 +139,7 @@ public final class CropMiniReport {
     }
 
     private static JSONObject humanVerificationJson(CapturedPlateItem item) throws JSONException {
-        JSONObject verification = new JSONObject();
-        verification.put("status", item.verificationStatus.wireName());
-        verification.put("revision", item.verificationRevision);
-        verification.put("verified_at_ms", item.verifiedAtMillis);
-        verification.put("ground_truth_text", item.groundTruthText);
-        verification.put("original_prediction", item.text);
-        return verification;
+        return HumanVerificationJson.from(item);
     }
 
     private static void addModel(

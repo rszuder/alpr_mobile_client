@@ -29,6 +29,7 @@ public final class PlateCropView extends View {
     private final RectF characterBox = new RectF();
     private Bitmap bitmap;
     private List<PlateCharacter> characters = Collections.emptyList();
+    private boolean boxesVisible = true;
 
     public PlateCropView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -54,13 +55,24 @@ public final class PlateCropView extends View {
         invalidate();
     }
 
+    public void setBoxesVisible(boolean visible) {
+        if (boxesVisible == visible) return;
+        boxesVisible = visible;
+        invalidate();
+    }
+
+    public boolean boxesVisible() {
+        return boxesVisible;
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (bitmap == null || bitmap.isRecycled()) return;
 
-        float bandHeight = characters.isEmpty() ? 0f : dp(19f);
-        float bandGap = characters.isEmpty() ? 0f : dp(3f);
+        boolean drawBoxes = boxesVisible && !characters.isEmpty();
+        float bandHeight = drawBoxes ? dp(19f) : 0f;
+        float bandGap = drawBoxes ? dp(3f) : 0f;
         float imageAreaHeight = Math.max(1f, getHeight() - bandHeight - bandGap);
         float scale = Math.min(
                 getWidth() / (float) bitmap.getWidth(),
@@ -73,16 +85,18 @@ public final class PlateCropView extends View {
         imageBounds.set(left, top, left + width, top + height);
         canvas.drawBitmap(bitmap, null, imageBounds, imagePaint);
 
-        for (PlateCharacter character : characters) {
-            characterBox.set(
-                    imageBounds.left + character.left * imageBounds.width(),
-                    imageBounds.top + character.top * imageBounds.height(),
-                    imageBounds.left + character.right * imageBounds.width(),
-                    imageBounds.top + character.bottom * imageBounds.height()
-            );
-            canvas.drawRoundRect(characterBox, dp(1.5f), dp(1.5f), boxPaint);
+        if (drawBoxes) {
+            for (PlateCharacter character : characters) {
+                characterBox.set(
+                        imageBounds.left + character.left * imageBounds.width(),
+                        imageBounds.top + character.top * imageBounds.height(),
+                        imageBounds.left + character.right * imageBounds.width(),
+                        imageBounds.top + character.bottom * imageBounds.height()
+                );
+                canvas.drawRoundRect(characterBox, dp(1.5f), dp(1.5f), boxPaint);
+            }
+            drawLegend(canvas, imageAreaHeight + bandGap);
         }
-        if (!characters.isEmpty()) drawLegend(canvas, imageAreaHeight + bandGap);
     }
 
     private void drawLegend(Canvas canvas, float top) {

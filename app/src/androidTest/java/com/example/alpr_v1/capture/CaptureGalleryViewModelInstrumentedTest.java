@@ -25,6 +25,12 @@ public final class CaptureGalleryViewModelInstrumentedTest {
         CaptureGalleryViewModel first = firstOwner.get(CaptureGalleryViewModel.class);
         Bitmap bitmap = Bitmap.createBitmap(8, 4, Bitmap.Config.ARGB_8888);
         first.capturedCrops().add(crop(bitmap));
+        Bitmap historySource = Bitmap.createBitmap(8, 4, Bitmap.Config.ARGB_8888);
+        first.recognitionHistory().upsert(
+                1L, 2L, 3L, 4L, 4L, "KR12345", 0.9, 0.8,
+                1L, historySource, true, 3, 0.7f, "normal"
+        );
+        Bitmap historyPreview = first.recognitionHistory().newestFirst().get(0).previewBitmap;
         first.retainSession(true, "rotation-session", 123L, 7);
 
         ViewModelProvider recreatedOwner = provider(retainedStore);
@@ -37,9 +43,13 @@ public final class CaptureGalleryViewModelInstrumentedTest {
         assertEquals(123L, restored.collectionSessionStartedElapsedNanos());
         assertEquals(7, restored.collectionSequence());
         assertFalse(bitmap.isRecycled());
+        assertEquals(1, restored.recognitionHistory().size());
+        assertFalse(historyPreview.isRecycled());
 
         retainedStore.clear();
         assertTrue(bitmap.isRecycled());
+        assertTrue(historyPreview.isRecycled());
+        historySource.recycle();
     }
 
     private static ViewModelProvider provider(ViewModelStore store) {

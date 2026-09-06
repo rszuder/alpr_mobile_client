@@ -61,11 +61,14 @@ Każdy crop ma niezależny stan:
 
 - `not_reviewed`;
 - `accepted` — ground truth jest równy oryginalnej predykcji;
-- `rejected` — wiadomo, że odczyt jest błędny, ale nie znamy transkrypcji;
+- `rejected` — próbka jest `Nie do oceny` i nie da się wiarygodnie ustalić transkrypcji;
 - `corrected` — `ground_truth_text` pochodzi od użytkownika.
 
-Raport zawsze przechowuje `original_prediction`, status, czas i rewizję. CER i
-exact match są liczone tylko dla `accepted/corrected`. Jednostką jakościową
+Raport zawsze przechowuje predykcję, status, czas, rewizję,
+`eligible_for_text_metrics`, `issue_codes`, `needs_desktop_review` i opcjonalną
+notatkę. Stare rekordy bez nowych pól pozostają poprawne, a eligibility jest
+wyznaczane ze statusu i ground truth. CER i exact match są liczone tylko dla
+`accepted/corrected`. Jednostką jakościową
 jest unikalna para `session_id + track_id`; kilka klatek tego samego tracku nie
 zwiększa sztucznie liczebności próby.
 

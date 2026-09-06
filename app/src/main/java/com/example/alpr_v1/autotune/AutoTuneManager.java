@@ -25,10 +25,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.locks.ReentrantLock;
 
 public final class AutoTuneManager {
     private static final int WARMUP_RUNS = 2;
     private static final int MEASURED_RUNS = 8;
+    private static final ReentrantLock TUNING_LOCK = new ReentrantLock(true);
     private final Context context;
     private final SharedPreferences preferences;
     private final String environmentId;
@@ -48,6 +51,21 @@ public final class AutoTuneManager {
     }
 
     public AutoTuneResult tune(InstalledModel model) {
+        boolean locked = false;
+        try {
+            TUNING_LOCK.lockInterruptibly();
+            locked = true;
+            return tuneLocked(model);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("Autotuning przerwany");
+        } finally {
+            if (locked) TUNING_LOCK.unlock();
+        }
+    }
+
+    private AutoTuneResult tuneLocked(InstalledModel model) {
+        cancelIfInterrupted();
         if (isThermallyConstrained()) {
             throw new IllegalStateException("Autotuning odłożony: urządzenie jest zbyt rozgrzane");
         }
@@ -61,9 +79,11 @@ public final class AutoTuneManager {
         AutoTuneResult.Candidate best = null;
         boolean hasFp32 = hasExecutableFp32(model);
         for (ModelVariant variant : model.manifest().variants()) {
+            cancelIfInterrupted();
             if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) continue;
             boolean selectable = !hasFp32 || isFp32(variant);
             for (int threads : threadCounts) {
+                cancelIfInterrupted();
                 ExecutionProfile profile = new ExecutionProfile(variant.runtime(), threads, false);
                 AutoTuneResult.Candidate candidate = benchmark(model, variant, profile);
                 results.add(candidate);
@@ -104,6 +124,7 @@ public final class AutoTuneManager {
         double modelLoadMs = 0.0;
         double coldInferenceMs = 0.0;
         try {
+            cancelIfInterrupted();
             long loadStarted = SystemClock.elapsedRealtimeNanos();
             backend = RuntimeBackendFactory.create(model, variant, profile);
             modelLoadMs = (SystemClock.elapsedRealtimeNanos() - loadStarted) / 1_000_000.0;
@@ -111,8 +132,12 @@ public final class AutoTuneManager {
             long coldStarted = SystemClock.elapsedRealtimeNanos();
             backend.run(input);
             coldInferenceMs = (SystemClock.elapsedRealtimeNanos() - coldStarted) / 1_000_000.0;
-            for (int i = 0; i < WARMUP_RUNS; i++) backend.run(input);
+            for (int i = 0; i < WARMUP_RUNS; i++) {
+                cancelIfInterrupted();
+                backend.run(input);
+            }
             for (int i = 0; i < MEASURED_RUNS; i++) {
+                cancelIfInterrupted();
                 long started = SystemClock.elapsedRealtimeNanos();
                 backend.run(input);
                 measured.add((SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0);
@@ -122,6 +147,8 @@ public final class AutoTuneManager {
                     variant.id(), variant.runtime(), profile.cpuThreads, profile.gpu,
                     stats.median, stats.p95, modelLoadMs, coldInferenceMs, ""
             );
+        } catch (CancellationException cancelled) {
+            throw cancelled;
         } catch (Exception e) {
             return new AutoTuneResult.Candidate(
                     variant.id(), variant.runtime(), profile.cpuThreads, profile.gpu,
@@ -129,6 +156,12 @@ public final class AutoTuneManager {
             );
         } finally {
             if (backend != null) backend.close();
+        }
+    }
+
+    private static void cancelIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("Autotuning przerwany");
         }
     }
 

@@ -1913,13 +1913,7 @@ public final class MetricsCollector {
     }
 
     private static JSONObject verificationJson(CapturedPlateItem item) throws JSONException {
-        JSONObject verification = new JSONObject();
-        verification.put("status", item.verificationStatus.wireName());
-        verification.put("revision", item.verificationRevision);
-        verification.put("verified_at_ms", item.verifiedAtMillis);
-        verification.put("ground_truth_text", item.groundTruthText);
-        verification.put("original_prediction", item.text);
-        return verification;
+        return HumanVerificationJson.from(item);
     }
 
     private static JSONObject qualityJson(List<JSONObject> cropRecords) throws JSONException {
@@ -1938,28 +1932,47 @@ public final class MetricsCollector {
         int exactMatches = 0;
         int reviewed = 0;
         int acceptedOriginal = 0;
+        int corrected = 0;
+        int rejected = 0;
         int rejectedWithoutGroundTruth = 0;
+        int ineligibleForTextMetrics = 0;
         int notReviewed = 0;
         int totalDistance = 0;
         int totalGroundTruthCharacters = 0;
         double normalizedDistanceSum = 0.0;
         JSONArray samples = new JSONArray();
+        Map<String, Integer> issueCounts = new LinkedHashMap<>();
         for (JSONObject record : qualityUnits.values()) {
             JSONObject verification = record.optJSONObject("human_verification");
             String status = verification == null
                     ? "not_reviewed"
                     : verification.optString("status", "not_reviewed");
+            JSONArray issueCodes = verification == null
+                    ? null : verification.optJSONArray("issue_codes");
+            if (issueCodes != null) {
+                for (int index = 0; index < issueCodes.length(); index++) {
+                    String issue = issueCodes.optString(index, "");
+                    if (!issue.isEmpty()) {
+                        issueCounts.put(issue, issueCounts.getOrDefault(issue, 0) + 1);
+                    }
+                }
+            }
             if ("not_reviewed".equals(status)) {
                 notReviewed++;
                 continue;
             }
             reviewed++;
             if ("accepted".equals(status)) acceptedOriginal++;
+            if ("corrected".equals(status)) corrected++;
+            if ("rejected".equals(status)) rejected++;
             String groundTruth = verification == null
                     ? ""
                     : verification.optString("ground_truth_text", "");
-            if (groundTruth.isEmpty()) {
-                rejectedWithoutGroundTruth++;
+            if (!HumanVerificationJson.eligibleForTextMetrics(verification)) {
+                ineligibleForTextMetrics++;
+                if ("rejected".equals(status) && groundTruth.isEmpty()) {
+                    rejectedWithoutGroundTruth++;
+                }
                 continue;
             }
             String prediction = normalizeSequence(record.optString("text", ""));
@@ -1992,7 +2005,16 @@ public final class MetricsCollector {
         quality.put("ground_truth_samples", groundTruthSamples);
         quality.put("reviewed_samples", reviewed);
         quality.put("not_reviewed_samples", notReviewed);
+        quality.put("accepted_samples", acceptedOriginal);
+        quality.put("corrected_samples", corrected);
+        quality.put("rejected_samples", rejected);
+        quality.put("ineligible_for_text_metrics", ineligibleForTextMetrics);
         quality.put("rejected_without_ground_truth", rejectedWithoutGroundTruth);
+        JSONObject issueCodeCounts = new JSONObject();
+        for (Map.Entry<String, Integer> entry : issueCounts.entrySet()) {
+            issueCodeCounts.put(entry.getKey(), entry.getValue());
+        }
+        quality.put("issue_code_counts", issueCodeCounts);
         quality.put(
                 "accepted_original_rate",
                 reviewed == 0 ? JSONObject.NULL : acceptedOriginal / (double) reviewed

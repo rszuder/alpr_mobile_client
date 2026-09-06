@@ -7,16 +7,22 @@ def resolvedGitDirty = false
 def resolvedGitDirtyAvailable = false
 try {
     def gitProcess = ["git", "rev-parse", "HEAD"].execute(null, rootDir)
+    def gitOutput = new StringBuffer()
+    def gitError = new StringBuffer()
+    gitProcess.consumeProcessOutput(gitOutput, gitError)
     gitProcess.waitFor()
     if (gitProcess.exitValue() == 0) {
-        resolvedGitCommit = gitProcess.in.text.trim()
+        resolvedGitCommit = gitOutput.toString().trim()
     }
     def statusProcess = ["git", "status", "--porcelain", "--untracked-files=normal"]
             .execute(null, rootDir)
+    def statusOutput = new StringBuffer()
+    def statusError = new StringBuffer()
+    statusProcess.consumeProcessOutput(statusOutput, statusError)
     statusProcess.waitFor()
     if (statusProcess.exitValue() == 0) {
         resolvedGitDirtyAvailable = true
-        resolvedGitDirty = !statusProcess.in.text.trim().isEmpty()
+        resolvedGitDirty = !statusOutput.toString().trim().isEmpty()
     }
 } catch (Exception ignored) {
     // Archiwum źródłowe bez katalogu .git pozostaje budowalne.

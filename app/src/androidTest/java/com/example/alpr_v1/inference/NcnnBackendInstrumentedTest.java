@@ -24,6 +24,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 @RunWith(AndroidJUnit4.class)
 public final class NcnnBackendInstrumentedTest {
@@ -75,6 +82,64 @@ public final class NcnnBackendInstrumentedTest {
             );
             assertEquals("NCNN/CPU", backend.runtimeName());
         } finally {
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    public void concurrentSessionsDoNotRaceOpenMpInitialization() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File root = new File(context.getCacheDir(), "ncnn-concurrency-test");
+        deleteRecursively(root);
+        assertTrue(root.mkdirs() || root.isDirectory());
+        File param = new File(root, "model.param");
+        File weights = new File(root, "model.bin");
+        Files.write(
+                param.toPath(),
+                ("7767517\n"
+                        + "2 2\n"
+                        + "Input in0 0 1 in0\n"
+                        + "Reshape reshape 1 1 in0 out0 0=12 1=5\n")
+                        .getBytes(StandardCharsets.UTF_8)
+        );
+        Files.write(weights.toPath(), new byte[0]);
+
+        ModelManifest manifest = ModelManifest.parse(manifest().toString());
+        InstalledModel model = new InstalledModel(manifest, root, "ncnn-concurrency-test");
+        ModelVariant variant = manifest.variants().get(0);
+        int workers = 6;
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        List<Future<int[]>> futures = new ArrayList<>();
+        try {
+            for (int worker = 0; worker < workers; worker++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    try (NcnnBackend backend = new NcnnBackend(
+                            model,
+                            variant,
+                            new ExecutionProfile(ModelRuntime.NCNN, 2, false)
+                    )) {
+                        ByteBuffer input = ByteBuffer.allocateDirect(backend.inputByteSize())
+                                .order(ByteOrder.nativeOrder());
+                        InferenceRunResult result = backend.run(input);
+                        return result.tensorInfo().get(0).shape;
+                    }
+                }));
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            for (Future<int[]> future : futures) {
+                assertArrayEquals(
+                        new int[]{1, 5, 12},
+                        future.get(30, TimeUnit.SECONDS)
+                );
+            }
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
             deleteRecursively(root);
         }
     }

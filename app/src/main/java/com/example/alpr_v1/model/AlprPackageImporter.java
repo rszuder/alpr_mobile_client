@@ -50,6 +50,16 @@ public final class AlprPackageImporter {
     }
 
     public ModelImportResult importPackage(Uri source) throws ModelPackageException {
+        return importPackage(source, ExpectedContent.ANY);
+    }
+
+    public ModelImportResult importPackage(
+            Uri source,
+            ExpectedContent expectedContent
+    ) throws ModelPackageException {
+        ExpectedContent requestedContent = expectedContent == null
+                ? ExpectedContent.ANY
+                : expectedContent;
         File work = new File(new File(context.getCacheDir(), "alpr-package-dispatch"), UUID.randomUUID().toString());
         File localPackage = new File(work, "source.alprmodel");
         try {
@@ -60,15 +70,25 @@ public final class AlprPackageImporter {
             try {
                 schema = new JSONObject(manifestText).optString("schema");
             } catch (JSONException e) {
-                throw new ModelPackageException("Nieprawidłowy manifest pakietu: " + e.getMessage(), e);
+                throw new ModelPackageException("Nieprawidłowy manifest importu: " + e.getMessage(), e);
             }
             if (ModelManifest.SCHEMA.equals(schema)) {
+                if (requestedContent == ExpectedContent.COMPLETE_PACKAGE) {
+                    throw new ModelPackageException(
+                            "Wybrany plik jest modelem mobilnym. Użyj akcji „Zaimportuj model mobilny”."
+                    );
+                }
                 return ModelImportResult.single(singleModelImporter.importPackage(localPackage));
             }
             if (AlprPackageManifest.SCHEMA.equals(schema)) {
+                if (requestedContent == ExpectedContent.SINGLE_MODEL) {
+                    throw new ModelPackageException(
+                            "Wybrany plik jest kompletnym pakietem ALPR. Użyj akcji „Zaimportuj pakiet ALPR”."
+                    );
+                }
                 return ModelImportResult.complete(importCompletePackage(localPackage));
             }
-            throw new ModelPackageException("Nieobsługiwany schemat pakietu: " + schema);
+            throw new ModelPackageException("Nieobsługiwany schemat importu: " + schema);
         } catch (ModelPackageException e) {
             throw e;
         } catch (Exception e) {
@@ -76,6 +96,12 @@ public final class AlprPackageImporter {
         } finally {
             ModelPackageImporter.safeDelete(work);
         }
+    }
+
+    public enum ExpectedContent {
+        ANY,
+        SINGLE_MODEL,
+        COMPLETE_PACKAGE
     }
 
     private InstalledAlprPackage importCompletePackage(File source) throws Exception {
@@ -246,7 +272,7 @@ public final class AlprPackageImporter {
                 if (read == 0) continue;
                 total += read;
                 if (total > MAX_SOURCE_BYTES) {
-                    throw new ModelPackageException("Plik pakietu przekracza limit 1 GiB");
+                    throw new ModelPackageException("Wybrany plik przekracza limit 1 GiB");
                 }
                 output.write(buffer, 0, read);
             }
@@ -260,12 +286,12 @@ public final class AlprPackageImporter {
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
                 if ("manifest.json".equals(entry.getName())) {
-                    if (manifest != null) throw new ModelPackageException("Powtórzony manifest.json w pakiecie");
+                    if (manifest != null) throw new ModelPackageException("Powtórzony manifest.json w archiwum");
                     manifest = entry;
                 }
             }
             if (manifest == null || manifest.isDirectory()) {
-                throw new ModelPackageException("Pakiet nie zawiera manifest.json w katalogu głównym");
+                throw new ModelPackageException("Archiwum nie zawiera manifest.json w katalogu głównym");
             }
             try (InputStream input = zip.getInputStream(manifest)) {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -274,7 +300,7 @@ public final class AlprPackageImporter {
                 while ((read = input.read(buffer)) >= 0) {
                     if (read == 0) continue;
                     if (output.size() + read > MAX_MANIFEST_BYTES) {
-                        throw new ModelPackageException("Manifest pakietu przekracza limit 2 MiB");
+                        throw new ModelPackageException("Manifest importu przekracza limit 2 MiB");
                     }
                     output.write(buffer, 0, read);
                 }

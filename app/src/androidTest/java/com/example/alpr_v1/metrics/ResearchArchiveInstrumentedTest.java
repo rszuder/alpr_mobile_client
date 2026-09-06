@@ -12,6 +12,7 @@ import android.graphics.Bitmap;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.capture.CapturedPlateItem;
+import com.example.alpr_v1.capture.VerificationIssue;
 import com.example.alpr_v1.model.ModelRegistry;
 
 import org.json.JSONObject;
@@ -155,6 +156,8 @@ public final class ResearchArchiveInstrumentedTest {
         corrected.verificationStatus = CapturedPlateItem.VerificationStatus.CORRECTED;
         corrected.groundTruthText = "KR12345";
         corrected.verifiedAtMillis = 2L;
+        corrected.verificationIssues.add(VerificationIssue.MZ_WRONG_CLASS);
+        corrected.needsDesktopReview = true;
         metrics.recordCapturedCrop(corrected);
         CapturedPlateItem duplicateTrack = crop("c3", 2L, "BAD");
         metrics.recordCapturedCrop(duplicateTrack);
@@ -171,9 +174,61 @@ public final class ResearchArchiveInstrumentedTest {
         assertEquals(2, quality.getInt("unit_count"));
         assertEquals(0.5, quality.getDouble("exact_match_rate"), 0.000001);
         assertEquals(1.0 / 14.0, quality.getDouble("cer"), 0.000001);
+        assertEquals(1, quality.getInt("accepted_samples"));
+        assertEquals(1, quality.getInt("corrected_samples"));
+        assertEquals(1, quality.getJSONObject("issue_code_counts").getInt(
+                "mz_wrong_class"
+        ));
+        JSONObject correctedVerification = new JSONObject(report)
+                .getJSONObject("crop_session")
+                .getJSONArray("records")
+                .getJSONObject(1)
+                .getJSONObject("human_verification");
+        assertTrue(correctedVerification.getBoolean("eligible_for_text_metrics"));
+        assertTrue(correctedVerification.getBoolean("needs_desktop_review"));
         exact.recycle();
         corrected.recycle();
         duplicateTrack.recycle();
+    }
+
+    @Test
+    public void researchSessionExportsExtendedHumanVerification() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        CapturedPlateItem item = crop("desktop-review", 7L, "WI1234A");
+        item.verificationStatus = CapturedPlateItem.VerificationStatus.CORRECTED;
+        item.groundTruthText = "WI1234B";
+        item.verificationIssues.add(VerificationIssue.RECTIFICATION);
+        item.needsDesktopReview = true;
+        item.verificationNote = "sprawdzić geometrię";
+        item.verifiedAtMillis = 123L;
+        item.verificationRevision = 2;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ResearchArchive.writeResearchSession(
+                output,
+                "{\"schema\":\"alpr.mobile_benchmark_report.v1\","
+                        + "\"report_id\":\"verification-export\","
+                        + "\"package_id\":\"test\",\"variant_id\":\"test\","
+                        + "\"device\":{},\"model_refs\":{}}",
+                "",
+                "",
+                Collections.singletonList(item),
+                new ModelRegistry(context)
+        );
+
+        Map<String, byte[]> entries = unzip(output.toByteArray());
+        String annotations = new String(
+                entries.get("samples/annotations.jsonl"),
+                StandardCharsets.UTF_8
+        ).trim();
+        JSONObject verification = new JSONObject(annotations).getJSONObject(
+                "human_verification"
+        );
+        assertEquals("corrected", verification.getString("status"));
+        assertTrue(verification.getBoolean("eligible_for_text_metrics"));
+        assertTrue(verification.getBoolean("needs_desktop_review"));
+        assertEquals("rectification", verification.getJSONArray("issue_codes").getString(0));
+        assertEquals("sprawdzić geometrię", verification.getString("note"));
+        item.recycle();
     }
 
     private static CapturedPlateItem crop(String captureId, long trackId, String text) {

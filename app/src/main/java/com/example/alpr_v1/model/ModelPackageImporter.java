@@ -64,7 +64,7 @@ public final class ModelPackageImporter {
         } catch (ModelPackageException e) {
             throw e;
         } catch (IOException e) {
-            throw new ModelPackageException("Nie można otworzyć pakietu modelu: " + e.getMessage(), e);
+            throw new ModelPackageException("Nie można otworzyć modelu mobilnego: " + e.getMessage(), e);
         }
     }
 
@@ -79,7 +79,7 @@ public final class ModelPackageImporter {
         } catch (ModelPackageException e) {
             throw e;
         } catch (Exception e) {
-            throw new ModelPackageException("Nieprawidłowy pakiet modelu: " + e.getMessage(), e);
+            throw new ModelPackageException("Nieprawidłowy model mobilny: " + e.getMessage(), e);
         } finally {
             safeDelete(staging);
         }
@@ -121,14 +121,14 @@ public final class ModelPackageImporter {
             throw e;
         } catch (Exception e) {
             safeDelete(staging);
-            throw new ModelPackageException("Nie udało się zaimportować pakietu: " + e.getMessage(), e);
+            throw new ModelPackageException("Nie udało się zaimportować modelu mobilnego: " + e.getMessage(), e);
         }
     }
 
     private ModelManifest readAndValidate(File staging) throws Exception {
         File manifestFile = new File(staging, "manifest.json");
         if (!manifestFile.isFile()) {
-            throw new ModelPackageException("Pakiet nie zawiera pliku manifest.json w katalogu głównym");
+            throw new ModelPackageException("Model mobilny nie zawiera pliku manifest.json w katalogu głównym");
         }
         byte[] manifestBytes = Files.readAllBytes(manifestFile.toPath());
         ModelManifest manifest;
@@ -152,7 +152,7 @@ public final class ModelPackageImporter {
             while ((entry = zip.getNextEntry()) != null) {
                 entries++;
                 if (entries > MAX_ENTRIES) {
-                    throw new ModelPackageException("Pakiet zawiera zbyt wiele plików");
+                    throw new ModelPackageException("Archiwum zawiera zbyt wiele plików");
                 }
                 String safeName = entry.getName();
                 validateZipPath(safeName);
@@ -161,7 +161,7 @@ public final class ModelPackageImporter {
                 }
                 Path destination = root.resolve(safeName).normalize();
                 if (!destination.startsWith(root)) {
-                    throw new ModelPackageException("Pakiet zawiera niedozwoloną ścieżkę: " + safeName);
+                    throw new ModelPackageException("Archiwum zawiera niedozwoloną ścieżkę: " + safeName);
                 }
                 if (entry.isDirectory()) {
                     Files.createDirectories(destination);
@@ -178,7 +178,7 @@ public final class ModelPackageImporter {
                         if (read == 0) continue;
                         totalBytes += read;
                         if (totalBytes > MAX_UNCOMPRESSED_BYTES) {
-                            throw new ModelPackageException("Rozpakowany pakiet przekracza limit 512 MiB");
+                            throw new ModelPackageException("Rozpakowany model przekracza limit 512 MiB");
                         }
                         output.write(buffer, 0, read);
                     }
@@ -191,13 +191,13 @@ public final class ModelPackageImporter {
     static void validateZipPath(String path) throws ModelPackageException {
         if (path == null || path.isEmpty() || path.startsWith("/") || path.startsWith("\\")
                 || path.indexOf('\\') >= 0) {
-            throw new ModelPackageException("Pakiet zawiera niedozwoloną ścieżkę POSIX: " + path);
+            throw new ModelPackageException("Archiwum zawiera niedozwoloną ścieżkę POSIX: " + path);
         }
         String trimmed = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
-        if (trimmed.isEmpty()) throw new ModelPackageException("Pakiet zawiera pustą ścieżkę");
+        if (trimmed.isEmpty()) throw new ModelPackageException("Archiwum zawiera pustą ścieżkę");
         for (String part : trimmed.split("/", -1)) {
             if (part.isEmpty() || part.equals(".") || part.equals("..") || part.contains(":")) {
-                throw new ModelPackageException("Pakiet zawiera niedozwoloną ścieżkę POSIX: " + path);
+                throw new ModelPackageException("Archiwum zawiera niedozwoloną ścieżkę POSIX: " + path);
             }
         }
     }

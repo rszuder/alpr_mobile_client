@@ -1,7 +1,6 @@
 <resources>
     <string name="app_name">Mobilny ALPR</string>
     <string name="camera_permission_required">Do podglądu i analizy potrzebny jest dostęp do kamery.</string>
-    <string name="import_model">Importuj .alprmodel</string>
     <string name="export_report">Eksportuj raport</string>
     <string name="export_choose_title">Eksport badawczy</string>
     <string name="export_research_session">Pełna paczka .alprsession</string>
@@ -40,60 +39,81 @@
     <string name="result_count_zero">0</string>
     <string name="collection_start">Zbieraj cropy</string>
     <string name="collection_stop">Wstrzymaj</string>
-    <string name="gallery_open_zero">Cropy · 0</string>
-    <string name="gallery_open_count">Cropy · %1$d</string>
+    <string name="history_open_zero">Ostatnie · 0</string>
+    <string name="history_open_count">Ostatnie · %1$d</string>
+    <string name="verification_open_count">Próbki · %1$d</string>
+    <string name="history_mode_label">Historia rozpoznawania</string>
+    <string name="history_title">Ostatnie odczyty</string>
+    <string name="history_subtitle">Jeden wpis na logiczny pojazd lub tablicę w bieżącej scenie</string>
+    <string name="history_empty_title">Jeszcze nic tu nie ma</string>
+    <string name="history_empty_description">Potwierdzone odczyty pojawią się automatycznie podczas analizy.</string>
+    <string name="history_clear_action">Wyczyść ostatnie odczyty</string>
+    <string name="history_clear_title">Wyczyścić historię?</string>
+    <string name="history_clear_message">Miniatury i odczyty z bieżącej historii zostaną usunięte. Zapisane pliki pozostaną bez zmian.</string>
+    <string name="history_confidence_format">Pewność %1$d%%</string>
+    <plurals name="history_observation_count">
+        <item quantity="one">%1$d obserwacja</item>
+        <item quantity="few">%1$d obserwacje</item>
+        <item quantity="many">%1$d obserwacji</item>
+        <item quantity="other">%1$d obserwacji</item>
+    </plurals>
+    <string name="history_detail_title">Szczegóły odczytu</string>
+    <string name="history_detail_meta">%1$s · pewność %2$d%%</string>
+    <string name="history_detail_full">%1$s · %2$s</string>
+    <string name="history_item_description">%1$s. %2$s. %3$s.</string>
+    <string name="history_copy_action">Kopiuj numer</string>
+    <string name="history_save_action">Zapisz obraz</string>
+    <string name="history_delete_action">Usuń</string>
+    <string name="history_copied">Skopiowano numer %1$s</string>
+    <string name="history_saved">Obraz odczytu został zapisany</string>
+    <string name="history_save_failed">Nie udało się zapisać obrazu odczytu</string>
+    <string name="verification_mode_label">Tryb badawczy</string>
+    <string name="verification_title">Weryfikacja próbek</string>
+    <string name="verification_progress">%1$d / %2$d</string>
+    <string name="verification_stats">Zweryfikowano %1$d z %2$d · %3$s</string>
+    <string name="verification_empty">Brak próbek pasujących do wybranego filtra.</string>
+    <string name="verification_filter_all">Wszystkie</string>
+    <string name="verification_filter_unreviewed">Niezwer.</string>
+    <string name="verification_filter_changed">Błędne / poprawione</string>
+    <string name="verification_filter_desktop">Do Desktop</string>
+    <string name="verification_show_boxes">Pokaż boxy</string>
+    <string name="verification_model_reading_label">ODCZYT MODELU</string>
+    <string name="verification_consensus_label">KONSENSUS</string>
+    <string name="verification_metrics_format">MT %1$d%%  ·  MZ %2$d%%  ·  ostrość %3$.2f\nPróba MZ %4$d  ·  %5$s  ·  %6$s</string>
+    <string name="verification_correct_action">Koryguj odczyt</string>
+    <string name="verification_unreadable_action">Nie do oceny</string>
+    <string name="verification_issues_title">Problemy zaobserwowane</string>
+    <string name="verification_issues_subtitle">Możesz oznaczyć kilka przyczyn jednocześnie. Boxy pozostają tylko do podglądu.</string>
+    <string name="verification_desktop_review">Do analizy w Desktop</string>
+    <string name="verification_note_hint">Krótka notatka (opcjonalnie)</string>
+    <string name="verification_save_current">Zapisz próbkę</string>
+    <string name="verification_save_reviewed">Zapisz zweryfikowane</string>
+    <string name="verification_previous">Poprzednia</string>
+    <string name="verification_next">Następna</string>
+    <string name="verification_no_reviewed_to_save">Brak niezapisanych, zweryfikowanych próbek</string>
+    <string name="issue_plate_not_visible">Tablica niewidoczna</string>
+    <string name="issue_mt_region">MT obszar</string>
+    <string name="issue_mt_corners">MT narożniki</string>
+    <string name="issue_rectification">Rektyfikacja</string>
+    <string name="issue_mz_missing">Brak znaku</string>
+    <string name="issue_mz_wrong">Zła klasa</string>
+    <string name="issue_blur">Rozmycie</string>
+    <string name="issue_occlusion">Zasłonięcie</string>
+    <string name="issue_vehicle_association">Powiązanie pojazdu</string>
+    <string name="issue_other">Inne</string>
 
-    <string name="gallery_sheet_title">Cropy sesji</string>
-
-    <string name="gallery_empty">
-    Brak zebranych cropów.
-</string>
-
-    <string name="gallery_collection_ready">
-    Zbieranie nieuruchomione
-</string>
-
-    <string name="gallery_collection_ready_limit">
-    Zbieranie nieuruchomione · limit %1$d
-</string>
-
-    <string name="gallery_collection_running">
-    Zbieranie aktywne · %1$d/%2$d
-</string>
-
-    <string name="gallery_collection_paused">
-    Zbieranie wstrzymane · %1$d/%2$d
-</string>
-    <string name="inference_time_format">Pipeline %1$.1f ms · MZ %2$.1f ms</string>
-    <string name="inference_time_unavailable">Czas inferencji niedostępny</string>
-    <string name="crop_save_action">Zapisz trwale</string>
-    <string name="crop_select_action">Zaznacz</string>
-    <string name="crop_select_all">Zaznacz wszystkie</string>
-    <string name="crop_save_selected_count">Zapisz (%1$d)</string>
-    <string name="crop_save_none_selected">Najpierw zaznacz co najmniej jeden crop</string>
     <string name="capture_batch_save_success">Zapisano: %1$d</string>
     <string name="capture_batch_save_partial">Zapisano: %1$d · błędy: %2$d</string>
-    <string name="verification_not_reviewed">Nieoceniony</string>
-    <string name="verification_accepted">Odczyt poprawny</string>
-    <string name="verification_rejected">Odczyt błędny</string>
-    <string name="verification_corrected">Poprawiono: %1$s</string>
-    <string name="verification_accept_action">Potwierdź poprawny odczyt</string>
-    <string name="verification_reject_action">Oznacz błędny odczyt</string>
-    <string name="verification_edit_action">Wpisz poprawny numer</string>
-    <string name="verification_accept_short">Poprawny</string>
-    <string name="verification_reject_short">Błędny</string>
-    <string name="verification_edit_short">Popraw</string>
-    <string name="verification_edit_title">Poprawny numer rejestracyjny</string>
-    <string name="verification_edit_hint">Ground truth</string>
+    <string name="verification_not_reviewed">Niezwer.</string>
+    <string name="verification_accepted">Zgodne</string>
+    <string name="verification_rejected">Nie do oceny</string>
+    <string name="verification_corrected">Skorygowano: %1$s</string>
+    <string name="verification_accept_short">Zgodne</string>
+    <string name="verification_edit_title">Korekta odczytu</string>
+    <string name="verification_edit_hint">Tekst referencyjny tablicy</string>
     <string name="verification_empty_error">Numer referencyjny nie może być pusty</string>
-    <string name="crop_saving">Zapisywanie…</string>
-    <string name="crop_saved">Zapisano na nośniku</string>
     <string name="live_results_summary">Bieżące detekcje: %1$d · potwierdzone: %2$d</string>
     <string name="collection_limit_blocked">Zbieranie zatrzymano: wszystkie elementy są właśnie zapisywane</string>
-    <string name="plate_waiting_for_characters">Oczekiwanie na detekcję znaków</string>
-    <string name="plate_state_preliminary">Wstępna</string>
-    <string name="plate_state_confirmed">Potwierdzona</string>
-    <string name="plate_character_format">%1$s  x%2$d y%3$d · %4$d%%</string>
     <string name="recognition_searching">Skieruj aparat na pojazd z widoczną tablicą</string>
     <string name="recognition_stabilizing">Utrzymuj tablicę w kadrze</string>
     <string name="scene_change_analyzing">Zmiana sceny · analizuję…</string>
@@ -118,7 +138,7 @@
     <string name="menu_resolution_profile">Rozdzielczość kamery</string>
     <string name="menu_crop_limit">Limit cropów sesji</string>
     <string name="menu_capture_directory">Katalog cropów</string>
-    <string name="crop_limit_changed">Nowy limit galerii: %1$d</string>
+    <string name="crop_limit_changed">Nowy limit próbek badawczych: %1$d</string>
     <string name="capture_directory_error">Nie udało się utworzyć lub otworzyć katalogu „Mobilny ALPR - cropy”</string>
     <string name="resolution_profile_changed">Wybrano jakość obrazu: %1$s</string>
     <string name="vehicle_cascade_enabled">Włączono kaskadę pojazd → ROI → MT → MZ</string>
@@ -135,7 +155,7 @@
     <string name="exit_app_cancel">Anuluj</string>
     <string name="recognition_cleared">Wyczyszczono bieżący wynik i śledzenie</string>
     <string name="help_title">Jak używać aplikacji</string>
-    <string name="help_message">1. Zaimportuj pakiet .alprmodel zawierający modele MT i MZ. Opcjonalny model pojazdów MP możesz zaimportować osobno.\n\n2. Wybierz tryb rozpoznawania. Kaskadę pojazd → ROI → MT → MZ włącz tylko z aktywnym MP.\n\n3. Skieruj aparat na tablicę. Pierwszy odczyt pojawi się jako wstępny, a zgodne obserwacje oznaczą go jako potwierdzony.\n\nSzczegóły modeli i dziennik działania znajdziesz w opcji Diagnostyka.</string>
+    <string name="help_message">1. Zaimportuj kompletny pakiet ALPR albo osobne modele mobilne MT i MZ. Model pojazdów MP jest opcjonalny.\n\n2. Wybierz tryb rozpoznawania. Kaskadę pojazd → ROI → MT → MZ włącz tylko z aktywnym MP.\n\n3. Skieruj aparat na tablicę. Pierwszy odczyt pojawi się jako wstępny, a zgodne obserwacje oznaczą go jako potwierdzony.\n\nSzczegóły modeli i dziennik działania znajdziesz w opcji Diagnostyka.</string>
     <string name="about_title">Mobilny ALPR</string>
     <string name="about_message">Rozpoznawanie działa lokalnie na urządzeniu. Opcjonalny MP wykrywa pojazdy i wyznacza ROI. MT wykrywa tablicę i jej narożniki, a MZ wykrywa znaki na wyprostowanym obrazie tablicy. Wynik wstępny jest pokazywany od razu, a kolejne obserwacje budują potwierdzenie.</string>
     <string name="settings_title">Opcje</string>
@@ -171,6 +191,8 @@
     <string name="settings_model_optional_missing">Brak aktywnego modelu\nEtap opcjonalny — pipeline może działać bez MP</string>
     <string name="settings_model_required_missing">Brak aktywnego modelu\nModel wymagany do uruchomienia pipeline’u</string>
     <string name="settings_model_node_hint">Dotknij węzła grafu, aby zmienić model lub wariant wykonawczy.</string>
+    <string name="settings_import_mobile_model">Zaimportuj model mobilny</string>
+    <string name="settings_import_alpr_package">Zaimportuj pakiet ALPR</string>
     <string name="settings_restore_base_package">Przywróć pakiet bazowy</string>
     <string name="settings_node_actions_title">Węzeł %1$s</string>
     <string name="settings_node_choose_model">Zmień model lub format</string>
@@ -184,9 +206,7 @@
     <string name="settings_node_active_lines">%1$s\n%2$s\n%3$s</string>
     <string name="settings_node_inactive_lines">%1$s\n%2$s\nNieaktywny</string>
     <string name="settings_node_missing_lines">%1$s\nBrak</string>
-    <string name="settings_node_imported">Zaimportowano i aktywowano model %1$s: %2$s</string>
     <string name="settings_node_role_mismatch">Wybrany model ma rolę %1$s, a węzeł wymaga %2$s</string>
-    <string name="settings_node_role_missing">Wybrany pakiet nie zawiera modelu dla węzła %1$s</string>
     <string name="settings_node_badge_enabled">WŁ.</string>
     <string name="settings_node_badge_disabled">WYŁ.</string>
     <string name="settings_node_badge_missing">BRAK</string>
@@ -209,9 +229,13 @@
     <string name="settings_crop_25_short">25</string>
     <string name="settings_crop_50_short">50</string>
     <string name="settings_crop_100_short">100</string>
-    <string name="settings_import_complete">Zaimportowano i aktywowano: %1$s</string>
-    <string name="settings_import_complete_partial_runtime">Zaimportowano pakiet: %1$s. Aktywowano MT+MZ; MP pozostaje nieaktywny, ponieważ nie zawiera TFLite ani ONNX.</string>
-    <string name="settings_import_partial">Zaimportowano model: %1$s</string>
+    <string name="settings_import_complete">Zaimportowano i aktywowano pakiet ALPR: %1$s</string>
+    <string name="settings_import_complete_partial_runtime">Zaimportowano pakiet ALPR: %1$s. Aktywowano MT i MZ; MP pozostaje nieaktywny, ponieważ nie ma obsługiwanego wariantu wykonawczego.</string>
+    <string name="settings_import_model_ready">Zaimportowano i aktywowano model %1$s: %2$s. Pipeline ALPR gotowy — modele MT i MZ są aktywne.</string>
+    <string name="settings_import_model_missing_both">Zaimportowano i aktywowano model %1$s: %2$s. Pipeline ALPR niekompletny — brakuje MT i MZ.</string>
+    <string name="settings_import_model_missing_mt">Zaimportowano i aktywowano model %1$s: %2$s. Pipeline ALPR niekompletny — brakuje MT.</string>
+    <string name="settings_import_model_missing_mz">Zaimportowano i aktywowano model %1$s: %2$s. Pipeline ALPR niekompletny — brakuje MZ.</string>
+    <string name="settings_import_model_stored">Zaimportowano model %1$s: %2$s, ale nie został aktywowany — brak obsługiwanego wariantu wykonawczego.</string>
     <string name="settings_import_rejected">Import odrzucony: %1$s</string>
     <string name="settings_vehicle_none">Bez modelu pojazdu</string>
     <string name="diagnostics_title">Diagnostyka</string>
@@ -234,10 +258,11 @@
     <string name="diagnostics_model_value_unavailable">—</string>
     <string name="diagnostics_model_stage_skipped">Etap nie jest wykonywany</string>
     <string name="diagnostics_model_pipeline_blocked">Uruchomienie pipeline’u zablokowane</string>
-    <string name="diagnostics_model_package_modified">Kompozycja zmodyfikowana · baza: %1$s v%2$s</string>
-    <string name="diagnostics_model_package_ready">Komplet gotowy: %1$s v%2$s%3$s</string>
-    <string name="diagnostics_model_package_individual">Pipeline z pojedynczych pakietów · MT i MZ aktywne</string>
-    <string name="diagnostics_model_package_partial">Tryb częściowy · brakuje modelu MT lub MZ</string>
+    <string name="diagnostics_model_composition_modified">Stan: gotowa\nŹródło: kompozycja zmodyfikowana · baza: %1$s v%2$s</string>
+    <string name="diagnostics_model_composition_modified_incomplete">Stan: niekompletna\nŹródło: kompozycja zmodyfikowana · baza: %1$s v%2$s\nBrakuje: %3$s</string>
+    <string name="diagnostics_model_package_ready">Stan: gotowa\nŹródło: kompletny pakiet ALPR · %1$s v%2$s%3$s</string>
+    <string name="diagnostics_model_composition_individual">Stan: gotowa\nŹródło: kompozycja z modeli mobilnych · MT i MZ aktywne</string>
+    <string name="diagnostics_model_composition_incomplete">Stan: niekompletna\nBrakuje: %1$s</string>
     <string name="diagnostics_model_package_date"> · %1$s</string>
     <string name="diagnostics_model_family_params">%1$s · %2$.2f mln parametrów</string>
     <string name="diagnostics_model_family_only">%1$s</string>

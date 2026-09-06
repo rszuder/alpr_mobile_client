@@ -83,6 +83,8 @@ public final class SettingsActivity extends AppCompatActivity {
     public static final String KEY_SCENE_HANDLING_MODE = "scene_handling_mode";
 
     private static final String LOG_TAG = "SettingsActivity";
+    private static final String STATE_PENDING_IMPORT_ROLE = "pending_import_role";
+    private static final String STATE_PENDING_IMPORT_CONTENT = "pending_import_content";
 
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private SharedPreferences preferences;
@@ -95,7 +97,8 @@ public final class SettingsActivity extends AppCompatActivity {
     private TextView characterModelStatus;
     private TextView storagePath;
     private View progress;
-    private MaterialButton importButton;
+    private MaterialButton importModelButton;
+    private MaterialButton importPackageButton;
     private MaterialButton restoreBaseButton;
     private MaterialButton vehicleNode;
     private MaterialButton plateNode;
@@ -110,14 +113,17 @@ public final class SettingsActivity extends AppCompatActivity {
     private MaterialAutoCompleteTextView experimentType;
     private TextInputEditText experimentVariant;
     private ModelRole pendingImportRole;
+    private AlprPackageImporter.ExpectedContent pendingImportContent;
     private boolean importInProgress;
 
     private final ActivityResultLauncher<String[]> modelPicker = registerForActivityResult(
             new ActivityResultContracts.OpenDocument(),
             uri -> {
                 ModelRole expectedRole = pendingImportRole;
+                AlprPackageImporter.ExpectedContent expectedContent = pendingImportContent;
                 pendingImportRole = null;
-                if (uri != null) importModel(uri, expectedRole);
+                pendingImportContent = null;
+                if (uri != null) importSelectedFile(uri, expectedRole, expectedContent);
             }
     );
 
@@ -127,6 +133,7 @@ public final class SettingsActivity extends AppCompatActivity {
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_settings);
         applySystemInsets();
+        restorePendingImport(savedInstanceState);
 
         preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
         modelRegistry = new ModelRegistry(this);
@@ -150,7 +157,8 @@ public final class SettingsActivity extends AppCompatActivity {
         characterModelStatus = findViewById(R.id.settings_model_status_character);
         storagePath = findViewById(R.id.settings_storage_path);
         progress = findViewById(R.id.settings_progress);
-        importButton = findViewById(R.id.settings_import_model);
+        importModelButton = findViewById(R.id.settings_import_model);
+        importPackageButton = findViewById(R.id.settings_import_alpr_package);
         restoreBaseButton = findViewById(R.id.settings_restore_base_package);
         vehicleNode = findViewById(R.id.settings_node_vehicle);
         plateNode = findViewById(R.id.settings_node_plate);
@@ -174,6 +182,37 @@ public final class SettingsActivity extends AppCompatActivity {
         configurePipelineControls();
         refreshModelStatus();
         refreshStoragePath();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (pendingImportRole != null) {
+            outState.putString(STATE_PENDING_IMPORT_ROLE, pendingImportRole.wireName());
+        }
+        if (pendingImportContent != null) {
+            outState.putString(STATE_PENDING_IMPORT_CONTENT, pendingImportContent.name());
+        }
+    }
+
+    private void restorePendingImport(Bundle savedInstanceState) {
+        if (savedInstanceState == null) return;
+        String role = savedInstanceState.getString(STATE_PENDING_IMPORT_ROLE, "");
+        if (!role.isEmpty()) {
+            try {
+                pendingImportRole = ModelRole.fromWire(role);
+            } catch (IllegalArgumentException ignored) {
+                pendingImportRole = null;
+            }
+        }
+        String content = savedInstanceState.getString(STATE_PENDING_IMPORT_CONTENT, "");
+        if (!content.isEmpty()) {
+            try {
+                pendingImportContent = AlprPackageImporter.ExpectedContent.valueOf(content);
+            } catch (IllegalArgumentException ignored) {
+                pendingImportContent = null;
+            }
+        }
     }
 
     private void configureProfileControls() {
@@ -548,7 +587,8 @@ public final class SettingsActivity extends AppCompatActivity {
             refreshNodeBadges();
         });
 
-        importButton.setOnClickListener(view -> launchModelImport(null));
+        importModelButton.setOnClickListener(view -> launchModelImport(null));
+        importPackageButton.setOnClickListener(view -> launchPackageImport());
         vehicleNode.setOnClickListener(view -> showNodeActions(ModelRole.VEHICLE));
         plateNode.setOnClickListener(view -> showNodeActions(ModelRole.PLATE));
         characterNode.setOnClickListener(view -> showNodeActions(ModelRole.CHARACTER));
@@ -557,6 +597,17 @@ public final class SettingsActivity extends AppCompatActivity {
 
     private void launchModelImport(ModelRole expectedRole) {
         pendingImportRole = expectedRole;
+        pendingImportContent = AlprPackageImporter.ExpectedContent.SINGLE_MODEL;
+        launchImportPicker();
+    }
+
+    private void launchPackageImport() {
+        pendingImportRole = null;
+        pendingImportContent = AlprPackageImporter.ExpectedContent.COMPLETE_PACKAGE;
+        launchImportPicker();
+    }
+
+    private void launchImportPicker() {
         modelPicker.launch(new String[]{
                 "application/zip", "application/octet-stream", "application/x-zip-compressed"
         });
@@ -717,24 +768,20 @@ public final class SettingsActivity extends AppCompatActivity {
                 : role == ModelRole.PLATE ? "MT" : "MZ";
     }
 
-    private void importModel(Uri uri, ModelRole expectedRole) {
+    private void importSelectedFile(
+            Uri uri,
+            ModelRole expectedRole,
+            AlprPackageImporter.ExpectedContent expectedContent
+    ) {
         setBusy(true);
-        AppLog.info(this, LOG_TAG, "Rozpoczęto import modelu z ekranu opcji");
+        AppLog.info(this, LOG_TAG, "Rozpoczęto import modelu mobilnego lub pakietu ALPR");
         backgroundExecutor.execute(() -> {
             try {
-                ModelImportResult result = packageImporter.importPackage(uri);
+                ModelImportResult result = packageImporter.importPackage(uri, expectedContent);
                 String name;
                 String successMessage;
                 if (expectedRole != null) {
-                    InstalledModel model = result.isCompletePackage()
-                            ? modelForRole(result.completePackage(), expectedRole)
-                            : result.singleModel();
-                    if (model == null) {
-                        throw new IllegalArgumentException(getString(
-                                R.string.settings_node_role_missing,
-                                roleLabel(expectedRole)
-                        ));
-                    }
+                    InstalledModel model = result.singleModel();
                     if (model.manifest().role() != expectedRole) {
                         throw new IllegalArgumentException(getString(
                                 R.string.settings_node_role_mismatch,
@@ -753,11 +800,7 @@ public final class SettingsActivity extends AppCompatActivity {
                         setVehicleCascadeEnabled(true);
                     }
                     name = model.manifest().name();
-                    successMessage = getString(
-                            R.string.settings_node_imported,
-                            roleLabel(expectedRole),
-                            name
-                    );
+                    successMessage = singleModelImportMessage(model, name);
                 } else if (result.isCompletePackage()) {
                     InstalledAlprPackage completePackage = result.completePackage();
                     modelRegistry.activate(completePackage);
@@ -782,10 +825,16 @@ public final class SettingsActivity extends AppCompatActivity {
                         modelRegistry.reload();
                     }
                     name = model.manifest().name();
-                    successMessage = getString(R.string.settings_import_partial, name);
+                    successMessage = singleModelImportMessage(model, name);
                 }
                 markChanged();
-                AppLog.info(this, LOG_TAG, "Zaimportowano model: " + name);
+                AppLog.info(
+                        this,
+                        LOG_TAG,
+                        (result.isCompletePackage()
+                                ? "Zaimportowano pakiet ALPR: "
+                                : "Zaimportowano model mobilny: ") + name
+                );
                 runOnUiThread(() -> {
                     setBusy(false);
                     refreshModelStatus();
@@ -803,6 +852,31 @@ public final class SettingsActivity extends AppCompatActivity {
                 });
             }
         });
+    }
+
+    private String singleModelImportMessage(InstalledModel model, String name) {
+        if (!ModelRegistry.isExecutable(model)) {
+            return getString(
+                    R.string.settings_import_model_stored,
+                    roleLabel(model.manifest().role()),
+                    name
+            );
+        }
+        if (modelRegistry.hasCompleteAlprComposition()) {
+            return getString(
+                    R.string.settings_import_model_ready,
+                    roleLabel(model.manifest().role()),
+                    name
+            );
+        }
+        boolean missingPlate = modelRegistry.getActive(ModelRole.PLATE) == null;
+        boolean missingCharacter = modelRegistry.getActive(ModelRole.CHARACTER) == null;
+        int message = missingPlate && missingCharacter
+                ? R.string.settings_import_model_missing_both
+                : missingPlate
+                ? R.string.settings_import_model_missing_mt
+                : R.string.settings_import_model_missing_mz;
+        return getString(message, roleLabel(model.manifest().role()), name);
     }
 
     private static InstalledModel modelForRole(
@@ -825,7 +899,7 @@ public final class SettingsActivity extends AppCompatActivity {
         plateModelStatus.setText(status.plate);
         characterModelStatus.setText(status.character);
         modelStatusSummary.setTextColor(getColor(
-                modelRegistry.hasRequiredPipeline()
+                modelRegistry.hasCompleteAlprComposition()
                         ? R.color.alpr_success
                         : R.color.alpr_warning
         ));
@@ -1044,7 +1118,8 @@ public final class SettingsActivity extends AppCompatActivity {
     private void setBusy(boolean busy) {
         importInProgress = busy;
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
-        importButton.setEnabled(!busy);
+        importModelButton.setEnabled(!busy);
+        importPackageButton.setEnabled(!busy);
     }
 
     private void requestSettingsClose() {

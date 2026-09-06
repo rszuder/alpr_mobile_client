@@ -30,20 +30,26 @@ public final class ModelStatusFormatter {
     ) {
         InstalledAlprPackage activePackage = registry.getActivePackage();
         InstalledAlprPackage basePackage = registry.getBasePackage();
+        boolean complete = registry.hasCompleteAlprComposition();
         String header;
-        if (basePackage != null && registry.isCompositionModified()) {
-            header = "Kompozycja zmodyfikowana · baza: "
+        if (complete && basePackage != null && registry.isCompositionModified()) {
+            header = "Stan: gotowa\nŹródło: kompozycja zmodyfikowana · baza: "
                     + displayName(basePackage.manifest().name())
                     + " v" + basePackage.manifest().version();
-        } else if (activePackage != null) {
-            header = "Komplet gotowy: " + displayName(activePackage.manifest().name())
+        } else if (complete && activePackage != null) {
+            header = "Stan: gotowa\nŹródło: kompletny pakiet ALPR · "
+                    + displayName(activePackage.manifest().name())
                     + " v" + activePackage.manifest().version();
             String createdAt = shortDate(activePackage.manifest().createdAt());
             if (!createdAt.isEmpty()) header += " • " + createdAt;
-        } else if (registry.hasRequiredPipeline()) {
-            header = "Pipeline z pojedynczych pakietów — MT+MZ aktywne";
+        } else if (complete) {
+            header = "Stan: gotowa\nŹródło: kompozycja z modeli mobilnych · MT i MZ aktywne";
         } else {
-            header = "Tryb częściowy — zaimportuj brakujący model MT lub MZ";
+            header = "Stan: niekompletna\nBrakuje: " + missingRequiredRoles(registry);
+            if (basePackage != null && registry.isCompositionModified()) {
+                header += "\nBaza: " + displayName(basePackage.manifest().name())
+                        + " v" + basePackage.manifest().version();
+            }
         }
         InstalledModel activeVehicle = registry.getActive(ModelRole.VEHICLE);
         String vehicleDescription = activeVehicle == null
@@ -57,6 +63,13 @@ public final class ModelStatusFormatter {
                 describe(registry.getActive(ModelRole.PLATE), autoTuneManager, true),
                 describe(registry.getActive(ModelRole.CHARACTER), autoTuneManager, true)
         );
+    }
+
+    private static String missingRequiredRoles(ModelRegistry registry) {
+        boolean missingPlate = registry.getActive(ModelRole.PLATE) == null;
+        boolean missingCharacter = registry.getActive(ModelRole.CHARACTER) == null;
+        if (missingPlate && missingCharacter) return "MT i MZ";
+        return missingPlate ? "MT" : "MZ";
     }
 
     private static String describe(

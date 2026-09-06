@@ -384,7 +384,7 @@ public final class AlprPipeline {
         );
         trace.putConfidence("overlay_update_fps", overlayUpdateFps);
         trace.start("total");
-        if (!registry.hasRequiredPipeline()) {
+        if (!registry.hasCompleteAlprComposition()) {
             trace.stop("total");
             trace.finish("models_missing", "");
             trace.captureMemoryAfterMeasurement();
@@ -813,7 +813,7 @@ public final class AlprPipeline {
         );
         trace.putCount("camera_rotation_degrees", cameraRotationDegrees);
         trace.start("total");
-        if (!registry.hasRequiredPipeline()) {
+        if (!registry.hasCompleteAlprComposition()) {
             trace.stop("total");
             trace.finish("models_missing", "");
             trace.captureMemoryAfterMeasurement();

@@ -114,6 +114,31 @@ public final class AlprPackageManifestInstrumentedTest {
         }
     }
 
+    @Test
+    public void packageWithoutPlateIsRejectedWithRequiredRolesMessage() throws Exception {
+        JSONObject manifest = completeManifest(false, false);
+        manifest.getJSONObject("models").remove("plate");
+
+        assertMissingRequiredModelsRejected(manifest);
+    }
+
+    @Test
+    public void packageWithoutCharacterIsRejectedWithRequiredRolesMessage() throws Exception {
+        JSONObject manifest = completeManifest(false, false);
+        manifest.getJSONObject("models").remove("character");
+
+        assertMissingRequiredModelsRejected(manifest);
+    }
+
+    private static void assertMissingRequiredModelsRejected(JSONObject manifest) throws Exception {
+        try {
+            AlprPackageManifest.parse(manifest.toString());
+            fail("Pakiet bez MT lub MZ powinien zostać odrzucony");
+        } catch (JSONException expected) {
+            assertTrue(expected.getMessage().contains("wymagane są modele MT i MZ"));
+        }
+    }
+
     private static void assertInvalidCompleteManifest(JSONObject json) throws Exception {
         try {
             AlprPackageManifest.parse(json.toString());

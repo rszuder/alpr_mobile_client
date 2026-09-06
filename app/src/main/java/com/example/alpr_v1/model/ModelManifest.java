@@ -52,7 +52,7 @@ public final class ModelManifest {
     public static ModelManifest parse(String jsonText) throws JSONException {
         JSONObject json = new JSONObject(jsonText);
         if (!SCHEMA.equals(json.optString("schema"))) {
-            throw new JSONException("Nieobsługiwany schemat pakietu: " + json.optString("schema"));
+            throw new JSONException("Nieobsługiwany schemat modelu: " + json.optString("schema"));
         }
         String modelId = json.getString("model_id").trim();
         if (!SAFE_ID.matcher(modelId).matches()) {
@@ -96,7 +96,7 @@ public final class ModelManifest {
             variants.add(ModelVariant.fromJson(variantsJson.getJSONObject(i)));
         }
         if (variants.isEmpty()) {
-            throw new JSONException("Pakiet nie zawiera żadnego wariantu modelu");
+            throw new JSONException("Model nie zawiera żadnego wariantu wykonawczego");
         }
         int classCount = outputSpec.classCount();
         if (labels.size() != classCount) {
