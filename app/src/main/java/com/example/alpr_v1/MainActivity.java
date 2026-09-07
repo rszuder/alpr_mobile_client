@@ -1922,6 +1922,7 @@ public final class MainActivity extends AppCompatActivity {
         deviceProfile = DeviceProfile.capture(this);
         pipeline = new AlprPipeline(this, modelRegistry, metricsCollector, autoTuneManager);
         cameraController = new CameraController(this, this, previewView);
+        cameraController.setPreviewGeometryListener(overlayView::setPreviewSourceSize);
         metricsCollector.setCameraTimestampSource(
                 cameraController.sourceTimeline().cameraTimestampSource().name()
         );
@@ -5484,7 +5485,9 @@ public final class MainActivity extends AppCompatActivity {
                 enabled ? R.color.alpr_success : R.color.alpr_text_muted
         );
         autoZoomButton.setIconTint(ColorStateList.valueOf(color));
-        autoZoomButton.setStrokeColor(ColorStateList.valueOf(color));
+        autoZoomButton.setTextColor(color);
+        autoZoomButton.setStrokeColor(ColorStateList.valueOf(enabled ? color
+                : ContextCompat.getColor(this, R.color.alpr_outline)));
         autoZoomButton.setContentDescription(
                 getString(enabled
                         ? R.string.auto_zoom_disable

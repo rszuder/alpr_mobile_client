@@ -2,6 +2,7 @@ package com.example.alpr_v1.ui;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -917,6 +918,38 @@ public final class DetectionOverlayViewInstrumentedTest {
         assertEquals(993.45f, bounds.top, 0.01f);
         assertEquals(1026f, bounds.right, 0.01f);
         assertEquals(1406.55f, bounds.bottom, 0.01f);
+    }
+
+    @Test
+    public void cameraGeometryDrawsViewportBeforeDetectionAndSurvivesLayerReset() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 1080, 2400);
+            view.setPreviewSourceSize(1080, 1920);
+            view.setAnalysisViewportEnabled(true);
+            RectF before = view.analysisViewportBoundsForTesting();
+            assertNotNull(before);
+            android.graphics.Bitmap initial = android.graphics.Bitmap.createBitmap(
+                    1080, 2400, android.graphics.Bitmap.Config.ARGB_8888);
+            view.draw(new android.graphics.Canvas(initial));
+            assertTrue(android.graphics.Color.alpha(initial.getPixel(1, 1200)) > 0);
+            assertEquals(0, android.graphics.Color.alpha(initial.getPixel(540, 1200)));
+
+            view.setItems(Collections.emptyList());
+            view.setPreviewItems(Collections.emptyList());
+            view.setAnalysisViewportEnabled(false);
+            view.setAnalysisViewportEnabled(true);
+            assertEquals(before, view.analysisViewportBoundsForTesting());
+            android.graphics.Bitmap restored = android.graphics.Bitmap.createBitmap(
+                    1080, 2400, android.graphics.Bitmap.Config.ARGB_8888);
+            view.draw(new android.graphics.Canvas(restored));
+            assertTrue(initial.sameAs(restored));
+            view.setPreviewSourceSize(1920, 1080);
+            assertEquals(993.45f, view.analysisViewportBoundsForTesting().top, 0.01f);
+            initial.recycle();
+            restored.recycle();
+        });
     }
 
     @Test

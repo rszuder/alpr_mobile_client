@@ -109,6 +109,8 @@ public final class DetectionOverlayView extends View {
     private long activeVehicleGeometryMaximumAgeNanos = 500_000_000L;
     private float activeVehicleMarkerProgress;
     private boolean analysisViewportEnabled;
+    private int previewSourceWidth;
+    private int previewSourceHeight;
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -207,7 +209,16 @@ public final class DetectionOverlayView extends View {
     public void setAnalysisViewportEnabled(boolean enabled) {
         if (analysisViewportEnabled == enabled) return;
         analysisViewportEnabled = enabled;
-        postInvalidateOnAnimation();
+        invalidate();
+    }
+
+    /** Camera geometry outlives detection layers and is available before inference. */
+    public void setPreviewSourceSize(int width, int height) {
+        if (width <= 0 || height <= 0
+                || width == previewSourceWidth && height == previewSourceHeight) return;
+        previewSourceWidth = width;
+        previewSourceHeight = height;
+        invalidate();
     }
 
     public void setGeometryCalibrationEnabled(boolean enabled) {
@@ -462,7 +473,8 @@ public final class DetectionOverlayView extends View {
                 sourceWidth;
 
         this.sourceHeight =
-                sourceHeight;
+                    sourceHeight;
+        setPreviewSourceSize(sourceWidth, sourceHeight);
 
 
         /*
@@ -1627,7 +1639,7 @@ public final class DetectionOverlayView extends View {
 
     private RectF analysisViewportViewBounds() {
         if (getWidth() <= 0 || getHeight() <= 0
-                || sourceWidth <= 0 || sourceHeight <= 0) return null;
+                || previewSourceWidth <= 0 || previewSourceHeight <= 0) return null;
         return OverlayViewportTransform.mapNormalizedToView(
                 new RectF(
                         ScanAcquisitionViewport.BOUNDS.left,
@@ -1635,8 +1647,8 @@ public final class DetectionOverlayView extends View {
                         ScanAcquisitionViewport.BOUNDS.right,
                         ScanAcquisitionViewport.BOUNDS.bottom
                 ),
-                sourceWidth,
-                sourceHeight,
+                previewSourceWidth,
+                previewSourceHeight,
                 getWidth(),
                 getHeight()
         );

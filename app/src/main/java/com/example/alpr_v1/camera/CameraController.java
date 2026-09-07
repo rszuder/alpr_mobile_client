@@ -50,6 +50,23 @@ public final class CameraController implements AutoCloseable {
         void onError(Throwable error);
     }
 
+    public interface PreviewGeometryListener {
+        void onGeometry(int width, int height);
+    }
+
+    private PreviewGeometryListener previewGeometryListener;
+    private Size boundPreviewGeometry;
+
+    public void setPreviewGeometryListener(PreviewGeometryListener listener) {
+        previewGeometryListener = listener;
+    }
+
+    private void publishPreviewGeometry() {
+        if (previewGeometryListener != null && boundPreviewGeometry != null) {
+            previewGeometryListener.onGeometry(boundPreviewGeometry.getWidth(), boundPreviewGeometry.getHeight());
+        }
+    }
+
     public interface ControlCallback {
         void onSuccess(float appliedZoomRatio);
         void onError(Throwable error);
@@ -104,6 +121,7 @@ public final class CameraController implements AutoCloseable {
         if (camera != null && analysisSize.equals(boundAnalysisSize)
                 && allowHighResolution == boundHighResolution && rotation == boundRotation) {
             activeCallbacks = new FrameCallbacks(frameHandler, lumaFrameHandler);
+            publishPreviewGeometry();
             android.util.Log.d("ALPR_CAMERA_START", "reused_preview_binding");
             return;
         }
@@ -321,6 +339,14 @@ public final class CameraController implements AutoCloseable {
         boundAnalysisSize = analysisSize;
         boundHighResolution = allowHighResolution;
         boundRotation = displayRotation;
+        androidx.camera.core.ResolutionInfo geometry = analysis.getResolutionInfo();
+        if (geometry != null) {
+            Size size = geometry.getResolution();
+            int rotation = geometry.getRotationDegrees();
+            boundPreviewGeometry = rotation == 90 || rotation == 270
+                    ? new Size(size.getHeight(), size.getWidth()) : size;
+            publishPreviewGeometry();
+        }
         activeCallbacks = new FrameCallbacks(frameHandler, lumaFrameHandler);
     }
 
