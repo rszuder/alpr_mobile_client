@@ -658,6 +658,17 @@ final class MobileAlprEngine implements AutoCloseable {
             AlprPipeline.PlateDetectionCallback plateDetectionCallback,
             BooleanSupplier cancellationRequested
     ) {
+        return run(frame, trace, sourceStamp, plateDetectionCallback, cancellationRequested, null);
+    }
+
+    PipelineResult run(
+            Bitmap frame,
+            InferenceTrace trace,
+            ContinuityStamp sourceStamp,
+            AlprPipeline.PlateDetectionCallback plateDetectionCallback,
+            BooleanSupplier cancellationRequested,
+            AlprPipeline.PlateObservationCallback plateObservationCallback
+    ) {
         if (sourceStamp == null) throw new IllegalArgumentException("sourceStamp");
         long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
         if (continuitySoftHold) {
@@ -1583,6 +1594,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             trace.durationNanos("vehicle_preprocess")
                                     + trace.durationNanos("vehicle_inference")
                                     + trace.durationNanos("vehicle_postprocess"),
+                            trace.durationNanos("vehicle_inference"),
                             trace.durationNanos("plate_preprocess"),
                             trace.durationNanos("plate_inference"),
                             trace.durationNanos("plate_postprocess"),
@@ -1656,7 +1668,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     );
                 }
             }
-            plateObservations.add(new PlateObservation(
+            PlateObservation observation = new PlateObservation(
                     decision.trackId,
                     vehicleAssociation,
                     workKindByPlateTrack.getOrDefault(
@@ -1697,10 +1709,15 @@ final class MobileAlprEngine implements AutoCloseable {
                             : trackResult.rowCounts,
                     predictionBefore,
                     visibleText,
-                    ContinuityStamp.initial(0L),
+                    sourceStamp,
                     mtDecision == null
                             ? 0L : mtDecision.acquisitionDirectiveRevision
-            ));
+            );
+            plateObservations.add(observation);
+            if (observation.previewBitmap != null && plateObservationCallback != null) {
+                cancelIfRequested(cancellationRequested);
+                plateObservationCallback.onPlateObservation(observation);
+            }
             android.util.Log.d(
                     "ALPR_OCR_ENTITY",
                     "entity=" + vehicleAssociation.entityId

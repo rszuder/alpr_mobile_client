@@ -63,6 +63,20 @@ public final class CameraController implements AutoCloseable {
     private final CameraSourceTimeline sourceTimeline = new CameraSourceTimeline();
     private ProcessCameraProvider cameraProvider;
     private Camera camera;
+    private volatile FrameCallbacks activeCallbacks;
+    private Size boundAnalysisSize;
+    private boolean boundHighResolution;
+    private int boundRotation;
+
+    private static final class FrameCallbacks {
+        final FrameHandler frame;
+        final LumaFrameHandler luma;
+
+        FrameCallbacks(FrameHandler frame, LumaFrameHandler luma) {
+            this.frame = frame;
+            this.luma = luma;
+        }
+    }
     private int bindingGeneration;
     private final Handler cameraControlHandler = new Handler(Looper.getMainLooper());
     private int cameraControlGeneration;
@@ -85,6 +99,15 @@ public final class CameraController implements AutoCloseable {
             Size analysisSize,
             boolean allowHighResolution
     ) {
+        int rotation = previewView.getDisplay() == null
+                ? Surface.ROTATION_0 : previewView.getDisplay().getRotation();
+        if (camera != null && analysisSize.equals(boundAnalysisSize)
+                && allowHighResolution == boundHighResolution && rotation == boundRotation) {
+            activeCallbacks = new FrameCallbacks(frameHandler, lumaFrameHandler);
+            android.util.Log.d("ALPR_CAMERA_START", "reused_preview_binding");
+            return;
+        }
+        activeCallbacks = null;
         final int requestedGeneration = ++bindingGeneration;
         ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(context);
         providerFuture.addListener(() -> {
@@ -246,21 +269,23 @@ public final class CameraController implements AutoCloseable {
                 image -> {
 
                     try {
+                        FrameCallbacks callbacks = activeCallbacks;
+                        if (requestedGeneration != bindingGeneration || callbacks == null) return;
                         SourceFrameStamp sourceFrameStamp =
                                 sourceTimeline.observeCameraFrame(
                                         image.getImageInfo().getTimestamp()
                                 );
-                        if (lumaFrameHandler != null) {
+                        if (callbacks.luma != null) {
                             LumaFrame lumaFrame = LumaFrame.copyFrom(
                                     image,
                                     240,
                                     sourceFrameStamp
                             );
                             if (lumaFrame != null) {
-                                lumaFrameHandler.onLumaFrame(lumaFrame);
+                                callbacks.luma.onLumaFrame(lumaFrame);
                             }
                         }
-                        frameHandler.onFrame(
+                        callbacks.frame.onFrame(
                                 image,
                                 sourceFrameStamp
                         );
@@ -293,6 +318,10 @@ public final class CameraController implements AutoCloseable {
                 CameraSelector.DEFAULT_BACK_CAMERA,
                 useCaseGroup
         );
+        boundAnalysisSize = analysisSize;
+        boundHighResolution = allowHighResolution;
+        boundRotation = displayRotation;
+        activeCallbacks = new FrameCallbacks(frameHandler, lumaFrameHandler);
     }
 
     public void zoomAndFocus(
@@ -498,6 +527,8 @@ public final class CameraController implements AutoCloseable {
     }
 
     public void stop() {
+        activeCallbacks = null;
+        boundAnalysisSize = null;
         bindingGeneration++;
         cameraControlGeneration++;
         cameraControlHandler.removeCallbacksAndMessages(null);

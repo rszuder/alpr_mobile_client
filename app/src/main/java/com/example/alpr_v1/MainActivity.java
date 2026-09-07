@@ -345,6 +345,8 @@ public final class MainActivity extends AppCompatActivity {
     private final Object previewMotionStateLock = new Object();
     private final PlateOverlayFreshness plateOverlayFreshness =
             new PlateOverlayFreshness();
+    private final com.example.alpr_v1.ui.StationarySceneSupport stationarySceneSupport =
+            new com.example.alpr_v1.ui.StationarySceneSupport();
 
 
     private final Handler previewSceneHandler =
@@ -957,8 +959,7 @@ public final class MainActivity extends AppCompatActivity {
         if (frame == null || frame.candidates.isEmpty()) {
             return java.util.Collections.emptyList();
         }
-        long maximumAgeNanos = PreviewContinuityUiPolicy
-                .vehicleOverlayMaximumAgeNanos(
+        long maximumAgeNanos = vehicleOverlayMaximumAgeNanos(
                         activePipeline.lastMpObservationGapNanos()
                 );
         List<com.example.alpr_v1.domain.NormalizedBounds> masks =
@@ -976,6 +977,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void resetGlobalPreviewMotionState() {
+        stationarySceneSupport.reset();
         synchronized (previewMotionStateLock) {
             globalLumaMotionTracker.reset();
             lumaSceneChangeDetector.reset();
@@ -1020,13 +1022,11 @@ public final class MainActivity extends AppCompatActivity {
             overlayView.setFocusedTrackId(0L);
             overlayView.setActiveVehicleEntityId(0L);
             overlayView.clearPlateItems();
+            overlayView.setStationaryScene(stationarySceneSupported());
             overlayView.setItems(java.util.Collections.emptyList());
+            overlayView.setStationaryScene(stationarySceneSupported());
             overlayView.setPreviewItems(java.util.Collections.emptyList());
-            overlayView.setVehicleEntityStates(
-                    java.util.Collections.emptySet(),
-                    java.util.Collections.emptySet(),
-                    java.util.Collections.emptyMap()
-            );
+            overlayView.resetVehicleEntityStates();
             livePresentation.clearResult();
             livePresentation.showState(
                     LivePresentationController.State.RECOVERING,
@@ -1089,6 +1089,19 @@ public final class MainActivity extends AppCompatActivity {
                 visualMotionEvidenceDecay.snapshot(
                         android.os.SystemClock.elapsedRealtimeNanos()
                 );
+        long evidenceNow = android.os.SystemClock.elapsedRealtimeNanos();
+        boolean measuredSceneMotion = earlySensorMotion || isVisualCameraMotion(frameMotion)
+                || cameraTransformInProgress || motionSample.sceneChange.globalChanged
+                || motionSample.sceneChange.globalChangedFraction >= 0.20f;
+        if (measuredSceneMotion) {
+            stationarySceneSupport.observe(evidenceNow, false);
+        } else if (motionSample.sceneChange.globalSamples >= 128
+                && motionSample.sceneChange.globalChangedFraction < 0.05f
+                && motionSample.sceneChange.globalMeanDelta < 8f) {
+            stationarySceneSupport.observe(evidenceNow, true);
+        } else {
+            stationarySceneSupport.observeUncertain(evidenceNow);
+        }
         if (motionSample.sceneChange.globalChangedFraction >= 0.20f
                 || motionSample.sceneChange.changedFraction >= 0.08f) {
             android.util.Log.d(
@@ -1229,8 +1242,7 @@ public final class MainActivity extends AppCompatActivity {
         if (!cameraMotionOwnsVehicleGeometry
                 && previewVehicleTrackerAwaitingFreshMpAnchor) {
             long rebaseNowNanos = android.os.SystemClock.elapsedRealtimeNanos();
-            long rebaseMaximumAgeNanos = PreviewContinuityUiPolicy
-                    .vehicleOverlayMaximumAgeNanos(
+            long rebaseMaximumAgeNanos = vehicleOverlayMaximumAgeNanos(
                             pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                     );
             long rebaseGeometryAgeNanos = previewVehicleGeometryFreshAtNanos <= 0L
@@ -1362,6 +1374,7 @@ public final class MainActivity extends AppCompatActivity {
             } else if (isDynamicCameraMotion()
                     || frameMotion.significant()
                     || !locallyTrackedVehicles.isEmpty()) {
+                overlayView.setStationaryScene(stationarySceneSupported());
                 overlayView.setPreviewItems(
                         dynamicCameraMotionOverlayItems(
                                 trackedItems,
@@ -1716,7 +1729,7 @@ public final class MainActivity extends AppCompatActivity {
     private TextView verificationStatus;
     private TextView verificationModelText;
     private TextView verificationConsensusText;
-    private TextView verificationTiming;
+    private com.example.alpr_v1.ui.CropTimingView verificationTiming;
     private TextView verificationCharacters;
     private TextView verificationMetrics;
     private MaterialButton verificationAcceptButton;
@@ -2502,7 +2515,9 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setFocusedTrackId(0L);
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(java.util.Collections.emptyList());
         overlayView.setAnalysisViewportEnabled(
                 cameraStarted || cameraPreviewActive
@@ -2526,6 +2541,7 @@ public final class MainActivity extends AppCompatActivity {
         pipeline.resetTracking();
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(java.util.Collections.emptyList());
         livePresentation.clearResult();
         showSearchingStatusForCurrentPipeline();
@@ -2686,9 +2702,6 @@ public final class MainActivity extends AppCompatActivity {
                         cancelThermalStartWaiting();
 
                     } else {
-                        if (cameraPreviewActive) {
-                            stopCameraPreview(false);
-                        }
                         ensureCameraPermission(false);
                     }
                 }
@@ -2949,14 +2962,11 @@ public final class MainActivity extends AppCompatActivity {
 
         lastCaptureByTrack.clear();
 
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
-        overlayView.setVehicleEntityStates(
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptyMap()
-        );
+        overlayView.resetVehicleEntityStates();
 
         livePresentation.stop();
 
@@ -3482,6 +3492,7 @@ public final class MainActivity extends AppCompatActivity {
             if (effectiveSceneHandlingMode()
                     == SceneHandlingMode.DYNAMIC_CONTINUITY) {
                 if (trackedItems != null) {
+                    overlayView.setStationaryScene(stationarySceneSupported());
                     overlayView.setPreviewItems(
                             trackedItems.isEmpty()
                                     ? java.util.Collections.emptyList()
@@ -3659,14 +3670,11 @@ public final class MainActivity extends AppCompatActivity {
 
 
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
-        overlayView.setVehicleEntityStates(
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptyMap()
-        );
+        overlayView.resetVehicleEntityStates();
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(true);
 
@@ -3774,6 +3782,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
@@ -3817,7 +3826,9 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setFocusedTrackId(0L);
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(java.util.Collections.emptyList());
         overlayView.setAnalysisViewportEnabled(true);
         livePresentation.clearResult();
@@ -3863,7 +3874,9 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.setFocusedTrackId(0L);
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setPreviewItems(java.util.Collections.emptyList());
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(java.util.Collections.emptyList());
         livePresentation.stop();
         renderAnalysisControls();
@@ -3871,7 +3884,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void startCamera(boolean beginNewMeasurement) {
-        if (cameraStarted || cameraPreviewActive) return;
+        if (cameraStarted) return;
         lastRenderedContinuityState =
                 com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
         if (beginNewMeasurement) {
@@ -3885,6 +3898,7 @@ public final class MainActivity extends AppCompatActivity {
         if (beginNewMeasurement) {
             if (!beginAnalysisMeasurement()) return;
         }
+        cameraPreviewActive = false;
         previewView.setVisibility(View.VISIBLE);
 
         /*
@@ -3892,17 +3906,10 @@ public final class MainActivity extends AppCompatActivity {
          * bez stanu trackingowego poprzedniego przebiegu.
          */
         pipeline.resetTracking();
-        if (beginNewMeasurement
-                && vehicleCascadeEnabled
-                && !experimentModeEnabled
-                && requiredRecognitionModelsAvailable()) {
-            long scanStartedRuntimeNanos =
-                    android.os.SystemClock.elapsedRealtimeNanos();
-            pipeline.startScanRun(
-                    Math.max(1L, scanStartedRuntimeNanos),
-                    scanStartedRuntimeNanos
-            );
-        }
+        restartScanAcquisitionForConfiguration(
+                true,
+                beginNewMeasurement ? "analysis_start" : "camera_restart"
+        );
         targetStateMachine.reset();
 
         overlayTracker.reset();
@@ -3929,14 +3936,11 @@ public final class MainActivity extends AppCompatActivity {
         lastCaptureByTrack.clear();
 
         overlayView.clearPlateItems();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(
                 java.util.Collections.emptyList()
         );
-        overlayView.setVehicleEntityStates(
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptySet(),
-                java.util.Collections.emptyMap()
-        );
+        overlayView.resetVehicleEntityStates();
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(true);
 
@@ -3989,6 +3993,15 @@ public final class MainActivity extends AppCompatActivity {
         lastDirectLumaSourceTimestampNanos = 0L;
         pendingDirectLumaFrame.set(null);
         directLumaTrackingUnavailable = false;
+        AlprPipeline startingPipeline = pipeline;
+        pipelineInferenceExecutor.execute(() -> {
+            try {
+                startingPipeline.prepareModels();
+            } catch (RuntimeException error) {
+                // The first measured frame uses the regular runtime error reporting path.
+                android.util.Log.w("ALPR_PIPELINE_START", "Model preparation failed", error);
+            }
+        });
         cameraController.start(
                 (image, cameraFrameStamp) -> {
 
@@ -4158,7 +4171,10 @@ public final class MainActivity extends AppCompatActivity {
                                                 score,
                                                 changedFraction
                                         );
-                                    })
+                                    }),
+                                    observation -> publishGalleryObservation(
+                                            observation, sceneGenerationAtStart,
+                                            transformGenerationAtStart, presentationGenerationAtStart)
                             );
 
 
@@ -4256,8 +4272,7 @@ public final class MainActivity extends AppCompatActivity {
                                 }
                         );
 
-                    } else if (collectionActive
-                            && containsNewCrop(
+                    } else if (containsNewCrop(
                             result.plateObservations
                     )) {
 
@@ -4286,6 +4301,7 @@ public final class MainActivity extends AppCompatActivity {
                                             );
                                             return;
                                         }
+                                        collectRecognitionHistory(result.plateObservations);
                                         collectCrops(
                                                 result.plateObservations
                                         );
@@ -4663,7 +4679,7 @@ public final class MainActivity extends AppCompatActivity {
             livePresentation.clearResult();
         }
         overlayView.setActiveVehicleGeometryMaximumAgeNanos(
-                PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(
+                vehicleOverlayMaximumAgeNanos(
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                 )
         );
@@ -4839,6 +4855,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void presentCurrentResult(PipelineResult result, long observationNanos) {
+        overlayView.setPresentationStamp(result.continuityStamp());
         if ("models_missing".equals(result.status)) {
             showMissingModelsStatus();
             return;
@@ -4876,11 +4893,14 @@ public final class MainActivity extends AppCompatActivity {
              * Natychmiast usuwamy ewentualny stary overlay.
              */
             overlayView.clearPlateItems();
+            overlayView.setStationaryScene(stationarySceneSupported());
             overlayView.setItems(
                     java.util.Collections.emptyList()
             );
         }
 
+        // Publish the first OCR crop before overlay/auto-zoom presentation can return early.
+        collectRecognitionHistory(result.plateObservations);
         boolean scanReleaseBarrierActive = applyScanTargetReleaseIfNeeded();
 
         if (autoZoomController.state()
@@ -5027,8 +5047,7 @@ public final class MainActivity extends AppCompatActivity {
 
         long vehiclePresentationNowNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
-        long vehiclePresentationMaximumAgeNanos = PreviewContinuityUiPolicy
-                .vehicleOverlayMaximumAgeNanos(
+        long vehiclePresentationMaximumAgeNanos = vehicleOverlayMaximumAgeNanos(
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                 );
         long previewVehicleGeometryAgeNanos =
@@ -5162,6 +5181,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
         overlayView.setFocusedTrackId(targetStateMachine.snapshot().trackId);
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(
                 presentedOverlayItems,
                 result.sourceWidth,
@@ -5252,7 +5272,6 @@ public final class MainActivity extends AppCompatActivity {
             }
 
         }
-        collectRecognitionHistory(result.plateObservations);
         if (collectionActive) {
             if (!PipelineResultDispatchGate.isCurrent(pipeline, result)) {
                 recordStaleFinalResult("before_crop_collect", result);
@@ -6302,6 +6321,7 @@ public final class MainActivity extends AppCompatActivity {
                 java.util.Collections.unmodifiableList(plates);
         // Ten callback publikuje geometrię MT przed próbą OCR.
         latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
+        overlayView.setStationaryScene(stationarySceneSupported());
         overlayView.setItems(items, sourceWidth, sourceHeight);
         latestPreviewMotionItems = java.util.Collections.unmodifiableList(
                 new ArrayList<>(items)
@@ -6589,6 +6609,7 @@ public final class MainActivity extends AppCompatActivity {
                 || !containsPlate(overlayItems)) return;
         ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
         if (!shouldPresentScanMtStage(scan)) return;
+        overlayView.setPresentationStamp(sourceStamp);
 
         setScanOverlayPresentationEntity(scan.activeEntityId);
         List<OverlayItem> scopedStage = scanScopedMtStageItems(
@@ -7127,11 +7148,12 @@ public final class MainActivity extends AppCompatActivity {
                 nowNanos
         );
         List<OverlayItem> displayableTrackedItems =
-                plateOverlayFreshness.retainDisplayable(ownedTrackedItems, nowNanos);
+                plateOverlayFreshness.retainDisplayable(ownedTrackedItems, nowNanos, plateOverlayMaximumAgeNanos());
 
         if (displayableTrackedItems.isEmpty()) {
             expireStalePlateOverlayIfNeeded();
             if (dynamicCameraMotion) {
+                overlayView.setStationaryScene(stationarySceneSupported());
                 overlayView.setPreviewItems(
                         dynamicCameraMotionOverlayItems(
                                 displayableTrackedItems,
@@ -7144,6 +7166,7 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         if (dynamicCameraMotion) {
+            overlayView.setStationaryScene(stationarySceneSupported());
             overlayView.setPreviewItems(
                     dynamicCameraMotionOverlayItems(
                             displayableTrackedItems,
@@ -7165,6 +7188,24 @@ public final class MainActivity extends AppCompatActivity {
                 == SceneHandlingMode.DYNAMIC_CONTINUITY
                 && cameraMotionMonitor != null
                 && cameraMotionMonitor.isMoving();
+    }
+
+    private boolean stationarySceneSupported() {
+        return cameraStarted && !cameraTransformInProgress && !previewPresentationBarrier.active()
+                && stationarySceneSupport.supported(android.os.SystemClock.elapsedRealtimeNanos());
+    }
+
+    private long vehicleOverlayMaximumAgeNanos(long measuredInterval) {
+        return stationarySceneSupported()
+                ? com.example.alpr_v1.ui.StationarySceneSupport.maximumOverlayAge(measuredInterval)
+                : PreviewContinuityUiPolicy.vehicleOverlayMaximumAgeNanos(measuredInterval);
+    }
+
+    private long plateOverlayMaximumAgeNanos() {
+        return stationarySceneSupported()
+                ? com.example.alpr_v1.ui.StationarySceneSupport.maximumOverlayAge(
+                        pipeline == null ? 0L : pipeline.lastMpObservationGapNanos())
+                : PlateOverlayFreshness.MAXIMUM_AGE_NANOS;
     }
 
     private List<OverlayItem> scanOwnedTrackedPlateItems(List<OverlayItem> trackedItems) {
@@ -7234,7 +7275,7 @@ public final class MainActivity extends AppCompatActivity {
                 nowNanos
         );
         List<OverlayItem> displayableTrackedPlates =
-                plateOverlayFreshness.retainDisplayable(trackedPlates, nowNanos);
+                plateOverlayFreshness.retainDisplayable(trackedPlates, nowNanos, plateOverlayMaximumAgeNanos());
         if ((trackedPlates != null && !trackedPlates.isEmpty())
                 && displayableTrackedPlates.isEmpty()) {
             expireStalePlateOverlayIfNeeded();
@@ -7244,8 +7285,7 @@ public final class MainActivity extends AppCompatActivity {
         long focusedPlateTrackId = focusedTarget.trackId;
         VehicleTrackingFrame vehicleFrame = pipeline == null
                 ? null : pipeline.latestVehicleTrackingFrame();
-        long maximumVehicleAgeNanos = PreviewContinuityUiPolicy
-                .vehicleOverlayMaximumAgeNanos(
+        long maximumVehicleAgeNanos = vehicleOverlayMaximumAgeNanos(
                         pipeline == null ? 0L : pipeline.lastMpObservationGapNanos()
                 );
         if (pipeline != null) {
@@ -7464,12 +7504,15 @@ public final class MainActivity extends AppCompatActivity {
         switch (safe) {
             case CLEAR:
                 overlayView.clearPlateItems();
+                overlayView.setStationaryScene(stationarySceneSupported());
                 overlayView.setPreviewItems(java.util.Collections.emptyList());
                 break;
             case PLATE_ONLY:
+                overlayView.setStationaryScene(stationarySceneSupported());
                 overlayView.setPreviewItems(plateOnlyOverlayItems(trackedItems));
                 break;
             case KEEP_PREDICTED_VEHICLES:
+                overlayView.setStationaryScene(stationarySceneSupported());
                 overlayView.setPreviewItems(
                         dynamicCameraMotionOverlayItems(trackedItems)
                 );
@@ -7477,6 +7520,7 @@ public final class MainActivity extends AppCompatActivity {
             case KEEP:
             default:
                 if (isDynamicCameraMotion()) {
+                    overlayView.setStationaryScene(stationarySceneSupported());
                     overlayView.setPreviewItems(
                             dynamicCameraMotionOverlayItems(trackedItems)
                     );
@@ -7489,7 +7533,8 @@ public final class MainActivity extends AppCompatActivity {
         if (latestPipelinePlateItems.isEmpty()) return;
         List<OverlayItem> retained = plateOverlayFreshness.retainDisplayable(
                 latestPipelinePlateItems,
-                android.os.SystemClock.elapsedRealtimeNanos()
+                android.os.SystemClock.elapsedRealtimeNanos(),
+                plateOverlayMaximumAgeNanos()
         );
         if (retained.size() == latestPipelinePlateItems.size()) return;
 
@@ -8445,7 +8490,7 @@ public final class MainActivity extends AppCompatActivity {
                     ? getString(R.string.result_placeholder) : item.text);
             verificationConsensusText.setText(item.consensusText.isEmpty()
                     ? getString(R.string.result_placeholder) : item.consensusText);
-            verificationTiming.setText(cropTimingText(item.timing, item.characters.size()));
+            verificationTiming.setTiming(item.timing);
             verificationCharacters.setText(characterBoxesText(item.characters));
             verificationMetrics.setText(getString(
                     R.string.verification_metrics_format,
@@ -8641,17 +8686,6 @@ public final class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private String cropTimingText(CropInferenceTiming timing, int characterBoxCount) {
-        if (timing == null) return getString(R.string.gallery_timing_unavailable);
-        return getString(
-                R.string.gallery_timing_format,
-                timing.plateInferenceMilliseconds(),
-                timing.characterInferenceMilliseconds(),
-                timing.totalMilliseconds(),
-                Math.max(0, characterBoxCount)
-        );
-    }
-
     private String characterBoxesText(List<PlateCharacter> characters) {
         if (characters == null || characters.isEmpty()) {
             return getString(R.string.gallery_character_boxes_empty);
@@ -8803,19 +8837,55 @@ public final class MainActivity extends AppCompatActivity {
         renderCapturedCrops();
     }
 
+    private void publishGalleryObservation(
+            PlateObservation observation,
+            long sceneGeneration,
+            long transformGeneration,
+            long presentationGeneration
+    ) {
+        if (!cameraStarted || pipeline == null
+                || !pipeline.isCurrentContinuityStamp(observation.continuityStamp())) return;
+        PlateObservation snapshot = observation.copyForGallery();
+        if (snapshot == null) return;
+        runOnUiThread(() -> {
+            try {
+                if (!cameraStarted || pipeline == null
+                        || sceneGeneration != uiSceneGeneration.get()
+                        || transformGeneration != uiCameraTransformGeneration.get()
+                        || !previewPresentationBarrier.permits(presentationGeneration)
+                        || !pipeline.isCurrentContinuityStamp(snapshot.continuityStamp())) return;
+                List<PlateObservation> crops = java.util.Collections.singletonList(snapshot);
+                overlayView.setPresentationStamp(snapshot.continuityStamp());
+                overlayView.animatePlateObservation(snapshot);
+                collectRecognitionHistory(crops);
+                collectCrops(crops);
+                android.util.Log.d("ALPR_GALLERY", "mz_crop_published frame=" + snapshot.frameId
+                        + " entity=" + snapshot.entityId + " chars=" + snapshot.characters.size()
+                        + " plate_track=" + snapshot.plateTrackId + " epoch=" + snapshot.visualEpoch
+                        + " association=" + snapshot.associationReason
+                        + " confirmed=" + snapshot.confirmed + " dispatch_ms="
+                        + (android.os.SystemClock.elapsedRealtimeNanos()
+                        - snapshot.capturedElapsedNanos) / 1_000_000L);
+            } finally {
+                snapshot.previewBitmap.recycle();
+            }
+        });
+    }
+
     private void collectRecognitionHistory(List<PlateObservation> observations) {
         if (experimentModeEnabled || observations == null || observations.isEmpty()) return;
         boolean changed = false;
         for (PlateObservation observation : observations) {
-            if (!observation.confirmed
-                    || !RegistrationTextPolicy.displayable(observation.text)) continue;
+            // A crop is evidence of an MZ attempt, including zero or partial characters.
+            String cropText = observation.freshMzAttempted
+                    ? observation.freshPrediction : observation.text;
             changed |= recognitionHistory.upsert(
                     observation.sceneGeneration,
                     observation.entityId,
                     observation.vehicleTrackId,
                     observation.plateTrackId,
                     observation.trackId,
-                    observation.text,
+                    cropText,
                     observation.recognitionConfidence,
                     observation.plateConfidence,
                     observation.capturedAtMillis,
@@ -8825,7 +8895,8 @@ public final class MainActivity extends AppCompatActivity {
                     observation.confirmed,
                     observation.observations,
                     observation.sharpness,
-                    autoZoomController.captureSource()
+                    autoZoomController.captureSource(),
+                    observation.visualEpoch
             );
         }
         if (changed) renderCapturedCrops();
@@ -8844,8 +8915,9 @@ public final class MainActivity extends AppCompatActivity {
                 .show();
     }
 
-    private void showRecognitionHistoryDetails(RecognitionHistoryItem item) {
-        if (item == null || item.previewBitmap == null || item.previewBitmap.isRecycled()) return;
+    private void showRecognitionHistoryDetails(RecognitionHistoryItem sourceItem) {
+        RecognitionHistoryItem item = sourceItem == null ? null : sourceItem.snapshot();
+        if (item == null) return;
         View content = getLayoutInflater().inflate(
                 R.layout.dialog_recognition_history_detail,
                 (ViewGroup) findViewById(android.R.id.content),
@@ -8854,15 +8926,16 @@ public final class MainActivity extends AppCompatActivity {
         PlateCropView preview = content.findViewById(R.id.history_detail_preview);
         TextView number = content.findViewById(R.id.history_detail_number);
         TextView meta = content.findViewById(R.id.history_detail_meta);
-        TextView timing = content.findViewById(R.id.history_detail_timing);
+        com.example.alpr_v1.ui.CropTimingView timing = content.findViewById(R.id.history_detail_timing);
         TextView characters = content.findViewById(R.id.history_detail_characters);
         MaterialButton copy = content.findViewById(R.id.history_detail_copy);
         MaterialButton save = content.findViewById(R.id.history_detail_save);
         MaterialButton delete = content.findViewById(R.id.history_detail_delete);
         preview.setPlate(item.previewBitmap, item.characters);
         preview.setBoxesVisible(true);
-        number.setText(item.text);
-        timing.setText(cropTimingText(item.timing, item.characters.size()));
+        number.setText(item.text.isEmpty() ? getString(R.string.result_placeholder) : item.text);
+        copy.setEnabled(!item.text.isEmpty());
+        timing.setTiming(item.timing);
         characters.setText(characterBoxesText(item.characters));
         meta.setText(getString(
                 R.string.history_detail_full,
@@ -8879,11 +8952,17 @@ public final class MainActivity extends AppCompatActivity {
                         Math.max(1, item.observations)
                 )
         ));
-        androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.history_detail_title)
-                .setView(content)
-                .setNegativeButton(R.string.menu_close, null)
-                .create();
+        meta.append("\n" + getString(item.entityId > 0L
+                        ? R.string.history_entity_assigned : R.string.history_entity_unassigned,
+                item.entityId > 0L ? item.entityId : item.plateTrackId));
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setContentView(content);
+        content.findViewById(R.id.history_detail_close).setOnClickListener(view -> dialog.dismiss());
+        dialog.setOnDismissListener(ignored -> {
+            preview.setPlate(null, java.util.Collections.emptyList());
+            item.close();
+        });
         copy.setOnClickListener(view -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(
                     CLIPBOARD_SERVICE
@@ -8904,6 +8983,13 @@ public final class MainActivity extends AppCompatActivity {
             renderCapturedCrops();
         });
         dialog.show();
+        android.view.Window detailWindow = dialog.getWindow();
+        if (detailWindow != null) {
+            detailWindow.setBackgroundDrawableResource(R.color.alpr_background);
+            WindowCompat.setDecorFitsSystemWindows(detailWindow, true);
+            detailWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+        }
     }
 
     private void saveRecognitionHistoryImage(RecognitionHistoryItem item) {
@@ -9576,12 +9662,54 @@ public final class MainActivity extends AppCompatActivity {
         modelRegistry.reload();
         pipeline.invalidateModels();
         invalidatePresentationAfterSettingsChange(revision);
+        restartScanAcquisitionForConfiguration(cameraStarted, "settings_applied");
 
         if (!syncMissingModelsStatus() && cameraStarted) {
             showSearchingStatusForCurrentPipeline();
         }
 
         scheduleMissingAutotuning();
+    }
+
+    private void restartScanAcquisitionForConfiguration(
+            boolean cameraActive,
+            String reason
+    ) {
+        if (pipeline == null) return;
+        boolean modelsAvailable = requiredRecognitionModelsAvailable();
+        boolean shouldRun = shouldRunNormalScanAcquisition(
+                cameraActive,
+                vehicleCascadeEnabled,
+                experimentModeEnabled,
+                modelsAvailable
+        );
+        long nowRuntimeNanos = android.os.SystemClock.elapsedRealtimeNanos();
+        if (shouldRun) {
+            pipeline.startScanRun(Math.max(1L, nowRuntimeNanos), nowRuntimeNanos);
+        } else if (pipeline.scanAcquisitionSnapshot().runState.active()) {
+            pipeline.stopScanRun(nowRuntimeNanos);
+        }
+        android.util.Log.i(
+                "ALPR_SCAN_LIFECYCLE",
+                "reason=" + reason
+                        + " camera=" + cameraActive
+                        + " cascade=" + vehicleCascadeEnabled
+                        + " experiment=" + experimentModeEnabled
+                        + " models=" + modelsAvailable
+                        + " action=" + (shouldRun ? "start" : "stop_or_idle")
+        );
+    }
+
+    static boolean shouldRunNormalScanAcquisition(
+            boolean cameraActive,
+            boolean vehicleCascadeEnabled,
+            boolean experimentModeEnabled,
+            boolean requiredModelsAvailable
+    ) {
+        return cameraActive
+                && vehicleCascadeEnabled
+                && !experimentModeEnabled
+                && requiredModelsAvailable;
     }
 
     @Override

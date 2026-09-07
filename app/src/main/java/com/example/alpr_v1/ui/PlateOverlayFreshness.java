@@ -32,13 +32,19 @@ public final class PlateOverlayFreshness {
             List<OverlayItem> items,
             long nowNanos
     ) {
+        return retainDisplayable(items, nowNanos, MAXIMUM_AGE_NANOS);
+    }
+
+    public synchronized List<OverlayItem> retainDisplayable(
+            List<OverlayItem> items, long nowNanos, long maximumAgeNanos
+    ) {
         if (items == null || items.isEmpty()) return Collections.emptyList();
         long safeNow = Math.max(0L, nowNanos);
         List<OverlayItem> retained = new ArrayList<>(items.size());
         for (OverlayItem item : items) {
             if (item == null) continue;
             if (item.kind != OverlayItem.Kind.PLATE
-                    || isFresh(item.trackId, safeNow)) {
+                    || isFresh(item.trackId, safeNow, maximumAgeNanos)) {
                 retained.add(item);
             }
         }
@@ -55,10 +61,10 @@ public final class PlateOverlayFreshness {
         return (nowNanos - freshAt) / 1_000_000.0;
     }
 
-    private boolean isFresh(long trackId, long nowNanos) {
+    private boolean isFresh(long trackId, long nowNanos, long maximumAgeNanos) {
         Long freshAt = freshAtNanos.get(trackId);
         return freshAt != null
                 && nowNanos >= freshAt
-                && nowNanos - freshAt <= MAXIMUM_AGE_NANOS;
+                && nowNanos - freshAt <= Math.max(0L, maximumAgeNanos);
     }
 }

@@ -78,14 +78,17 @@ public final class PlateCropView extends View {
                 1f,
                 getHeight() - getPaddingTop() - getPaddingBottom()
         );
+        // Reserve room even when a character starts at the very top of the crop.
+        float badgeSpace = drawBoxes ? badgeHeight() + dp(4f) : 0f;
+        float imageHeight = Math.max(1f, contentHeight - badgeSpace);
         float scale = Math.min(
                 contentWidth / bitmap.getWidth(),
-                contentHeight / bitmap.getHeight()
+                imageHeight / bitmap.getHeight()
         );
         float width = bitmap.getWidth() * scale;
         float height = bitmap.getHeight() * scale;
         float left = contentLeft + (contentWidth - width) * 0.5f;
-        float top = contentTop + (contentHeight - height) * 0.5f;
+        float top = contentTop + badgeSpace + (imageHeight - height) * 0.5f;
         imageBounds.set(left, top, left + width, top + height);
         canvas.drawBitmap(bitmap, null, imageBounds, imagePaint);
 
@@ -117,13 +120,10 @@ public final class PlateCropView extends View {
                 + characterPaint.measureText(label)
                 + textGap
                 + confidencePaint.measureText(confidence);
-        Paint.FontMetrics metrics = confidencePaint.getFontMetrics();
-        float badgeHeight = Math.max(dp(15f), metrics.descent - metrics.ascent + dp(4f));
+        float badgeHeight = badgeHeight();
         float left = characterBox.centerX() - badgeWidth * 0.5f;
         left = Math.max(imageBounds.left, Math.min(left, imageBounds.right - badgeWidth));
         float top = characterBox.top - badgeHeight - dp(2f);
-        if (top < imageBounds.top) top = characterBox.top + dp(2f);
-        top = Math.min(top, imageBounds.bottom - badgeHeight);
         characterBadge.set(left, top, left + badgeWidth, top + badgeHeight);
         canvas.drawRoundRect(characterBadge, dp(3f), dp(3f), badgePaint);
 
@@ -134,6 +134,11 @@ public final class PlateCropView extends View {
         canvas.drawText(label, textLeft, baseline, characterPaint);
         textLeft += characterPaint.measureText(label) + textGap;
         canvas.drawText(confidence, textLeft, baseline, confidencePaint);
+    }
+
+    private float badgeHeight() {
+        Paint.FontMetrics metrics = confidencePaint.getFontMetrics();
+        return Math.max(dp(15f), metrics.descent - metrics.ascent + dp(4f));
     }
 
     private float dp(float value) {

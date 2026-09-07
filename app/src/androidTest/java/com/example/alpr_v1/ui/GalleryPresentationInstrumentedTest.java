@@ -44,6 +44,79 @@ import java.util.List;
 @RunWith(AndroidJUnit4.class)
 public final class GalleryPresentationInstrumentedTest {
     @Test
+    public void galleryCollectsFirstEmptyAndPartialMzInsteadOfWaitingForConsensus() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Intent intent = new Intent(context, MainActivity.class)
+                .putExtra("debug_baseline_profile", "live");
+        Bitmap bitmap = Bitmap.createBitmap(32, 16, Bitmap.Config.ARGB_8888);
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(intent)) {
+            scenario.onActivity(activity -> {
+                try {
+                    java.lang.reflect.Method collect = MainActivity.class.getDeclaredMethod(
+                            "collectRecognitionHistory", List.class);
+                    collect.setAccessible(true);
+                    com.example.alpr_v1.capture.RecognitionHistoryStore history =
+                            new ViewModelProvider(activity).get(CaptureGalleryViewModel.class)
+                                    .recognitionHistory();
+                    for (String raw : new String[]{"", "W", "WI1"}) {
+                        com.example.alpr_v1.pipeline.PlateObservation observation =
+                                new com.example.alpr_v1.pipeline.PlateObservation(
+                                        1L, com.example.alpr_v1.pipeline.PlateVehicleAssociation
+                                                .direct(1L, 1L, "test"),
+                                        com.example.alpr_v1.pipeline.MtWorkKind.VEHICLE_ROI,
+                                        com.example.alpr_v1.pipeline.MtReason.SCAN_NEXT_CANDIDATE,
+                                        1L, bitmap, "OLD1234", 0.9, 0.2, false, 1,
+                                        java.util.Collections.emptyList(), raw.length() + 1L, 1L,
+                                        0.5f, null, timing(),
+                                        com.example.alpr_v1.pipeline.PlateGeometry.unavailable(),
+                                        true, !raw.isEmpty(), raw, false, 1, "single_row",
+                                        java.util.Collections.emptyList(), "", "OLD1234");
+                        collect.invoke(activity, java.util.Collections.singletonList(observation));
+                        assertEquals(1, history.size());
+                        assertEquals(raw, history.newestFirst().get(0).text);
+                        assertFalse(history.newestFirst().get(0).confirmed);
+                    }
+                } catch (ReflectiveOperationException error) {
+                    throw new AssertionError(error);
+                }
+            });
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    @Test
+    public void narrowDetailKeepsActionLabelsAndIconsVisible() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        android.content.res.Configuration config = new android.content.res.Configuration(
+                context.getResources().getConfiguration());
+        config.fontScale = 1.3f;
+        Context themed = new ContextThemeWrapper(context.createConfigurationContext(config),
+                R.style.Theme_ALPR_v1);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            View detail = LayoutInflater.from(themed).inflate(
+                    R.layout.dialog_recognition_history_detail, null, false);
+            float density = themed.getResources().getDisplayMetrics().density;
+            int width = Math.round(280 * density);
+            detail.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            detail.layout(0, 0, width, detail.getMeasuredHeight());
+            for (int id : new int[]{R.id.history_detail_copy, R.id.history_detail_save,
+                    R.id.history_detail_delete}) {
+                MaterialButton button = detail.findViewById(id);
+                assertTrue(button.getIcon() != null);
+                assertEquals(MaterialButton.ICON_GRAVITY_TEXT_TOP, button.getIconGravity());
+                assertEquals(0, button.getLayout().getEllipsisCount(0));
+                assertTrue(button.getPaint().measureText(button.getText().toString())
+                        <= button.getWidth() - button.getCompoundPaddingLeft()
+                        - button.getCompoundPaddingRight());
+                assertTrue(button.getLayout().getHeight() <= button.getHeight()
+                        - button.getCompoundPaddingTop() - button.getCompoundPaddingBottom());
+            }
+        });
+    }
+
+    @Test
     public void sheetStartsInHistoryModeAndResearchOverlayIsReadOnly() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Context themedContext = new ContextThemeWrapper(context, R.style.Theme_ALPR_v1);
@@ -72,7 +145,7 @@ public final class GalleryPresentationInstrumentedTest {
     }
 
     @Test
-    public void normalModeShowsLogicalRecognitionHistory() {
+    public void normalModeShowsLogicalRecognitionHistory() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Intent intent = new Intent(context, MainActivity.class)
                 .putExtra("debug_baseline_profile", "live");
@@ -92,12 +165,26 @@ public final class GalleryPresentationInstrumentedTest {
             onView(withId(R.id.gallery_sheet_list)).check(matches(isDisplayed()));
             onView(withId(R.id.history_number)).check(matches(withText("WI1234A")));
             onView(withId(R.id.history_number)).perform(click());
-            onView(withId(R.id.history_detail_timing)).check(matches(withText(
-                    containsString("MT — inferencja tablicy")
-            )));
+            onView(withId(R.id.crop_timing_mp)).check(matches(withText(String.format("%.1f", 2.0))));
+            onView(withId(R.id.crop_timing_mt)).check(matches(withText(String.format("%.1f", 4.0))));
+            onView(withId(R.id.crop_timing_mz)).check(matches(withText(String.format("%.1f", 8.0))));
+            onView(withId(R.id.crop_timing_pipeline)).check(matches(withText(String.format("%.1f", 40.0))));
             onView(withId(R.id.history_detail_characters)).check(matches(withText(
                     containsString("W 97%")
             )));
+            onView(withId(R.id.history_detail_scroll)).check((view, error) -> {
+                if (error != null) throw error;
+                assertTrue(view.getWidth() >= context.getResources().getDisplayMetrics().widthPixels * 0.95f);
+                assertTrue(view.getHeight() >= context.getResources().getDisplayMetrics().heightPixels * 0.85f);
+            });
+            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            try (java.io.FileOutputStream output = new java.io.FileOutputStream(
+                    new java.io.File(context.getExternalFilesDir(null), "gallery-detail-qa.png"))) {
+                screenshot.compress(Bitmap.CompressFormat.PNG, 100, output);
+            } finally {
+                screenshot.recycle();
+            }
+            onView(withId(R.id.history_detail_close)).perform(click());
         } finally {
             source.recycle();
         }
@@ -121,9 +208,7 @@ public final class GalleryPresentationInstrumentedTest {
             onView(withId(R.id.verification_scroll)).check(matches(isDisplayed()));
             onView(withId(R.id.verification_model_text)).check(matches(withText("WI1234A")));
             onView(withId(R.id.verification_accept)).check(matches(isDisplayed()));
-            onView(withId(R.id.verification_timing)).check(matches(withText(
-                    containsString("Pipeline do wyniku")
-            )));
+            onView(withId(R.id.crop_timing_pipeline)).check(matches(withText(String.format("%.1f", 40.0))));
             onView(withId(R.id.verification_characters)).check(matches(withText(
                     containsString("W 97%")
             )));
@@ -157,11 +242,15 @@ public final class GalleryPresentationInstrumentedTest {
             plate.eraseColor(Color.BLACK);
             Bitmap rendered = Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
             view.layout(0, 0, rendered.getWidth(), rendered.getHeight());
-            view.setPlate(plate, characters());
+            view.setPlate(plate, java.util.Collections.singletonList(
+                    new PlateCharacter("W", 0.97, 0.2f, 0f, 0.4f, 0.82f)
+            ));
             view.draw(new Canvas(rendered));
 
             boolean orangeBoxPixel = false;
             boolean greenConfidencePixel = false;
+            int firstBoxY = rendered.getHeight();
+            int lastConfidenceY = -1;
             for (int y = 0; y < rendered.getHeight(); y++) {
                 for (int x = 0; x < rendered.getWidth(); x++) {
                     int color = rendered.getPixel(x, y);
@@ -170,10 +259,18 @@ public final class GalleryPresentationInstrumentedTest {
                     int blue = Color.blue(color);
                     orangeBoxPixel |= red > 180 && green > 70 && green < 210 && blue < 100;
                     greenConfidencePixel |= green > 150 && red < 160 && blue > 80;
+                    if (red > 180 && green > 70 && green < 210 && blue < 100) {
+                        firstBoxY = Math.min(firstBoxY, y);
+                    }
+                    if (green > 150 && red < 160 && blue > 80) {
+                        lastConfidenceY = Math.max(lastConfidenceY, y);
+                    }
                 }
             }
             assertTrue(orangeBoxPixel);
             assertTrue(greenConfidencePixel);
+            assertTrue("Confidence must stay above a box touching the crop's top edge",
+                    lastConfidenceY < firstBoxY);
             plate.recycle();
             rendered.recycle();
         });
@@ -218,6 +315,7 @@ public final class GalleryPresentationInstrumentedTest {
         return new CropInferenceTiming(
                 1L,
                 1_000_000L,
+                2_000_000L,
                 2_000_000L,
                 3_000_000L,
                 4_000_000L,

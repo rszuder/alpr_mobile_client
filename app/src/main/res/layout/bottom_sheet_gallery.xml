@@ -304,14 +304,11 @@
                             android:orientation="vertical"
                             android:padding="12dp">
 
-                            <TextView
+                            <com.example.alpr_v1.ui.CropTimingView
                                 android:id="@+id/verification_timing"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="@string/gallery_timing_unavailable"
-                                android:textColor="@color/alpr_text_primary"
-                                android:textSize="12sp"
-                                android:textStyle="bold" />
+                                />
 
                             <TextView
                                 android:id="@+id/verification_characters"

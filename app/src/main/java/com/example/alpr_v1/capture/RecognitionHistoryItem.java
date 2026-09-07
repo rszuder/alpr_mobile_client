@@ -9,13 +9,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-public final class RecognitionHistoryItem {
+public final class RecognitionHistoryItem implements AutoCloseable {
     public final String historyId;
     public final long sceneGeneration;
     public final long entityId;
-    public final long vehicleTrackId;
-    public final long plateTrackId;
-    public final long trackId;
+    public long vehicleTrackId;
+    public long plateTrackId;
+    public long trackId;
     public String text;
     public double confidence;
     public double plateConfidence;
@@ -77,6 +77,30 @@ public final class RecognitionHistoryItem {
         this.characters = immutableCharacters(characters);
         this.timing = timing;
     }
+
+    public RecognitionHistoryItem snapshot() {
+        if (previewBitmap == null || previewBitmap.isRecycled()) return null;
+        Bitmap copy = previewBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        return copy == null ? null : new RecognitionHistoryItem(historyId, sceneGeneration,
+                entityId, vehicleTrackId, plateTrackId, trackId, text, confidence,
+                plateConfidence, capturedAtMillis, copy, characters, timing, confirmed,
+                observations, previewSharpness, captureSource);
+    }
+
+    /** Transfers the retained crop to a proven entity without copying or recycling it. */
+    RecognitionHistoryItem withIdentity(String id, long ownerId, long ownerTrackId) {
+        RecognitionHistoryItem moved = new RecognitionHistoryItem(id, sceneGeneration,
+                ownerId, ownerTrackId, plateTrackId, trackId, text, confidence,
+                plateConfidence, capturedAtMillis, previewBitmap, characters, timing,
+                confirmed, observations, previewSharpness, captureSource);
+        moved.previewConfidence = previewConfidence;
+        moved.previewCapturedAtMillis = previewCapturedAtMillis;
+        previewBitmap = null;
+        return moved;
+    }
+
+    @Override
+    public void close() { recycle(); }
 
     private static List<PlateCharacter> immutableCharacters(List<PlateCharacter> characters) {
         return Collections.unmodifiableList(new ArrayList<>(

@@ -10,6 +10,19 @@ import java.util.Collections;
 
 public final class PlateOverlayFreshnessTest {
     @Test
+    public void stationaryBudgetBridgesMzButMotionAndSceneResetRemoveOldPlate() {
+        PlateOverlayFreshness freshness = new PlateOverlayFreshness();
+        java.util.List<OverlayItem> items = Collections.singletonList(plate(5L, false));
+        freshness.recordFresh(items, 1_000_000_000L);
+        assertEquals(1, freshness.retainDisplayable(items, 6_000_000_000L,
+                StationarySceneSupport.maximumOverlayAge(0L)).size());
+        assertEquals(0, freshness.retainDisplayable(items, 6_000_000_000L).size());
+        freshness.reset();
+        assertEquals(0, freshness.retainDisplayable(items, 6_000_000_000L,
+                StationarySceneSupport.maximumOverlayAge(0L)).size());
+    }
+
+    @Test
     public void singleMissRetainsPlateButExpiredGeometryIsRemoved() {
         PlateOverlayFreshness freshness = new PlateOverlayFreshness();
         OverlayItem plate = plate(11L, false);

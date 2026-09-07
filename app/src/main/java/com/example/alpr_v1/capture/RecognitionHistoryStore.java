@@ -16,6 +16,7 @@ public final class RecognitionHistoryStore {
 
     private final int capacity;
     private final LinkedHashMap<String, RecognitionHistoryItem> items = new LinkedHashMap<>();
+    private final LinkedHashMap<String, String> plateOwners = new LinkedHashMap<>();
 
     public RecognitionHistoryStore() {
         this(DEFAULT_CAPACITY);
@@ -79,14 +80,56 @@ public final class RecognitionHistoryStore {
             float sharpness,
             String captureSource
     ) {
-        if (!confirmed || text == null || text.trim().isEmpty()
-                || sourcePreview == null || sourcePreview.isRecycled()) {
-            return false;
+        return upsert(sceneGeneration, entityId, vehicleTrackId, plateTrackId, trackId,
+                text, confidence, plateConfidence, capturedAtMillis, sourcePreview,
+                characters, timing, confirmed, observations, sharpness, captureSource, 0L);
+    }
+
+    public synchronized boolean upsert(
+            long sceneGeneration, long entityId, long vehicleTrackId, long plateTrackId,
+            long trackId, String text, double confidence, double plateConfidence,
+            long capturedAtMillis, Bitmap sourcePreview, List<PlateCharacter> characters,
+            CropInferenceTiming timing, boolean confirmed, int observations, float sharpness,
+            String captureSource, long visualEpoch
+    ) {
+        String normalizedText = text == null ? "" : text.trim();
+        // Plate track ids may restart within a scene when the visual epoch changes.
+        String plateKey = historyId(sceneGeneration, 0L, plateTrackId, trackId)
+                + ":v" + visualEpoch;
+        String historyId = entityId > 0L
+                ? historyId(sceneGeneration, entityId, plateTrackId, trackId) : plateKey;
+        boolean promoted = false;
+        if (entityId > 0L) {
+            plateOwners.put(plateKey, historyId);
+            RecognitionHistoryItem provisional = items.remove(plateKey);
+            if (provisional != null) {
+                if (!items.containsKey(historyId)) {
+                    items.put(historyId, provisional.withIdentity(historyId, entityId, vehicleTrackId));
+                } else {
+                    provisional.recycle();
+                }
+                promoted = true;
+            }
+        } else {
+            String knownId = plateOwners.get(plateKey);
+            RecognitionHistoryItem known = items.get(knownId);
+            if (known != null) {
+                historyId = knownId;
+                entityId = known.entityId;
+                vehicleTrackId = known.vehicleTrackId;
+            }
         }
-        String historyId = historyId(
-                sceneGeneration, entityId, plateTrackId, trackId
-        );
-        RecognitionHistoryItem existing = items.remove(historyId);
+        RecognitionHistoryItem existing = items.get(historyId);
+        // A later association can identify the first crop without running MZ again.
+        if (sourcePreview == null || sourcePreview.isRecycled()) {
+            trimToCapacity();
+            return promoted;
+        }
+        // The per-MZ callback and final pipeline result may contain the same crop.
+        if (existing != null && capturedAtMillis <= existing.capturedAtMillis) {
+            trimToCapacity();
+            return promoted;
+        }
         if (existing == null) {
             Bitmap preview = copy(sourcePreview);
             if (preview == null) return false;
@@ -97,24 +140,24 @@ public final class RecognitionHistoryStore {
                     vehicleTrackId,
                     plateTrackId,
                     trackId,
-                    text.trim(),
+                    normalizedText,
                     confidence,
                     plateConfidence,
                     capturedAtMillis,
                     preview,
                     characters,
                     timing,
-                    true,
+                    confirmed,
                     Math.max(0, observations),
                     sharpness,
                     captureSource == null ? "normal" : captureSource
             );
         } else {
-            existing.text = text.trim();
+            existing.text = normalizedText;
             existing.confidence = confidence;
             existing.plateConfidence = plateConfidence;
             existing.capturedAtMillis = capturedAtMillis;
-            existing.confirmed = true;
+            existing.confirmed = confirmed;
             existing.observations = Math.max(existing.observations, observations);
             existing.captureSource = captureSource == null
                     ? existing.captureSource : captureSource;
@@ -130,6 +173,9 @@ public final class RecognitionHistoryStore {
                 if (replacement != null) {
                     existing.recycle();
                     existing.previewBitmap = replacement;
+                    existing.vehicleTrackId = vehicleTrackId;
+                    existing.plateTrackId = plateTrackId;
+                    existing.trackId = trackId;
                     existing.previewConfidence = confidence;
                     existing.previewSharpness = sharpness;
                     existing.previewCapturedAtMillis = capturedAtMillis;
@@ -137,6 +183,7 @@ public final class RecognitionHistoryStore {
                 }
             }
         }
+        items.remove(historyId);
         items.put(historyId, existing);
         trimToCapacity();
         return true;
@@ -156,12 +203,14 @@ public final class RecognitionHistoryStore {
         RecognitionHistoryItem removed = items.remove(historyId);
         if (removed == null) return false;
         removed.recycle();
+        plateOwners.values().removeIf(historyId::equals);
         return true;
     }
 
     public synchronized void clear() {
         for (RecognitionHistoryItem item : items.values()) item.recycle();
         items.clear();
+        plateOwners.clear();
     }
 
     static String historyId(
@@ -196,6 +245,10 @@ public final class RecognitionHistoryStore {
                     items.entrySet().iterator().next();
             items.remove(oldest.getKey());
             oldest.getValue().recycle();
+        }
+        plateOwners.values().removeIf(id -> !items.containsKey(id));
+        while (plateOwners.size() > capacity * 4) {
+            plateOwners.remove(plateOwners.keySet().iterator().next());
         }
     }
 

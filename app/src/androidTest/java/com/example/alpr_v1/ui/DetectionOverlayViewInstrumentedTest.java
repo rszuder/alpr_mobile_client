@@ -24,6 +24,231 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
     @Test
+    public void reusedPlateNumberInNewEpochIsNotHiddenByOldVehicleReading() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setPresentationStamp(com.example.alpr_v1.continuity.ContinuityStamp.initial(1L));
+            OverlayItem car = item(OverlayItem.Kind.VEHICLE, new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L);
+            view.setItems(Collections.singletonList(car), 720, 1280);
+            view.animatePlateObservation(animationObservation(7L, 77L));
+            view.finishPlateAbsorptionForTesting();
+            assertTrue(view.absorbedPlateTrackForTesting(77L));
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(
+                    0L, 1L, 0L, 0L, 2L,
+                    com.example.alpr_v1.continuity.SourceTimestampDomain.RUNTIME_UPTIME));
+            view.setVehicleEntityStates(Collections.singleton(7L), Collections.emptySet(),
+                    Collections.singletonMap(7L, new EntityRecognitionSnapshot(7L, 77L, "WX1234", 0.8, false, 1)));
+            assertFalse(view.absorbedPlateTrackForTesting(77L));
+            view.setItems(Arrays.asList(car, item(OverlayItem.Kind.PLATE,
+                    new RectF(0.6f, 0.6f, 0.7f, 0.65f), 77L)), 720, 1280);
+            assertEquals(1, view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            assertTrue(view.vehicleLabelForTesting(7L).contains("WX1234"));
+            view.resetVehicleEntityStates();
+        });
+    }
+
+    @Test
+    public void sparseSnapshotAndFadeCannotEraseProvisionalReadOrCancelItsFlight() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            OverlayItem car = item(OverlayItem.Kind.VEHICLE, new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L);
+            view.setItems(Collections.singletonList(car), 720, 1280);
+            int unconfirmedColor = view.vehicleColorForTesting(7L);
+            view.animatePlateObservation(animationObservation(7L, 77L));
+            view.setVehicleEntityStates(Collections.emptySet(), Collections.emptySet(), Collections.emptyMap());
+            view.fadeOutPlateItems();
+            assertEquals(7L, view.plateAbsorptionEntityForTesting());
+            view.setItems(Collections.emptyList(), 720, 1280);
+            view.finishPlateAbsorptionForTesting();
+            view.setItems(Collections.singletonList(car), 720, 1280);
+            view.setVehicleEntityStates(Collections.emptySet(), Collections.emptySet(), Collections.emptyMap());
+            assertTrue(view.vehicleLabelForTesting(7L).contains("WX1234"));
+            assertFalse(view.confirmedVehicleForTesting(7L));
+            assertEquals(android.graphics.Color.argb(245, 52, 211, 153), view.vehicleColorForTesting(7L));
+            view.setActiveVehicleEntityId(7L);
+            assertEquals(android.graphics.Color.argb(245, 52, 211, 153), view.vehicleColorForTesting(7L));
+            assertEquals(view.vehicleColorForTesting(7L), view.activeVehicleMarkerColorForTesting());
+            view.setVehicleEntityStates(Collections.singleton(7L), Collections.singleton(7L),
+                    Collections.singletonMap(7L, new EntityRecognitionSnapshot(7L, 88L, "WX1234", 0.95, true, 3)));
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+            assertTrue(view.confirmedVehicleForTesting(7L));
+            assertTrue(view.vehicleColorForTesting(7L) != unconfirmedColor);
+            view.resetVehicleEntityStates();
+            assertEquals("P7", view.vehicleLabelForTesting(7L));
+        });
+    }
+
+    @Test
+    public void unresolvedReadWaitsAtPlateThenFliesWhenOwnerArrives() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setStationaryScene(true);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L)), 720, 1280);
+            view.animatePlateObservation(animationObservation(0L, 77L));
+            view.fadeOutPlateItems();
+            view.setVehicleEntityStates(Collections.emptySet(), Collections.emptySet(), Collections.emptyMap());
+            assertEquals(1, view.pendingPlateReadingCountForTesting());
+            assertEquals("P7", view.vehicleLabelForTesting(7L));
+            view.animatePlateObservation(animationObservation(7L, 77L));
+            assertEquals(0, view.pendingPlateReadingCountForTesting());
+            assertEquals(7L, view.plateAbsorptionEntityForTesting());
+            view.finishPlateAbsorptionForTesting();
+            assertTrue(view.vehicleLabelForTesting(7L).contains("WX1234"));
+            view.resetVehicleEntityStates();
+        });
+    }
+
+    @Test
+    public void sourceRemainsVisibleUntilDestinationBadgeCanBePlaced() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            OverlayItem plate = item(OverlayItem.Kind.PLATE, new RectF(0.2f, 0.6f, 0.3f, 0.65f), 77L);
+            view.setItems(Arrays.asList(item(OverlayItem.Kind.VEHICLE, new RectF(0, 0, 1, 1), 7L), plate), 720, 1280);
+            view.setVehicleEntityStates(Collections.singleton(7L), Collections.emptySet(),
+                    Collections.singletonMap(7L, new EntityRecognitionSnapshot(7L, 77L, "WX1234", 0.8, false, 1)));
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+            assertEquals(1, view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            view.setItems(Arrays.asList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L), plate), 720, 1280);
+            assertEquals(7L, view.plateAbsorptionEntityForTesting());
+            view.finishPlateAbsorptionForTesting();
+            view.resetVehicleEntityStates();
+        });
+    }
+
+    @Test
+    public void stationaryPreviewSuppressesJitterAndBriefMissingVehicleButExplicitClearWins() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            OverlayItem car = item(OverlayItem.Kind.VEHICLE, new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L);
+            view.setItems(Collections.singletonList(car), 720, 1280);
+            RectF before = view.vehicleBoundsForTesting(7L);
+            view.setStationaryScene(true);
+            view.setPreviewItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.103f, 0.302f, 0.504f, 0.702f), 7L)));
+            assertEquals(before, view.vehicleBoundsForTesting(7L));
+            view.setPreviewItems(Collections.singletonList(item(OverlayItem.Kind.PLATE,
+                    new RectF(0.2f, 0.6f, 0.3f, 0.65f), 77L)));
+            assertEquals(before, view.vehicleBoundsForTesting(7L));
+            view.setStationaryScene(false);
+            view.setPreviewItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.103f, 0.302f, 0.504f, 0.702f), 7L)));
+            assertFalse(before.equals(view.vehicleBoundsForTesting(7L)));
+            view.setItems(Collections.emptyList(), 720, 1280);
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+        });
+    }
+
+    @Test
+    public void firstMzAnimatesFromCropGeometryEvenWhenPlateOverlayHasExpired() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L)), 720, 1280);
+            com.example.alpr_v1.pipeline.PlateObservation observation = animationObservation(7L, 77L);
+            view.animatePlateObservation(observation);
+            assertEquals(7L, view.plateAbsorptionEntityForTesting());
+            assertFalse(view.confirmedVehicleForTesting(7L));
+            assertTrue(view.absorbedPlateTrackForTesting(77L));
+            view.finishPlateAbsorptionForTesting();
+            assertTrue(view.vehicleLabelForTesting(7L).contains("WX1234"));
+            view.animatePlateObservation(observation);
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+            view.resetVehicleEntityStates();
+            assertFalse(view.absorbedPlateTrackForTesting(77L));
+        });
+    }
+
+    @Test
+    public void simultaneousFirstReadingsFlyOneAfterAnother() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setItems(Arrays.asList(
+                    item(OverlayItem.Kind.VEHICLE, new RectF(0.1f, 0.3f, 0.45f, 0.7f), 7L),
+                    item(OverlayItem.Kind.VEHICLE, new RectF(0.55f, 0.3f, 0.95f, 0.7f), 8L)
+            ), 720, 1280);
+            view.animatePlateObservation(animationObservation(7L, 77L));
+            view.animatePlateObservation(animationObservation(8L, 88L));
+            assertEquals(7L, view.plateAbsorptionEntityForTesting());
+            view.finishPlateAbsorptionForTesting();
+            assertEquals(8L, view.plateAbsorptionEntityForTesting());
+            view.finishPlateAbsorptionForTesting();
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+        });
+    }
+
+    private static com.example.alpr_v1.pipeline.PlateObservation animationObservation(long entity, long track) {
+        return new com.example.alpr_v1.pipeline.PlateObservation(track,
+                entity > 0L ? com.example.alpr_v1.pipeline.PlateVehicleAssociation.direct(entity, entity, "test")
+                        : com.example.alpr_v1.pipeline.PlateVehicleAssociation.unassigned("test"),
+                com.example.alpr_v1.pipeline.MtWorkKind.VEHICLE_ROI,
+                com.example.alpr_v1.pipeline.MtReason.SCAN_NEXT_CANDIDATE,
+                1L, null, "WX1234", 0.9, 0.8, false, 1, Collections.emptyList(),
+                1L, 1L, 0.5f, null, null,
+                com.example.alpr_v1.pipeline.PlateGeometry.from(720, 1280,
+                        new com.example.alpr_v1.vision.Detection(0, 0.9f, 144, 768, 216, 832,
+                                Collections.emptyList()), Collections.emptyList()),
+                true, true, "WX1234", false, 1, "single_row", Collections.emptyList(), "", "WX1234");
+    }
+
+    @Test
+    public void vehicleCalloutsStayOutsideCarsAndActiveCarHasDistinctColor() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setItems(Arrays.asList(
+                    item(OverlayItem.Kind.VEHICLE, new RectF(0.12f, 0.4f, 0.5f, 0.75f), 7L),
+                    item(OverlayItem.Kind.VEHICLE, new RectF(0.53f, 0.38f, 0.95f, 0.73f), 8L)
+            ), 720, 1280);
+            view.setActiveVehicleEntityId(7L);
+            assertEquals(android.graphics.Color.rgb(255, 82, 82), view.vehicleColorForTesting(7L));
+            assertEquals(view.vehicleColorForTesting(7L), view.activeVehicleMarkerColorForTesting());
+            RectF first = view.vehicleBoundsForTesting(7L);
+            RectF second = view.vehicleBoundsForTesting(8L);
+            RectF firstBadge = view.vehicleBadgeForTesting(7L);
+            RectF secondBadge = view.vehicleBadgeForTesting(8L);
+            assertTrue(firstBadge != null && secondBadge != null);
+            assertFalse(RectF.intersects(firstBadge, first));
+            assertFalse(RectF.intersects(firstBadge, second));
+            assertFalse(RectF.intersects(secondBadge, first));
+            assertFalse(RectF.intersects(secondBadge, second));
+            assertFalse(RectF.intersects(firstBadge, secondBadge));
+            assertEquals("P7", view.vehicleLabelForTesting(7L));
+            assertTrue(view.vehicleColorForTesting(7L) != view.vehicleColorForTesting(8L));
+            android.graphics.Bitmap rendered = android.graphics.Bitmap.createBitmap(
+                    720, 1280, android.graphics.Bitmap.Config.ARGB_8888);
+            view.draw(new android.graphics.Canvas(rendered));
+            // The straight leader starts at the exact upper-left corner (outside the rounded stroke).
+            assertTrue(android.graphics.Color.alpha(rendered.getPixel(
+                    Math.round(first.left), Math.round(first.top))) > 0);
+            try (java.io.FileOutputStream output = new java.io.FileOutputStream(
+                    new java.io.File(context.getExternalFilesDir(null), "overlay-callouts-qa.png"))) {
+                rendered.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+            } catch (java.io.IOException error) {
+                throw new AssertionError(error);
+            } finally {
+                rendered.recycle();
+            }
+        });
+    }
+
+    @Test
     public void vehicleFrameAndEntityNumberAreVisibleWithoutDiagnosticHud() {
         Context context = InstrumentationRegistry.getInstrumentation()
                 .getTargetContext();
@@ -106,16 +331,16 @@ public final class DetectionOverlayViewInstrumentedTest {
 
         assertEquals(1, (int) vehicleCount.get());
         assertEquals(0, (int) roiCount.get());
-        assertEquals("Pojazd 7 · czeka na odczyt", vehicleLabel.get());
-        assertEquals("Pojazd 7: WX1234 · 82%", transferVehicleLabel.get());
+        assertEquals("P7", vehicleLabel.get());
+        assertEquals("P7: WX1234 · 82%", transferVehicleLabel.get());
         assertEquals(
-                "Pojazd 7: WX1234 · 82%",
+                "P7: WX1234 · 82%",
                 recognitionVehicleLabel.get()
         );
         assertEquals(7L, (long) absorptionEntity.get());
         assertTrue(absorbedPlate.get());
         assertEquals(0, (int) remainingPlateCount.get());
-        assertEquals("Pojazd 7: WX1234 · 82%", completedVehicleLabel.get());
+        assertEquals("P7: WX1234 · 82%", completedVehicleLabel.get());
         assertFalse(recognized.get());
         assertTrue(recognizedAfterRead.get());
         assertTrue(vehicleBadge.get().centerY() < vehicleBounds.get().centerY());
@@ -188,13 +413,13 @@ public final class DetectionOverlayViewInstrumentedTest {
         });
 
         assertEquals(
-                "Pojazd 7: WX1234 \u00b7 60%",
+                "P7: WX1234 \u00b7 60%",
                 provisionalLabel.get()
         );
         assertFalse(provisionalConfirmed.get());
         assertTrue(provisionalRecognized.get());
         assertEquals(0L, (long) secondAbsorptionEntity.get());
-        assertEquals("Pojazd 7: WX1234 \u00b7 82%", confirmedLabel.get());
+        assertEquals("P7: WX1234 \u00b7 82%", confirmedLabel.get());
         assertTrue(finalConfirmed.get());
         assertEquals(0, (int) remainingPlateCount.get());
     }

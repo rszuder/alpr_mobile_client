@@ -253,10 +253,28 @@ public final class PlateObservation {
         return copyWithStampAndFinalization(continuityStamp(), false, false);
     }
 
+    /** Independent bitmap ownership for an asynchronous gallery update. */
+    public PlateObservation copyForGallery() {
+        if (previewBitmap == null || previewBitmap.isRecycled()) return null;
+        Bitmap copy = previewBitmap.copy(Bitmap.Config.ARGB_8888, false);
+        return copy == null ? null : copyWithStampAndFinalization(
+                continuityStamp(), confirmed, cropSupportsConsensus, copy);
+    }
+
     private PlateObservation copyWithStampAndFinalization(
             ContinuityStamp stamp,
             boolean finalizationConfirmed,
             boolean supportsConsensus
+    ) {
+        return copyWithStampAndFinalization(stamp, finalizationConfirmed,
+                supportsConsensus, previewBitmap);
+    }
+
+    private PlateObservation copyWithStampAndFinalization(
+            ContinuityStamp stamp,
+            boolean finalizationConfirmed,
+            boolean supportsConsensus,
+            Bitmap bitmap
     ) {
         return new PlateObservation(
                 trackId,
@@ -264,7 +282,7 @@ public final class PlateObservation {
                 sourceRoiKind,
                 sourceMtReason,
                 frameId,
-                previewBitmap,
+                bitmap,
                 text,
                 plateConfidence,
                 recognitionConfidence,

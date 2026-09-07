@@ -45,6 +45,9 @@
     <string name="history_mode_label">Historia rozpoznawania</string>
     <string name="history_title">Ostatnie odczyty</string>
     <string name="history_subtitle">Jeden wpis na logiczny pojazd lub tablicę w bieżącej scenie</string>
+    <string name="history_entity_assigned">P%1$d</string>
+    <string name="overlay_plate_pending">T: %1$s · oczekuje</string>
+    <string name="history_entity_unassigned">Bez przypisania do pojazdu · track T%1$d</string>
     <string name="history_empty_title">Jeszcze nic tu nie ma</string>
     <string name="history_empty_description">Potwierdzone odczyty pojawią się automatycznie podczas analizy.</string>
     <string name="history_clear_action">Wyczyść ostatnie odczyty</string>
@@ -80,7 +83,10 @@
     <string name="verification_model_reading_label">ODCZYT MODELU</string>
     <string name="verification_consensus_label">KONSENSUS</string>
     <string name="verification_metrics_format">Pewność tablicy %1$d%% · pewność odczytu %2$d%% · ostrość %3$.2f\nPróba MZ %4$d · układ %5$s · źródło %6$s</string>
-    <string name="gallery_timing_format">MT — inferencja tablicy: %1$.1f ms · MZ — inferencja znaków: %2$.1f ms\nPipeline do wyniku: %3$.1f ms · boxy znaków: %4$d</string>
+    <string name="gallery_timing_mp">MP [ms]</string>
+    <string name="gallery_timing_mt">MT [ms]</string>
+    <string name="gallery_timing_mz">MZ [ms]</string>
+    <string name="gallery_timing_pipeline">Pipeline [ms]</string>
     <string name="gallery_timing_unavailable">Czasy inferencji niedostępne dla tego cropa</string>
     <string name="gallery_character_boxes">Boxy znaków: %1$s</string>
     <string name="gallery_character_boxes_empty">Boxy znaków: brak detekcji MZ</string>

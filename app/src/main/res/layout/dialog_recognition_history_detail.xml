@@ -1,16 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/history_detail_scroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+<LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:paddingHorizontal="20dp"
-    android:paddingTop="6dp"
-    android:paddingBottom="4dp">
+    android:paddingHorizontal="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/history_detail_title"
+            android:textColor="@color/alpr_text_primary"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/history_detail_close"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/menu_close"
+            app:icon="@drawable/ic_close_24" />
+    </LinearLayout>
 
     <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="180dp"
+        android:layout_weight="1"
         app:cardBackgroundColor="@color/black"
         app:cardCornerRadius="16dp"
         app:cardElevation="0dp">
@@ -24,15 +53,12 @@
             android:padding="8dp" />
     </com.google.android.material.card.MaterialCardView>
 
-    <TextView
+    <com.example.alpr_v1.ui.CropTimingView
         android:id="@+id/history_detail_timing"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:text="@string/gallery_timing_unavailable"
-        android:textColor="@color/alpr_text_primary"
-        android:textSize="12sp"
-        android:textStyle="bold" />
+        />
 
     <TextView
         android:id="@+id/history_detail_characters"
@@ -71,33 +97,33 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/history_detail_copy"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            style="@style/GalleryActionButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
             android:layout_marginEnd="3dp"
             android:layout_weight="1"
             android:maxLines="1"
             android:text="@string/history_copy_action"
-            android:textSize="11sp" />
+            android:textSize="11sp"
+            app:icon="@drawable/ic_copy_24" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/history_detail_save"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            style="@style/GalleryActionButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
             android:layout_marginHorizontal="3dp"
             android:layout_weight="1"
             android:maxLines="1"
             android:text="@string/history_save_action"
             android:textSize="11sp"
-            app:icon="@drawable/ic_save_24"
-            app:iconSize="17dp" />
+            app:icon="@drawable/ic_save_24" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/history_detail_delete"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            style="@style/GalleryActionButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
             android:layout_marginStart="3dp"
             android:layout_weight="1"
             android:maxLines="1"
@@ -105,8 +131,8 @@
             android:textColor="@color/alpr_error"
             android:textSize="11sp"
             app:icon="@drawable/ic_delete_24"
-            app:iconSize="17dp"
             app:iconTint="@color/alpr_error"
             app:strokeColor="@color/alpr_error" />
     </LinearLayout>
 </LinearLayout>
+</androidx.core.widget.NestedScrollView>

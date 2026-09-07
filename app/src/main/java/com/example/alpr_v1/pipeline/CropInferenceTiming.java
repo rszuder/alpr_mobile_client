@@ -8,6 +8,7 @@ public final class CropInferenceTiming {
     public final long frameId;
     public final long cameraConversionNanos;
     public final long vehicleStagesNanos;
+    public final long vehicleInferenceNanos;
     public final long platePreprocessNanos;
     public final long plateInferenceNanos;
     public final long platePostprocessNanos;
@@ -57,9 +58,30 @@ public final class CropInferenceTiming {
             long characterPostprocessNanos,
             long pipelineToObservationNanos
     ) {
+        this(frameId, cameraConversionNanos, vehicleStagesNanos, -1L,
+                platePreprocessNanos, plateInferenceNanos, platePostprocessNanos,
+                rectificationNanos, characterPreprocessNanos, characterInferenceNanos,
+                characterPostprocessNanos, pipelineToObservationNanos);
+    }
+
+    public CropInferenceTiming(
+            long frameId,
+            long cameraConversionNanos,
+            long vehicleStagesNanos,
+            long vehicleInferenceNanos,
+            long platePreprocessNanos,
+            long plateInferenceNanos,
+            long platePostprocessNanos,
+            long rectificationNanos,
+            long characterPreprocessNanos,
+            long characterInferenceNanos,
+            long characterPostprocessNanos,
+            long pipelineToObservationNanos
+    ) {
         this.frameId = frameId;
         this.cameraConversionNanos = nonNegative(cameraConversionNanos);
         this.vehicleStagesNanos = nonNegative(vehicleStagesNanos);
+        this.vehicleInferenceNanos = vehicleInferenceNanos < 0L ? -1L : vehicleInferenceNanos;
         this.platePreprocessNanos = nonNegative(platePreprocessNanos);
         this.plateInferenceNanos = nonNegative(plateInferenceNanos);
         this.platePostprocessNanos = nonNegative(platePostprocessNanos);
@@ -74,6 +96,7 @@ public final class CropInferenceTiming {
     }
 
     public double totalMilliseconds() { return pipelineToObservationNanos / 1_000_000.0; }
+    public double vehicleInferenceMilliseconds() { return millis(vehicleInferenceNanos); }
     public double plateInferenceMilliseconds() { return millis(plateInferenceNanos); }
     public double characterInferenceMilliseconds() { return millis(characterInferenceNanos); }
 
@@ -82,6 +105,9 @@ public final class CropInferenceTiming {
         json.put("frame_id", frameId);
         json.put("camera_conversion_ms", millis(cameraConversionNanos));
         json.put("vehicle_stages_ms", millis(vehicleStagesNanos));
+        if (vehicleInferenceNanos >= 0L) {
+            json.put("vehicle_inference_ms", vehicleInferenceMilliseconds());
+        }
         json.put("plate_preprocess_ms", millis(platePreprocessNanos));
         json.put("plate_inference_ms", millis(plateInferenceNanos));
         json.put("plate_postprocess_ms", millis(platePostprocessNanos));

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:baselineAligned="true">
+        <TextView style="@style/GalleryTimingHeader" android:text="@string/gallery_timing_mp" />
+        <TextView style="@style/GalleryTimingHeader" android:text="@string/gallery_timing_mt" />
+        <TextView style="@style/GalleryTimingHeader" android:text="@string/gallery_timing_mz" />
+        <TextView style="@style/GalleryTimingHeader" android:layout_weight="1.5" android:text="@string/gallery_timing_pipeline" />
+    </LinearLayout>
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/alpr_outline" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:baselineAligned="true">
+        <TextView android:id="@+id/crop_timing_mp" style="@style/GalleryTimingValue" />
+        <TextView android:id="@+id/crop_timing_mt" style="@style/GalleryTimingValue" />
+        <TextView android:id="@+id/crop_timing_mz" style="@style/GalleryTimingValue" />
+        <TextView android:id="@+id/crop_timing_pipeline" style="@style/GalleryTimingValue" android:layout_weight="1.5" />
+    </LinearLayout>
+</merge>

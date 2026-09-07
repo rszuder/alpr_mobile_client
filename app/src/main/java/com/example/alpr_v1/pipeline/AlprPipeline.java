@@ -84,6 +84,11 @@ public final class AlprPipeline {
         void onSceneChanged(float score, float changedFraction);
     }
 
+    /** Borrowed crop, delivered on the inference thread immediately after each MZ attempt. */
+    public interface PlateObservationCallback {
+        void onPlateObservation(PlateObservation observation);
+    }
+
     /*
      * Etapy, których czasy nie nakładają się na siebie
      * i mogą zostać zsumowane jako jawnie zmierzony
@@ -481,53 +486,7 @@ public final class AlprPipeline {
 
             try {
 
-                if (reloadRequested) {
-
-                    if (engine != null) {
-                        engine.close();
-                    }
-
-                    engine = null;
-
-                    reloadRequested =
-                            false;
-                }
-
-
-                if (engine == null) {
-
-                    engine =
-                            new MobileAlprEngine(
-                                    registry,
-                                    autoTuneManager,
-                                    effectiveRoiBudgetPolicy(),
-                                    effectiveMtExecutionPolicy(),
-                                    effectiveMtFallbackPolicy(),
-                                    effectiveVehicleTrackingPolicy(),
-                                    frozenResearchExecutionConfig,
-                                    vehicleTrackingCoordinator
-                            );
-                    logEngineModelDiagnostics(engine);
-
-                    engine.setRecognitionProfile(
-                            effectiveRecognitionProfile()
-                    );
-
-                    engine.setRapidCameraMotion(
-                            rapidCameraMotion
-                    );
-
-                    engine.setCameraTransformInProgress(
-                            cameraTransformInProgress
-                    );
-                    engine.setSoftReacquireResultListener(
-                            this::handleSoftReacquireReport
-                    );
-                    engine.setPreviewFrameMotionHistory(
-                            previewFrameMotionHistory
-                    );
-                }
-
+                ensureEngineLoaded();
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
                 engine.setAutoZoomTargetLock(
                         targetConfig.active,
@@ -745,6 +704,21 @@ public final class AlprPipeline {
             PlateDetectionCallback plateDetectionCallback,
             SceneChangeCallback sceneChangeCallback
     ) {
+        return processBitmap(frame, sourceFrameStamp, cameraToBitmapNanos,
+                cameraRotationNanos, cameraRotationDegrees, plateDetectionCallback,
+                sceneChangeCallback, null);
+    }
+
+    public synchronized PipelineResult processBitmap(
+            Bitmap frame,
+            SourceFrameStamp sourceFrameStamp,
+            long cameraToBitmapNanos,
+            long cameraRotationNanos,
+            int cameraRotationDegrees,
+            PlateDetectionCallback plateDetectionCallback,
+            SceneChangeCallback sceneChangeCallback,
+            PlateObservationCallback plateObservationCallback
+    ) {
         if (frame == null || frame.isRecycled()) return null;
         SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
                 ? SourceFrameStamp.unknown(0L, 0L, 0L)
@@ -828,33 +802,7 @@ public final class AlprPipeline {
         try {
             trace.start("engine_setup");
             try {
-                if (reloadRequested) {
-                    if (engine != null) engine.close();
-                    engine = null;
-                    reloadRequested = false;
-                }
-                if (engine == null) {
-                    engine = new MobileAlprEngine(
-                            registry,
-                            autoTuneManager,
-                            effectiveRoiBudgetPolicy(),
-                            effectiveMtExecutionPolicy(),
-                            effectiveMtFallbackPolicy(),
-                            effectiveVehicleTrackingPolicy(),
-                            frozenResearchExecutionConfig,
-                            vehicleTrackingCoordinator
-                    );
-                    logEngineModelDiagnostics(engine);
-                    engine.setRecognitionProfile(effectiveRecognitionProfile());
-                    engine.setRapidCameraMotion(rapidCameraMotion);
-                    engine.setCameraTransformInProgress(cameraTransformInProgress);
-                    engine.setSoftReacquireResultListener(
-                            this::handleSoftReacquireReport
-                    );
-                    engine.setPreviewFrameMotionHistory(
-                            previewFrameMotionHistory
-                    );
-                }
+                ensureEngineLoaded();
                 AutoZoomTargetConfig targetConfig = autoZoomTargetConfig;
                 engine.setAutoZoomTargetLock(
                         targetConfig.active,
@@ -908,7 +856,8 @@ public final class AlprPipeline {
                         plateDetectionCallback,
                         () -> hardResetRevision.get() != processingHardResetRevision
                                 || visualEpochRevision.get()
-                                != processingVisualEpochRevision
+                                != processingVisualEpochRevision,
+                        plateObservationCallback
                 );
             } finally {
                 trace.stop("engine_total");
@@ -2583,6 +2532,35 @@ public final class AlprPipeline {
         trace.finish("stale_scene_result", "");
         trace.captureMemoryAfterMeasurement();
         metrics.add(trace);
+    }
+
+    /** Called on the same executor as inference, while CameraX opens its stream. */
+    public synchronized void prepareModels() {
+        if (!registry.hasCompleteAlprComposition() || runtimeContractFailureGate.isBlocked()) return;
+        ensureEngineLoaded();
+        frameGate.requestImmediateFrame();
+    }
+
+    private void ensureEngineLoaded() {
+        if (reloadRequested) {
+            if (engine != null) engine.close();
+            engine = null;
+            reloadRequested = false;
+        }
+        if (engine != null) return;
+        long started = SystemClock.elapsedRealtimeNanos();
+        engine = new MobileAlprEngine(registry, autoTuneManager,
+                effectiveRoiBudgetPolicy(), effectiveMtExecutionPolicy(),
+                effectiveMtFallbackPolicy(), effectiveVehicleTrackingPolicy(),
+                frozenResearchExecutionConfig, vehicleTrackingCoordinator);
+        logEngineModelDiagnostics(engine);
+        engine.setRecognitionProfile(effectiveRecognitionProfile());
+        engine.setRapidCameraMotion(rapidCameraMotion);
+        engine.setCameraTransformInProgress(cameraTransformInProgress);
+        engine.setSoftReacquireResultListener(this::handleSoftReacquireReport);
+        engine.setPreviewFrameMotionHistory(previewFrameMotionHistory);
+        android.util.Log.d("ALPR_PIPELINE_START", "models_ready_ms="
+                + (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000L);
     }
 
     public void invalidateModels() {

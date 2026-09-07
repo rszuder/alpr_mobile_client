@@ -6,6 +6,17 @@ import static org.junit.Assert.assertEquals;
 
 public class CropInferenceTimingTest {
     @Test
+    public void vehicleInferenceDoesNotIncludePreprocessingOrPostprocessing() {
+        CropInferenceTiming timing = new CropInferenceTiming(
+                17, 1_000_000, 9_000_000, 2_000_000,
+                3_000_000, 4_000_000, 5_000_000,
+                6_000_000, 7_000_000, 8_000_000, 9_000_000, 40_000_000
+        );
+        assertEquals(9_000_000L, timing.vehicleStagesNanos);
+        assertEquals(2.0, timing.vehicleInferenceMilliseconds(), 0.0001);
+    }
+
+    @Test
     public void keepsPerCropDurationsAndConvertsTotalToMilliseconds() {
         CropInferenceTiming timing = new CropInferenceTiming(
                 17, 1_000_000, 2_000_000,

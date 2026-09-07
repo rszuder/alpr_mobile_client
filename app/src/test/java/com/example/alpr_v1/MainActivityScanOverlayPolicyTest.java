@@ -32,6 +32,25 @@ import java.util.Set;
 
 public final class MainActivityScanOverlayPolicyTest {
     @Test
+    public void normalScanStartsWhenModelsBecomeAvailableDuringActiveCamera() {
+        assertEquals(false, MainActivity.shouldRunNormalScanAcquisition(
+                true, true, false, false
+        ));
+        assertEquals(true, MainActivity.shouldRunNormalScanAcquisition(
+                true, true, false, true
+        ));
+        assertEquals(false, MainActivity.shouldRunNormalScanAcquisition(
+                true, true, true, true
+        ));
+        assertEquals(false, MainActivity.shouldRunNormalScanAcquisition(
+                false, true, false, true
+        ));
+        assertEquals(false, MainActivity.shouldRunNormalScanAcquisition(
+                true, false, false, true
+        ));
+    }
+
+    @Test
     public void activeEntityWinsOverOlderTemporalObservation() {
         ScanAcquisitionSnapshot scan = snapshot(20L, 2L);
 

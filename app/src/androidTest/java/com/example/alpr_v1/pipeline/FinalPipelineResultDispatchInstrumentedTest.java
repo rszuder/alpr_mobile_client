@@ -24,6 +24,26 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RunWith(AndroidJUnit4.class)
 public final class FinalPipelineResultDispatchInstrumentedTest {
     @Test
+    public void immediateGalleryCopySurvivesSuppressedFinalization() {
+        Bitmap crop = Bitmap.createBitmap(32, 16, Bitmap.Config.ARGB_8888);
+        ContinuityStamp stamp = ContinuityStamp.initial(1L);
+        PlateObservation original = observation(crop, stamp).withoutFinalization();
+        PlateObservation gallery = original.copyForGallery();
+        PipelineResult result = new PipelineResult("recognizing", "test",
+                Collections.emptyList(), Collections.emptyList(), 1280, 720,
+                Collections.singletonList(original), false, stamp);
+        PipelineResult suppressed = result.withoutGeometryAndFinalization();
+        assertTrue(crop.isRecycled());
+        assertTrue(suppressed.plateObservations.isEmpty());
+        assertFalse(gallery.previewBitmap.isRecycled());
+        assertFalse(gallery.confirmed);
+        assertEquals(original.entityId, gallery.entityId);
+        assertEquals(original.sceneGeneration, gallery.sceneGeneration);
+        gallery.previewBitmap.recycle();
+        suppressed.close();
+    }
+
+    @Test
     public void delayedStaleResultRecyclesBitmapOnceWithoutUiOrCrop()
             throws Exception {
         SceneTransitionCoordinator coordinator = new SceneTransitionCoordinator(

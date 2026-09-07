@@ -107,7 +107,7 @@ public final class RecognitionHistoryAdapter
             Context context = itemView.getContext();
             preview.setPlate(item.previewBitmap, item.characters);
             preview.setBoxesVisible(true);
-            number.setText(item.text);
+            number.setText(item.text.isEmpty() ? context.getString(R.string.result_placeholder) : item.text);
             time.setText(new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
                     new Date(item.capturedAtMillis)
             ));
