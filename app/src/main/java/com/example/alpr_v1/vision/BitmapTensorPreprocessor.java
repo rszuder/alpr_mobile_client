@@ -17,6 +17,11 @@ public final class BitmapTensorPreprocessor {
     private BitmapTensorPreprocessor() {}
 
     public static PreparedInput prepare(Bitmap source, ModelInputSpec spec, TensorInfo tensorInfo) {
+        return prepare(source,spec,tensorInfo,null);
+    }
+
+    public static PreparedInput prepare(Bitmap source, ModelInputSpec spec, TensorInfo tensorInfo,
+                                        java.util.function.Consumer<Bitmap> inputObserver) {
         if (!"NHWC".equals(spec.layout()) && !"NCHW".equals(spec.layout())) {
             throw new IllegalArgumentException("Obsługiwane układy wejścia to NHWC i NCHW");
         }
@@ -81,7 +86,8 @@ public final class BitmapTensorPreprocessor {
             }
         }
         input.rewind();
-        letterboxed.recycle();
+        try { if (inputObserver != null) inputObserver.accept(letterboxed); }
+        finally { letterboxed.recycle(); }
         return new PreparedInput(input, scale, padX, padY, source.getWidth(), source.getHeight());
     }
 

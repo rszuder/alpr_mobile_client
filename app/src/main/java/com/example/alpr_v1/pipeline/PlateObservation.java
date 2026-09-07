@@ -11,6 +11,7 @@ import java.util.List;
 
 /** Migawka tracku przekazywana do trwałej galerii wyników w UI. */
 public final class PlateObservation {
+    public com.example.alpr_v1.experiment.ResearchSampleIdentity researchIdentity;
     public final long entityId;
     public final long vehicleTrackId;
     public final long plateTrackId;

@@ -26,6 +26,91 @@ telemetrii `alpr.mobile_experiment_telemetry.v1`:
 Nowe wpisy są objęte `manifest.json/entry_sha256`. Klasyczny raport ZIP pozostaje
 bez zmian strukturalnych dla zgodności wstecznej.
 
+## Automatyczna kolekcja badawcza — samples v2
+
+Od wdrożenia `research-session-auto-collection-v1` START eksperymentu tworzy
+`files/research/sessions/<session_id>/session.json` w stanie PREPARED przed t0.
+Zamrożony config oraz uzbrojony writer poprzedzają RUNNING domeny i metryk.
+Nie ma drugiego START kolekcji ani wybierania próbek do paczki. STOP/timer
+zamyka przyjmowanie nowych prób, czeka na rozpoczętą pracę pipeline’u i writer,
+a następnie automatycznie buduje `final/<session_id>.alprsession`.
+Wspólny czas końca domeny, metryk i magazynu jest ustalany przy zamknięciu
+bramki STOP, zanim zatrzymanie kamery, drain lub ZIP mogłyby opóźnić ten znacznik.
+
+W `.alprsession` zachowany jest `alpr.mobile_research_bundle.v1`. Nowe wpisy:
+
+- `session.json` — konfiguracja, czasy, stan trwałego zapisu i kompletność;
+- `samples/schema.json` — `alpr.mobile_research_samples.v2`, review na desktopie;
+- `samples/attempts.csv` — każda wykonana próba MT i jej dalszy przebieg;
+- `samples/evidence/<attempt_id>.jpg` — obraz wejścia MT, jeżeli nie ma cropa;
+- `samples/attempts.jsonl`, `samples/crops.jsonl`, `samples/write_states.jsonl`
+  — dzienniki robocze pozwalające diagnozować zapis;
+- `telemetry/*.jsonl` — strumienie utrwalane także podczas pomiaru.
+
+MT evidence jest kopią faktycznego obrazu letterbox użytego przez preprocessor,
+po wyborze ROI i rotacji źródła, przed normalizacją kanałów/liczb do tensora.
+`roi_*`, `input_width/height`, `input_scale`, `input_pad_x/y` w dzienniku prób
+opisują mapowanie geometrii. Przy wykonanym MZ zapisuje się rektyfikowany crop,
+a `evidence_entry` wskazuje ten sam JPEG w `samples/crops` — bez drugiej kopii.
+`mt_invocation_id` łączy kilka detekcji pochodzących z tego samego wywołania MT.
+Próby odfiltrowane później przez tracker/NMS/wybór celu pozostają audytowalne
+z `mz_status=NOT_RUN`.
+
+`samples/attempts.csv` zawiera:
+
+```text
+attempt_id,session_id,subject_key,scene_generation,visual_epoch,
+camera_transform_generation,entity_id,vehicle_track_id,plate_track_id,
+source_sequence,source_timestamp_nanos,attempt_started_elapsed_nanos,
+roi_policy,capture_source,camera_zoom_ratio,mt_status,rectification_status,
+mz_status,prediction,consensus_prediction,plate_confidence,recognition_confidence,
+evidence_kind,evidence_entry,stale_or_cancelled,cancel_reason,write_state,
+missing_evidence_reason,mz_executed,mt_invocation_id
+```
+
+Statusy MT: NOT_RUN / NO_DETECTION / DETECTION_INVALID_QUAD / VALID_QUAD.
+Rektyfikacja: NOT_RUN / FAILED / OK. MZ: NOT_RUN / NO_CHARACTERS / READ.
+`mz_executed` odróżnia wywołanie backendu przerwane przed dekodowaniem wyniku.
+`prediction` jest zawsze świeżym wynikiem MZ, również pustym; nigdy nie jest
+uzupełniany poprzednim konsensusem. `recognition_confidence` nowych próbek to
+średnia confidence świeżych znaków (0 przy ich braku); osobny
+`consensus_confidence` w dzienniku/adnotacji opisuje stan konsensusu.
+Anulowana scena ma `stale_or_cancelled=true`, `cancel_reason=scene_superseded`;
+STOP podczas pracy ma `session_stopped`. Takich prób nie należy liczyć jako
+błędów jakości modelu. Brak obrazu ma jawny `missing_evidence_reason`.
+
+`samples/index.csv` zachowuje stare kolumny i dodaje na końcu: `attempt_id`,
+`subject_key`, `scene_generation`, `entity_id`, `vehicle_track_id`, `plate_track_id`.
+Te same dane są w `annotations.jsonl`. Wszystkie nowe cropy mają
+`verification_status=not_reviewed`, pusty GT. `report.crop_session.records_file`
+wskazuje trwałe adnotacje zamiast ograniczonej galerii, a `quality` jawnie czeka
+na weryfikację desktopową. Ręczna weryfikacja galerii pozostaje funkcją
+diagnostyczną poza trwającym badaniem; nie modyfikuje gotowej paczki źródłowej.
+
+Tożsamość: `<session>/sg-<generation>/entity-<id>`, tymczasowo `/track-<id>` lub
+`/attempt-<id>`. OCR nigdy nie służy do identyfikacji. Późniejsze przypisanie
+promuje fallback w końcowych CSV/adnotacjach; append-only dzienniki zachowują
+oryginalny przebieg. Odtworzenie Activity zachowuje kolektor, t0, timer i config,
+a nowy pipeline rozpoczyna kolejną generację sceny, by nie zderzyć nowych tracków
+z identyfikatorami wcześniejszej instancji kamery.
+
+Writer ma kolejkę 256 zadań, maksymalnie 64 przyjęte próby i budżet kopii obrazów
+64 MiB. Kompresja JPEG i I/O pracują poza wątkiem inferencji. Przekroczenie limitu
+lub błąd I/O zwiększa licznik strat, zapisuje zdarzenie i prowadzi do PARTIAL/ERROR.
+START wymaga co najmniej 128 MiB wolnej przestrzeni w prywatnym magazynie aplikacji.
+
+Po restarcie procesu RUNNING/FINALIZING (także osierocone PREPARED) przechodzi
+w PARTIAL z `process_interrupted`. Odzyskana paczka nie kontynuuje pomiaru.
+`pending_sample_loss_unknown=true` ostrzega o niemożności policzenia niezapisanej
+kolejki RAM. Niepełny ostatni rekord dziennika lub brak obrazu obniża kompletność.
+ZIP powstaje po opróżnieniu writer queue, jest weryfikowany SHA-256 i dopiero
+wtedy publikowany; stan COMPLETED jest utrwalany po publikacji.
+
+Każdy nowy wpis podlega `entry_sha256`. `samples_self_contained` opisuje pełność
+dowodów, natomiast dotychczasowe `self_contained=false` nadal dotyczy braku wag
+modeli w archiwum. Pełny dziennik trace’ów odtwarza `traces.csv` niezależnie od
+limitu ring buffera UI; statystyki raportu zachowują deklarację własnego okna retencji.
+
 ## Tożsamość i kompletność eksperymentu
 
 Sekcja `report.json/experiment` przechowuje zamrożone przy starcie:

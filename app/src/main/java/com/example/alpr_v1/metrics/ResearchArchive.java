@@ -94,6 +94,21 @@ public final class ResearchArchive {
             ModelRegistry registry,
             ResearchExecutionConfig frozenConfig
     ) throws Exception {
+        writeSession(destination,reportJson,tracesCsv,thermalCsv,frameFlowCsv,eventsJsonl,applicationLog,
+                crops,registry,frozenConfig,null);
+    }
+
+    public static void writePersistentResearchSession(OutputStream destination,String report,String traces,
+            String thermal,String frameFlow,String events,String log,java.io.File directory,
+            ResearchExecutionConfig frozen) throws Exception {
+        writeSession(destination,report,traces,thermal,frameFlow,events,log,
+                java.util.Collections.emptyList(),null,frozen,directory);
+    }
+
+    private static void writeSession(OutputStream destination,String reportJson,String tracesCsv,
+            String thermalCsv,String frameFlowCsv,String eventsJsonl,String applicationLog,
+            List<CapturedPlateItem> crops,ModelRegistry registry,ResearchExecutionConfig frozenConfig,
+            java.io.File persistentDirectory) throws Exception {
         JSONObject report = new JSONObject(reportJson);
         ArchiveWriter archive = new ArchiveWriter(destination);
         try {
@@ -121,9 +136,18 @@ public final class ResearchArchive {
                         packageManifest
                 );
             }
-            writeModelManifest(archive, frozenConfig, registry, ModelRole.VEHICLE, "vehicle");
-            writeModelManifest(archive, frozenConfig, registry, ModelRole.PLATE, "plate");
-            writeModelManifest(archive, frozenConfig, registry, ModelRole.CHARACTER, "character");
+            if (persistentDirectory == null) {
+                writeModelManifest(archive, frozenConfig, registry, ModelRole.VEHICLE, "vehicle");
+                writeModelManifest(archive, frozenConfig, registry, ModelRole.PLATE, "plate");
+                writeModelManifest(archive, frozenConfig, registry, ModelRole.CHARACTER, "character");
+            } else {
+                for (String role : new String[]{"vehicle","plate","character"}) {
+                    java.io.File file = new java.io.File(persistentDirectory,"pipeline/"+role+"_manifest.json");
+                    if (file.isFile()) archive.writeFile("pipeline/"+role+"_manifest.json",file);
+                }
+                java.io.File savedPackage = new java.io.File(persistentDirectory,"pipeline/package_manifest.json");
+                if (packageManifest.isEmpty() && savedPackage.isFile()) archive.writeFile("pipeline/package_manifest.json",savedPackage);
+            }
 
             JSONObject modelRefsFile = new JSONObject();
             modelRefsFile.put("schema", "alpr.mobile_model_refs.v1");
@@ -142,11 +166,27 @@ public final class ResearchArchive {
             }
             archive.writeText("pipeline/model_refs.json", modelRefsFile.toString(2));
 
+            if (persistentDirectory == null) {
             archive.writeText("samples/index.csv", cropIndexCsv(crops));
             archive.writeText("samples/annotations.jsonl", annotationsJsonl(crops));
             for (CapturedPlateItem item : crops) {
                 if (item.bitmap == null || item.bitmap.isRecycled()) continue;
                 archive.writeBitmap("samples/crops/" + safeId(item.captureId) + ".jpg", item.bitmap);
+            }
+            } else {
+                archive.writeText("session.json",report.getJSONObject("research_collection").toString(2));
+                try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(
+                        new java.io.File(persistentDirectory,"samples").toPath())) {
+                    for (java.nio.file.Path file : (Iterable<java.nio.file.Path>)files.filter(java.nio.file.Files::isRegularFile)::iterator) {
+                        if (file.toString().endsWith(".tmp")) continue;
+                        String entry = persistentDirectory.toPath().relativize(file).toString().replace('\\','/');
+                        archive.writeFile(entry,file.toFile());
+                    }
+                }
+                for (String name : new String[]{"traces.jsonl","thermal.jsonl","frame_flow.jsonl"}) {
+                    java.io.File file = new java.io.File(persistentDirectory,"telemetry/"+name);
+                    if (file.isFile()) archive.writeFile("telemetry/"+name,file);
+                }
             }
 
             JSONObject manifest = baseManifest(RESEARCH_SCHEMA, report, archive.hashes());
@@ -155,7 +195,16 @@ public final class ResearchArchive {
             manifest.put("self_contained", false);
             manifest.put("exact_source_package_embedded", false);
             manifest.put("reproducible_by_model_hash", reproducibleByModelHash(reportModelRefs));
-            manifest.put("crop_count", crops.size());
+            java.io.File[] storedCrops = persistentDirectory == null ? null
+                    : new java.io.File(persistentDirectory,"samples/crops").listFiles((dir,name)->name.endsWith(".jpg"));
+            manifest.put("crop_count", persistentDirectory == null ? crops.size() : storedCrops == null ? 0 : storedCrops.length);
+            if (persistentDirectory != null) {
+                JSONObject collection = report.optJSONObject("research_collection");
+                manifest.put("sample_contract_version","alpr.mobile_research_samples.v2");
+                manifest.put("collection_complete",collection != null && collection.optBoolean("collection_complete"));
+                manifest.put("samples_self_contained",collection != null && collection.optBoolean("collection_complete"));
+                manifest.put("human_review","desktop");
+            }
             manifest.put("entry_sha256", new JSONObject(archive.hashes()));
             archive.writeManifest(manifest.toString(2));
         } finally {
@@ -291,16 +340,22 @@ public final class ResearchArchive {
         return value != null && value.matches("[0-9a-fA-F]{64}");
     }
 
-    private static String cropIndexCsv(List<CapturedPlateItem> crops) {
+    public static String cropIndexCsv(List<CapturedPlateItem> crops) { return cropIndexCsv(crops,true); }
+
+    public static String cropIndexCsv(List<CapturedPlateItem> crops,boolean includeIdentity) {
         StringBuilder csv = new StringBuilder(
                 "capture_id,session_id,track_id,captured_at_ms,prediction,consensus_prediction,verification_status,ground_truth,plate_confidence,recognition_confidence,sharpness,pipeline_ms,mz_ms,camera_zoom_ratio,capture_source,track_confirmed,fresh_mz_successful,crop_supports_consensus,consensus_observations,mz_attempt_index,layout,row_counts,plate_bbox_width_px,plate_bbox_height_px,plate_bbox_area_ratio,plate_quad_area_ratio,plate_corners_norm,mean_luminance,luminance_stddev,underexposed_ratio,overexposed_ratio,image_metrics_computation_ms,eligible_for_text_metrics,issue_codes,needs_desktop_review,verification_note,verified_at_millis,verification_revision\n"
         );
+        if (includeIdentity) {
+            csv.setLength(csv.length()-1);
+            csv.append(",attempt_id,subject_key,scene_generation,entity_id,vehicle_track_id,plate_track_id\n");
+        }
         for (CapturedPlateItem item : crops) {
             csv.append(csv(item.captureId)).append(',')
                     .append(csv(item.sessionId)).append(',')
                     .append(item.trackId).append(',')
                      .append(item.capturedAtMillis).append(',')
-                     .append(csv(item.text)).append(',')
+                     .append(csv(item.researchIdentity == null ? item.text : item.freshPrediction)).append(',')
                      .append(csv(item.consensusText)).append(',')
                      .append(item.verificationStatus.wireName()).append(',')
                     .append(csv(item.groundTruthText)).append(',')
@@ -335,21 +390,36 @@ public final class ResearchArchive {
                     .append(item.needsDesktopReview).append(',')
                     .append(csv(item.verificationNote)).append(',')
                     .append(item.verifiedAtMillis).append(',')
-                    .append(item.verificationRevision)
-                    .append('\n');
+                    .append(item.verificationRevision);
+            if (includeIdentity) {
+                com.example.alpr_v1.experiment.ResearchSampleIdentity identity = item.researchIdentity;
+                csv.append(',').append(csv(identity == null ? "" : identity.attemptId))
+                        .append(',').append(csv(identity == null ? "" : identity.subjectKey))
+                        .append(',').append(identity == null ? 0 : identity.sceneGeneration)
+                        .append(',').append(identity == null ? 0 : identity.entityId)
+                        .append(',').append(identity == null ? 0 : identity.vehicleTrackId)
+                        .append(',').append(identity == null ? item.trackId : identity.plateTrackId);
+            }
+            csv.append('\n');
         }
         return csv.toString();
     }
 
-    private static String annotationsJsonl(List<CapturedPlateItem> crops) throws JSONException {
+    public static String annotationsJsonl(List<CapturedPlateItem> crops) throws JSONException {
         StringBuilder jsonl = new StringBuilder();
         for (CapturedPlateItem item : crops) {
             JSONObject record = new JSONObject();
             record.put("capture_id", item.captureId);
             record.put("session_id", item.sessionId);
             record.put("track_id", item.trackId);
+            if (item.researchIdentity != null) {
+                com.example.alpr_v1.experiment.ResearchSampleIdentity identity = item.researchIdentity;
+                record.put("attempt_id",identity.attemptId).put("subject_key",identity.subjectKey)
+                        .put("scene_generation",identity.sceneGeneration).put("entity_id",identity.entityId)
+                        .put("vehicle_track_id",identity.vehicleTrackId).put("plate_track_id",identity.plateTrackId);
+            }
             record.put("captured_at_ms", item.capturedAtMillis);
-            record.put("prediction", item.text);
+            record.put("prediction", item.researchIdentity == null ? item.text : item.freshPrediction);
             record.put("consensus_prediction", item.consensusText);
             record.put("plate_confidence", item.plateConfidence);
             record.put("recognition_confidence", item.recognitionConfidence);
@@ -611,6 +681,37 @@ public final class ResearchArchive {
         return safe.isEmpty() ? "item" : safe;
     }
 
+    public static void verifyEntryHashes(java.io.File file) throws Exception {
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(file)) {
+            java.util.zip.ZipEntry manifestEntry = zip.getEntry("manifest.json");
+            if (manifestEntry == null) throw new IOException("Brak manifestu archiwum");
+            String text;
+            try (java.io.InputStream input = zip.getInputStream(manifestEntry)) {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[8192]; int read;
+                while ((read=input.read(buffer)) != -1) bytes.write(buffer,0,read);
+                text = bytes.toString("UTF-8");
+            }
+            JSONObject hashes = new JSONObject(text).getJSONObject("entry_sha256");
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                if (!entry.isDirectory() && !entry.getName().equals("manifest.json") && !hashes.has(entry.getName()))
+                    throw new IOException("Plik poza listą SHA-256: "+entry.getName());
+            }
+            for (Iterator<String> names = hashes.keys(); names.hasNext();) {
+                String name = names.next(); java.util.zip.ZipEntry entry = zip.getEntry(name);
+                if (entry == null) throw new IOException("Brak pliku: "+name);
+                MessageDigest digest = digest();
+                try (java.io.InputStream input = zip.getInputStream(entry)) {
+                    byte[] buffer = new byte[65536]; int read;
+                    while ((read=input.read(buffer)) != -1) digest.update(buffer,0,read);
+                }
+                if (!hex(digest.digest()).equals(hashes.getString(name))) throw new IOException("Niezgodny SHA-256: "+name);
+            }
+        }
+    }
+
     private static final class ArchiveWriter implements AutoCloseable {
         private final ZipOutputStream zip;
         private final Map<String, String> hashes = new LinkedHashMap<>();
@@ -647,6 +748,15 @@ public final class ResearchArchive {
             sink.flush();
             zip.closeEntry();
             hashes.put(name, hex(digest.digest()));
+        }
+
+        void writeFile(String name,java.io.File file) throws IOException {
+            MessageDigest digest = digest(); zip.putNextEntry(new ZipEntry(name));
+            try (java.io.InputStream input = new java.io.FileInputStream(file)) {
+                byte[] buffer = new byte[65536]; int read;
+                while ((read=input.read(buffer)) != -1) { zip.write(buffer,0,read); digest.update(buffer,0,read); }
+            }
+            zip.closeEntry(); hashes.put(name,hex(digest.digest()));
         }
 
         @Override

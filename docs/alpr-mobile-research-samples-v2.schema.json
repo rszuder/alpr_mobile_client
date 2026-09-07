@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ALPR mobile research samples v2 descriptor",
+  "type": "object",
+  "required": ["schema", "subject_identity", "human_review", "attempts_file", "crops_file"],
+  "properties": {
+    "schema": {"const": "alpr.mobile_research_samples.v2"},
+    "subject_identity": {"const": "scene_generation+entity_id"},
+    "human_review": {"const": "desktop"},
+    "attempts_file": {"const": "samples/attempts.csv"},
+    "crops_file": {"const": "samples/index.csv"}
+  },
+  "additionalProperties": true
+}

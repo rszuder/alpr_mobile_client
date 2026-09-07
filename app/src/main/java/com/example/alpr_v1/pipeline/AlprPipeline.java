@@ -182,6 +182,14 @@ public final class AlprPipeline {
     private final AtomicLong lastTracedPreviewTrackingUpdates = new AtomicLong();
     private volatile MobileAlprEngine engine;
     private volatile boolean reloadRequested;
+    private volatile com.example.alpr_v1.experiment.ResearchSessionStore researchCollector;
+    public void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore collector) {
+        researchCollector = collector;
+    }
+    public synchronized void resumeResearchAfterRecreation(long previousScene) {
+        applySceneTransition(sceneTransitionCoordinator.resumeAfterCameraRecreation(
+                previousScene,SystemClock.elapsedRealtimeNanos()));
+    }
     private final RuntimeContractFailureGate runtimeContractFailureGate =
             new RuntimeContractFailureGate();
     /*
@@ -1652,6 +1660,7 @@ public final class AlprPipeline {
             activeEngine.requestVehicleRefreshAfterZoom();
         }
         activeEngine.setStaticSceneMode(staticMode());
+        activeEngine.setResearchCollector(researchCollector,currentCameraZoomRatio);
         activeEngine.setStaticRefinement(staticMode() && staticCycle.refining());
         activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
         if (staticMode() && staticCycle.refining() || !staticMode() && dynamicZoomEntity > 0L) {

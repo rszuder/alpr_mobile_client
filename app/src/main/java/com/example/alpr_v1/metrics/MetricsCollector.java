@@ -36,6 +36,10 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class MetricsCollector {
+    private com.example.alpr_v1.experiment.ResearchSessionStore researchCollector;
+    public synchronized void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore store) {
+        researchCollector = store;
+    }
     private static final class FrameFlowBucket {
         final long elapsedMs;
         long framesReceived;
@@ -193,6 +197,10 @@ public final class MetricsCollector {
     private final List<JSONObject> capturedCropRecords = new ArrayList<>();
 
     public synchronized void startMeasurementSession() {
+        startMeasurementSession(System.currentTimeMillis(),SystemClock.elapsedRealtimeNanos(),System.nanoTime());
+    }
+
+    public synchronized void startMeasurementSession(long wallMillis,long elapsedNanos,long monotonicNanos) {
         traces.clear();
         frameFlowBuckets.clear();
         thermalSamples.clear();
@@ -250,14 +258,11 @@ public final class MetricsCollector {
         actualSourceWidth = 0;
         actualSourceHeight = 0;
 
-        sessionStartedMillis =
-                System.currentTimeMillis();
+        sessionStartedMillis = wallMillis;
 
-        sessionStartedNanos =
-                System.nanoTime();
+        sessionStartedNanos = monotonicNanos;
 
-        sessionStartedElapsedNanos =
-                SystemClock.elapsedRealtimeNanos();
+        sessionStartedElapsedNanos = elapsedNanos;
 
         sessionFinishedMillis = -1L;
 
@@ -266,12 +271,15 @@ public final class MetricsCollector {
 
 
     public synchronized void finishMeasurementSession() {
+        finishMeasurementSession(System.currentTimeMillis());
+    }
+
+    public synchronized void finishMeasurementSession(long wallMillis) {
         if (!measurementSessionActive) {
             return;
         }
 
-        sessionFinishedMillis =
-                System.currentTimeMillis();
+        sessionFinishedMillis = wallMillis;
 
         measurementSessionActive = false;
     }
@@ -318,6 +326,14 @@ public final class MetricsCollector {
         }
 
         traces.addLast(trace);
+        if (researchCollector != null) {
+            try {
+                String csv = csvForTraces(java.util.Collections.singletonList(trace));
+                JSONObject row = trace.toJson().put("_csv_header",csv.substring(0,csv.indexOf('\n')+1))
+                        .put("_csv_row",csv.substring(csv.indexOf('\n')+1));
+                researchCollector.appendTelemetry("traces.jsonl",row.toString());
+            } catch (JSONException error) { researchCollector.recordMetadataFailure("trace_serialization"); }
+        }
     }
     public synchronized void frameSkippedByGate() {
         if (!measurementSessionActive) return;
@@ -638,6 +654,7 @@ public final class MetricsCollector {
             sample.put("available_memory_bytes", snapshot.availableMemoryBytes >= 0L
                     ? snapshot.availableMemoryBytes : JSONObject.NULL);
             thermalSamples.add(sample);
+            if (researchCollector != null) researchCollector.appendTelemetry("thermal.jsonl",sample.toString());
         } catch (JSONException ignored) {
             // Wszystkie pola pochodzą z kontrolowanych typów prostych.
         }
@@ -666,6 +683,7 @@ public final class MetricsCollector {
                 }
             }
             eventRecords.add(event);
+            if (researchCollector != null) researchCollector.appendTelemetry("events.jsonl",event.toString());
         } catch (JSONException ignored) {
             // Rekord zdarzenia pozostaje opcjonalną telemetrią.
         }
@@ -676,6 +694,21 @@ public final class MetricsCollector {
         long bucketStart = (elapsed / 1_000L) * 1_000L;
         FrameFlowBucket bucket = frameFlowBuckets.get(bucketStart);
         if (bucket == null) {
+            if (researchCollector != null && !frameFlowBuckets.isEmpty()) {
+                FrameFlowBucket previous = null;
+                for (FrameFlowBucket value : frameFlowBuckets.values()) previous = value;
+                try {
+                    JSONObject row = new JSONObject().put("experiment_session_id",experimentSessionId)
+                            .put("elapsed_ms",previous.elapsedMs).put("frames_received",previous.framesReceived)
+                            .put("frames_processed",previous.framesProcessed).put("frames_skipped_frame_gate",previous.framesSkippedGate)
+                            .put("frames_skipped_camera_transform",previous.framesSkippedCameraTransform)
+                            .put("frames_skipped_hard_scene_reset",previous.framesSkippedHardSceneReset)
+                            .put("frames_skipped_continuity_hold",previous.framesSkippedContinuityHold)
+                            .put("frames_skipped_continuity_reacquire",previous.framesSkippedContinuityReacquire)
+                            .put("estimated_upstream_gaps",previous.estimatedUpstreamGaps);
+                    researchCollector.appendTelemetry("frame_flow.jsonl",row.toString());
+                } catch (JSONException error) { researchCollector.recordMetadataFailure("frame_flow_serialization"); }
+            }
             bucket = new FrameFlowBucket(bucketStart);
             frameFlowBuckets.put(bucketStart, bucket);
         }
@@ -1922,6 +1955,12 @@ public final class MetricsCollector {
         return HumanVerificationJson.from(item);
     }
 
+    public static JSONObject pendingDesktopReviewQuality(long cropCount) throws JSONException {
+        return qualityJson(java.util.Collections.emptyList()).put("review_location","desktop")
+                .put("unit","scene_generation_entity_id").put("unit_count",JSONObject.NULL)
+                .put("not_reviewed_samples",cropCount).put("ground_truth_available",false);
+    }
+
     private static JSONObject qualityJson(List<JSONObject> cropRecords) throws JSONException {
         Map<String, JSONObject> qualityUnits = new LinkedHashMap<>();
         for (JSONObject record : cropRecords) {
@@ -2264,6 +2303,10 @@ public final class MetricsCollector {
     }
 
     public synchronized String createCsvReport() {
+        return csvForTraces(traces);
+    }
+
+    private String csvForTraces(Iterable<InferenceTrace> sourceTraces) {
         String[] stages = new String[]{
                 "total", "engine_setup", "camera_conversion", "camera_to_bitmap", "camera_rotation",
                 "vehicle_preprocess", "vehicle_inference", "vehicle_postprocess",
@@ -2298,7 +2341,7 @@ public final class MetricsCollector {
                 .append(",locked_track_id,lock_switches,lock_losses,lock_reassociations,frames_to_lock,time_to_lock_ms")
                 .append(",pss_start_kb,pss_end_kb,pss_delta_kb")
                 .append(",native_heap_start_bytes,native_heap_end_bytes,native_heap_delta_bytes\n");
-        for (InferenceTrace trace : traces) {
+        for (InferenceTrace trace : sourceTraces) {
             csv.append(trace.frameId()).append(',')
                     .append(trace.timestampMillis()).append(',')
                     .append(traceElapsedMillis(trace)).append(',')

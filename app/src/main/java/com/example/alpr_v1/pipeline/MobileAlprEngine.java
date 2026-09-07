@@ -120,6 +120,12 @@ final class MobileAlprEngine implements AutoCloseable {
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
     private StableSceneVehicleCache stableSceneVehicles;
     private boolean staticSceneMode;
+    private com.example.alpr_v1.experiment.ResearchSessionStore researchStore;
+    private com.example.alpr_v1.experiment.ResearchAttemptBatch researchBatch;
+    private float researchZoomRatio = 1f;
+    void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore store,float zoomRatio) {
+        researchStore=store; researchZoomRatio=zoomRatio;
+    }
     private boolean staticRefinement;
     private VehicleTrackingFrame lastMeasuredVehicles = VehicleTrackingFrame.empty(0L);
     void setStaticSceneMode(boolean enabled) { staticSceneMode = enabled; }
@@ -716,6 +722,24 @@ final class MobileAlprEngine implements AutoCloseable {
             BooleanSupplier cancellationRequested,
             AlprPipeline.PlateObservationCallback plateObservationCallback
     ) {
+        researchBatch = researchStore != null && researchStore.accepting()
+                ? new com.example.alpr_v1.experiment.ResearchAttemptBatch(researchStore,sourceStamp,
+                        roiBudgetPolicy.wireName(),researchZoomRatio) : null;
+        String cancellation = "", failure = "";
+        try { return runAudited(frame,trace,sourceStamp,plateDetectionCallback,cancellationRequested,plateObservationCallback); }
+        catch (ProcessingCancelledException error) { cancellation="scene_superseded"; throw error; }
+        catch (RuntimeException error) { failure=error.toString(); throw error; }
+        finally {
+            if (researchBatch != null) {
+                if (cancellationRequested.getAsBoolean()) cancellation="scene_superseded";
+                researchBatch.finish(cancellation,failure); researchBatch=null;
+            }
+        }
+    }
+
+    private PipelineResult runAudited(Bitmap frame,InferenceTrace trace,ContinuityStamp sourceStamp,
+            AlprPipeline.PlateDetectionCallback plateDetectionCallback,BooleanSupplier cancellationRequested,
+            AlprPipeline.PlateObservationCallback plateObservationCallback) {
         if (sourceStamp == null) throw new IllegalArgumentException("sourceStamp");
         long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
         if (continuitySoftHold) {
@@ -998,7 +1022,7 @@ final class MobileAlprEngine implements AutoCloseable {
             } else {
                 for (VehicleRoi roi : vehicleRois) {
                     List<Detection> detected = detectPlates(
-                            frame, VehicleRoiSelector.region(roi), plateDurations
+                            frame, VehicleRoiSelector.region(roi), plateDurations, roi
                     );
                     plates.addAll(detected);
                     markPlateWork(
@@ -1165,7 +1189,7 @@ final class MobileAlprEngine implements AutoCloseable {
             }
 
             List<Detection> detected = detectPlates(
-                    frame, scheduledRegion, plateDurations
+                    frame, scheduledRegion, plateDurations, scheduledVehicleRoi
             );
             plates.addAll(detected);
             markPlateWork(
@@ -1578,6 +1602,13 @@ final class MobileAlprEngine implements AutoCloseable {
             cancelIfRequested(cancellationRequested);
             PlateCandidate candidate = candidates.get(decision.sourceIndex);
             TemporalCharacterAggregator.Result trackResult = decision.currentResult;
+            com.example.alpr_v1.experiment.AcquisitionAttemptRecord audit = researchBatch == null
+                    ? null : researchBatch.forDetection(candidate.detection);
+            if (audit != null) {
+                PlateVehicleAssociation owner = associationByPlateTrack.getOrDefault(decision.trackId,
+                        PlateVehicleAssociation.unassigned("unassigned"));
+                audit.associate(owner.entityId,owner.vehicleTrackId,decision.trackId);
+            }
             String predictionBefore = trackResult == null ? "" : trackResult.text;
             Bitmap observationBitmap = null;
             List<PlateCharacter> observedCharacters = Collections.emptyList();
@@ -1591,13 +1622,16 @@ final class MobileAlprEngine implements AutoCloseable {
                     candidate.corners, frame.getWidth(), frame.getHeight()
             );
             if (!validGeometry) invalidGeometryCount++;
+            if (audit != null) audit.put("mt_status",validGeometry ? "VALID_QUAD" : "DETECTION_INVALID_QUAD");
 
             if (decision.recognize) {
                 long started = SystemClock.elapsedRealtimeNanos();
+                if (audit != null) audit.put("rectification_status","FAILED");
                 Bitmap rectified = PlateRectifier.rectify(frame, candidate.corners);
                 cropRectificationNanos = SystemClock.elapsedRealtimeNanos() - started;
                 rectificationNanos += cropRectificationNanos;
                 try {
+                    if (audit != null) audit.copyPlateCrop(rectified);
                     started = SystemClock.elapsedRealtimeNanos();
                     PreparedInput characterInput = BitmapTensorPreprocessor.prepare(
                             rectified, characterInputSpec, characterBackend.inputInfo()
@@ -1606,6 +1640,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     characterPreprocessNanos += cropCharacterPreprocessNanos;
 
                     started = SystemClock.elapsedRealtimeNanos();
+                    if (audit != null) audit.put("mz_executed",true);
                     InferenceRunResult characterRun = characterBackend.run(characterInput.buffer);
                     cancelIfRequested(cancellationRequested);
                     cropCharacterInferenceNanos = SystemClock.elapsedRealtimeNanos() - started;
@@ -1650,6 +1685,10 @@ final class MobileAlprEngine implements AutoCloseable {
                         freshText.append(character.label);
                     }
                     freshPrediction = freshText.toString();
+                    if (audit != null) {
+                        audit.put("mz_status",freshPrediction.isEmpty() ? "NO_CHARACTERS" : "READ");
+                        audit.put("prediction",freshPrediction);
+                    }
                     observationBitmap = rectified.copy(Bitmap.Config.ARGB_8888, false);
                     cropTiming = new CropInferenceTiming(
                             trace.frameId(),
@@ -1777,6 +1816,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     mtDecision == null
                             ? 0L : mtDecision.acquisitionDirectiveRevision
             );
+            if (researchBatch != null) researchBatch.observe(candidate.detection,observation);
             plateObservations.add(observation);
             if (observation.previewBitmap != null && plateObservationCallback != null) {
                 cancelIfRequested(cancellationRequested);
@@ -3226,6 +3266,11 @@ final class MobileAlprEngine implements AutoCloseable {
             VehicleRoiSelector.Region region,
             long[] durations
     ) {
+        return detectPlates(frame,region,durations,null);
+    }
+
+    private List<Detection> detectPlates(Bitmap frame,VehicleRoiSelector.Region region,
+                                        long[] durations,VehicleRoi evidenceOwner) {
         VehicleRoiSelector.Region boundedRegion = intersectWithSensorFrame(
                 region,
                 frame
@@ -3234,6 +3279,14 @@ final class MobileAlprEngine implements AutoCloseable {
         boolean fullFrame = boundedRegion.left == 0 && boundedRegion.top == 0
                 && boundedRegion.right == frame.getWidth()
                 && boundedRegion.bottom == frame.getHeight();
+        long auditEntity = evidenceOwner != null ? evidenceOwner.entityId : fullFrame ? 0L
+                : refinementEntityId > 0L ? refinementEntityId : scanActiveEntityId;
+        VehicleEntity auditOwner = researchBatch == null || auditEntity <= 0L ? null
+                : vehicleTrackingCoordinator.repository().get(auditEntity);
+        com.example.alpr_v1.experiment.AcquisitionAttemptRecord audit = researchBatch == null ? null
+                : researchBatch.beginMt(auditEntity,evidenceOwner != null ? evidenceOwner.vehicleTrackId
+                        : auditOwner == null ? 0L : auditOwner.vehicleTrackId(),boundedRegion.left,boundedRegion.top,
+                        boundedRegion.right,boundedRegion.bottom,plateInputSpec.width(),plateInputSpec.height());
         Bitmap inputBitmap = fullFrame
                 ? frame
                 : Bitmap.createBitmap(
@@ -3246,21 +3299,36 @@ final class MobileAlprEngine implements AutoCloseable {
         try {
             long started = SystemClock.elapsedRealtimeNanos();
             PreparedInput input = BitmapTensorPreprocessor.prepare(
-                    inputBitmap, plateInputSpec, plateBackend.inputInfo()
+                    inputBitmap, plateInputSpec, plateBackend.inputInfo(),audit == null ? null : audit::copyEvidence
             );
+            if (audit != null) {
+                audit.put("evidence_kind",fullFrame ? "mt_full_frame" : "mt_input_roi");
+                audit.put("input_scale",input.scale); audit.put("input_pad_x",input.padX); audit.put("input_pad_y",input.padY);
+            }
             durations[0] += SystemClock.elapsedRealtimeNanos() - started;
 
             started = SystemClock.elapsedRealtimeNanos();
             InferenceRunResult run = plateBackend.run(input.buffer);
+            if (audit != null) { audit.put("mt_executed",true); audit.put("mt_status","NO_DETECTION"); }
             durations[1] += SystemClock.elapsedRealtimeNanos() - started;
 
             started = SystemClock.elapsedRealtimeNanos();
             List<Detection> result = new ArrayList<>();
             for (Detection detection : decodeFirstOutput(run, plateInputSpec, plateOutputSpec)) {
                 if (detection.keypoints.size() >= 4) {
-                    result.add(DetectionCoordinateMapper.toSource(
+                    Detection source = DetectionCoordinateMapper.toSource(
                             detection, input, boundedRegion.left, boundedRegion.top
-                    ));
+                    );
+                    result.add(source);
+                    if (audit != null) {
+                        List<Point2> corners = source.keypoints.subList(0,4);
+                        boolean valid = PlateQualityScorer.compute(source,corners,frame.getWidth(),frame.getHeight()).validQuad
+                                && cornersInsideFrame(corners,frame.getWidth(),frame.getHeight());
+                        researchBatch.detected(audit,source,valid);
+                    }
+                } else if (researchBatch != null) {
+                    researchBatch.detected(audit,DetectionCoordinateMapper.toSource(
+                            detection,input,boundedRegion.left,boundedRegion.top),false);
                 }
             }
             durations[2] += SystemClock.elapsedRealtimeNanos() - started;

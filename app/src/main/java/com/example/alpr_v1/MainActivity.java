@@ -1630,8 +1630,9 @@ public final class MainActivity extends AppCompatActivity {
             new PreviewPlateTracker();
     private final TargetStateMachine targetStateMachine =
             new TargetStateMachine();
-    private final ExperimentSession experimentSession =
-            new ExperimentSession();
+    private ExperimentSession experimentSession = new ExperimentSession();
+    private com.example.alpr_v1.experiment.ResearchSessionViewModel researchSessions;
+    private java.io.File pendingPersistentResearchArchive;
     private CrashSessionMarker crashSessionMarker;
     private final Set<Long> telemetryActiveTrackIds = new HashSet<>();
     private final Set<Long> telemetryConfirmedTrackIds = new HashSet<>();
@@ -1925,6 +1926,11 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        researchSessions = new ViewModelProvider(this).get(com.example.alpr_v1.experiment.ResearchSessionViewModel.class);
+        experimentSession = researchSessions.experiment;
+        researchSessions.messages.observe(this,message -> {
+            if (message != null) Toast.makeText(this,message,Toast.LENGTH_LONG).show();
+        });
         EdgeToEdge.enable(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
@@ -2968,12 +2974,7 @@ public final class MainActivity extends AppCompatActivity {
          * Cropy mogą być zbierane tylko podczas
          * aktywnej analizy.
          */
-        if (collectionToggle != null) {
-
-            collectionToggle.setEnabled(
-                    cameraStarted
-            );
-        }
+        renderCollectionControl();
 
 
         /*
@@ -3074,6 +3075,7 @@ public final class MainActivity extends AppCompatActivity {
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
+        closeResearchAdmission(reason);
         pendingPreviewCoordination.set(null);
         // Odpowiedź wizualna na STOP nie może czekać na zamknięcie CameraX,
         // pipeline'u ani zapisu metryk.
@@ -3184,13 +3186,12 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
 
-        experimentTimerDeadlineElapsedMillis =
-                android.os.SystemClock.elapsedRealtime()
-                        + timerConfig.durationMillis();
+        long remainingMillis = Math.max(0L,timerConfig.durationMillis()-experimentSession.durationMillis());
+        experimentTimerDeadlineElapsedMillis = android.os.SystemClock.elapsedRealtime()+remainingMillis;
 
         experimentTimerHandler.postDelayed(
                 experimentTimerRunnable,
-                timerConfig.durationMillis()
+                remainingMillis
         );
 
         experimentTimerHandler.post(
@@ -3217,6 +3218,10 @@ public final class MainActivity extends AppCompatActivity {
         experimentTimerDeadlineElapsedMillis = -1L;
     }
     private boolean beginAnalysisMeasurement() {
+        if (researchSessions.finalizing()) {
+            Toast.makeText(this,"Trwa zapisywanie paczki poprzedniego eksperymentu",Toast.LENGTH_LONG).show();
+            return false;
+        }
         synchronized (this) {
             telemetryActiveTrackIds.clear();
             telemetryConfirmedTrackIds.clear();
@@ -3254,14 +3259,6 @@ public final class MainActivity extends AppCompatActivity {
         );
         pipeline.setResearchExecutionConfig(frozenConfig);
         pipeline.setSceneHandlingMode(frozenConfig == null ? effectiveSceneHandlingMode() : frozenConfig.sceneHandlingMode);
-        metricsCollector.startMeasurementSession();
-        CrashSessionMarker.Recovery recoveredCrash = crashSessionMarker.consumeRecovery();
-        metricsCollector.setCrashMeasurement(
-                true,
-                recoveredCrash.count,
-                recoveredCrash.lastSessionId,
-                recoveredCrash.lastSessionStartedAtMillis
-        );
 
         if (experimentModeEnabled) {
 
@@ -3301,8 +3298,9 @@ public final class MainActivity extends AppCompatActivity {
                     cameraController == null ? 1.0 : cameraController.maximumZoomRatio()
             );
 
-            boolean started =
-                    experimentSession.start(
+            boolean started;
+            try {
+                ExperimentSession.Prepared prepared = experimentSession.prepare(
                             frozenConfig.experimentType,
                             frozenConfig.variant,
                             timerForSession,
@@ -3310,6 +3308,30 @@ public final class MainActivity extends AppCompatActivity {
                             identity,
                             frozenConfig
                     );
+                com.example.alpr_v1.experiment.ResearchSessionStore store = researchSessions.prepare(prepared);
+                long startWall = System.currentTimeMillis();
+                long startElapsed = android.os.SystemClock.elapsedRealtimeNanos();
+                long startMonotonic = System.nanoTime();
+                store.startAt(startWall,startElapsed);
+                started = experimentSession.startPrepared(prepared,startWall,startElapsed);
+                if (!started) throw new IllegalStateException("Eksperyment już trwa");
+                metricsCollector.startMeasurementSession(startWall,startElapsed,startMonotonic);
+                metricsCollector.setResearchCollector(store);
+                pipeline.setResearchCollector(store);
+                collectionActive = true;
+                collectionSessionId = prepared.sessionId;
+                collectionSessionStartedElapsedNanos = startElapsed;
+                collectionSequence = 0;
+                captureGalleryState.beginCollectionWindow();
+                metricsCollector.startCropSession(collectionSessionId,resolvedCropLimit);
+            } catch (Exception error) {
+                pipeline.setResearchExecutionConfig(null);
+                if (researchSessions.store() != null) researchSessions.store().abortPreparation(error.toString());
+                recordWarning("START badania zablokowany: "+error.getMessage());
+                livePresentation.showState(LivePresentationController.State.ERROR,"Nie przygotowano zapisu sesji");
+                Toast.makeText(this,"Nie można rozpocząć badania: "+error.getMessage(),Toast.LENGTH_LONG).show();
+                return false;
+            }
 
             if (started) {
                 metricsCollector.setExperimentSessionId(
@@ -3349,6 +3371,9 @@ public final class MainActivity extends AppCompatActivity {
         } else {
 
             cancelExperimentTimer();
+            metricsCollector.setResearchCollector(null);
+            pipeline.setResearchCollector(null);
+            metricsCollector.startMeasurementSession();
 
             /*
              * Zwykła analiza nie może odziedziczyć informacji
@@ -3360,6 +3385,9 @@ public final class MainActivity extends AppCompatActivity {
                 metricsCollector.recordThermalSample(latestThermalSnapshot);
             }
         }
+        CrashSessionMarker.Recovery recoveredCrash = crashSessionMarker.consumeRecovery();
+        metricsCollector.setCrashMeasurement(true,recoveredCrash.count,recoveredCrash.lastSessionId,
+                recoveredCrash.lastSessionStartedAtMillis);
         crashSessionMarker.markStarted(
                 experimentSession.isRunning()
                         ? experimentSession.sessionId()
@@ -3458,6 +3486,18 @@ public final class MainActivity extends AppCompatActivity {
     }
 
 
+    private void closeResearchAdmission(ExperimentSession.CompletionReason reason) {
+        com.example.alpr_v1.experiment.ResearchSessionStore store = researchSessions == null ? null : researchSessions.store();
+        if (experimentSession.isRunning() && store != null) {
+            long finishedWall=System.currentTimeMillis(), finishedElapsed=android.os.SystemClock.elapsedRealtimeNanos();
+            store.closeAdmission(reason.name().toLowerCase(Locale.ROOT),finishedWall,finishedElapsed);
+            experimentSession.finishAt(reason,finishedWall,finishedElapsed);
+            metricsCollector.finishMeasurementSession(finishedWall);
+            metricsCollector.setCropCollectionActive(false);
+            collectionActive=false;
+        }
+    }
+
     private void finishAnalysisMeasurement(
             ExperimentSession.CompletionReason reason
     ) {
@@ -3467,8 +3507,12 @@ public final class MainActivity extends AppCompatActivity {
          * unieważnia oczekujący callback timera.
          */
         cancelExperimentTimer();
+        closeResearchAdmission(reason);
+        boolean researchWasRunning = researchSessions.store() != null
+                && researchSessions.store().state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.FINALIZING
+                && !researchSessions.finalizing();
 
-        if (experimentSession.isRunning()) {
+        if (experimentSession.isRunning() || researchWasRunning) {
             experimentSession.finish(reason);
 
             recordInfo(
@@ -3483,7 +3527,26 @@ public final class MainActivity extends AppCompatActivity {
 
         metricsCollector.finishMeasurementSession();
         crashSessionMarker.markFinished();
-        pipeline.setResearchExecutionConfig(null);
+        if (researchWasRunning && researchSessions.store() != null) {
+            com.example.alpr_v1.experiment.ResearchSessionStore store = researchSessions.store();
+            ExperimentSession.Snapshot snapshot = experimentSession.snapshot();
+            MetricsCollector measured = metricsCollector;
+            android.content.Context application = getApplicationContext();
+            AlprPipeline finishingPipeline = pipeline;
+            researchSessions.beginFinalizing();
+            collectionSessionId="";
+            retainCaptureGalleryState();
+            com.example.alpr_v1.experiment.ResearchSessionViewModel retained = researchSessions;
+            pipelineInferenceExecutor.execute(() -> {
+                finishingPipeline.setResearchCollector(null);
+                finishingPipeline.setResearchExecutionConfig(null);
+                measured.setResearchCollector(null);
+                retained.finish(store,() -> new com.example.alpr_v1.experiment.ResearchSessionStore.Telemetry(
+                        measured.createJsonReport(DeviceProfile.capture(application),new ModelRegistry(application),
+                                new AutoTuneManager(application),snapshot),measured.createCsvReport(),measured.createThermalCsv(),
+                        measured.createFrameFlowCsv(),measured.createEventsJsonl(),AppLog.contents(application)),snapshot.frozenExecutionConfig);
+            });
+        } else pipeline.setResearchExecutionConfig(null);
         targetStateMachine.setEnabled(true);
         autoZoomController.setEnabled(uiPreferences.getBoolean(
                 KEY_AUTO_ZOOM_ENABLED,
@@ -8410,7 +8473,20 @@ public final class MainActivity extends AppCompatActivity {
         boundVerificationItem = null;
     }
 
+    private void renderCollectionControl() {
+        if (collectionToggle == null) return;
+        boolean automatic=experimentSession.isRunning();
+        collectionToggle.setEnabled(cameraStarted && !automatic && !exportInProgress);
+        collectionToggle.setText(automatic ? R.string.research_collection_automatic
+                : collectionActive ? R.string.collection_stop : R.string.collection_start);
+        collectionToggle.setIconResource(automatic || !collectionActive ? R.drawable.ic_session_24 : R.drawable.ic_stop_24);
+    }
+
     private void toggleCollection() {
+        if (experimentSession.isRunning()) {
+            Toast.makeText(this,"Badanie zbiera dane automatycznie; weryfikacja odbędzie się na desktopie",Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (!cameraStarted) {
             collectionActive = false;
             metricsCollector.setCropCollectionActive(false);
@@ -8687,6 +8763,7 @@ public final class MainActivity extends AppCompatActivity {
                     observation.rowCounts,
                     observation.freshPrediction
             );
+            captured.researchIdentity = observation.researchIdentity;
             try {
                 captured.miniReportJson = CropMiniReport.create(
                         captured,
@@ -8747,6 +8824,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderCapturedCrops() {
+        if (experimentSession.isRunning()) collectionActive=true;
         if (recognitionHistoryAdapter != null) {
             recognitionHistoryAdapter.setItems(recognitionHistory.newestFirst());
         }
@@ -8762,16 +8840,7 @@ public final class MainActivity extends AppCompatActivity {
                     )
             );
         }
-        collectionToggle.setText(
-                collectionActive
-                        ? R.string.collection_stop
-                        : R.string.collection_start
-        );
-        collectionToggle.setIconResource(
-                collectionActive
-                        ? R.drawable.ic_stop_24
-                        : R.drawable.ic_session_24
-        );
+        renderCollectionControl();
         if (galleryRecentContainer == null || galleryResearchContainer == null) return;
         galleryResearchMode = experimentModeEnabled;
         galleryRecentContainer.setVisibility(galleryResearchMode ? View.GONE : View.VISIBLE);
@@ -8869,15 +8938,15 @@ public final class MainActivity extends AppCompatActivity {
             }
             verificationStatus.setTextColor(ContextCompat.getColor(this, statusColor));
             boolean saving = item.saveState == CapturedPlateItem.SaveState.SAVING;
-            verificationAcceptButton.setEnabled(!saving && !item.text.isEmpty());
-            verificationCorrectButton.setEnabled(!saving);
-            verificationRejectButton.setEnabled(!saving);
+            verificationAcceptButton.setEnabled(!experimentSession.isRunning() && !saving && !item.text.isEmpty());
+            verificationCorrectButton.setEnabled(!experimentSession.isRunning() && !saving);
+            verificationRejectButton.setEnabled(!experimentSession.isRunning() && !saving);
             for (Map.Entry<VerificationIssue, Chip> entry : verificationIssueChips.entrySet()) {
                 entry.getValue().setEnabled(!saving);
                 entry.getValue().setChecked(item.verificationIssues.contains(entry.getKey()));
             }
-            verificationDesktopReview.setEnabled(!saving);
-            verificationNote.setEnabled(!saving);
+            verificationDesktopReview.setEnabled(!experimentSession.isRunning() && !saving);
+            verificationNote.setEnabled(!experimentSession.isRunning() && !saving);
             verificationDesktopReview.setChecked(item.needsDesktopReview);
             if (!verificationNote.getText().toString().equals(item.verificationNote)) {
                 verificationNote.setText(item.verificationNote);
@@ -9622,6 +9691,34 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void requestExportDestination(ResearchArchive.Kind kind) {
+        if (experimentSession.isRunning() || researchSessions.finalizing()) {
+            Toast.makeText(this,"Paczka badawcza powstaje automatycznie po zakończeniu pomiaru i zapisu",Toast.LENGTH_LONG).show();
+            return;
+        }
+        pendingPersistentResearchArchive=null;
+        if (kind == ResearchArchive.Kind.RESEARCH_SESSION) {
+            List<java.io.File> archives = researchSessions.archives();
+            if (!archives.isEmpty()) {
+                String[] names = new String[archives.size()];
+                for (int i=0;i<names.length;i++) {
+                    java.io.File archive = archives.get(i);
+                    boolean complete=false;
+                    try { complete=new JSONObject(new String(java.nio.file.Files.readAllBytes(new java.io.File(
+                            archive.getParentFile().getParentFile(),"session.json").toPath()),java.nio.charset.StandardCharsets.UTF_8))
+                            .optBoolean("collection_complete"); } catch (Exception ignored) { }
+                    names[i]=archive.getName()+(complete ? "" : " · NIEKOMPLETNA");
+                }
+                new MaterialAlertDialogBuilder(this).setTitle("Zapisane sesje badawcze")
+                        .setItems(names,(dialog,index) -> {
+                            pendingPersistentResearchArchive=archives.get(index); launchExportDestination(kind);
+                        }).setNegativeButton(R.string.menu_close,null).show();
+                return;
+            }
+        }
+        launchExportDestination(kind);
+    }
+
+    private void launchExportDestination(ResearchArchive.Kind kind) {
         pendingExportKind = kind;
         String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ROOT).format(new Date());
         String name = kind == ResearchArchive.Kind.RESEARCH_SESSION
@@ -9639,6 +9736,23 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void writeResearchExport(Uri destination, ResearchArchive.Kind kind) {
+        if (pendingPersistentResearchArchive != null && kind == ResearchArchive.Kind.RESEARCH_SESSION) {
+            java.io.File source = pendingPersistentResearchArchive; pendingPersistentResearchArchive=null;
+            exportInProgress=true;
+            backgroundExecutor.execute(() -> {
+                String message;
+                try (java.io.InputStream input = new java.io.FileInputStream(source);
+                     OutputStream output = getContentResolver().openOutputStream(destination,"w")) {
+                    if (output == null) throw new java.io.IOException("Brak pliku docelowego");
+                    byte[] buffer = new byte[65536]; int count;
+                    while ((count=input.read(buffer)) != -1) output.write(buffer,0,count);
+                    message=getString(R.string.export_saved);
+                } catch (Exception error) { message=getString(R.string.export_failed,error.getMessage()); }
+                final String result = message;
+                runOnUiThread(() -> { exportInProgress=false; Toast.makeText(this,result,Toast.LENGTH_LONG).show(); });
+            });
+            return;
+        }
         exportInProgress = true;
         if (collectionActive) {
             collectionActive = false;
@@ -9832,6 +9946,20 @@ public final class MainActivity extends AppCompatActivity {
 
         applySettingsRevision();
         startThermalUiMonitor();
+        if (experimentSession.isRunning() && !cameraStarted && researchSessions.store() != null) {
+            ResearchExecutionConfig frozen = experimentSession.frozenExecutionConfig();
+            pipeline.setResearchExecutionConfig(frozen);
+            pipeline.setSceneHandlingMode(frozen.sceneHandlingMode);
+            pipeline.resumeResearchAfterRecreation(researchSessions.previousSceneGeneration);
+            pipeline.setResearchCollector(researchSessions.store());
+            metricsCollector.setResearchCollector(researchSessions.store());
+            collectionActive=true; collectionSessionId=experimentSession.sessionId();
+            targetStateMachine.setEnabled(frozen.lockEnabled);
+            autoZoomController.setEnabled(frozen.autoZoomEnabled);
+            startCamera(false);
+            ExperimentSession.Snapshot snapshot=experimentSession.snapshot();
+            scheduleExperimentTimer(TimerConfig.of(snapshot.timerEnabled,(int)(snapshot.timerDurationMillis/1000)));
+        }
 
         /*
          * Sensor ruchu pracuje tylko wtedy,
@@ -10088,6 +10216,10 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (researchSessions != null && pipeline != null)
+            researchSessions.previousSceneGeneration=pipeline.sceneContinuitySnapshot().sceneGeneration;
+        if (experimentSession.isRunning() && !isChangingConfigurations())
+            finishAnalysisMeasurement(ExperimentSession.CompletionReason.MANUAL);
         /*
          * Wywołanie defensywne. Standardowo monitor został już
          * zatrzymany w onPause(), ale usunięcie callbacków również
@@ -10147,7 +10279,7 @@ public final class MainActivity extends AppCompatActivity {
          * Proces kończymy tylko po świadomym wybraniu
          * pozycji "Zamknij aplikację".
          */
-        if (explicitExitRequested) {
+        if (explicitExitRequested && !researchSessions.finalizing()) {
             android.os.Process.killProcess(
                     android.os.Process.myPid()
             );

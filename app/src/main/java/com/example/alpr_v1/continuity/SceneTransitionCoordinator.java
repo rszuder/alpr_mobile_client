@@ -320,6 +320,12 @@ public final class SceneTransitionCoordinator {
         return hardReset(assessment.reason, nowNanos, false);
     }
 
+    /** A recreated camera has lost its ephemeral tracks; preserve monotonic research scene identity. */
+    public synchronized SceneTransitionDecision resumeAfterCameraRecreation(long previousScene,long nowNanos) {
+        sceneGeneration = Math.max(sceneGeneration,previousScene);
+        return hardReset("camera_activity_recreated",nowNanos,false);
+    }
+
     public synchronized SceneTransitionDecision requestSoftReacquire(
             String reason,
             long nowNanos

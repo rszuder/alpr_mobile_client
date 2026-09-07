@@ -51,6 +51,26 @@ wykryty track tablicy w scenie, także dla mocnego odczytu, tablicy bez encji
 i ramki wymagającej dopiero ustalenia narożników/MZ. Tryb dynamiczny zachowuje
 dotychczasowe kryteria jakości i geometrii zoomu.
 
+## Trwały magazyn automatycznej sesji badawczej
+
+`ExperimentSession.prepare()` przydziela tożsamość i config bez RUNNING.
+`ResearchSessionStore.prepare()` tworzy katalog, PREPARED i writer przed t0;
+dopiero potem `startPrepared()` i `MetricsCollector.startMeasurementSession()`
+uruchamiają pomiar na wspólnych znacznikach czasu. Odmowa przygotowania
+magazynu blokuje START.
+
+`ResearchAttemptBatch` obserwuje wywołania MT oraz rektyfikację/MZ w silniku,
+bez zmieniania detekcji, kolejki, AZ i decyzji o tożsamości. Kopiuje obraz przed
+zwolnieniem bitmapy, a jeden writer `ResearchSessionStore` kompresuje i zapisuje
+dowody poza inferencją. `CaptureGalleryViewModel` pozostaje ograniczonym podglądem.
+Kolektor nie podlega odrzucaniu wyników przez UI ani polityce najlepszego cropa.
+
+STOP zamyka bramkę prób, a finalizator za zakończeniem pracy pipeline’u czeka
+na writer i buduje istniejący `ResearchArchive` z dyskowego samples v2.
+`ResearchSessionViewModel` utrzymuje zapis/timer/config przez odtworzenie Activity.
+Proces przerwany pozostawia PARTIAL oraz odzyskiwalny zbiór dowodów. Eksport UI
+kopiuje gotową paczkę całej sesji. Szczegóły: `docs/mobile_research_export.md`.
+
 ## Potok wykonawczy
 
 ```text

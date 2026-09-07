@@ -70,6 +70,7 @@ public final class CapturedPlateItem {
     public volatile boolean needsDesktopReview;
     public volatile String verificationNote = "";
     public volatile boolean exportProtected;
+    public com.example.alpr_v1.experiment.ResearchSampleIdentity researchIdentity;
 
     public CapturedPlateItem(
             String captureId,

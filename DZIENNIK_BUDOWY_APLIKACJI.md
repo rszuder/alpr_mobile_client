@@ -1580,6 +1580,26 @@ Sprawdzono także pełny cykl AZ na bieżącym zdjęciu z kamery. APK zainstalow
 z zachowaniem danych. Szczegóły i zakres pomiaru:
 `docs/static_scene_reset_plate_zoom_fix.md`.
 
+### 2026-09-08 — automatyczna trwała kolekcja sesji badawczej
+
+START przygotowuje katalog i writer przed wspólnym t0 domeny, metryk i kolekcji.
+ResearchSessionStore zapisuje próby MT/MZ i własne kopie obrazów niezależnie od
+galerii. MT miss ma obraz rzeczywistego wejścia, każda próba MZ osobny crop;
+świeża predykcja i jej pewność są oddzielone od wcześniejszego konsensusu.
+Tożsamość używa session/scene/entity z fallbackiem tracku, nigdy tekstu OCR.
+
+STOP/timer zamyka pomiar i automatycznie finalizuje `.alprsession` po opróżnieniu
+kolejki. Rozszerzenie samples v2 zachowuje stary kontrakt paczki, dodaje attempts.csv,
+identyfikację próbek i hashe wszystkich plików. Błędy zapisu/przepełnienie dają
+PARTIAL; restart procesu odzyskuje niepełną sesję bez kontynuowania pomiaru.
+Odtworzenie Activity zachowuje konfigurację, kolektor i zegar.
+
+Weryfikacja: 543 testy JVM i 145 testów Androida przeszły. Dwie końcowe paczki
+sprawdzono niezależnie w Pythonie: 10 prób, 9 cropów i 58 poprawnych hashy.
+APK zainstalowano z zachowaniem danych. GUI desktopowe nie było uruchamiane.
+Gałąź: `feature/research-session-auto-collection-v1`. Szczegóły:
+`docs/handoffs/implementation-report-research-auto-collection-v1.md`.
+
 ## 6. Najważniejsze decyzje projektowe
 
 ### Pakiet zamiast surowych wag

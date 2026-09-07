@@ -60,6 +60,22 @@ odrzucone duplikaty, dzięki czemu można niezależnie policzyć:
 - czas akwizycji;
 - unikalne tablice na minutę czasu ściennego.
 
+## Automatyczna sesja i zapis dowodów
+
+START badania przygotowuje trwały katalog i zamrożoną konfigurację przed
+uruchomieniem wspólnego t0 domeny/metryk. Kolekcja obejmuje wszystkie wykonane
+próby MT/MZ, bez ręcznego wybierania cropów. STOP lub timer automatycznie
+zamyka kolekcję, opróżnia writer queue i tworzy `.alprsession` do późniejszej
+weryfikacji na desktopie. Galeria nie jest magazynem badania.
+
+`ResearchSessionViewModel` zachowuje sesję i kolektor podczas odtwarzania Activity;
+odtworzony timer korzysta z pozostałego czasu, bez ponownego t0. Zakończenie
+procesu jest odróżnione od odtworzenia Activity: przerwany magazyn zostaje PARTIAL,
+bez kontynuowania tego samego pomiaru. Błędy zapisu i brakujące dane są jawne.
+
+Kontrakt CSV, tożsamości, obrazów MT miss, kompletności i hashy:
+`docs/mobile_research_export.md`, sekcja samples v2.
+
 ## Ograniczenia v1
 
 - Brak kontrolowanego replayu na Androidzie; porównania są camera-in-the-loop.

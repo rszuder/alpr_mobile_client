@@ -127,6 +127,33 @@ public final class ExperimentSession {
     private boolean timerEnabled;
     private long timerDurationMillis;
 
+    /** Identity/configuration allocated without starting clocks or the measurement. */
+    public static final class Prepared {
+        public final String sessionId, experimentType, variant;
+        public final TimerConfig timer;
+        public final ThermalConfig thermal;
+        public final ExperimentIdentity identity;
+        public final ResearchExecutionConfig execution;
+        public final long createdAtMillis = System.currentTimeMillis();
+        private boolean consumed;
+        private Prepared(String type, String variant, TimerConfig timer, ThermalConfig thermal,
+                         ExperimentIdentity identity, ResearchExecutionConfig execution) {
+            sessionId = "exp-" + createdAtMillis + "-" + UUID.randomUUID().toString().substring(0,8);
+            experimentType = normalize(type); this.variant = normalize(variant);
+            this.timer = timer == null ? TimerConfig.disabled() : timer;
+            this.thermal = thermal == null ? ThermalConfig.disabled() : thermal;
+            this.identity = identity == null ? ExperimentIdentity.defaults() : identity;
+            this.execution = execution;
+        }
+    }
+
+    public synchronized Prepared prepare(String type, String variant, TimerConfig timer,
+                                         ThermalConfig thermal, ExperimentIdentity identity,
+                                         ResearchExecutionConfig execution) {
+        if (isRunning()) throw new IllegalStateException("Eksperyment już trwa");
+        return new Prepared(type,variant,timer,thermal,identity,execution);
+    }
+
     public synchronized boolean start(
             String experimentType,
             String variant
@@ -186,19 +213,23 @@ public final class ExperimentSession {
             ExperimentIdentity identity,
             ResearchExecutionConfig frozenExecutionConfig
     ) {
+        if (isRunning()) return false;
+        return startPrepared(prepare(experimentType,variant,timerConfig,thermalConfig,identity,
+                frozenExecutionConfig),System.currentTimeMillis(),SystemClock.elapsedRealtimeNanos());
+    }
+
+    public synchronized boolean startPrepared(Prepared prepared, long nowMillis, long nowElapsedNanos) {
+        if (prepared == null || prepared.consumed) throw new IllegalStateException("Nieprawidłowe przygotowanie sesji");
         if (state == State.RUNNING) {
             return false;
         }
-
-        long nowMillis = System.currentTimeMillis();
-
-        sessionId =
-                "exp-"
-                        + nowMillis
-                        + "-"
-                        + UUID.randomUUID()
-                        .toString()
-                        .substring(0, 8);
+        prepared.consumed = true;
+        sessionId = prepared.sessionId;
+        String experimentType = prepared.experimentType, variant = prepared.variant;
+        ExperimentIdentity identity = prepared.identity;
+        ThermalConfig thermalConfig = prepared.thermal;
+        TimerConfig timerConfig = prepared.timer;
+        ResearchExecutionConfig frozenExecutionConfig = prepared.execution;
 
         this.experimentType =
                 normalize(experimentType);
@@ -230,8 +261,7 @@ public final class ExperimentSession {
         startedAtMillis = nowMillis;
         finishedAtMillis = -1L;
 
-        startedElapsedNanos =
-                SystemClock.elapsedRealtimeNanos();
+        startedElapsedNanos = nowElapsedNanos;
 
         finishedElapsedNanos = -1L;
 
@@ -245,15 +275,17 @@ public final class ExperimentSession {
     public synchronized boolean finish(
             CompletionReason reason
     ) {
+        return finishAt(reason,System.currentTimeMillis(),SystemClock.elapsedRealtimeNanos());
+    }
+
+    public synchronized boolean finishAt(CompletionReason reason,long wallMillis,long elapsedNanos) {
         if (state != State.RUNNING) {
             return false;
         }
 
-        finishedAtMillis =
-                System.currentTimeMillis();
+        finishedAtMillis = wallMillis;
 
-        finishedElapsedNanos =
-                SystemClock.elapsedRealtimeNanos();
+        finishedElapsedNanos = elapsedNanos;
 
         completionReason =
                 reason == null

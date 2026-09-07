@@ -1,4 +1,5 @@
 <resources>
+    <string name="research_collection_automatic">Zapis automatyczny</string>
     <string name="app_name">Mobilny ALPR</string>
     <string name="camera_permission_required">Do podglądu i analizy potrzebny jest dostęp do kamery.</string>
     <string name="export_report">Eksportuj raport</string>
