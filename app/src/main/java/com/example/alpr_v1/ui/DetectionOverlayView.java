@@ -111,6 +111,34 @@ public final class DetectionOverlayView extends View {
     private boolean analysisViewportEnabled;
     private int previewSourceWidth;
     private int previewSourceHeight;
+    private java.util.function.LongConsumer vehicleTapListener;
+    private long touchedEntity;
+    private float touchX, touchY;
+    public void setVehicleTapListener(java.util.function.LongConsumer listener) { vehicleTapListener = listener; }
+
+    @Override public boolean onTouchEvent(android.view.MotionEvent event) {
+        if (vehicleTapListener == null) return super.onTouchEvent(event);
+        if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+            touchedEntity = 0L; float smallest = Float.MAX_VALUE;
+            for (RenderItem item : renderItems) if (item.item.kind == OverlayItem.Kind.VEHICLE
+                    && item.item.trackId > 0L && item.bounds.contains(event.getX(), event.getY())) {
+                float area = item.bounds.width() * item.bounds.height();
+                if (area < smallest) { smallest = area; touchedEntity = item.item.trackId; }
+            }
+            touchX = event.getX(); touchY = event.getY();
+            return touchedEntity > 0L;
+        }
+        if (event.getActionMasked() == android.view.MotionEvent.ACTION_UP && touchedEntity > 0L) {
+            long entity = touchedEntity; touchedEntity = 0L;
+            if (Math.hypot(event.getX() - touchX, event.getY() - touchY) < dp(12)) {
+                performClick(); vehicleTapListener.accept(entity);
+            }
+            return true;
+        }
+        if (event.getActionMasked() == android.view.MotionEvent.ACTION_CANCEL) touchedEntity = 0L;
+        return touchedEntity > 0L;
+    }
+    @Override public boolean performClick() { super.performClick(); return true; }
 
     public DetectionOverlayView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -671,8 +699,9 @@ public final class DetectionOverlayView extends View {
 
     public void setPresentationStamp(com.example.alpr_v1.continuity.ContinuityStamp stamp) {
         if (stamp == null) return;
+        if (presentationScene >= 0L && stamp.sceneGeneration < presentationScene) return;
         if (presentationScene >= 0L && presentationScene != stamp.sceneGeneration) {
-            resetVehicleEntityStates();
+            hardResetForNewScene(stamp);
         } else if (presentationScene >= 0L && (presentationEpoch != stamp.visualEpoch
                 || presentationTransform != stamp.cameraTransformGeneration)) {
             // Keep the reading, but track numbers and geometry belong to the old visual epoch.
@@ -694,6 +723,26 @@ public final class DetectionOverlayView extends View {
         presentationScene = stamp.sceneGeneration;
         presentationEpoch = stamp.visualEpoch;
         presentationTransform = stamp.cameraTransformGeneration;
+    }
+
+    /** Hard boundary: geometry, pending reads, badges and animations end together. */
+    public void hardResetForNewScene(com.example.alpr_v1.continuity.ContinuityStamp stamp) {
+        if (stamp == null || stamp.sceneGeneration < presentationScene) return;
+        if (overlayAnimator != null) { overlayAnimator.cancel(); overlayAnimator = null; }
+        cancelPlateFade();
+        resetVehicleEntityStates();
+        setActiveVehicleEntityId(0L);
+        setFocusedTrackId(0L);
+        stopActiveVehicleMarkerAnimator();
+        touchedEntity = 0L;
+        stationaryScene = false;
+        items = Collections.emptyList();
+        renderItems = Collections.emptyList();
+        presentationScene = stamp.sceneGeneration;
+        presentationEpoch = stamp.visualEpoch;
+        presentationTransform = stamp.cameraTransformGeneration;
+        rebuildRenderItems();
+        invalidate();
     }
 
     private boolean hasQueuedTransfer(long entityId) {

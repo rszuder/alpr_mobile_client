@@ -152,6 +152,13 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         );
 
         Intent source = getIntent();
+        boolean staticMode = "static".equals(source.getStringExtra("analysis_mode"));
+        addMetric(staticMode ? R.drawable.ic_scene_static_24 : R.drawable.ic_scene_dynamic_24,
+                R.drawable.bg_icon_blue, R.color.alpr_accent,
+                getString(R.string.settings_scene_mode_title),
+                getString(staticMode ? R.string.settings_scene_mode_strict : R.string.settings_scene_mode_dynamic),
+                source.getBooleanExtra("analysis_mode_frozen", false)
+                        ? getString(R.string.scene_mode_experiment_locked_hud) : "");
         int count = Math.max(0, source.getIntExtra(EXTRA_CROP_COUNT, 0));
         int limit = Math.max(1, source.getIntExtra(EXTRA_CROP_LIMIT, 1));
         String sessionId = source.getStringExtra(EXTRA_SESSION_ID);

@@ -28,7 +28,7 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
-    public void strictRawChangePreemptsExpiredSoftReacquire() {
+    public void staticLocalTrackerLossDoesNotReacquireAndConfirmedChangeStartsNewScene() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.STRICT_SCENE_BOUNDARY
         );
@@ -51,7 +51,7 @@ public final class SceneTransitionCoordinatorTest {
                 localLossBeforeRawChange,
                 1_000L
         );
-        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, reacquire.action);
+        assertEquals(SceneTransitionAction.NONE, reacquire.action);
 
         SceneEvidence delayedRawChange = new SceneEvidence(
                 2L, 20L, true,
@@ -67,7 +67,7 @@ public final class SceneTransitionCoordinatorTest {
         );
 
         assertEquals(SceneTransitionAction.HARD_RESET, decision.action);
-        assertEquals("strict_raw_visual_change", decision.reason);
+        assertEquals("static_scene_boundary", decision.reason);
         assertTrue(decision.incrementSceneGeneration);
         assertTrue(decision.incrementVisualEpoch);
     }
@@ -610,8 +610,9 @@ public final class SceneTransitionCoordinatorTest {
 
         SceneContinuitySnapshot snapshot = coordinator.snapshot();
         assertEquals(SceneHandlingMode.STRICT_SCENE_BOUNDARY, snapshot.mode);
-        assertEquals(SceneContinuityState.STABLE, snapshot.state);
-        assertFalse(snapshot.finalizationSuspended);
+        assertEquals(SceneContinuityState.HARD_RESETTING, snapshot.state);
+        assertTrue(snapshot.finalizationSuspended);
+        assertTrue(snapshot.sceneGeneration > 0L);
     }
 
     @Test

@@ -828,6 +828,105 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(4L, controller.snapshot(100L).activeEntityId);
     }
 
+    @Test public void l1l2ManualLockSurvivesTrackChangeAndWrongOcrAndSessionTimeout() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.pickVehicle(4L, 10L);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A")),continuity(),20L);
+        assertEquals(4L, controller.lockedEntityId());
+        controller.onVehicleFrame(frame(candidate(4L,99L)),continuity(),30L*SECOND);
+        controller.onPipelineResult(result(observation(4L,99L,false,true,"WRONG")),continuity(),30L*SECOND+1L);
+        assertEquals(4L, controller.lockedEntityId());
+        assertEquals(com.example.alpr_v1.domain.TargetPurpose.USER_PICK, controller.foregroundPurpose());
+        assertTrue(controller.snapshot(30L*SECOND+1L).acquisitionRecords.isEmpty());
+    }
+
+    @Test
+    public void staticRefinementRetainsReadWhileDispatchPausedAndCutResumesCleanBaseline() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.setStaticBaseline(true);
+        controller.startRun(1L, 0L);
+        controller.onVehicleFrame(frame(candidate(1L, 11L), candidate(2L, 12L)), continuity(), 1L);
+        controller.pauseRun(10L);
+        controller.onPipelineResult(result(observation(1L, 11L, true, true, "WI1234A")), continuity(), 20L);
+        ScanAcquisitionSnapshot refined = controller.snapshot(20L);
+        assertEquals(ScanRunState.PAUSED, refined.runState);
+        assertEquals(AcquisitionDirectiveAction.NONE, refined.directive.action);
+        assertEquals("WI1234A", refined.entityRecognitions.get(1L).text);
+        controller.onContinuityDecision(transition(SceneTransitionAction.HARD_RESET,
+                SceneContinuityState.HARD_RESETTING, true), 30L);
+        ScanAcquisitionSnapshot reset = controller.snapshot(30L);
+        assertEquals(ScanRunState.RUNNING, reset.runState);
+        assertEquals(0L, reset.activeEntityId);
+        assertTrue(reset.entityRecognitions.isEmpty());
+        assertTrue(reset.identifiedEntityIds.isEmpty());
+        assertEquals(0, reset.queue.size());
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP, reset.directive.action);
+    }
+
+    @Test public void l3l4l5SearchNeedsIndependentFreshVerificationBeforePursuit() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.startSearch(" wi-1234a ", 10L);
+        assertEquals("WI1234A", controller.searchText());
+        controller.onVehicleFrame(frame(candidate(4L,44L)),continuity(),11L);
+        controller.onPipelineResult(result(observation(4L,44L,false,true,"WI1234B",0L,1L)),continuity(),20L);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH, controller.searchState());
+        assertEquals(0L, controller.lockedEntityId());
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,1L)),continuity(),21L);
+        assertEquals(0L, controller.lockedEntityId());
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),22L);
+        assertEquals(4L, controller.lockedEntityId());
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.CONFIRMED_MATCH, controller.searchState());
+        assertEquals(com.example.alpr_v1.domain.TargetPurpose.SEARCH_PURSUIT, controller.foregroundPurpose());
+    }
+
+    @Test public void searchCanVerifyAnAlreadyReadEntityWithoutRequeueingEveryVehicle() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,1L)),continuity(),10L);
+        assertEquals(0L,controller.snapshot(10L).activeEntityId);
+        controller.startSearch("WI1234A",11L);
+        assertEquals(com.example.alpr_v1.domain.TargetPurpose.SEARCH_VERIFICATION,controller.foregroundPurpose());
+        assertEquals(0L,controller.lockedEntityId());
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),12L);
+        assertEquals(4L,controller.lockedEntityId());
+    }
+
+    @Test public void l6ManualSelectionOverridesSearchPursuit() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.startSearch("WI1234A",10L);
+        controller.onVehicleFrame(frame(candidate(4L,44L),candidate(5L,55L)),continuity(),11L);
+        controller.onPipelineResult(result(observation(4L,44L,false,true,"WI1234A",0L,1L)),continuity(),20L);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),21L);
+        controller.pickVehicle(5L,22L);
+        assertEquals(5L,controller.lockedEntityId());
+        assertEquals(com.example.alpr_v1.domain.TargetPurpose.USER_PICK,controller.foregroundPurpose());
+    }
+
+    @Test public void az6az7DynamicZoomBudgetBelongsToForegroundSession() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        assertFalse(controller.claimLockZoom());
+        controller.pickVehicle(4L,10L);
+        assertTrue(controller.claimLockZoom());
+        assertFalse(controller.claimLockZoom());
+        controller.onVehicleFrame(frame(candidate(4L,99L)),continuity(),11L);
+        assertFalse(controller.claimLockZoom());
+        controller.releaseForeground(true,12L);
+        assertEquals(0L,controller.lockedEntityId());
+        controller.pickVehicle(4L,13L);
+        assertTrue(controller.claimLockZoom());
+    }
+
+    @Test public void staticBaselineRetiresFailedVehicleAndForbidsSearchAndLock() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.setStaticBaseline(true);
+        controller.startSearch("WI1234A",10L); controller.pickVehicle(4L,11L);
+        assertEquals("",controller.searchText()); assertEquals(0L,controller.lockedEntityId());
+        controller.onPipelineResult(result(),continuity(),20L);
+        controller.onPipelineResult(result(),continuity(),21L);
+        controller.onVehicleFrame(frame(candidate(4L,44L)),continuity(),22L);
+        assertEquals(0,controller.snapshot(22L).queue.size());
+        assertEquals(0L,controller.snapshot(22L).activeEntityId);
+    }
+
     private static ScanAcquisitionController startedWithCandidate(long entityId) {
         ScanAcquisitionController controller = new ScanAcquisitionController();
         controller.startRun(1L, 0L);
@@ -935,6 +1034,11 @@ public final class ScanAcquisitionControllerTest {
             String text,
             long acquisitionDirectiveRevision
     ) {
+        return observation(entityId, vehicleTrackId, confirmed, freshMzAttempted, text, acquisitionDirectiveRevision, 1L);
+    }
+
+    private static PlateObservation observation(long entityId, long vehicleTrackId, boolean confirmed,
+            boolean freshMzAttempted, String text, long acquisitionDirectiveRevision, long sourceFrameId) {
         return new PlateObservation(
                 entityId + 100L,
                 entityId == 0L ? PlateVehicleAssociation.unassigned("test_unassigned") : PlateVehicleAssociation.direct(
@@ -944,7 +1048,7 @@ public final class ScanAcquisitionControllerTest {
                 ),
                 MtWorkKind.VEHICLE_ROI,
                 MtReason.SCAN_NEXT_CANDIDATE,
-                1L,
+                sourceFrameId,
                 null,
                 text,
                 0.9,

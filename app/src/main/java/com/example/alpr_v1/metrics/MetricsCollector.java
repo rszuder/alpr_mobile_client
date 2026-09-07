@@ -721,6 +721,8 @@ public final class MetricsCollector {
         try {
             JSONObject record = new JSONObject();
             record.put("capture_id", item.captureId);
+            record.put("analysis_mode", com.example.alpr_v1.continuity.SceneHandlingMode
+                    .fromWireName(frozenSceneHandlingMode).analysisMode());
             record.put("session_id", item.sessionId);
             record.put("captured_at_ms", item.capturedAtMillis);
             record.put("track_id", item.trackId);
@@ -910,7 +912,11 @@ public final class MetricsCollector {
                         ? frozenRoiBudgetPolicy
                         : researchConfig.roiBudgetPolicy.wireName()
         );
-        report.put("scene_handling_mode", frozenSceneHandlingMode);
+        com.example.alpr_v1.continuity.SceneHandlingMode reportMode = researchConfig == null
+                ? com.example.alpr_v1.continuity.SceneHandlingMode.fromWireName(frozenSceneHandlingMode)
+                : researchConfig.sceneHandlingMode;
+        report.put("scene_handling_mode", reportMode.wireName());
+        report.put("analysis_mode", reportMode.analysisMode());
         report.put("scene_continuity_profile", frozenSceneContinuityProfile);
         report.put("camera_timestamp_source", frozenCameraTimestampSource);
 

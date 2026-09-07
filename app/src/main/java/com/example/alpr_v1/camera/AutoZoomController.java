@@ -189,6 +189,21 @@ public final class AutoZoomController {
         state = featureEnabled ? State.READY : State.DISABLED;
     }
 
+    /** Authorization and entity/lock budget belong to the scene acquisition policy. */
+    public synchronized Decision requestRefinement(Sample sample) {
+        if (!featureEnabled || state != State.READY || sample == null || !sample.validQuad
+                || !sample.recognitionExecuted || sample.trackId <= 0L) return Decision.none();
+        targetTrackId = sample.trackId;
+        targetCenterX = sample.centerX; targetCenterY = sample.centerY;
+        targetText = beforeText = sample.text;
+        beforeConfidence = bestAfterConfidence = sample.recognitionConfidence;
+        consistentImprovementCount = 0;
+        lastImprovedText = "";
+        state = State.ZOOM_SETTLING;
+        return new Decision(Action.REQUEST_ZOOM, targetTrackId, targetCenterX, targetCenterY,
+                beforeConfidence, beforeConfidence, "policy_authorized_refinement");
+    }
+
     public synchronized Decision evaluate(List<Sample> samples, long nowNanos) {
         if (state == State.READY) {
             Sample candidate = chooseCandidate(samples);

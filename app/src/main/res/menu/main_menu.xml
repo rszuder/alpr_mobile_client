@@ -2,6 +2,11 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <item android:id="@+id/menu_search_plate" android:icon="@drawable/ic_search_24"
+        android:title="@string/search_vehicle" android:visible="false" app:showAsAction="always" />
+    <item android:id="@+id/menu_release_target" android:title="@string/release_vehicle"
+        android:visible="false" app:showAsAction="never" />
+
     <item
         android:id="@+id/menu_diagnostics"
         android:icon="@drawable/ic_diagnostics_24"

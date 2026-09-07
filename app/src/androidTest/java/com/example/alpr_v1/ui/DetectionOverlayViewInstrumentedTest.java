@@ -24,6 +24,49 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test public void s10s12StaticBoundaryClearsGeometryBadgesAndInFlightAnimations() {
+        AtomicReference<DetectionOverlayView> reference = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(), null);
+            reference.set(view); view.layout(0,0,720,1280);
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1L,1L,0L,1L));
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,new RectF(.2f,.3f,.7f,.6f),7L)),720,1280);
+            view.setActiveVehicleEntityId(7L);
+            view.animatePlateObservation(animationObservation(7L,77L));
+            view.hardResetForNewScene(new com.example.alpr_v1.continuity.ContinuityStamp(2L,2L,0L,2L));
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+            assertTrue(view.snapshotRenderBoundsForTesting().isEmpty());
+            assertFalse(view.recognizedVehicleForTesting(7L));
+            assertEquals(0L,view.plateAbsorptionEntityForTesting());
+            assertEquals(0,view.pendingPlateReadingCountForTesting());
+            assertEquals(0,view.fadingPlateCountForTesting());
+            view.setStationaryScene(true);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,new RectF(.21f,.3f,.71f,.6f),8L)),720,1280);
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.VEHICLE));
+            assertFalse(view.recognizedVehicleForTesting(8L));
+        });
+        android.os.SystemClock.sleep(1100L);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            assertFalse(reference.get().recognizedVehicleForTesting(7L));
+            assertFalse(reference.get().recognizedVehicleForTesting(8L));
+            assertEquals(0L,reference.get().plateAbsorptionEntityForTesting());
+        });
+    }
+
+    @Test public void vehicleTapResolvesDomainEntityFromVisibleBox() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view=new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+            view.layout(0,0,720,1280);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,new RectF(.2f,.3f,.7f,.6f),47L)),720,1280);
+            java.util.concurrent.atomic.AtomicLong selected=new java.util.concurrent.atomic.AtomicLong();
+            view.setVehicleTapListener(selected::set);
+            android.view.MotionEvent down=android.view.MotionEvent.obtain(1L,1L,0,300f,500f,0);
+            android.view.MotionEvent up=android.view.MotionEvent.obtain(1L,2L,1,300f,500f,0);
+            assertTrue(view.onTouchEvent(down)); assertTrue(view.onTouchEvent(up));
+            assertEquals(47L,selected.get()); down.recycle(); up.recycle();
+        });
+    }
+
     @Test
     public void badgeRejectsWeakerReadingsFromBothMzAndPipelineUpdates() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();

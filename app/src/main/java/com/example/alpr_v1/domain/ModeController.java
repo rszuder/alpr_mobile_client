@@ -96,7 +96,8 @@ public final class ModeController {
             case PICK_ACQUIRE_LOCK:
                 return purpose == TargetPurpose.USER_PICK;
             case SEARCH_VERIFY_PURSUIT:
-                return purpose == TargetPurpose.SEARCH_VERIFICATION
+                return purpose == TargetPurpose.SCAN_ACQUISITION
+                        || purpose == TargetPurpose.SEARCH_VERIFICATION
                         || purpose == TargetPurpose.SEARCH_PURSUIT;
             default:
                 return false;

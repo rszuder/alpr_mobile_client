@@ -43,6 +43,81 @@ public final class ScanAcquisitionController {
     private int freshMzAttempts;
     private boolean releasePending;
     private boolean finishOnFirstRead;
+    private boolean staticBaseline;
+    public synchronized void setStaticBaseline(boolean enabled) {
+        staticBaseline = enabled;
+        if (enabled) { searchText = ""; searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED; }
+    }
+    private String searchText = "";
+    private com.example.alpr_v1.domain.SearchMatchState searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+    private long verificationFrameId, verificationSourceSequence;
+    private int verificationAttempts;
+    private final Set<Long> zoomedLockSessions = new HashSet<>();
+    private final Map<Long, Long> readingFrames = new HashMap<>(), readingSequences = new HashMap<>();
+
+    public synchronized String searchText() { return searchText; }
+    public synchronized com.example.alpr_v1.domain.SearchMatchState searchState() { return searchState; }
+    public synchronized long lockedEntityId() { return activeSession != null && activeSession.persistent() ? activeSession.entityId() : 0L; }
+    public synchronized TargetPurpose foregroundPurpose() { return activeSession == null ? null : activeSession.purpose(); }
+
+    public synchronized boolean claimLockZoom() {
+        return !staticBaseline && activeSession != null
+                && (activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION)
+                && zoomedLockSessions.add(activeSession.sessionId());
+    }
+
+    public synchronized void pickVehicle(long entityId, long now) {
+        if (staticBaseline || !running() || entityId <= 0L) return;
+        releaseForeground(false, now);
+        modeController.switchMode(ApplicationMode.PICK_ACQUIRE_LOCK, now);
+        searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+        beginForeground(entityId, TargetPurpose.USER_PICK, now);
+    }
+
+    public synchronized void startSearch(String text, long now) {
+        if (staticBaseline || !running()) return;
+        String normalized = RegistrationSearchPolicy.normalize(text);
+        if (normalized.length() < 4) throw new IllegalArgumentException("Registration must contain at least four characters");
+        releaseForeground(true, now);
+        searchText = normalized;
+        searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+        modeController.switchMode(ApplicationMode.SEARCH_VERIFY_PURSUIT, now);
+        for (EntityRecognitionSnapshot known : entityRecognitions.values()) {
+            if (known.confidence < .25 || !RegistrationSearchPolicy.possible(searchText, known.text)) continue;
+            beginForeground(known.entityId, TargetPurpose.SEARCH_VERIFICATION, now);
+            searchState = com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH;
+            verificationFrameId = readingFrames.getOrDefault(known.entityId, 0L);
+            verificationSourceSequence = readingSequences.getOrDefault(known.entityId, 0L);
+            verificationAttempts = 0;
+            break;
+        }
+    }
+
+    public synchronized void releaseForeground(boolean endSearch, long now) {
+        if (activeSession != null) {
+            long entityId = activeSession.entityId();
+            cancelActiveSession(TargetSessionState.CANCELLED, now);
+            queue.defer(entityId, now, 0L);
+        }
+        if (endSearch) searchText = "";
+        modeController.switchMode(searchText.isEmpty() ? ApplicationMode.SCAN_ACQUIRE : ApplicationMode.SEARCH_VERIFY_PURSUIT, now);
+        plateAnchor = null;
+        resetSessionBudgets();
+        setDirective(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET, 0L, 0L, "foreground_released");
+        releasePending = true;
+    }
+
+    private void beginForeground(long entityId, TargetPurpose purpose, long now) {
+        vehiclesSeen.add(entityId);
+        activeSession = modeController.startSession(entityId, purpose, now);
+        activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
+        activeSession.setCameraAttentionOwned(true, now);
+        mtAttempts = 1; freshMzAttempts = 0; releasePending = false;
+        activeSessionBudget = new ActiveTimeBudget(profile.maximumActiveSessionNanos);
+        noProgressBudget = new ActiveTimeBudget(profile.noProgressTimeoutNanos);
+        activeSessionBudget.start(now); noProgressBudget.start(now);
+        setDirective(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT, activeSession.sessionId(), entityId, "foreground_acquisition");
+    }
     private long lastRuntimeNanos;
     private PlateAnchor plateAnchor;
     private boolean continuityPaused;
@@ -194,6 +269,9 @@ public final class ScanAcquisitionController {
         AcquisitionDirective timeout = enforceSessionBudgets(nowRuntimeNanos);
         if (timeout != null) return timeout;
         if (activeSession != null) return currentDirective();
+        if (modeController.mode() == ApplicationMode.PICK_ACQUIRE_LOCK) {
+            modeController.switchMode(searchText.isEmpty() ? ApplicationMode.SCAN_ACQUIRE : ApplicationMode.SEARCH_VERIFY_PURSUIT, nowRuntimeNanos);
+        }
 
         AcquisitionQueue.Selection selection = queue.selectNext(nowRuntimeNanos);
         if (selection == null) {
@@ -239,7 +317,7 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         rememberRuntime(nowRuntimeNanos);
-        if (!running() || result == null) {
+        if (run == null || !run.state().active() || result == null) {
             return ignored("scan_has_no_active_session");
         }
         if (continuity == null
@@ -250,10 +328,19 @@ public final class ScanAcquisitionController {
             return ignored("stale_scan_pipeline_result");
         }
         rememberCurrentEntityRecognitions(result);
+        if (!running()) return ignored("queue_paused_result_retained");
+        AcquisitionDecision searchDecision = evaluateSearch(result, nowRuntimeNanos);
+        if (searchDecision != null) return searchDecision;
         if (activeSession == null) {
             return ignored("scan_has_no_active_session");
         }
         if ("candidate_missing".equals(result.status)) {
+            if (activeSession.persistent()) {
+                AcquisitionDirective refresh = setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                        activeSession.sessionId(), activeSession.entityId(), "persistent_lock_refresh_vehicle_geometry");
+                return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                        EntityAcquisitionState.ACQUIRING, refresh, "persistent_lock_waits_for_fresh_mp");
+            }
             return deferActive(
                     AcquisitionDeferReason.CANDIDATE_MISSING,
                     nowRuntimeNanos
@@ -265,6 +352,16 @@ public final class ScanAcquisitionController {
                 activeSession.entityId()
         );
         if (matching == null) {
+            if (activeSession.persistent()) {
+                if ("tracking".equals(result.status)) {
+                    return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                            EntityAcquisitionState.READING_REGISTRATION, directive, "persistent_lock_tracking_only");
+                }
+                AcquisitionDirective retry = setDirective(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,
+                        activeSession.sessionId(), activeSession.entityId(), "persistent_vehicle_without_plate");
+                return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                        EntityAcquisitionState.ACQUIRING, retry, "persistent_lock_retained");
+            }
             if (containsDifferentAssignedEntity(result, activeSession.entityId())) {
                 return ignored("pipeline_result_belongs_to_another_entity");
             }
@@ -323,6 +420,17 @@ public final class ScanAcquisitionController {
             freshMzAttempts++;
             totalFreshMzAttempts++;
             queue.recordFreshMzAttempt(activeSession.entityId(), nowRuntimeNanos);
+        }
+        if (activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
+            if (activeSession.persistent() && activeSession.state() != TargetSessionState.LOCKED_IDENTIFIED
+                    && activeSession.state() != TargetSessionState.LOCKED_UNIDENTIFIED) {
+                activeSession.transitionTo(RegistrationTextPolicy.displayable(matching.text)
+                        ? TargetSessionState.LOCKED_IDENTIFIED : TargetSessionState.LOCKED_UNIDENTIFIED, nowRuntimeNanos);
+            }
+            AcquisitionDirective next = setDirective(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,
+                    activeSession.sessionId(), activeSession.entityId(), "foreground_tracking");
+            return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                    EntityAcquisitionState.READING_REGISTRATION, next, "foreground_ocr_does_not_unlock");
         }
         if (matching.confirmed
                 && matching.cropSupportsConsensus
@@ -425,7 +533,8 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         rememberRuntime(nowRuntimeNanos);
-        if (decision == null || !running()) return;
+        if (decision == null || run == null || !run.state().active()) return;
+        if (!running() && decision.action != SceneTransitionAction.HARD_RESET) return;
         if (decision.action == SceneTransitionAction.SOFT_HOLD) {
             continuityPaused = true;
             pauseSessionBudgets(nowRuntimeNanos);
@@ -459,9 +568,17 @@ public final class ScanAcquisitionController {
             if (activeSession != null) vehiclesLost++;
             recordActiveSessionDuration(nowRuntimeNanos);
             cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
+            modeController.switchMode(searchText.isEmpty() ? ApplicationMode.SCAN_ACQUIRE : ApplicationMode.SEARCH_VERIFY_PURSUIT, nowRuntimeNanos);
+            searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
             identifiedEntityIds.clear();
             completedEntityIds.clear();
             entityRecognitions.clear();
+            readingFrames.clear(); readingSequences.clear();
+            zoomedLockSessions.clear();
+            vehiclesSeen.clear(); vehiclesQueued.clear();
+            firstObservationRuntimeNanos.clear(); bestCropByEntityId.clear();
+            recentlyReleasedEntityId = 0L; recentlyReleasedAtRuntimeNanos = 0L;
+            if (run.state() == ScanRunState.PAUSED) run.resume(nowRuntimeNanos);
             queue.hardReset(Math.max(0L,
                     decision.incrementSceneGeneration
                             ? queue.snapshot(nowRuntimeNanos).sceneGeneration + 1L
@@ -653,6 +770,7 @@ public final class ScanAcquisitionController {
     }
 
     private AcquisitionDirective enforceSessionBudgets(long nowRuntimeNanos) {
+        if (activeSession != null && activeSession.persistent()) return null;
         if (activeSession == null) return null;
         if (activeSessionBudget != null
                 && activeSessionBudget.exhausted(nowRuntimeNanos)) {
@@ -694,6 +812,7 @@ public final class ScanAcquisitionController {
                 nowRuntimeNanos,
                 profile.defaultCooldownNanos
         );
+        if (staticBaseline) queue.complete(entityId);
         resetSessionBudgets();
         plateAnchor = null;
         releasePending = true;
@@ -815,6 +934,10 @@ public final class ScanAcquisitionController {
     }
 
     private void resetStatistics() {
+        searchText = "";
+        searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+        zoomedLockSessions.clear();
+        readingFrames.clear(); readingSequences.clear();
         vehiclesSeen.clear();
         vehiclesQueued.clear();
         identifiedEntityIds.clear();
@@ -836,10 +959,59 @@ public final class ScanAcquisitionController {
         totalFreshMzAttempts = 0;
     }
 
+    private AcquisitionDecision evaluateSearch(PipelineResult result, long now) {
+        if (staticBaseline || searchText.isEmpty() || modeController.mode() != ApplicationMode.SEARCH_VERIFY_PURSUIT
+                || activeSession != null && activeSession.purpose() == TargetPurpose.SEARCH_PURSUIT) return null;
+        for (PlateObservation observation : result.plateObservations) {
+            if (observation.entityId <= 0L || !observation.freshMzAttempted || !vehiclesSeen.contains(observation.entityId)) continue;
+            boolean verifying = activeSession != null && activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION;
+            if (verifying && observation.entityId != activeSession.entityId()) continue;
+            if (!verifying) {
+                if (observation.recognitionConfidence < 0.25 || !RegistrationSearchPolicy.possible(searchText, observation.freshPrediction)) {
+                    searchState = com.example.alpr_v1.domain.SearchMatchState.NO_MATCH;
+                    continue;
+                }
+                releaseForeground(false, now);
+                beginForeground(observation.entityId, TargetPurpose.SEARCH_VERIFICATION, now);
+                searchState = com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH;
+                verificationFrameId = observation.frameId;
+                verificationSourceSequence = observation.sourceSequence;
+                verificationAttempts = 0;
+                return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                        EntityAcquisitionState.READING_REGISTRATION, directive, "possible_match_requires_fresh_verification");
+            }
+            if (observation.frameId <= verificationFrameId
+                    || observation.sourceSequence > 0L && observation.sourceSequence <= verificationSourceSequence) continue;
+            verificationFrameId = observation.frameId; verificationSourceSequence = observation.sourceSequence;
+            verificationAttempts++;
+            if (RegistrationSearchPolicy.normalize(observation.freshPrediction).equals(searchText)
+                    && observation.recognitionConfidence >= 0.65) {
+                boolean consumedZoom = zoomedLockSessions.contains(activeSession.sessionId());
+                activeSession = modeController.promoteSearchToPursuit(now);
+                if (consumedZoom) zoomedLockSessions.add(activeSession.sessionId());
+                activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
+                activeSession.setCameraAttentionOwned(true, now);
+                searchState = com.example.alpr_v1.domain.SearchMatchState.CONFIRMED_MATCH;
+                rememberEntityRecognition(observation);
+                setDirective(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION, activeSession.sessionId(), activeSession.entityId(), "search_pursuit_confirmed");
+                return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                        EntityAcquisitionState.READING_REGISTRATION, directive, "search_pursuit_confirmed");
+            }
+            if (verificationAttempts >= 2 || !RegistrationSearchPolicy.possible(searchText, observation.freshPrediction)) {
+                searchState = com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH;
+                releaseForeground(false, now);
+                return ignored("search_verification_rejected");
+            }
+        }
+        return null;
+    }
+
     private void rememberEntityRecognition(PlateObservation observation) {
         if (observation == null
                 || observation.entityId <= 0L
                 || !RegistrationTextPolicy.displayable(observation.text)) return;
+        readingFrames.merge(observation.entityId, observation.frameId, Math::max);
+        readingSequences.merge(observation.entityId, observation.sourceSequence, Math::max);
         firstObservationRuntimeNanos.putIfAbsent(
                 observation.entityId,
                 observationRuntimeNanos(observation, lastRuntimeNanos)
@@ -896,7 +1068,8 @@ public final class ScanAcquisitionController {
                     || activeOwner && directive.requestsMt()
                     && observation.acquisitionDirectiveRevision == directive.revision
                     || !activeOwner && observation.acquisitionDirectiveRevision <= directive.revision);
-            if (observation.confirmed || activeOwner || recentlyReleasedOwner || currentLiveRead) {
+            boolean refinementRead = run != null && run.state() == ScanRunState.PAUSED && observation.freshMzAttempted;
+            if (observation.confirmed || activeOwner || recentlyReleasedOwner || currentLiveRead || refinementRead) {
                 rememberEntityRecognition(observation);
             }
             // Full-frame/expanded ROI work may read a queued neighbor or finish

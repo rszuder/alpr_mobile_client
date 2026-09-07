@@ -30,6 +30,31 @@ import java.io.File;
 
 @RunWith(AndroidJUnit4.class)
 public final class ResearchExecutionConfigInstrumentedTest {
+    @Test public void r1r2StaticAndDynamicAreFrozenForEveryRoiPolicyAndExported() throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ResearchExecutionConfig base=configuration();
+        for (com.example.alpr_v1.continuity.SceneHandlingMode mode : com.example.alpr_v1.continuity.SceneHandlingMode.values()) {
+            for (RoiBudgetPolicy roi : RoiBudgetPolicy.values()) {
+                ResearchExecutionConfig config=new ResearchExecutionConfig("roi_budget",roi.wireName(),roi,
+                        base.recognitionProfile,base.cameraRequestedResolution,false,false,roi.usesVehicleCascade(),true,true,true,
+                        base.vehicle,base.plate,base.character,null,false,base.packageSizeBytes,mode);
+                ExperimentSession session=new ExperimentSession();
+                assertTrue(session.start(config.experimentType,config.variant,TimerConfig.disabled(),ThermalConfig.disabled(),
+                        new ExperimentIdentity("MODE","SCENE",1,"",false,4.0),config));
+                MetricsCollector metrics=new MetricsCollector();
+                metrics.setSceneContinuityConfiguration(mode.wireName(),"v3"); metrics.startMeasurementSession();
+                metrics.setSceneContinuityConfiguration(mode == com.example.alpr_v1.continuity.SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                        ? "dynamic_continuity" : "strict_scene_boundary","v3");
+                assertSame(config,session.snapshot().frozenExecutionConfig);
+                JSONObject report=new JSONObject(metrics.createJsonReport(DeviceProfile.capture(context),new ModelRegistry(context),
+                        new AutoTuneManager(context),session.snapshot()));
+                assertEquals(mode.analysisMode(),report.getString("analysis_mode"));
+                assertEquals(mode.wireName(),report.getString("scene_handling_mode"));
+                assertEquals(mode.analysisMode(),config.toJson().getString("analysis_mode"));
+                session.finish(ExperimentSession.CompletionReason.MANUAL);
+            }
+        }
+    }
     private static final String HASH =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

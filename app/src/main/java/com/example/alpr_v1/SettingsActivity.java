@@ -511,17 +511,13 @@ public final class SettingsActivity extends AppCompatActivity {
                         SceneHandlingMode.DYNAMIC_CONTINUITY.wireName()
                 )
         );
-        SceneHandlingMode effective = experimentEnabled
-                ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : stored;
+        SceneHandlingMode effective = stored;
         group.check(effective == SceneHandlingMode.STRICT_SCENE_BOUNDARY
                 ? R.id.settings_scene_strict
                 : R.id.settings_scene_dynamic);
-        setSceneHandlingControlsEnabled(group, !experimentEnabled);
+        setSceneHandlingControlsEnabled(group, true);
         group.addOnButtonCheckedListener((ignored, checkedId, isChecked) -> {
-            if (!isChecked || preferences.getBoolean(
-                    KEY_EXPERIMENT_MODE_ENABLED,
-                    false
-            )) {
+            if (!isChecked) {
                 refreshSceneHandlingControls();
                 return;
             }
@@ -542,8 +538,8 @@ public final class SettingsActivity extends AppCompatActivity {
                 KEY_EXPERIMENT_MODE_ENABLED,
                 false
         );
-        if (experimentEnabled) group.check(R.id.settings_scene_strict);
-        setSceneHandlingControlsEnabled(group, !experimentEnabled);
+
+        setSceneHandlingControlsEnabled(group, true);
         summary.setText(experimentEnabled
                 ? R.string.settings_scene_mode_experiment_locked
                 : R.string.settings_scene_mode_description);

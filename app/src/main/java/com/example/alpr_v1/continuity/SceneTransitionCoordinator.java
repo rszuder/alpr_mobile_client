@@ -11,6 +11,8 @@ public final class SceneTransitionCoordinator {
     private final MotionExplanationEvaluator motionEvaluator;
     private final ContinuityBreakEvaluator breakEvaluator;
     private final long transitionCooldownNanos;
+    private final ScenePolicy staticPolicy = new StaticScenePolicy();
+    private final ScenePolicy dynamicPolicy;
 
     private SceneHandlingMode mode;
     private SceneContinuityState currentState = SceneContinuityState.STABLE;
@@ -69,6 +71,8 @@ public final class SceneTransitionCoordinator {
         this.vehicleEvaluator = Contracts.required("vehicleEvaluator", vehicleEvaluator);
         this.motionEvaluator = Contracts.required("motionEvaluator", motionEvaluator);
         this.breakEvaluator = Contracts.required("breakEvaluator", breakEvaluator);
+        this.dynamicPolicy = new DynamicContinuityPolicy(targetEvaluator, vehicleEvaluator,
+                motionEvaluator, breakEvaluator);
         this.transitionCooldownNanos = Contracts.nonNegative(
                 "transitionCooldownNanos", transitionCooldownNanos
         );
@@ -93,7 +97,18 @@ public final class SceneTransitionCoordinator {
             enterState(SceneContinuityState.STABLE, nowNanos);
         }
 
-        assessment = assess(evidence);
+        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
+            assessment = staticPolicy.assess(evidence, profile);
+            if (assessment.classification == VisualChangeClassification.CONTINUITY_BREAK) {
+                return hardReset(assessment.reason, nowNanos);
+            }
+            resetRecoveryState();
+            enterState(SceneContinuityState.STABLE, nowNanos);
+            finalizationSuspended = false;
+            heavyInferenceSuspended = false;
+            return emitNone(nowNanos, assessment.reason);
+        }
+        assessment = dynamicPolicy.assess(evidence, profile);
         lastActiveTargetPresent = evidence.focusedTrackingLost
                 || evidence.target.level != TargetContinuityLevel.NO_TARGET
                 && evidence.target.level != TargetContinuityLevel.LOST;
@@ -101,38 +116,20 @@ public final class SceneTransitionCoordinator {
                 && reacquireContext != null) {
             reacquireContext = reacquireContext.observe(assessment);
         }
-        /*
-         * W trybie strict potwierdzona zmiana obrazu jest nadrzędna wobec
-         * timeoutu rozpoczętego wcześniej soft reacquire. Na wolnym urządzeniu
-         * pierwsza klatka po cięciu może zgłosić tylko utratę lokalnego trackera,
-         * a dopiero kolejna rawVisualChange. Nie wolno wtedy zakończyć recovery
-         * ścieżką dynamiczną tuż przed obsłużeniem granicy sceny.
-         */
-        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY
-                && evidence.rawVisualChange) {
-            return observeStrict(evidence, nowNanos);
-        }
         if (currentState == SceneContinuityState.REACQUIRING
                 && reacquireDeadlineReached(nowNanos)) {
             return finishUnsuccessfulReacquire(nowNanos);
         }
-        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
-            return observeStrict(evidence, nowNanos);
-        }
         return observeDynamic(evidence, nowNanos);
     }
 
-    public synchronized void setMode(SceneHandlingMode mode, long nowNanos) {
+    public synchronized SceneTransitionDecision setMode(SceneHandlingMode mode, long nowNanos) {
         Contracts.required("mode", mode);
         Contracts.nonNegative("nowNanos", nowNanos);
-        if (this.mode == mode) return;
+        if (this.mode == mode) return idleDecision("analysis_mode_unchanged");
         this.mode = mode;
-        resetRecoveryState();
-        enterState(SceneContinuityState.STABLE, nowNanos);
-        assessment = ContinuityAssessment.none();
-        finalizationSuspended = false;
-        heavyInferenceSuspended = false;
         clearEvidenceDeduplication();
+        return hardReset("analysis_mode_changed", nowNanos);
     }
 
     public synchronized SceneTransitionDecision completeSoftReacquire(
@@ -343,6 +340,19 @@ public final class SceneTransitionCoordinator {
                         visualEpoch,
                         cameraTransformGeneration
                 ) : triggerSourceFrame;
+        if (mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
+            resetRecoveryState();
+            enterState(SceneContinuityState.STABLE, nowNanos);
+            finalizationSuspended = false;
+            heavyInferenceSuspended = false;
+            return emit(SceneTransitionAction.RELEASE_ACTIVE_TARGET,
+                    true, false, true,
+                    true, false, false,
+                    false, true, true,
+                    true, true,
+                    true, false,
+                    "static_local_geometry_refresh", nowNanos);
+        }
         if (currentState == SceneContinuityState.HARD_RESETTING) {
             enterState(SceneContinuityState.STABLE, nowNanos);
         }
@@ -353,118 +363,6 @@ public final class SceneTransitionCoordinator {
                 safeTrigger.domain,
                 Contracts.reason(reason).isEmpty() ? "soft_reacquire_requested" : reason
         );
-    }
-
-    private ContinuityAssessment assess(SceneEvidence evidence) {
-        float targetScore = targetEvaluator.evaluate(evidence.target, profile);
-        float vehicleScore = vehicleEvaluator.evaluate(evidence.vehicles);
-        float motionScore = motionEvaluator.evaluate(evidence, targetScore, vehicleScore);
-        float cutScore = breakEvaluator.evaluate(
-                evidence, targetScore, vehicleScore, motionScore
-        );
-        boolean stationaryLocalContradiction = evidence.rawVisualChange
-                && !evidence.motion.cameraMoving
-                && !evidence.motion.rapidCameraMotion
-                && !evidence.motion.cameraTransformInProgress
-                && !evidence.motion.motionSettling
-                && evidence.target.localAppearanceValidated
-                && evidence.target.plateAppearanceSimilarity
-                < profile.localAppearanceContradictionThreshold;
-        boolean stationaryStaleTargetEvidence = evidence.rawVisualChange
-                && !evidence.motion.cameraMoving
-                && !evidence.motion.rapidCameraMotion
-                && !evidence.motion.cameraTransformInProgress
-                && !evidence.motion.motionSettling
-                && evidence.target.level != TargetContinuityLevel.NO_TARGET
-                && evidence.target.measurementAgeNanos
-                > profile.maximumFocusedEvidenceAgeNanos;
-        boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve
-                && !stationaryLocalContradiction
-                && !stationaryStaleTargetEvidence;
-        boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve;
-        boolean motionExplained = motionScore >= profile.minimumMotionExplanation
-                && !stationaryLocalContradiction
-                && !stationaryStaleTargetEvidence;
-
-        VisualChangeClassification classification;
-        String reason;
-        if (!evidence.rawVisualChange) {
-            classification = VisualChangeClassification.NONE;
-            reason = "no_raw_visual_change";
-        } else if (motionExplained && (targetPreserved || poolPreserved)) {
-            classification = VisualChangeClassification.MOTION_EXPLAINED_CHANGE;
-            reason = targetPreserved
-                    ? "local_target_explains_visual_change"
-                    : "vehicle_pool_explains_visual_change";
-        } else if (stationaryLocalContradiction) {
-            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
-            reason = "stationary_local_appearance_contradiction";
-        } else if (stationaryStaleTargetEvidence) {
-            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
-            reason = "stationary_target_evidence_predates_visual_change";
-        } else if (!targetPreserved && !poolPreserved && !motionExplained) {
-            classification = VisualChangeClassification.UNEXPLAINED_CHANGE;
-            reason = "visual_change_has_no_continuity_explanation";
-        } else {
-            classification = VisualChangeClassification.RAW_VISUAL_CHANGE;
-            reason = "visual_change_requires_more_evidence";
-        }
-
-        boolean freshValidatedTarget = targetPreserved
-                && evidence.target.geometryValidated
-                && (evidence.target.freshVehicleMeasurement
-                || evidence.target.freshPlateMeasurement)
-                && evidence.target.level != TargetContinuityLevel.PREDICTED_ONLY;
-        boolean continuityAllowsFinalization = !evidence.rawVisualChange
-                || freshValidatedTarget;
-        return new ContinuityAssessment(
-                classification,
-                targetScore,
-                vehicleScore,
-                motionScore,
-                cutScore,
-                targetPreserved,
-                poolPreserved,
-                continuityAllowsFinalization,
-                reason
-        );
-    }
-
-    private SceneTransitionDecision observeStrict(
-            SceneEvidence evidence,
-            long nowNanos
-    ) {
-        if (currentState == SceneContinuityState.REACQUIRING
-                && !evidence.rawVisualChange) {
-            return observeNoRawChange(evidence, nowNanos);
-        }
-        if (currentState != SceneContinuityState.REACQUIRING
-                && !evidence.rawVisualChange
-                && (evidence.focusedTrackingLost
-                || evidence.focusedTrackingDegraded)) {
-            return beginSoftReacquire(
-                    nowNanos,
-                    evidence.sourceSequence,
-                    evidence.sourceTimestampNanos,
-                    evidence.sourceTimestampDomain,
-                    evidence.focusedTrackingLost
-                            ? "strict_focused_tracking_lost"
-                            : "strict_focused_tracking_degraded"
-            );
-        }
-        if (evidence.rawVisualChange) {
-            assessment = withClassification(
-                    assessment,
-                    VisualChangeClassification.CONTINUITY_BREAK,
-                    "strict_raw_visual_change"
-            );
-            return hardReset(assessment.reason, nowNanos);
-        }
-        resetRecoveryState();
-        enterState(SceneContinuityState.STABLE, nowNanos);
-        finalizationSuspended = !assessment.finalizationAllowed;
-        heavyInferenceSuspended = false;
-        return emitNone(nowNanos, assessment.reason);
     }
 
     private SceneTransitionDecision observeDynamic(

@@ -15,8 +15,14 @@ public enum SceneHandlingMode {
         return wireName;
     }
 
+    public String analysisMode() {
+        return this == STRICT_SCENE_BOUNDARY ? "static" : "dynamic";
+    }
+
     public static SceneHandlingMode fromWireName(String value) {
         if (value != null) {
+            if ("static".equalsIgnoreCase(value.trim())) return STRICT_SCENE_BOUNDARY;
+            if ("dynamic".equalsIgnoreCase(value.trim())) return DYNAMIC_CONTINUITY;
             for (SceneHandlingMode mode : values()) {
                 if (mode.wireName.equalsIgnoreCase(value.trim())) return mode;
             }

@@ -227,6 +227,7 @@ public final class ResearchArchive {
         JSONObject protocol = new JSONObject();
         protocol.put("methodology", "MLPerf Mobile inspired; not an MLPerf result");
         protocol.put("scenario", "live_camera_session");
+        protocol.put("analysis_mode", report.optString("analysis_mode", "unknown"));
         protocol.put("clock", "monotonic_nanos");
         protocol.put("cold_start_separated", false);
         protocol.put("single_stream_target_samples", 1024);

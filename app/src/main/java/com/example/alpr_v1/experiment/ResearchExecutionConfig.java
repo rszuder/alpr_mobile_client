@@ -10,6 +10,7 @@ import org.json.JSONObject;
 
 /** Niezmienny snapshot efektywnej konfiguracji całego przebiegu badawczego. */
 public final class ResearchExecutionConfig {
+    public final com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode;
     public final String experimentType;
     public final String variant;
     public final RoiBudgetPolicy roiBudgetPolicy;
@@ -102,6 +103,33 @@ public final class ResearchExecutionConfig {
             boolean compositionModified,
             long packageSizeBytes
     ) {
+        this(experimentType, variant, roiBudgetPolicy, recognitionProfile, cameraRequestedResolution,
+                lockEnabled, autoZoomEnabled, vehicleTrackingEnabled, plateTrackingEnabled, temporalMzEnabled,
+                adaptiveFrameGateEnabled, vehicle, plate, character, basePackage, compositionModified, packageSizeBytes,
+                com.example.alpr_v1.continuity.SceneHandlingMode.STRICT_SCENE_BOUNDARY);
+    }
+
+    public ResearchExecutionConfig(
+            String experimentType,
+            String variant,
+            RoiBudgetPolicy roiBudgetPolicy,
+            RecognitionProfile recognitionProfile,
+            String cameraRequestedResolution,
+            boolean lockEnabled,
+            boolean autoZoomEnabled,
+            boolean vehicleTrackingEnabled,
+            boolean plateTrackingEnabled,
+            boolean temporalMzEnabled,
+            boolean adaptiveFrameGateEnabled,
+            ResearchStageExecutionConfig vehicle,
+            ResearchStageExecutionConfig plate,
+            ResearchStageExecutionConfig character,
+            InstalledAlprPackage basePackage,
+            boolean compositionModified,
+            long packageSizeBytes,
+            com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode
+    ) {
+        this.sceneHandlingMode = java.util.Objects.requireNonNull(sceneHandlingMode);
         this.experimentType = required(experimentType, "experimentType");
         this.variant = required(variant, "variant");
         this.roiBudgetPolicy = roiBudgetPolicy == null
@@ -135,7 +163,8 @@ public final class ResearchExecutionConfig {
         if (!this.plate.enabled || !this.character.enabled) {
             throw new IllegalArgumentException("Research Mode wymaga etapów MT i MZ");
         }
-        if (this.autoZoomEnabled && !this.lockEnabled) {
+        if (this.autoZoomEnabled && !this.lockEnabled
+                && sceneHandlingMode == com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY) {
             throw new IllegalArgumentException("Autozoom wymaga włączonego locka");
         }
     }
@@ -150,6 +179,8 @@ public final class ResearchExecutionConfig {
     public JSONObject toJson() throws JSONException {
         JSONObject json = new JSONObject();
         json.put("experiment_type", experimentType);
+        json.put("analysis_mode", sceneHandlingMode.analysisMode());
+        json.put("scene_handling_mode", sceneHandlingMode.wireName());
         json.put("variant", variant);
         json.put("roi_budget_policy", roiBudgetPolicy.wireName());
         json.put("recognition_profile", recognitionProfile.wireName());

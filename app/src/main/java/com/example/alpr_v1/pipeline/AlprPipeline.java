@@ -162,6 +162,10 @@ public final class AlprPipeline {
     private final ScanAcquisitionController scanAcquisitionController =
             new ScanAcquisitionController();
     private final StableSceneVehicleCache stableSceneVehicles = new StableSceneVehicleCache();
+    private final com.example.alpr_v1.acquisition.StaticSceneCycle staticCycle = new com.example.alpr_v1.acquisition.StaticSceneCycle();
+    private final com.example.alpr_v1.continuity.StaticSceneWatcher staticWatcher = new com.example.alpr_v1.continuity.StaticSceneWatcher();
+    private volatile boolean staticWatcherArmed;
+    private volatile long dynamicZoomEntity;
     private long lastScanTelemetryRunId;
     private ScanRunState lastScanTelemetryRunState = ScanRunState.IDLE;
     private long lastScanTelemetryQueueRevision = -1L;
@@ -213,7 +217,7 @@ public final class AlprPipeline {
     private boolean experimentModeEnabled;
     private RoiBudgetPolicy experimentRoiBudgetPolicy =
             RoiBudgetPolicy.TWO_ROI;
-    private ResearchExecutionConfig frozenResearchExecutionConfig;
+    private volatile ResearchExecutionConfig frozenResearchExecutionConfig;
 
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraMoving;
@@ -359,7 +363,7 @@ public final class AlprPipeline {
             }
             return null;
         }
-        if (stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
+        if (staticWaiting() || stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
             metrics.frameSkippedByGate();
             return null;
         }
@@ -588,9 +592,10 @@ public final class AlprPipeline {
                 return null;
             }
             handleScanPipelineResult(
-                    result,
-                    SystemClock.elapsedRealtimeNanos()
+                result,
+                SystemClock.elapsedRealtimeNanos()
             );
+            updateStaticCycle(result);
             recordVehicleTrackingEvents();
             trace.start(
                     "pipeline_finalize"
@@ -751,7 +756,7 @@ public final class AlprPipeline {
             }
             return null;
         }
-        if (stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
+        if (staticWaiting() || stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
             metrics.frameSkippedByGate();
             return null;
         }
@@ -884,6 +889,7 @@ public final class AlprPipeline {
                     result,
                     SystemClock.elapsedRealtimeNanos()
             );
+            updateStaticCycle(result);
             recordVehicleTrackingEvents();
             trace.start("pipeline_finalize");
             try {
@@ -1292,7 +1298,7 @@ public final class AlprPipeline {
                         safeSourceFrame.sourceSequence,
                         safeSourceFrame.sourceTimestampNanos,
                         safeSourceFrame.domain,
-                        sourceScene.sceneChanged,
+                        sceneTransitionCoordinator.snapshot().mode == SceneHandlingMode.DYNAMIC_CONTINUITY && sourceScene.sceneChanged,
                         clamp01(sourceScene.score),
                         clamp01(sourceScene.changedFraction),
                         clamp01(sourceScene.brightnessDelta),
@@ -1619,6 +1625,12 @@ public final class AlprPipeline {
             MobileAlprEngine activeEngine,
             long nowRuntimeNanos
     ) {
+        activeEngine.setStaticSceneMode(staticMode());
+        activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
+        if (staticMode() && staticCycle.zoomEntity() > 0L || !staticMode() && dynamicZoomEntity > 0L) {
+            activeEngine.setScanAcquisitionDirective(false, AcquisitionDirective.none(0L, 0L));
+            return;
+        }
         ScanAcquisitionSnapshot before = scanAcquisitionController.snapshot(
                 nowRuntimeNanos
         );
@@ -2111,6 +2123,11 @@ public final class AlprPipeline {
         }
 
         if (decision.action == SceneTransitionAction.HARD_RESET) {
+            dynamicZoomEntity = 0L;
+            staticCycle.reset(snapshot.sceneGeneration);
+            staticWatcher.reset();
+            staticWatcherArmed = false;
+            stableSceneVehicles.invalidate();
             lastReacquireVehicleEvidence = VehicleContinuityEvidence.empty();
             trackingResetRequested = true;
             rotatedSceneDetector.reset();
@@ -2164,6 +2181,8 @@ public final class AlprPipeline {
         if (trace == null || decision == null) return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         trace.putAttribute("scene_handling_mode", decision.mode.wireName());
+        trace.putAttribute("analysis_mode", decision.mode.analysisMode());
+        if (staticMode()) trace.putAttribute("static_scene_phase", staticCycle.phase().name());
         trace.putAttribute("scene_continuity_profile", "initial_v2");
         trace.putAttribute(
                 "visual_change_classification",
@@ -2565,6 +2584,7 @@ public final class AlprPipeline {
         engine.setPreviewFrameMotionHistory(previewFrameMotionHistory);
         stableSceneVehicles.invalidate();
         engine.setStableSceneVehicleCache(stableSceneVehicles);
+        engine.setSceneMutationGate(new SceneMutationGate(sceneTransitionCoordinator));
         android.util.Log.d("ALPR_PIPELINE_START", "models_ready_ms="
                 + (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000L);
     }
@@ -2638,7 +2658,7 @@ public final class AlprPipeline {
         reloadRequested = true;
     }
 
-    public synchronized ResearchExecutionConfig researchExecutionConfig() {
+    public ResearchExecutionConfig researchExecutionConfig() {
         return frozenResearchExecutionConfig;
     }
 
@@ -2794,12 +2814,18 @@ public final class AlprPipeline {
 
     private VehicleTrackingFrame scanVehicleTrackingFrame() {
         VehicleTrackingFrame latest = latestVehicleTrackingFrame();
+        MobileAlprEngine current = engine;
+        if (staticMode() && !trackingResetRequested && current != null) {
+            VehicleTrackingFrame measured = current.lastMeasuredVehicles();
+            if (measured.sourceFrameId > 0L && isCurrentContinuityStamp(measured.continuityStamp())) return measured;
+        }
         VehicleTrackingFrame retained = stableSceneVehicles.current(
                 latest.continuityStamp(), SystemClock.elapsedRealtimeNanos());
         return retained == null ? latest : retained;
     }
 
     private boolean stationaryScanIdle() {
+        if (staticMode()) return false;
         if (experimentModeEnabled || frozenResearchExecutionConfig != null) return false;
         long now = SystemClock.elapsedRealtimeNanos();
         ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(now);
@@ -2816,6 +2842,156 @@ public final class AlprPipeline {
         // Missing candidates wait for the control MP; cooldowns are reconsidered
         // on each lightweight camera callback without running the engine.
         return true;
+    }
+
+    private boolean staticMode() {
+        return sceneTransitionCoordinator.snapshot().mode == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+    }
+
+    public boolean isStaticIdle() {
+        return staticMode() && staticCycle.phase() == com.example.alpr_v1.acquisition.StaticSceneCycle.Phase.STATIC_IDLE;
+    }
+
+    /** Fixed base-zoom measurements for the completed static scene, never a new tracking anchor. */
+    public List<com.example.alpr_v1.tracking.VehicleCandidate> staticBaselineVehicles() {
+        return staticMode() ? staticCycle.baselineVehicles() : java.util.Collections.emptyList();
+    }
+
+    private boolean staticWaiting() {
+        if ((staticCycle.zoomEntity() > 0L || dynamicZoomEntity > 0L) && currentCameraZoomRatio <= 1.01f) return true;
+        return staticMode() && staticCycle.phase() != com.example.alpr_v1.acquisition.StaticSceneCycle.Phase.BASELINE
+                && staticCycle.zoomEntity() == 0L;
+    }
+
+    public boolean staticBaselineComplete() {
+        return staticMode() && staticCycle.phase() != com.example.alpr_v1.acquisition.StaticSceneCycle.Phase.BASELINE;
+    }
+
+    private void updateStaticCycle(PipelineResult result) {
+        if (!staticMode() || cameraTransformInProgress || currentCameraZoomRatio > 1.01f) return;
+        VehicleTrackingFrame vehicles = scanVehicleTrackingFrame();
+        staticCycle.observeVehicles(vehicles);
+        for (PlateObservation observation : result.plateObservations) staticCycle.observe(observation);
+        ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(SystemClock.elapsedRealtimeNanos());
+        if (scan.runState.active()) {
+            if (vehicles.sourceFrameId > 0L && scan.activeEntityId == 0L && scan.queue.size() == 0) staticCycle.finishBaseline();
+        } else if (!effectiveRoiBudgetPolicy().usesVehicleCascade()) {
+            staticCycle.finishBaseline();
+        }
+    }
+
+    public synchronized com.example.alpr_v1.camera.AutoZoomController.Sample nextStaticRefinement(boolean enabled) {
+        if (!staticMode()) return null;
+        com.example.alpr_v1.camera.AutoZoomController.Sample sample = staticCycle.nextRefinement(enabled);
+        if (sample != null) {
+            staticWatcher.prepareForZoom();
+            scanAcquisitionController.pauseRun(SystemClock.elapsedRealtimeNanos());
+        }
+        if (isStaticIdle() && !staticWatcherArmed) {
+            staticWatcher.arm(staticCycle.watchRegions());
+            staticWatcherArmed = true;
+            android.util.Log.i("ALPR_STATIC", "phase=STATIC_IDLE watch=" + staticCycle.watchRegions().source
+                    + " regions=" + staticCycle.watchRegions().bounds.size());
+            metrics.recordEvent("static_scene_idle", 0L, 0L, null);
+        }
+        if (sample != null) android.util.Log.i("ALPR_STATIC", "phase=AZ_REFINEMENT entity=" + staticCycle.zoomEntity());
+        return sample;
+    }
+
+    public void enableStaticRefinement() {
+        if (!staticMode()) return;
+        staticCycle.enableRefinement(); staticWatcherArmed = false;
+    }
+
+    public synchronized void finishStaticRefinement() {
+        staticCycle.finishZoom();
+        if (engine != null) engine.setRefinementEntity(0L);
+        scanAcquisitionController.resumeRun(SystemClock.elapsedRealtimeNanos());
+    }
+
+    public void pickVehicle(long entityId) {
+        if (staticMode() || vehicleTrackingCoordinator.repository().get(entityId) == null) return;
+        scanAcquisitionController.pickVehicle(entityId, SystemClock.elapsedRealtimeNanos());
+        frameGate.requestImmediateFrame();
+    }
+
+    public void startRegistrationSearch(String text) {
+        if (staticMode()) return;
+        scanAcquisitionController.startSearch(text, SystemClock.elapsedRealtimeNanos());
+        frameGate.requestImmediateFrame();
+    }
+
+    public void releaseSelectedTarget(boolean endSearch) {
+        scanAcquisitionController.releaseForeground(endSearch, SystemClock.elapsedRealtimeNanos());
+        frameGate.requestImmediateFrame();
+    }
+
+    public String searchRegistration() { return scanAcquisitionController.searchText(); }
+    public com.example.alpr_v1.domain.SearchMatchState searchMatchState() { return scanAcquisitionController.searchState(); }
+    public long lockedEntityId() { return scanAcquisitionController.lockedEntityId(); }
+    public long foregroundEntityId() {
+        com.example.alpr_v1.domain.TargetPurpose purpose = scanAcquisitionController.foregroundPurpose();
+        return purpose != null && purpose != com.example.alpr_v1.domain.TargetPurpose.SCAN_ACQUISITION
+                ? scanAcquisitionController.snapshot(SystemClock.elapsedRealtimeNanos()).activeEntityId : 0L;
+    }
+
+    public boolean claimDynamicZoom(com.example.alpr_v1.camera.AutoZoomController.Sample sample) {
+        if (staticMode() || !com.example.alpr_v1.acquisition.DynamicZoomPolicy.allows(
+                scanAcquisitionController.foregroundPurpose(), sample,
+                rapidCameraMotion || cameraMoving || cameraTransformInProgress, sceneTransitionCoordinator.snapshot().state)
+                || !scanAcquisitionController.claimLockZoom()) return false;
+        dynamicZoomEntity = foregroundEntityId();
+        return dynamicZoomEntity > 0L;
+    }
+
+    public void finishDynamicZoom() {
+        long finishedEntity = dynamicZoomEntity;
+        dynamicZoomEntity = 0L;
+        stableSceneVehicles.invalidate();
+        MobileAlprEngine current = engine;
+        if (finishedEntity > 0L && current != null) current.requestVehicleRefreshAfterZoom();
+        frameGate.requestImmediateFrame();
+    }
+
+    /** Runs on the lightweight luma thread; generation advances before old inference can dispatch. */
+    public SceneTransitionDecision observeStaticLuma(ContinuityStamp stamp, byte[] gray, int width, int height,
+            long now, boolean transformed) {
+        if (!staticMode() || !isCurrentContinuityStamp(stamp)) return null;
+        com.example.alpr_v1.continuity.StaticSceneWatcher.Result result = staticWatcher.observe(gray, width, height, now, transformed);
+        if (!result.changed) return null;
+        SceneTransitionDecision decision;
+        SceneContinuitySnapshot snapshot;
+        synchronized (sceneTransitionCoordinator) {
+        if (!isCurrentContinuityStamp(stamp)) return null;
+        decision = sceneTransitionCoordinator.requestStructuralReset(result.reason, now);
+        if (decision.action != SceneTransitionAction.HARD_RESET) return null;
+        vehicleTrackingCoordinator.repository().resetScene();
+        snapshot = sceneTransitionCoordinator.snapshot();
+        sceneGeneration.set(snapshot.sceneGeneration);
+        visualEpoch.set(snapshot.visualEpoch);
+        hardResetRevision.set(decision.revision);
+        visualEpochRevision.set(decision.revision);
+        trackingResetRequested = true;
+        stableSceneVehicles.invalidate();
+        staticCycle.reset(snapshot.sceneGeneration);
+        staticWatcher.reset();
+        staticWatcherArmed = false;
+        scanAcquisitionController.onContinuityDecision(decision, now);
+        }
+        frameGate.requestImmediateFrame();
+        JSONObject details = new JSONObject();
+        try {
+            details.put("analysis_mode", "static");
+            details.put("scene_generation_before", stamp.sceneGeneration);
+            details.put("scene_generation_after", snapshot.sceneGeneration);
+            details.put("reason", result.reason);
+            details.put("local_changed_fraction", result.localFraction);
+            details.put("global_changed_fraction", result.globalFraction);
+        } catch (JSONException ignored) { }
+        metrics.recordEvent("static_scene_boundary", 0L, 0L, details);
+        android.util.Log.i("ALPR_STATIC", "boundary=" + result.reason + " scene=" + stamp.sceneGeneration
+                + "->" + snapshot.sceneGeneration + " local=" + result.localFraction + " global=" + result.globalFraction);
+        return decision;
     }
 
     public void recordPreviewFrameMotion(
@@ -2838,11 +3014,14 @@ public final class AlprPipeline {
     public synchronized void setSceneHandlingMode(SceneHandlingMode mode) {
         SceneHandlingMode safeMode = mode == null
                 ? SceneHandlingMode.STRICT_SCENE_BOUNDARY : mode;
-        sceneTransitionCoordinator.setMode(
+        if (frozenResearchExecutionConfig != null) safeMode = frozenResearchExecutionConfig.sceneHandlingMode;
+        SceneTransitionDecision decision = sceneTransitionCoordinator.setMode(
                 safeMode,
                 SystemClock.elapsedRealtimeNanos()
         );
         metrics.setSceneContinuityConfiguration(safeMode.wireName(), "initial_v2");
+        scanAcquisitionController.setStaticBaseline(safeMode == SceneHandlingMode.STRICT_SCENE_BOUNDARY);
+        if (decision.action == SceneTransitionAction.HARD_RESET) applySceneTransition(decision);
     }
 
     public void setCameraTransformInProgress(boolean inProgress) {
@@ -2956,6 +3135,13 @@ public final class AlprPipeline {
         synchronized (cameraTransformLock) {
             pendingCameraZoomRatio *= to / from;
             cameraTransformFinishPending = true;
+            AutoZoomTargetConfig target = autoZoomTargetConfig;
+            if (target.active && Math.abs(to / from - 1f) > .0001f) {
+                // Camera completion already supplies zoom-space coordinates.
+                // Rebase the lock instead of treating the optical jump as object drift.
+                autoZoomTargetConfig = new AutoZoomTargetConfig(true,target.revision+1L,target.trackId,
+                        target.left,target.top,target.right,target.bottom);
+            }
         }
         boolean transformWasActive = cameraTransformInProgress;
         cameraTransformInProgress = false;
@@ -2978,7 +3164,9 @@ public final class AlprPipeline {
 
     /** Immutable entity-aware snapshot for the Phase 3 acquisition controller. */
     public VehicleTrackingFrame latestVehicleTrackingFrame() {
-        VehicleTrackingFrame frame = vehicleTrackingCoordinator.latestFrame();
+        VehicleTrackingFrame frame = trackingResetRequested
+                ? VehicleTrackingFrame.empty(sceneTransitionCoordinator.snapshot().sceneGeneration)
+                : vehicleTrackingCoordinator.latestFrame();
         return frame.withContinuityStamp(
                 sceneTransitionCoordinator.stamp(
                         frame.continuityStamp().sourceFrameStamp()
@@ -2992,6 +3180,9 @@ public final class AlprPipeline {
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
         stableSceneVehicles.invalidate();
+        staticCycle.reset(sceneTransitionCoordinator.snapshot().sceneGeneration);
+        staticWatcher.reset();
+        staticWatcherArmed = false;
         scanAcquisitionController.startLiveRun(scanRunId, nowRuntimeNanos);
         JSONObject autoZoomDetails = new JSONObject();
         try {
@@ -3181,7 +3372,7 @@ public final class AlprPipeline {
                         safeSourceFrame.sourceSequence,
                         safeSourceFrame.sourceTimestampNanos,
                         safeSourceFrame.domain,
-                        rawVisualChange,
+                        !staticMode() && rawVisualChange,
                         clamp01(rawVisualChangeScore),
                         clamp01(changedFraction),
                         clamp01(brightnessDelta),
