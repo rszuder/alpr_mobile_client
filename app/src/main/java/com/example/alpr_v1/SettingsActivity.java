@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.util.Size;
@@ -612,6 +613,7 @@ public final class SettingsActivity extends AppCompatActivity {
     private void showNodeActions(ModelRole role) {
         CharSequence[] actions = new CharSequence[]{
                 getString(R.string.settings_node_choose_model),
+                getString(R.string.settings_node_choose_variant),
                 getString(R.string.settings_node_import_model, roleLabel(role))
         };
         new MaterialAlertDialogBuilder(this)
@@ -619,6 +621,16 @@ public final class SettingsActivity extends AppCompatActivity {
                 .setItems(actions, (dialog, which) -> {
                     if (which == 0) {
                         showCompositionModel(role);
+                    } else if (which == 1) {
+                        modelRegistry.reload();
+                        InstalledModel model = modelRegistry.getActive(role);
+                        if (model == null) {
+                            Toast.makeText(this, getString(
+                                    R.string.settings_no_active_model, roleLabel(role)
+                            ), Toast.LENGTH_LONG).show();
+                        } else {
+                            showVariantSelection(role, model);
+                        }
                     } else {
                         launchModelImport(role);
                     }
@@ -700,13 +712,15 @@ public final class SettingsActivity extends AppCompatActivity {
     private void showVariantSelection(ModelRole role, InstalledModel model) {
         List<ModelVariant> variants = model.manifest().variants();
         CharSequence[] labels = new CharSequence[variants.size() + 1];
-        labels[0] = getString(R.string.settings_variant_auto);
+        labels[0] = getString(R.string.settings_variant_auto,
+                ModelStatusFormatter.variantLabel(autoTuneManager.automaticVariant(model))
+                        + " · " + ModelStatusFormatter.hardwareLabel(
+                                autoTuneManager.automaticProfile(model)));
         String pinned = autoTuneManager.pinnedVariantId(model);
         int selected = 0;
         for (int index = 0; index < variants.size(); index++) {
             ModelVariant variant = variants.get(index);
-            String label = variant.id() + " · " + variant.runtime().wireName()
-                    + " · " + variant.precision().toUpperCase(java.util.Locale.ROOT);
+            String label = ModelStatusFormatter.variantLabel(variant) + " · " + variant.id();
             if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
                 label += " · " + getString(
                         R.string.settings_variant_unavailable,
@@ -717,9 +731,25 @@ public final class SettingsActivity extends AppCompatActivity {
             if (variant.id().equals(pinned)) selected = index + 1;
         }
         final int[] choice = {selected};
+        ArrayAdapter<CharSequence> adapter = new ArrayAdapter<CharSequence>(
+                this, android.R.layout.simple_list_item_single_choice, labels
+        ) {
+            @Override public boolean areAllItemsEnabled() { return false; }
+
+            @Override public boolean isEnabled(int position) {
+                return position == 0 || RuntimeBackendFactory.isRuntimeAvailable(
+                        variants.get(position - 1).runtime());
+            }
+
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                View row = super.getView(position, convertView, parent);
+                row.setEnabled(isEnabled(position));
+                return row;
+            }
+        };
         new MaterialAlertDialogBuilder(this)
                 .setTitle(getString(R.string.settings_select_variant_title, roleLabel(role)))
-                .setSingleChoiceItems(labels, selected, (dialog, which) -> choice[0] = which)
+                .setSingleChoiceItems(adapter, selected, (dialog, which) -> choice[0] = which)
                 .setPositiveButton(R.string.settings_apply, (dialog, ignored) -> {
                     if (choice[0] == 0) {
                         autoTuneManager.clearPinnedVariant(model);

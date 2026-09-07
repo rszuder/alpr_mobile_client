@@ -1,5 +1,35 @@
 # Architektura klienta mobilnego ALPR
 
+## Wybór wariantu wykonawczego MP/MT/MZ
+
+Każdy węzeł kompozycji udostępnia osobno wybór modelu, wybór wariantu
+wykonawczego i import modelu. Wariant pochodzi z `ModelManifest.variants`:
+runtime + precision + pliki + opcjonalne nadpisania kontraktu wejścia/wyjścia.
+CPU ×1/×2/×4 lub GPU jest odrębnym profilem wykonania. Niedostępny runtime
+pozostaje widoczny z przyczyną, ale nie można go wybrać.
+
+Kolejność rozstrzygania: zamrożony `ResearchStageExecutionConfig`, ręczny pin
+`AutoTuneManager`, zwycięzca AutoTune, deterministyczny fallback.
+Pin jest zapisany istniejącym kluczem rola + fingerprint; zmiana fingerprintu
+nie przenosi ustawienia. AUTO usuwa tylko pin danego modelu. AutoTune mierzy
+wszystkie dostępne warianty i profile, również INT8 przy obecnym FP32, a wybiera
+najniższą medianę udanego pomiaru. Błędne pomiary nie wygrywają. Sam pomiar
+nie nadpisuje pinu. Bez poprawnego profilu/pinu fallback preferuje kolejno
+TFLite FP32, ONNX FP32, inne FP32, TFLite, pozostałe dostępne warianty.
+
+Zastosowanie wariantu zwiększa rewizję ustawień. Po powrocie
+`MainActivity.applySettingsRevision()` odświeża rejestr i wywołuje
+`AlprPipeline.invalidateModels()`. Przed kolejną inferencją `ensureEngineLoaded()`
+zamyka poprzedni silnik i otwiera nowy bez restartowania aplikacji.
+Badanie korzysta z `requireVariant()` i zamrożonego profilu przez całą sesję.
+Log `ALPR_ENGINE_MODEL` powstaje z tego samego obiektu wariantu przekazanego
+do fabryki backendu: zawiera rolę, model, fingerprint, wariant, runtime,
+precision, rozmiar i typ wejścia oraz pliki.
+
+Schemat i importer nie zmieniają się. W szczególności ONNX INT8 QDQ nadal
+zachowuje publiczne wejście FLOAT32. Wyniki walidacji wdrożenia:
+`docs/handoffs/implementation-report-model-variants-v1.md`.
+
 ## Potok wykonawczy
 
 ```text

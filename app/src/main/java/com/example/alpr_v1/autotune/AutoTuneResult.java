@@ -91,7 +91,7 @@ public final class AutoTuneResult {
         json.put("gpu", chosenProfile.gpu);
         json.put("warmup_runs", AutoTuneManager.warmupRuns());
         json.put("measured_runs_per_candidate", AutoTuneManager.measuredRunsPerCandidate());
-        json.put("selection_policy", "fp32_preferred_quality_gate_required_for_quantized");
+        json.put("selection_policy", "lowest_successful_median_all_executable_variants");
         JSONArray array = new JSONArray();
         for (Candidate candidate : candidates) array.put(candidate.toJson());
         json.put("candidates", array);

@@ -16,6 +16,16 @@ import java.util.Locale;
 public final class ModelStatusFormatter {
     private ModelStatusFormatter() {}
 
+    public static String variantLabel(ModelVariant variant) {
+        String runtime = variant.runtime() == com.example.alpr_v1.model.ModelRuntime.TFLITE
+                ? "TFLite" : variant.runtime().wireName().toUpperCase(Locale.ROOT);
+        return runtime + " " + variant.precision().toUpperCase(Locale.ROOT);
+    }
+
+    public static String hardwareLabel(ExecutionProfile profile) {
+        return profile.gpu ? "GPU" : "CPU ×" + profile.cpuThreads;
+    }
+
     public static String format(ModelRegistry registry, AutoTuneManager autoTuneManager) {
         Presentation value = presentation(registry, autoTuneManager);
         return value.summary
@@ -94,12 +104,11 @@ public final class ModelStatusFormatter {
             first.append(String.format(Locale.ROOT, " %.2fM", manifest.parameterCount() / 1_000_000.0));
         }
 
-        String hardware = profile.gpu ? "GPU" : "CPU ×" + profile.cpuThreads;
-        String second = selected.runtime().wireName().toUpperCase(Locale.ROOT)
-                + " · " + selected.precision().toUpperCase(Locale.ROOT)
-                + " · " + hardware
+        String second = variantLabel(selected)
+                + " · " + hardwareLabel(profile)
                 + " • " + input.width() + '×' + input.height()
-                + (autoTuneManager.isVariantPinned(model) ? " • ręczny" : " • AutoTune");
+                + (autoTuneManager.isVariantPinned(model) ? " • ręczny"
+                        : autoTuneManager.hasProfile(model) ? " • AutoTune" : " • AUTO (domyślny)");
 
         StringBuilder third = new StringBuilder(String.format(
                 Locale.ROOT,

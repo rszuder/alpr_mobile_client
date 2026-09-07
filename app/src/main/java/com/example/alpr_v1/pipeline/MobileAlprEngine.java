@@ -3629,7 +3629,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         + "variant_id=%s runtime=%s precision=%s "
                         + "input_width=%d input_height=%d decoder=%s "
                         + "output_format=%s tensor_layout=%s class_count=%d "
-                        + "keypoint_count=%d keypoint_dimensions=%d",
+                        + "keypoint_count=%d keypoint_dimensions=%d files=%s input_data_type=%s",
                 stage,
                 model.manifest().role().wireName(),
                 model.manifest().modelId(),
@@ -3644,7 +3644,9 @@ final class MobileAlprEngine implements AutoCloseable {
                 output.tensorLayout(),
                 output.classCount(),
                 output.keypointCount(),
-                output.keypointDimensions()
+                output.keypointDimensions(),
+                variant.files(),
+                input.dataType()
         );
     }
 

@@ -469,6 +469,184 @@ public final class RuntimeCompositionInstrumentedTest {
         assertFalse(registry.canRestoreBaseModels());
     }
 
+    @Test public void autoAcceptsStoredInt8WinnerWhileFp32Exists() throws Exception {
+        InstalledModel model = variantModel(ModelRole.PLATE, suffix);
+        AutoTuneManager manager = new AutoTuneManager(context);
+        storeProfile(manager, model, "tflite-int8", "tflite", 4);
+        assertEquals("tflite-int8", manager.chosenVariant(model).id());
+        assertEquals(4, manager.chosenProfile(model).cpuThreads);
+        assertEquals("lowest_successful_median_all_executable_variants",
+                new com.example.alpr_v1.autotune.AutoTuneResult("id", suffix, "tflite-int8",
+                        manager.chosenProfile(model), java.util.Collections.emptyList())
+                        .toJson().getString("selection_policy"));
+    }
+
+    @Test public void pinSurvivesRecreationAndRetuningUntilAutoIsSelected() throws Exception {
+        InstalledModel model = variantModel(ModelRole.PLATE, suffix);
+        AutoTuneManager manager = new AutoTuneManager(context);
+        storeProfile(manager, model, "tflite-fp32", "tflite", 4);
+        manager.pinVariant(model, "tflite-int8");
+        AutoTuneManager recreated = new AutoTuneManager(context);
+        assertEquals("tflite-int8", recreated.chosenVariant(model).id());
+        assertEquals("tflite-fp32", recreated.automaticVariant(model).id());
+        assertEquals(4, recreated.automaticProfile(model).cpuThreads);
+        storeProfile(recreated, model, "onnx-fp32", "onnx", 1);
+        assertEquals("tflite-int8", recreated.chosenVariant(model).id());
+        assertEquals(ModelRuntime.TFLITE, recreated.chosenProfile(model).runtime);
+        recreated.clearPinnedVariant(model);
+        assertEquals("onnx-fp32", recreated.chosenVariant(model).id());
+        assertEquals(1, recreated.chosenProfile(model).cpuThreads);
+    }
+
+    @Test public void pinsAreIndependentByRoleAndFingerprint() throws Exception {
+        AutoTuneManager manager = new AutoTuneManager(context);
+        InstalledModel mp = variantModel(ModelRole.VEHICLE, suffix);
+        InstalledModel mt = variantModel(ModelRole.PLATE, suffix);
+        InstalledModel mz = variantModel(ModelRole.CHARACTER, suffix);
+        manager.pinVariant(mp, "ncnn-fp32");
+        manager.pinVariant(mt, "tflite-int8");
+        manager.pinVariant(mz, "onnx-int8");
+        assertEquals("ncnn-fp32", manager.chosenVariant(mp).id());
+        assertEquals("tflite-int8", manager.chosenVariant(mt).id());
+        assertEquals("onnx-int8", manager.chosenVariant(mz).id());
+        InstalledModel updated = variantModel(ModelRole.PLATE, suffix + "new");
+        assertFalse(manager.isVariantPinned(updated));
+        assertEquals("tflite-fp32", manager.chosenVariant(updated).id());
+    }
+
+    @Test public void frozenInt8IgnoresLaterGlobalPinAndPreservesFloatQdqInterface() throws Exception {
+        AutoTuneManager manager = new AutoTuneManager(context);
+        InstalledModel mt = variantModel(ModelRole.PLATE, suffix);
+        manager.pinVariant(mt, "onnx-int8");
+        ResearchStageExecutionConfig frozen = ResearchStageExecutionConfig.enabled(
+                ModelRole.PLATE, mt, manager.chosenVariant(mt), manager.chosenProfile(mt),
+                new ModelRegistry(context));
+        manager.pinVariant(mt, "tflite-fp32");
+        assertEquals("onnx-int8", frozen.requireVariant(mt).id());
+        assertEquals(ModelRuntime.ONNX, frozen.runtime);
+        assertEquals("int8", frozen.precision);
+        assertEquals("FLOAT32", frozen.inputDataType);
+        assertEquals("tflite-fp32", manager.chosenVariant(mt).id());
+    }
+
+    @Test public void staleAutoWinnerFallsBackWithoutBorrowingItsHardwareProfile() throws Exception {
+        AutoTuneManager manager = new AutoTuneManager(context);
+        InstalledModel mt = variantModel(ModelRole.PLATE, suffix);
+        storeProfile(manager, mt, "deleted-variant", "tflite", 4);
+        assertEquals("tflite-fp32", manager.chosenVariant(mt).id());
+        assertEquals(Math.min(2, Runtime.getRuntime().availableProcessors()),
+                manager.chosenProfile(mt).cpuThreads);
+    }
+
+    @Test public void directStageMenuListsFiveVariantsAndAppliesPinWithRevision() throws Exception {
+        String storage = "variant-ui-" + suffix;
+        writeModel(ModelRole.PLATE, storage, storage);
+        ModelRegistry registry = new ModelRegistry(context);
+        InstalledModel model = findStorage(registry.getInstalled(ModelRole.PLATE), storage);
+        registry.activate(model);
+        AutoTuneManager manager = new AutoTuneManager(context);
+        SharedPreferences settings = context.getSharedPreferences("alpr_ui", Context.MODE_PRIVATE);
+        try (androidx.test.core.app.ActivityScenario<com.example.alpr_v1.SettingsActivity> scenario =
+                     androidx.test.core.app.ActivityScenario.launch(com.example.alpr_v1.SettingsActivity.class)) {
+            scenario.onActivity(activity -> {
+                try {
+                    for (String name : new String[]{"modelRegistry", "autoTuneManager", "preferences"}) {
+                        java.lang.reflect.Field field = activity.getClass().getDeclaredField(name);
+                        field.setAccessible(true);
+                        field.set(activity, name.equals("modelRegistry") ? registry
+                                : name.equals("autoTuneManager") ? manager : settings);
+                    }
+                    activity.findViewById(com.example.alpr_v1.R.id.settings_node_plate).performClick();
+                } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+            });
+            androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.withText(
+                    "Wybierz wariant wykonawczy")).perform(androidx.test.espresso.action.ViewActions.click());
+            // Inspect every adapter row, including those outside the screen, and availability.
+            androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers
+                    .isAssignableFrom(android.widget.ListView.class)).check((view, error) -> {
+                if (error != null) throw error;
+                android.widget.ListAdapter rows = ((android.widget.ListView) view).getAdapter();
+                assertEquals(6, rows.getCount());
+                assertTrue(rows.getItem(0).toString().startsWith("AUTO — aktualnie: TFLite FP32 · CPU ×"));
+                for (int index = 0; index < model.manifest().variants().size(); index++) {
+                    ModelVariant variant = model.manifest().variants().get(index);
+                    assertTrue(rows.getItem(index + 1).toString().startsWith(
+                            ModelStatusFormatter.variantLabel(variant)));
+                    assertEquals(com.example.alpr_v1.inference.RuntimeBackendFactory
+                            .isRuntimeAvailable(variant.runtime()), rows.isEnabled(index + 1));
+                }
+            });
+            androidx.test.espresso.Espresso.onData(org.hamcrest.Matchers.anything())
+                    .inAdapterView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(
+                            android.widget.ListView.class)).atPosition(4)
+                    .perform(androidx.test.espresso.action.ViewActions.click());
+            androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.withText(
+                    "Zastosuj")).perform(androidx.test.espresso.action.ViewActions.click());
+            assertEquals("tflite-int8", manager.chosenVariant(model).id());
+            assertEquals(1, settings.getInt(com.example.alpr_v1.SettingsActivity.KEY_REVISION, 0));
+        } finally {
+            settings.edit().clear().commit();
+        }
+    }
+
+    /** Opt-in device acceptance: uses the installed package as read-only test data. */
+    @Test public void installedFiveVariantPackageImportsBothWaysAndExecutesEveryMtBackend() throws Exception {
+        org.junit.Assume.assumeTrue("Requires -e installedVariants true",
+                "true".equals(InstrumentationRegistry.getArguments().getString("installedVariants")));
+        ModelRegistry installedRegistry = new ModelRegistry(targetContext);
+        InstalledAlprPackage source = installedRegistry.getBasePackage();
+        assertNotNull("Install the five-variant acceptance package first", source);
+        File archive = source.sourceArchive();
+        assertTrue(archive.isFile());
+        File singleArchive = new File(isolatedFiles, "acceptance-mt.alprmodel");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive)) {
+            java.util.zip.ZipEntry entry = zip.getEntry(source.manifest().plate().packageFile());
+            assertNotNull(entry);
+            try (java.io.InputStream stream = zip.getInputStream(entry)) {
+                Files.copy(stream, singleArchive.toPath());
+            }
+        }
+        ModelRegistry registry = new ModelRegistry(context);
+        AlprPackageImporter importer = new AlprPackageImporter(context, registry);
+        InstalledModel single = importer.importPackage(android.net.Uri.fromFile(singleArchive)).singleModel();
+        assertNotNull(single);
+        assertEquals(5, single.manifest().variants().size());
+        InstalledAlprPackage nested = importer.importPackage(android.net.Uri.fromFile(archive)).completePackage();
+        assertNotNull(nested);
+        assertEquals(5, nested.plateModel().manifest().variants().size());
+        assertEquals(single.fingerprint(), nested.plateModel().fingerprint());
+        AutoTuneManager manager = new AutoTuneManager(context);
+        for (ModelVariant variant : nested.plateModel().manifest().variants()) {
+            manager.pinVariant(nested.plateModel(), variant.id());
+            ModelVariant selected = manager.chosenVariant(nested.plateModel());
+            assertEquals(variant.id(), selected.id());
+            try (com.example.alpr_v1.inference.InferenceBackend backend =
+                         com.example.alpr_v1.inference.RuntimeBackendFactory.create(
+                                 nested.plateModel(), selected, manager.chosenProfile(nested.plateModel()))) {
+                java.nio.ByteBuffer input = java.nio.ByteBuffer.allocateDirect(backend.inputByteSize())
+                        .order(java.nio.ByteOrder.nativeOrder());
+                assertFalse(backend.run(input).outputs().isEmpty());
+                android.util.Log.i("ALPR_VARIANT_ACCEPTANCE", "executed=" + selected.id()
+                        + " files=" + selected.files() + " input=" + backend.inputInfo().dataType);
+            }
+        }
+    }
+
+    private InstalledModel variantModel(ModelRole role, String fingerprint) throws Exception {
+        return new InstalledModel(ModelManifest.parse(modelManifest(role, "variant-test").toString()),
+                isolatedFiles, fingerprint);
+    }
+
+    private void storeProfile(AutoTuneManager manager, InstalledModel model,
+                              String id, String runtime, int threads) throws Exception {
+        java.lang.reflect.Method key = AutoTuneManager.class.getDeclaredMethod("key", InstalledModel.class);
+        key.setAccessible(true);
+        JSONObject json = new JSONObject().put("chosen_variant_id", id)
+                .put("runtime", runtime).put("cpu_threads", threads).put("gpu", false);
+        context.getSharedPreferences("autotune", Context.MODE_PRIVATE).edit()
+                .putString((String) key.invoke(manager, model), json.toString()).commit();
+    }
+
     private InstalledModel importSingleModel(ModelRole role, String prefix) throws Exception {
         byte[] modelBytes = new byte[]{4, 2, 1, (byte) role.ordinal()};
         String modelId = prefix + suffix;
@@ -657,7 +835,10 @@ public final class RuntimeCompositionInstrumentedTest {
         JSONArray variants = new JSONArray()
                 .put(variant("tflite-fp32", "tflite", "fp32", "variants/model.tflite"))
                 .put(variant("onnx-fp32", "onnx", "fp32", "variants/model.onnx"))
-                .put(variant("ncnn-fp32", "ncnn", "fp32", "variants/model.param"));
+                .put(variant("ncnn-fp32", "ncnn", "fp32", "variants/model.param"))
+                .put(variant("tflite-int8", "tflite", "int8", "variants/model-int8.tflite"))
+                .put(variant("onnx-int8", "onnx", "int8", "variants/model-int8.onnx")
+                        .put("input", new JSONObject(input.toString()).put("layout", "NCHW")));
         return new JSONObject()
                 .put("schema", ModelManifest.SCHEMA)
                 .put("model_id", modelId)

@@ -191,6 +191,10 @@ eksportu, jeżeli eksporter je podał.
 
 ### 2026-08-19 — polityka FP32 i INT8
 
+Uwaga historyczna: ograniczenie automatycznego wyboru do FP32 opisane poniżej
+zostało zastąpione handoffem wyboru wariantów z 2026-09-07. Aktualna polityka
+porównuje wszystkie udane pomiary; preferencja FP32 pozostaje tylko fallbackiem.
+
 Problem:
 
 Pierwsza wersja autotuningu wybierała wariant wyłącznie według opóźnienia.
@@ -1528,6 +1532,34 @@ Weryfikacja:
 - kontrola wizualna potwierdziła piktogram obrazu, przycisk maksymalizacji i
   brak ponownego pojawienia się pustego obszaru po zwinięciu;
 - finalny APK został zainstalowany na telefonie.
+
+### 2026-09-07 — jawny wybór wariantu wykonawczego MP/MT/MZ
+
+Wdrożono handoff `model-variant-selection-v1` na gałęzi
+`feature/model-variant-selection-v1`, zachowując pełną bazę zmian v4.
+Każdy węzeł ma osobne akcje wyboru modelu, wariantu i importu. Dialog pokazuje
+runtime oraz precision, opcjonalny identyfikator i wynik AUTO z CPU/GPU;
+niedostępny backend nie jest wybieralny.
+
+Ręczny pin nadal używa klucza rola + fingerprint. AutoTune porównuje teraz
+wszystkie udane pomiary, również INT8 przy dostępnym FP32, bez nadpisywania
+pinu. Eksport pomiaru zapisuje politykę
+`lowest_successful_median_all_executable_variants`. Deterministyczny fallback
+nadal preferuje FP32. Importer, schematy i kontrakt ONNX INT8 QDQ FLOAT32
+pozostają bez zmian.
+
+Zmiana wariantu korzysta z istniejącej rewizji ustawień i przeładowania silnika
+przed inferencją. Badanie zamraża wariant oraz profil przez istniejący
+`ResearchStageExecutionConfig.requireVariant()`. Diagnostyka silnika wskazuje
+teraz także pliki i typ wejścia z obiektu rzeczywiście otwieranego przez backend.
+
+Weryfikacja: build debug/test APK, 536 testów JVM i 85 testów Androida na
+Samsung SM-A125F zakończonych sukcesem. Test Android obejmuje rzeczywistą
+pięciowariantową paczkę MT: import samodzielny, import zagnieżdżony oraz
+inferencję TFLite FP32/INT8, ONNX FP32/INT8 i NCNN FP32. Sprawdzono również
+dialog i przełączenie INT8 → FP32 w procesie PID 15033 bez restartu aplikacji.
+Pełna macierz V1–V14 i zakres walidacji:
+`docs/handoffs/implementation-report-model-variants-v1.md`.
 
 ## 6. Najważniejsze decyzje projektowe
 

@@ -206,8 +206,10 @@
     <string name="settings_import_alpr_package">Zaimportuj pakiet ALPR</string>
     <string name="settings_restore_base_package">Przywróć pakiet bazowy</string>
     <string name="settings_node_actions_title">Węzeł %1$s</string>
-    <string name="settings_node_choose_model">Zmień model lub format</string>
-    <string name="settings_node_import_model">Importuj model dla %1$s</string>
+    <string name="settings_node_choose_model">Wybierz model</string>
+    <string name="settings_node_choose_variant">Wybierz wariant wykonawczy</string>
+    <string name="settings_no_active_model">Brak aktywnego modelu %1$s.</string>
+    <string name="settings_node_import_model">Zaimportuj model %1$s</string>
     <string name="settings_node_missing">Brak</string>
     <string name="settings_node_inactive">Nieaktywny</string>
     <string name="settings_node_vehicle_missing">MP\nBrak</string>
@@ -227,7 +229,7 @@
     <string name="settings_node_badge_description">%1$s w kaskadzie: %2$s</string>
     <string name="settings_select_model_title">Wybierz model %1$s</string>
     <string name="settings_select_variant_title">Wariant wykonawczy %1$s</string>
-    <string name="settings_variant_auto">Automatyczny (zalecany)</string>
+    <string name="settings_variant_auto">AUTO — aktualnie: %1$s</string>
     <string name="settings_variant_unavailable">niedostępny: %1$s</string>
     <string name="settings_no_models_for_role">Brak zaimportowanych modeli dla etapu %1$s</string>
     <string name="settings_model_not_executable">Model nie zawiera wariantu obsługiwanego przez tę wersję aplikacji</string>

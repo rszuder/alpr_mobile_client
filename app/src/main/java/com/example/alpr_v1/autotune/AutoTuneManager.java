@@ -76,25 +76,21 @@ public final class AutoTuneManager {
         threadCounts.add(Math.min(4, cores));
 
         List<AutoTuneResult.Candidate> results = new ArrayList<>();
-        AutoTuneResult.Candidate best = null;
-        boolean hasFp32 = hasExecutableFp32(model);
         for (ModelVariant variant : model.manifest().variants()) {
             cancelIfInterrupted();
             if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) continue;
-            boolean selectable = !hasFp32 || isFp32(variant);
             for (int threads : threadCounts) {
                 cancelIfInterrupted();
                 ExecutionProfile profile = new ExecutionProfile(variant.runtime(), threads, false);
                 AutoTuneResult.Candidate candidate = benchmark(model, variant, profile);
                 results.add(candidate);
-                if (selectable && isBetter(candidate, best)) best = candidate;
             }
             if (variant.runtime() == ModelRuntime.TFLITE && !isThermallyConstrained()) {
                 AutoTuneResult.Candidate candidate = benchmark(model, variant, ExecutionProfile.tfliteGpu());
                 results.add(candidate);
-                if (selectable && isBetter(candidate, best)) best = candidate;
             }
         }
+        AutoTuneResult.Candidate best = fastestSuccessful(results);
         if (best == null) {
             throw new IllegalStateException("Żaden dostępny runtime nie przeszedł autotuningu");
         }
@@ -152,7 +148,9 @@ public final class AutoTuneManager {
         } catch (Exception e) {
             return new AutoTuneResult.Candidate(
                     variant.id(), variant.runtime(), profile.cpuThreads, profile.gpu,
-                    0, 0, modelLoadMs, coldInferenceMs, e.getMessage()
+                    0, 0, modelLoadMs, coldInferenceMs,
+                    e.getMessage() == null || e.getMessage().isEmpty()
+                            ? e.getClass().getSimpleName() : e.getMessage()
             );
         } finally {
             if (backend != null) backend.close();
@@ -165,8 +163,16 @@ public final class AutoTuneManager {
         }
     }
 
-    private static boolean isBetter(AutoTuneResult.Candidate candidate, AutoTuneResult.Candidate current) {
-        return candidate.error.isEmpty() && (current == null || candidate.medianMs < current.medianMs);
+    static AutoTuneResult.Candidate fastestSuccessful(List<AutoTuneResult.Candidate> candidates) {
+        AutoTuneResult.Candidate best = null;
+        for (AutoTuneResult.Candidate candidate : candidates) {
+            if (candidate.error.isEmpty() && Double.isFinite(candidate.medianMs)
+                    && candidate.medianMs >= 0.0
+                    && (best == null || candidate.medianMs < best.medianMs)) {
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     public boolean hasProfile(InstalledModel model) {
@@ -178,13 +184,20 @@ public final class AutoTuneManager {
     }
 
     public ExecutionProfile chosenProfile(InstalledModel model) {
-        ModelVariant selected = chosenVariant(model);
+        return profileForVariant(model, chosenVariant(model));
+    }
+
+    public ExecutionProfile automaticProfile(InstalledModel model) {
+        return profileForVariant(model, automaticVariant(model));
+    }
+
+    private ExecutionProfile profileForVariant(InstalledModel model, ModelVariant selected) {
         JSONObject parsed = profileObject(model);
         if (parsed == null) {
             return defaultProfile(selected.runtime());
         }
         try {
-            if (isVariantPinned(model)) {
+            if (!selected.id().equals(parsed.optString("chosen_variant_id", ""))) {
                 return bestMeasuredProfile(parsed, selected);
             }
             ModelRuntime runtime = ModelRuntime.fromWire(parsed.getString("runtime"));
@@ -211,13 +224,16 @@ public final class AutoTuneManager {
                 }
             }
         }
+        return automaticVariant(model);
+    }
+
+    /** AutoTune winner or deterministic fallback, without changing the manual pin. */
+    public ModelVariant automaticVariant(InstalledModel model) {
         JSONObject parsed = profileObject(model);
         String selectedId = parsed == null ? "" : parsed.optString("chosen_variant_id", "");
-        boolean hasFp32 = hasExecutableFp32(model);
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.id().equals(selectedId)
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())
-                    && (!hasFp32 || isFp32(variant))) {
+                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
                 return variant;
             }
         }
@@ -345,13 +361,6 @@ public final class AutoTuneManager {
 
     public static int warmupRuns() { return WARMUP_RUNS; }
     public static int measuredRunsPerCandidate() { return MEASURED_RUNS; }
-
-    private static boolean hasExecutableFp32(InstalledModel model) {
-        for (ModelVariant variant : model.manifest().variants()) {
-            if (isFp32(variant) && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return true;
-        }
-        return false;
-    }
 
     private static boolean isFp32(ModelVariant variant) {
         return "fp32".equals(variant.precision());
