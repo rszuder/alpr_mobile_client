@@ -305,6 +305,21 @@ public final class SceneTransitionCoordinator {
         return hardReset(assessment.reason, nowNanos);
     }
 
+    /** A new luma-confirmed static sample is not a duplicate of the previous reset.
+     * Generation validation rejects repeated asynchronous submissions instead of a time cooldown. */
+    public synchronized SceneTransitionDecision requestStaticSceneReset(
+            ContinuityStamp source, String reason, long nowNanos
+    ) {
+        Contracts.nonNegative("nowNanos", nowNanos);
+        if (mode != SceneHandlingMode.STRICT_SCENE_BOUNDARY || source == null
+                || source.sceneGeneration != sceneGeneration || source.visualEpoch != visualEpoch
+                || source.cameraTransformGeneration != cameraTransformGeneration)
+            return idleDecision("stale_static_boundary");
+        assessment = new ContinuityAssessment(VisualChangeClassification.CONTINUITY_BREAK,
+                0f,0f,0f,1f,false,false,false,Contracts.reason(reason));
+        return hardReset(assessment.reason, nowNanos, false);
+    }
+
     public synchronized SceneTransitionDecision requestSoftReacquire(
             String reason,
             long nowNanos
@@ -608,7 +623,11 @@ public final class SceneTransitionCoordinator {
     }
 
     private SceneTransitionDecision hardReset(String reason, long nowNanos) {
-        if (currentState == SceneContinuityState.HARD_RESETTING
+        return hardReset(reason, nowNanos, true);
+    }
+
+    private SceneTransitionDecision hardReset(String reason, long nowNanos, boolean deduplicateByTime) {
+        if (deduplicateByTime && currentState == SceneContinuityState.HARD_RESETTING
                 && elapsedSince(lastTransitionNanos, nowNanos) < transitionCooldownNanos) {
             return idleDecision("hard_reset_deduplicated");
         }

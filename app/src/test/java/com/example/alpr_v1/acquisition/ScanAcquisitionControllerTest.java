@@ -1083,6 +1083,18 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(4L,controller.lockedEntityId());
     }
 
+    @Test public void staticFreshEmptyMpImmediatelyCancelsActiveVehicleAndClearsQueue() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.setStaticBaseline(true);
+        controller.startRun(1L,1L);
+        controller.onVehicleFrame(frame(candidate(1L,1L),candidate(2L,2L)),continuity(),100L);
+        assertTrue(controller.snapshot(100L).activeEntityId > 0L);
+        controller.onVehicleFrame(frame(),continuity(),200L);
+        assertEquals(0L,controller.snapshot(200L).activeEntityId);
+        assertEquals(0,controller.snapshot(200L).queue.size());
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,controller.currentDirective().action);
+    }
+
     private static SceneContinuitySnapshot continuity() {
         return new SceneContinuitySnapshot(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,

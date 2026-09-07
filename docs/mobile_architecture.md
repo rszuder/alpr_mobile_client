@@ -30,6 +30,27 @@ Schemat i importer nie zmieniają się. W szczególności ONNX INT8 QDQ nadal
 zachowuje publiczne wejście FLOAT32. Wyniki walidacji wdrożenia:
 `docs/handoffs/implementation-report-model-variants-v1.md`.
 
+## Tryb statyczny: granica zdjęcia i autozoom tablic
+
+Detektor sceny pracuje na lekkich klatkach luma także podczas `STATIC_IDLE`
+i blokady prezentacji. Znaczna zmiana (≥65% pikseli regionu obserwowanego lub
+całego obrazu, po kompensacji ekspozycji) unieważnia scenę przy pierwszej
+obserwacji. Mniejsza istotna zmiana wymaga dwóch obserwacji i co najmniej 50 ms.
+Rzeczywista animacja optyczna nadal zawiesza porównanie obrazu.
+
+`requestStaticSceneReset()` odrzuca stare generacje zamiast blokować kolejne
+zdjęcie czasowym cooldownem. UI czyści ramki i zwalnia barierę prezentacji;
+nie czeka na bitmapę Preview ani zakończenie starej inferencji. Kolejna klatka
+odświeża MP z użyciem już otwartych modeli. Regiony obserwacji są aktualizowane
+już podczas baseline, a późny wynik nie może podmienić referencji luma nowym
+zdjęciem. KLT nie jest źródłem geometrii ani decyzji o scenie w trybie statycznym.
+
+STATIC dopuszcza tylko pojazdy zmierzone przez MP. Pusty nowy pomiar usuwa
+ramki, oczekujące zadania i aktywny cel. Autozoom ma budżet jednej próby na
+wykryty track tablicy w scenie, także dla mocnego odczytu, tablicy bez encji
+i ramki wymagającej dopiero ustalenia narożników/MZ. Tryb dynamiczny zachowuje
+dotychczasowe kryteria jakości i geometrii zoomu.
+
 ## Potok wykonawczy
 
 ```text

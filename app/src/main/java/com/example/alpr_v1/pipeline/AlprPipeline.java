@@ -1652,8 +1652,9 @@ public final class AlprPipeline {
             activeEngine.requestVehicleRefreshAfterZoom();
         }
         activeEngine.setStaticSceneMode(staticMode());
+        activeEngine.setStaticRefinement(staticMode() && staticCycle.refining());
         activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
-        if (staticMode() && staticCycle.zoomEntity() > 0L || !staticMode() && dynamicZoomEntity > 0L) {
+        if (staticMode() && staticCycle.refining() || !staticMode() && dynamicZoomEntity > 0L) {
             dispatchedScanSessionId = scanAcquisitionController.snapshot(nowRuntimeNanos).activeSessionId;
             activeEngine.setScanAcquisitionDirective(false, AcquisitionDirective.none(0L, 0L));
             return;
@@ -2894,9 +2895,9 @@ public final class AlprPipeline {
     }
 
     private boolean staticWaiting() {
-        if ((staticCycle.zoomEntity() > 0L || dynamicZoomEntity > 0L) && currentCameraZoomRatio <= 1.01f) return true;
+        if ((staticMode() ? staticCycle.refining() : dynamicZoomEntity > 0L) && currentCameraZoomRatio <= 1.01f) return true;
         return staticMode() && staticCycle.phase() != com.example.alpr_v1.acquisition.StaticSceneCycle.Phase.BASELINE
-                && staticCycle.zoomEntity() == 0L;
+                && !staticCycle.refining();
     }
 
     public boolean staticBaselineComplete() {
@@ -2908,6 +2909,8 @@ public final class AlprPipeline {
         VehicleTrackingFrame vehicles = scanVehicleTrackingFrame();
         staticCycle.observeVehicles(vehicles);
         for (PlateObservation observation : result.plateObservations) staticCycle.observe(observation);
+        // Watch measured objects already during baseline; arming preserves the original luma anchor.
+        staticWatcher.arm(staticCycle.watchRegions());
         ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(SystemClock.elapsedRealtimeNanos());
         if (scan.runState.active()) {
             if (vehicles.sourceFrameId > 0L && scan.activeEntityId == 0L && scan.queue.size() == 0) staticCycle.finishBaseline();
@@ -3016,7 +3019,7 @@ public final class AlprPipeline {
         SceneContinuitySnapshot snapshot;
         synchronized (sceneTransitionCoordinator) {
         if (!isCurrentContinuityStamp(stamp)) return null;
-        decision = sceneTransitionCoordinator.requestStructuralReset(result.reason, now);
+        decision = sceneTransitionCoordinator.requestStaticSceneReset(stamp, result.reason, now);
         if (decision.action != SceneTransitionAction.HARD_RESET) return null;
         vehicleTrackingCoordinator.repository().resetScene();
         snapshot = sceneTransitionCoordinator.snapshot();
@@ -3025,6 +3028,10 @@ public final class AlprPipeline {
         hardResetRevision.set(decision.revision);
         visualEpochRevision.set(decision.revision);
         trackingResetRequested = true;
+        dynamicZoomEntity = 0L;
+        targetSnapshot = TargetSnapshot.searching().withContinuityStamp(
+                sceneTransitionCoordinator.stamp(stamp.sourceFrameStamp()));
+        clearAutoZoomTargetRoi();
         stableSceneVehicles.invalidate();
         staticCycle.reset(snapshot.sceneGeneration);
         staticWatcher.reset();

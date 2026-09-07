@@ -538,6 +538,9 @@ public final class MainActivity extends AppCompatActivity {
                 return;
             }
 
+            // STATIC scene evidence comes from camera luma, never KLT or a delayed Preview bitmap.
+            if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY) return;
+
             if (autoZoomZoomedAnchorPending
                     && autoZoomController.state()
                     == AutoZoomController.State.ZOOMED_RETRY) {
@@ -1044,11 +1047,12 @@ public final class MainActivity extends AppCompatActivity {
          * scene-cut evidence. Only a real optical transform or an already
          * active presentation barrier is allowed to pause this channel.
          */
+        boolean staticScene = effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
         if (frame == null || !cameraStarted || cameraTransformInProgress
-                || previewPresentationBarrier.active()) return;
+                || !staticScene && previewPresentationBarrier.active()) return;
         final long presentationGeneration = previewPresentationBarrier.capture();
-        if (!previewPresentationBarrier.permits(presentationGeneration)) return;
-        if (PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
+        if (!staticScene && !previewPresentationBarrier.permits(presentationGeneration)) return;
+        if (!staticScene && PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
                 previewSceneRecoveryRebaseRevision.get(),
                 previewSceneRecoveryRebaseAppliedRevision
         )) return;
@@ -1063,17 +1067,16 @@ public final class MainActivity extends AppCompatActivity {
         if (!isCurrentPreviewStamp(continuityStamp)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
         lastDirectLumaSourceTimestampNanos = frame.timestampNanos;
-        if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY && pipeline != null) {
+        if (staticScene && pipeline != null) {
             SceneTransitionDecision staticDecision = pipeline.observeStaticLuma(continuityStamp,
                     frame.gray, frame.width, frame.height, android.os.SystemClock.elapsedRealtimeNanos(),
                     cameraTransformInProgress || currentCameraZoomRatio > 1.01f);
             if (staticDecision != null) {
-                activateAbruptScenePresentationBarrier(1f);
                 runOnUiThread(() -> renderPreviewContinuityDecision(staticDecision, 1f, 1f,
                         java.util.Collections.emptyList()));
                 return;
             }
-            if (pipeline.isStaticIdle()) return;
+            return;
         }
         CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
         boolean earlySensorMotion = earlyMotionMonitor != null
@@ -3602,6 +3605,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean needsPreviewSceneSampling() {
+        if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY)
+            return autoZoomReturnValidationPending || isAutoZoomHoldingMemory();
         if (pipeline != null && pipeline.isStaticIdle()) return false;
         return previewPresentationBarrier.active()
                 || previewSceneAnchorPending
@@ -3842,8 +3847,7 @@ public final class MainActivity extends AppCompatActivity {
         previewSceneDetector.reset();
         previewSceneAnchorGuard.reset();
 
-        previewSceneAnchorPending =
-                true;
+        previewSceneAnchorPending = effectiveSceneHandlingMode() != SceneHandlingMode.STRICT_SCENE_BOUNDARY;
 
         latestDiagnosticOverlayItems =
                 java.util.Collections.emptyList();
@@ -3869,6 +3873,14 @@ public final class MainActivity extends AppCompatActivity {
         overlayView.hardResetForNewScene(currentPreviewSourceFrameStamp().continuityStamp());
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(true);
+        if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
+            // The coordinator already invalidated old results. Never wait for a preview rebase
+            // that STATIC_IDLE can stop scheduling before its first callback.
+            previewPresentationBarrier.release();
+            previewSceneRecoveryRebaseRevision.set(0L);
+            previewSceneRecoveryRebaseAppliedRevision = 0L;
+            renderedStaticIdleScene = -1L;
+        }
 
 
         /*
@@ -5206,7 +5218,8 @@ public final class MainActivity extends AppCompatActivity {
                 latencyAlignedItems != motionCompensatedItems
                         || motionCompensatedItems != scanScopedItems;
         List<OverlayItem> visibleOverlayItems =
-                overlayTracker.update(
+                effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY
+                        ? latencyAlignedItems : overlayTracker.update(
                         latencyAlignedItems,
                         geometryAlignedToPresentation
                                 ? presentationNanos : observationNanos,
@@ -5770,7 +5783,7 @@ public final class MainActivity extends AppCompatActivity {
             renderStaticIdle();
             return;
         }
-        AutoZoomController.Decision decision = autoZoomController.requestRefinement(sample);
+        AutoZoomController.Decision decision = autoZoomController.requestStaticRefinement(sample);
         if (decision.action == AutoZoomController.Action.REQUEST_ZOOM) {
             pipeline.setAutoZoomTargetLock(sample.trackId, Math.max(0f, sample.centerX - sample.normalizedWidth),
                     Math.max(0f, sample.centerY - sample.normalizedWidth * 0.5f),
@@ -5807,7 +5820,9 @@ public final class MainActivity extends AppCompatActivity {
                         new RectF(b.left, b.top, b.right, b.bottom), java.util.Collections.emptyList(),
                         "P" + vehicle.entityId, vehicle.entityId, false));
             }
-            if (!vehicles.isEmpty()) applyVisibleOverlay(vehicles, latestOverlaySourceWidth, latestOverlaySourceHeight);
+            for (OverlayItem item : currentOverlayItems())
+                if (item.kind == OverlayItem.Kind.PLATE) vehicles.add(item);
+            applyVisibleOverlay(vehicles, latestOverlaySourceWidth, latestOverlaySourceHeight);
             overlayView.setStationaryScene(true);
             overlayView.setActiveVehicleEntityId(0L);
             overlayView.setFocusedTrackId(0L);

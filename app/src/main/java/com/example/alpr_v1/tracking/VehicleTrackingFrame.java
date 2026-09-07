@@ -124,6 +124,17 @@ public final class VehicleTrackingFrame {
         );
     }
 
+    /** STATIC uses positive MP measurements, never a missing track's predicted geometry. */
+    public VehicleTrackingFrame measuredOnly() {
+        List<VehicleCandidate> measured = new ArrayList<>();
+        for (VehicleCandidate candidate : candidates) {
+            if (!candidate.predicted && candidate.missedUpdates == 0) measured.add(candidate);
+        }
+        return new VehicleTrackingFrame(sourceFrameId, sourceSequence, sourceTimestampNanos,
+                sourceTimestampDomain, snapshotTimestampNanos, sceneGeneration, visualEpoch,
+                cameraTransformGeneration, measured);
+    }
+
     public static VehicleTrackingFrame empty(long sceneGeneration) {
         return new VehicleTrackingFrame(
                 0L, 0L, 0L, sceneGeneration, Collections.emptyList()

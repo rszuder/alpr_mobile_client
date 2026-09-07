@@ -17,9 +17,7 @@ public class StaticSceneWatcherTest {
     @Test public void s7ChangedVehicleRegionConfirmsBoundaryEvenWithSameBackground() {
         StaticSceneWatcher watcher = watcher(true);
         byte[] changed = change(20, 20, 60, 60);
-        assertFalse(watcher.observe(changed, 100, 100, 100_000_000L, false).changed);
-        assertFalse(watcher.observe(changed, 100, 100, 200_000_000L, false).changed);
-        StaticSceneWatcher.Result result = watcher.observe(changed, 100, 100, 300_000_000L, false);
+        StaticSceneWatcher.Result result = watcher.observe(changed, 100, 100, 100_000_000L, false);
         assertTrue(result.changed); assertEquals("static_alpr_region_changed", result.reason);
         assertTrue(result.globalFraction < StaticSceneWatcher.DEFAULT.globalFraction);
     }
@@ -31,16 +29,14 @@ public class StaticSceneWatcherTest {
     @Test public void s9GlobalFallbackWorksWithoutRegions() {
         StaticSceneWatcher watcher = watcher(false);
         byte[] changed = change(0, 0, 100, 100);
-        watcher.observe(changed, 100, 100, 100_000_000L, false);
-        watcher.observe(changed, 100, 100, 200_000_000L, false);
-        assertTrue(watcher.observe(changed, 100, 100, 300_000_000L, false).changed);
+        assertTrue(watcher.observe(changed, 100, 100, 100_000_000L, false).changed);
     }
     @Test public void s4NoiseAndUniformExposureFlashDoNotCreateScene() {
         StaticSceneWatcher watcher = watcher(true);
         byte[] light = baseline.clone();
         for (int i = 0; i < light.length; i++) light[i] += 35;
         for (int i = 1; i <= 8; i++) assertFalse(watcher.observe(light, 100, 100, i*100_000_000L, false).changed);
-        byte[] transientChange = change(20,20,60,60);
+        byte[] transientChange = change(20,20,36,60);
         assertFalse(watcher.observe(transientChange,100,100,900_000_000L,false).changed);
         assertFalse(watcher.observe(baseline,100,100,1_000_000_000L,false).changed);
     }
@@ -59,9 +55,23 @@ public class StaticSceneWatcherTest {
         byte[] changed = change(0,0,100,100);
         assertFalse(watcher.observe(changed,100,100,100_000_000L,true).changed);
         watcher.arm(new StaticSceneWatchRegions(Collections.singletonList(REGION),null,.12f));
-        watcher.observe(changed,100,100,200_000_000L,false);
-        watcher.observe(changed,100,100,300_000_000L,false);
-        assertTrue(watcher.observe(changed,100,100,400_000_000L,false).changed);
+        assertTrue(watcher.observe(changed,100,100,200_000_000L,false).changed);
+    }
+
+    @Test public void moderateRegionChangeNeedsOnlyTwoFramesAndFiftyMilliseconds() {
+        StaticSceneWatcher watcher = watcher(true);
+        byte[] changed = change(20,20,36,60);
+        assertFalse(watcher.observe(changed,100,100,100_000_000L,false).changed);
+        assertTrue(watcher.observe(changed,100,100,150_000_000L,false).changed);
+    }
+
+    @Test public void delayedInferenceCannotRearmWatcherOnTheNewPhoto() {
+        StaticSceneWatcher watcher = watcher(false);
+        byte[] changed = change(20,20,60,60);
+        assertFalse(watcher.observe(changed,100,100,100_000_000L,false).changed);
+        watcher.arm(new StaticSceneWatchRegions(Collections.singletonList(REGION),null,0f));
+        watcher.prepareForZoom();
+        assertTrue(watcher.observe(changed,100,100,110_000_000L,false).changed);
     }
 
     @Test public void s1s6s11SameOcrAfterBoundaryHasNewIdentityAndRejectsOldStamp() {
@@ -87,6 +97,20 @@ public class StaticSceneWatcherTest {
         assertEquals(.16f, fixed.bounds.get(0).left, .001f);
         assertEquals("plates", new StaticSceneWatchRegions(vehicles, Collections.singletonList(REGION), .1f).source);
     }
+    @Test public void rapidDistinctPhotosBypassResetCooldownButOldStampCannotResetAgain() {
+        SceneTransitionCoordinator coordinator = new SceneTransitionCoordinator(
+                SceneHandlingMode.STRICT_SCENE_BOUNDARY,SceneContinuityProfile.INITIAL);
+        ContinuityStamp first = coordinator.stamp(1L);
+        assertEquals(SceneTransitionAction.HARD_RESET,
+                coordinator.requestStaticSceneReset(first,"photo_one",1L).action);
+        assertEquals(SceneTransitionAction.NONE,
+                coordinator.requestStaticSceneReset(first,"old_callback",2L).action);
+        ContinuityStamp next = coordinator.stamp(3L);
+        assertEquals(SceneTransitionAction.HARD_RESET,
+                coordinator.requestStaticSceneReset(next,"photo_two",3L).action);
+        assertEquals(first.sceneGeneration+2,coordinator.snapshot().sceneGeneration);
+    }
+
     private byte[] change(int left,int top,int right,int bottom) {
         byte[] changed=baseline.clone();
         for(int y=top;y<bottom;y++) for(int x=left;x<right;x++) changed[y*100+x]=(byte)(200-(baseline[y*100+x]&255));

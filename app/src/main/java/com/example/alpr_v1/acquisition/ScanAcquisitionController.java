@@ -301,6 +301,21 @@ public final class ScanAcquisitionController {
             );
         }
         if (continuity.heavyInferenceSuspended) return currentDirective();
+        if (staticBaseline && frame.sourceFrameId > 0L) {
+            frame = frame.measuredOnly();
+            java.util.Set<Long> present = new java.util.HashSet<>();
+            for (com.example.alpr_v1.tracking.VehicleCandidate candidate : frame.candidates)
+                present.add(candidate.entityId);
+            for (AcquisitionCandidate candidate : queue.snapshot(nowRuntimeNanos).candidates)
+                if (!present.contains(candidate.entityId)) queue.releaseActiveWithoutRetry(candidate.entityId);
+            if (activeSession != null && !present.contains(activeSession.entityId())) {
+                queue.releaseActiveWithoutRetry(activeSession.entityId());
+                cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
+                resetSessionBudgets();
+                setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP, 0L, 0L,
+                        "static_vehicle_no_longer_measured");
+            }
+        }
         lastVehicleFrameId = Math.max(lastVehicleFrameId, frame.sourceFrameId);
 
         if (awaitingFreshScanAnchor) {

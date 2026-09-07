@@ -1561,6 +1561,25 @@ dialog i przełączenie INT8 → FP32 w procesie PID 15033 bez restartu aplikacj
 Pełna macierz V1–V14 i zakres walidacji:
 `docs/handoffs/implementation-report-model-variants-v1.md`.
 
+### 2026-09-07 — natychmiastowy reset STATIC i AZ dla każdej wykrytej tablicy
+
+Usunięto wzajemne blokowanie detektora luma i bariery prezentacji podczas
+STATIC_IDLE. Kolejne potwierdzone zdjęcie nie podlega już cooldownowi resetu;
+stare callbacki nadal są odrzucane po generacji. Wyraźna zmiana regionu/obrazu
+powoduje reset na pierwszej próbce, mniejsza wymaga dwóch próbek i 50 ms.
+Późny wynik inferencji nie zastępuje referencji sceny podczas uzbrajania regionów.
+
+Pusty MP usuwa poprzednie pojazdy i ich aktywne/oczekujące zadania. STATIC
+korzysta tylko z pomiarów MP, bez utrzymywania ramek przez KLT/predykcje.
+AZ jest kolejkowany na tablicę, również przy pewnym odczycie, bez encji lub
+przed uzyskaniem narożników/MZ. Reguły jakości zoomu dynamicznego są zachowane.
+
+Weryfikacja: 543 testy JVM i końcowe 44 testy Androida przeszły. Nowy test
+Activity odtwarza trzy kolejne granice przy STATIC_IDLE i aktywnej barierze.
+Sprawdzono także pełny cykl AZ na bieżącym zdjęciu z kamery. APK zainstalowano
+z zachowaniem danych. Szczegóły i zakres pomiaru:
+`docs/static_scene_reset_plate_zoom_fix.md`.
+
 ## 6. Najważniejsze decyzje projektowe
 
 ### Pakiet zamiast surowych wag

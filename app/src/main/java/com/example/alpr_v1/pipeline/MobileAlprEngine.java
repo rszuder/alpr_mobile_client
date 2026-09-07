@@ -120,8 +120,10 @@ final class MobileAlprEngine implements AutoCloseable {
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
     private StableSceneVehicleCache stableSceneVehicles;
     private boolean staticSceneMode;
+    private boolean staticRefinement;
     private VehicleTrackingFrame lastMeasuredVehicles = VehicleTrackingFrame.empty(0L);
     void setStaticSceneMode(boolean enabled) { staticSceneMode = enabled; }
+    void setStaticRefinement(boolean enabled) { staticRefinement = enabled; }
     VehicleTrackingFrame lastMeasuredVehicles() { return lastMeasuredVehicles; }
 
     void setStableSceneVehicleCache(StableSceneVehicleCache cache) {
@@ -420,6 +422,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     private void resetSceneDependentState() {
         lastMeasuredVehicles = VehicleTrackingFrame.empty(0L);
+        staticRefinement = false;
         forceVehicleRefresh = false;
         if (stableSceneVehicles != null) stableSceneVehicles.invalidate();
         trackCoordinator.reset();
@@ -750,7 +753,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoi> vehicleRois = new ArrayList<>();
-        boolean liveExecution = refinementEntityId > 0L || persistentTargetEntityId > 0L
+        boolean liveExecution = staticRefinement || refinementEntityId > 0L || persistentTargetEntityId > 0L
                 || mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED;
         trace.putAttribute("mt_execution_policy", mtExecutionPolicy.wireName());
         trace.putAttribute("mt_fallback_policy", mtFallbackPolicy.wireName());
@@ -845,7 +848,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 || vehicleRecoveryRequested
                 || scanFreshMpRequested || forceVehicleRefresh)
                 && roiBudgetPolicy.usesVehicleCascade()
-                && vehicleBackend != null && refinementEntityId == 0L;
+                && vehicleBackend != null && refinementEntityId == 0L && !staticRefinement;
         if (useVehicleRegions) {
             boolean refreshVehicles = forceVehicleRefresh || reusableVehicleFrame(sourceStamp) == null && (continuityFreshMpRequired
                     || scanDirectiveAction
@@ -2694,6 +2697,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         : java.util.Collections.emptySet(),
                 resultAvailableRuntimeNanos
         ));
+        if (staticSceneMode) trackingFrame = trackingFrame.measuredOnly();
         lastMeasuredVehicles = trackingFrame.withContinuityStamp(sourceStamp);
         if (scanAcquisitionActive && stableSceneVehicles != null) {
             stableSceneVehicles.record(trackingFrame.withContinuityStamp(sourceStamp),

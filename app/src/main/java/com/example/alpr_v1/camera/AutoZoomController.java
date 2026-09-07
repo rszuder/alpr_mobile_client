@@ -193,6 +193,20 @@ public final class AutoZoomController {
     public synchronized Decision requestRefinement(Sample sample) {
         if (!featureEnabled || state != State.READY || sample == null || !sample.validQuad
                 || !sample.recognitionExecuted || sample.trackId <= 0L) return Decision.none();
+        return startRefinement(sample);
+    }
+
+    /** STATIC refines every detected plate, including boxes that still need corners or MZ. */
+    public synchronized Decision requestStaticRefinement(Sample sample) {
+        if (!featureEnabled || state != State.READY || sample == null || sample.trackId <= 0L
+                || !Float.isFinite(sample.normalizedWidth) || sample.normalizedWidth <= 0f
+                || !Float.isFinite(sample.centerX) || !Float.isFinite(sample.centerY)
+                || sample.centerX < 0f || sample.centerX > 1f
+                || sample.centerY < 0f || sample.centerY > 1f) return Decision.none();
+        return startRefinement(sample);
+    }
+
+    private Decision startRefinement(Sample sample) {
         targetTrackId = sample.trackId;
         targetCenterX = sample.centerX; targetCenterY = sample.centerY;
         targetText = beforeText = sample.text;

@@ -14,7 +14,7 @@ public final class StaticSceneWatcher {
             pixelDelta = delta; this.confirmations = confirmations; confirmationNanos = nanos;
         }
     }
-    public static final Profile DEFAULT = new Profile(0.12f, 0.30f, 0.55f, 24, 3, 150_000_000L);
+    public static final Profile DEFAULT = new Profile(0.12f, 0.30f, 0.55f, 24, 2, 50_000_000L);
     public static final class Result {
         public final boolean changed;
         public final float localFraction, globalFraction;
@@ -27,7 +27,6 @@ public final class StaticSceneWatcher {
     private StaticSceneWatchRegions regions = new StaticSceneWatchRegions(null, null, 0f);
     private byte[] reference;
     private byte[] latestBase;
-    private boolean zoomReferencePreserved;
     private StaticSceneWatcher zoomWatcher;
     private int width, height, consecutive;
     private long since = -1L;
@@ -35,22 +34,20 @@ public final class StaticSceneWatcher {
     public StaticSceneWatcher(Profile profile) { this.profile = profile; }
     public synchronized void arm(StaticSceneWatchRegions regions) {
         this.regions = regions;
-        if (!zoomReferencePreserved && latestBase != null) reference = latestBase.clone();
-        consecutive = 0; since = -1L;
+        // Region discovery must not replace the scene captured before a slow inference.
+        if (reference == null && latestBase != null) reference = latestBase.clone();
     }
     public synchronized void prepareForZoom() {
-        if (latestBase != null) reference = latestBase.clone();
-        zoomReferencePreserved = true;
+        if (reference == null && latestBase != null) reference = latestBase.clone();
     }
     public synchronized void reset() {
         regions = new StaticSceneWatchRegions(Collections.emptyList(), Collections.emptyList(), 0f);
-        latestBase = null; zoomWatcher = null; zoomReferencePreserved = false;
+        latestBase = null; zoomWatcher = null;
         resetReference();
     }
     private void resetReference() { reference = null; consecutive = 0; since = -1L; }
     public synchronized Result observe(byte[] gray, int width, int height, long now, boolean transform) {
         if (transform) {
-            zoomReferencePreserved = true;
             if (zoomWatcher == null) zoomWatcher = new StaticSceneWatcher(profile);
             return zoomWatcher.observe(gray, width, height, now, false);
         }
@@ -75,7 +72,10 @@ public final class StaticSceneWatcher {
         boolean significant = local >= profile.localFraction || global >= profile.globalFraction;
         if (!significant || now < since) { consecutive = 0; since = -1L; }
         else { if (since < 0L) since = now; consecutive++; }
-        boolean cut = significant && consecutive >= profile.confirmations && now - since >= profile.confirmationNanos;
+        boolean abrupt = global >= Math.max(0.65f, profile.globalFraction)
+                || local >= Math.max(0.65f, profile.localFraction);
+        boolean cut = abrupt || significant && consecutive >= profile.confirmations
+                && now - since >= profile.confirmationNanos;
         Result result = new Result(cut, local, global,
                 local >= profile.localFraction ? "static_alpr_region_changed" : "static_global_changed");
         if (cut) resetReference();
