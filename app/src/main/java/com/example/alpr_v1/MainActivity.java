@@ -1933,6 +1933,7 @@ public final class MainActivity extends AppCompatActivity {
                 false
         );
         overlayView.setGeometryCalibrationEnabled(geometryCalibrationEnabled);
+        overlayView.setPlateEntityResolver(track -> pipeline == null ? 0L : pipeline.plateOwnerEntityId(track));
         overlayView.setVehicleTapListener(entity -> {
             if (!cameraStarted || pipeline == null || effectiveSceneHandlingMode() != SceneHandlingMode.DYNAMIC_CONTINUITY) return;
             ResearchExecutionConfig frozen = pipeline.researchExecutionConfig();
@@ -2231,7 +2232,14 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void returnZoomBeforeUserTargetChange() {
-        if (cameraTransformInProgress) abortAutoZoomAfterTransform = true;
+        if (!cameraTransformInProgress && currentCameraZoomRatio <= 1.01f
+                && autoZoomController.state() == AutoZoomController.State.ZOOM_SETTLING) {
+            cancelPendingAutoZoomStart();
+            autoZoomController.onRequestFailed();
+            pipeline.finishDynamicZoom();
+            hideAutoZoomTarget();
+            updateAutoZoomButton();
+        } else if (cameraTransformInProgress) abortAutoZoomAfterTransform = true;
         else if (currentCameraZoomRatio > 1.01f && autoZoomController.state() != AutoZoomController.State.RETURNING)
             requestAutoZoomReturn(null);
     }
@@ -2273,6 +2281,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean renderSearchControls() {
         if (topAppBar == null || pipeline == null || uiPreferences == null) return false;
+        synchronizeTargetFocusPresentation();
         boolean dynamic = effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY;
         String text = pipeline.searchRegistration();
         long locked = pipeline.lockedEntityId();
@@ -2290,7 +2299,9 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (!dynamic || !cameraStarted) return false;
         String status = null;
-        if (pipeline.searchMatchState() == com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH
+        boolean recoveringFocus = pipeline.targetFocus().sessionState == com.example.alpr_v1.domain.TargetSessionState.RECOVERING;
+        if (locked > 0L && recoveringFocus) status = getString(R.string.target_focus_recovering, locked);
+        else if (pipeline.searchMatchState() == com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH
                 && pipeline.foregroundEntityId() > 0L && locked == 0L)
             status = getString(R.string.search_plate_verifying);
         else if (locked > 0L) status = !text.isEmpty()
@@ -2300,8 +2311,57 @@ public final class MainActivity extends AppCompatActivity {
                 == com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH
                 ? R.string.search_plate_unconfirmed : R.string.search_plate_active, text);
         if (status == null) return false;
-        livePresentation.showUserStatus(LivePresentationController.State.SEARCHING, status, "");
+        livePresentation.showUserStatus(recoveringFocus ? LivePresentationController.State.RECOVERING
+                : LivePresentationController.State.SEARCHING, status, "");
         return true;
+    }
+
+    private long presentedFocusRevision = -1L;
+
+    private void synchronizeTargetFocusPresentation() {
+        com.example.alpr_v1.acquisition.TargetFocusSnapshot focus = pipeline.targetFocus();
+        if (focus.revision != presentedFocusRevision) {
+            if (presentedFocusRevision >= 0L && cameraStarted) uiSceneGeneration.incrementAndGet();
+            presentedFocusRevision = focus.revision;
+            pendingPreviewCoordination.set(null);
+            previewVehicleTracker.reset();
+            overlayTracker.reset();
+            latestDiagnosticOverlayItems = focusPresentationItems(latestDiagnosticOverlayItems, focus);
+            latestPipelinePlateItems = focusPresentationItems(latestPipelinePlateItems, focus);
+            latestPreviewMotionItems = focusPresentationItems(latestPreviewMotionItems, focus);
+            autoZoomBaseVehicleItems = focusPresentationItems(autoZoomBaseVehicleItems, focus);
+            autoZoomBaseMemoryOverlayItems = focusPresentationItems(autoZoomBaseMemoryOverlayItems, focus);
+            TargetSnapshot previousTarget = targetStateMachine.snapshot();
+            if (focus.entityId > 0L && previousTarget.trackId > 0L
+                    && pipeline.plateOwnerEntityId(previousTarget.trackId) != focus.entityId) {
+                previewPlateTracker.reset();
+                targetStateMachine.reset();
+                latestPipelinePlateEntityId = 0L;
+                latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
+            }
+            if (focus.awaitingFreshScanAnchor) {
+                returnZoomBeforeUserTargetChange();
+                hideAutoZoomTarget();
+                previewPlateTracker.reset();
+                targetStateMachine.reset();
+                latestPipelinePlateEntityId = 0L;
+                latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
+                clearAutoZoomRecognitionMemory();
+            }
+        }
+        overlayView.setTargetFocus(focus.entityId, focus.awaitingFreshScanAnchor);
+    }
+
+    private List<OverlayItem> focusPresentationItems(List<OverlayItem> items,
+            com.example.alpr_v1.acquisition.TargetFocusSnapshot focus) {
+        if (focus.awaitingFreshScanAnchor) return java.util.Collections.emptyList();
+        if (focus.entityId == 0L) return items;
+        List<OverlayItem> kept = new ArrayList<>();
+        for (OverlayItem item : items) {
+            long owner = item.kind == OverlayItem.Kind.PLATE ? pipeline.plateOwnerEntityId(item.trackId) : item.trackId;
+            if (owner == focus.entityId) kept.add(item);
+        }
+        return java.util.Collections.unmodifiableList(kept);
     }
 
     private boolean handleMenuItem(MenuItem item) {
@@ -8006,6 +8066,12 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showAutoZoomTarget(float normalizedX, float normalizedY) {
+        if (pipeline != null && effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY
+                && (pipeline.foregroundEntityId() == 0L
+                || pipeline.plateOwnerEntityId(autoZoomController.targetTrackId()) != pipeline.foregroundEntityId())) {
+            hideAutoZoomTarget();
+            return;
+        }
         if (autoZoomTarget == null) return;
         android.graphics.PointF point =
                 overlayView.normalizedToViewPoint(normalizedX, normalizedY);

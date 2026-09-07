@@ -55,6 +55,33 @@ public final class ScanAcquisitionController {
     private long lastVehicleFrameId;
     private long foregroundRefreshAfterFrameId = -1L;
     private long zoomBudgetSessionId;
+    private long targetFocusRevision;
+    private boolean awaitingFreshScanAnchor;
+    private long scanAnchorAfterFrameId;
+
+    public synchronized TargetFocusSnapshot targetFocus() {
+        boolean exclusive = activeSession != null && activeSession.persistent() && activeSession.cameraAttentionOwned();
+        return new TargetFocusSnapshot(exclusive ? activeSession.entityId() : 0L,
+                exclusive ? activeSession.sessionId() : 0L, targetFocusRevision, awaitingFreshScanAnchor,
+                exclusive ? activeSession.state() : null);
+    }
+
+    /** Only a completed MP from the current focus revision may reopen multi-vehicle presentation. */
+    public synchronized void onFreshVehicleMeasurement(VehicleTrackingFrame frame, long dispatchedFocusRevision) {
+        if (!awaitingFreshScanAnchor || dispatchedFocusRevision != targetFocusRevision || frame == null) return;
+        if (frame.sourceFrameId > scanAnchorAfterFrameId
+                && (frame.candidates.isEmpty() || frame.candidates.stream().anyMatch(candidate -> !candidate.predicted))) {
+            awaitingFreshScanAnchor = false;
+        }
+    }
+
+    private void leavePersistentFocus(long now) {
+        if (activeSession == null || !activeSession.persistent()) return;
+        targetFocusRevision++;
+        awaitingFreshScanAnchor = true;
+        scanAnchorAfterFrameId = lastVehicleFrameId;
+        queue.hardReset(queue.snapshot(now).sceneGeneration);
+    }
     private final Set<Long> zoomedLockSessions = new HashSet<>();
     private final Map<Long, Long> readingFrames = new HashMap<>(), readingSequences = new HashMap<>();
 
@@ -109,6 +136,8 @@ public final class ScanAcquisitionController {
     }
 
     public synchronized void releaseForeground(boolean endSearch, long now) {
+        recoveryPaused = false;
+        continuityPaused = false;
         if (activeSession != null) {
             long entityId = activeSession.entityId();
             cancelActiveSession(TargetSessionState.CANCELLED, now);
@@ -131,6 +160,11 @@ public final class ScanAcquisitionController {
         activeSession = modeController.startSession(entityId, purpose, now);
         activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
         activeSession.setCameraAttentionOwned(true, now);
+        if (activeSession.persistent()) {
+            targetFocusRevision++;
+            awaitingFreshScanAnchor = false;
+            queue.holdForTarget(activeSession.entityId());
+        }
         mtAttempts = 1; freshMzAttempts = 0; releasePending = false;
         activeSessionBudget = new ActiveTimeBudget(profile.maximumActiveSessionNanos);
         noProgressBudget = new ActiveTimeBudget(profile.noProgressTimeoutNanos);
@@ -269,6 +303,11 @@ public final class ScanAcquisitionController {
         if (continuity.heavyInferenceSuspended) return currentDirective();
         lastVehicleFrameId = Math.max(lastVehicleFrameId, frame.sourceFrameId);
 
+        if (awaitingFreshScanAnchor) {
+            return setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                    activeSessionId(), activeEntityId(), "focus_released_waiting_for_fresh_mp");
+        }
+
         if (releasePending) {
             releasePending = false;
             setDirective(AcquisitionDirectiveAction.NONE, 0L, 0L, "release_applied");
@@ -278,11 +317,8 @@ public final class ScanAcquisitionController {
                 : frame.candidates) {
             vehiclesSeen.add(candidate.entityId);
         }
-        AcquisitionQueueSnapshot updatedQueue = queue.update(
-                frame,
-                activeEntityId(),
-                nowRuntimeNanos
-        );
+        AcquisitionQueueSnapshot updatedQueue = activeSession != null && activeSession.persistent()
+                ? queue.snapshot(nowRuntimeNanos) : queue.update(frame, activeEntityId(), nowRuntimeNanos);
         for (AcquisitionCandidate candidate : updatedQueue.candidates) {
             vehiclesQueued.add(candidate.entityId);
         }
@@ -623,6 +659,7 @@ public final class ScanAcquisitionController {
             entityRecognitions.clear();
             readingFrames.clear(); readingSequences.clear();
             lastVehicleFrameId = 0L; foregroundRefreshAfterFrameId = -1L;
+            awaitingFreshScanAnchor = false;
             zoomedLockSessions.clear();
             vehiclesSeen.clear(); vehiclesQueued.clear();
             firstObservationRuntimeNanos.clear(); bestCropByEntityId.clear();
@@ -848,8 +885,14 @@ public final class ScanAcquisitionController {
         recentlyReleasedEntityId = entityId;
         recentlyReleasedDirectiveRevision = directive.revision;
         recentlyReleasedAtRuntimeNanos = nowRuntimeNanos;
+        leavePersistentFocus(nowRuntimeNanos);
         if (activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
             searchState = com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH;
+        } else if (activeSession.persistent()) {
+            searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+            entityRecognitions.remove(entityId);
+            identifiedEntityIds.remove(entityId);
+            completedEntityIds.remove(entityId);
         }
         modeController.finishSession(sessionId, TargetSessionState.LOST,
                 nowRuntimeNanos);
@@ -948,6 +991,7 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         if (activeSession == null) return;
+        leavePersistentFocus(nowRuntimeNanos);
         if (activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
             searchState = com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH;
         } else if (activeSession.purpose() == TargetPurpose.SEARCH_PURSUIT) {
@@ -994,6 +1038,7 @@ public final class ScanAcquisitionController {
 
     private void resetStatistics() {
         lastVehicleFrameId = 0L; foregroundRefreshAfterFrameId = -1L;
+        awaitingFreshScanAnchor = false;
         searchText = "";
         searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
         zoomedLockSessions.clear();
@@ -1052,6 +1097,9 @@ public final class ScanAcquisitionController {
                 if (consumedZoom) zoomedLockSessions.add(activeSession.sessionId());
                 activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
                 activeSession.setCameraAttentionOwned(true, now);
+                targetFocusRevision++;
+                awaitingFreshScanAnchor = false;
+                queue.holdForTarget(activeSession.entityId());
                 searchState = com.example.alpr_v1.domain.SearchMatchState.CONFIRMED_MATCH;
                 rememberEntityRecognition(observation);
                 setDirective(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION, activeSession.sessionId(), activeSession.entityId(), "search_pursuit_confirmed");
@@ -1112,6 +1160,7 @@ public final class ScanAcquisitionController {
             if (observation == null
                     || observation.entityId <= 0L
                     || !vehiclesSeen.contains(observation.entityId)) continue;
+            if (activeSession != null && activeSession.persistent() && observation.entityId != activeSession.entityId()) continue;
             identifiedEntityIds.add(observation.entityId);
             boolean activeOwner = activeSession != null
                     && activeSession.entityId() == observation.entityId;

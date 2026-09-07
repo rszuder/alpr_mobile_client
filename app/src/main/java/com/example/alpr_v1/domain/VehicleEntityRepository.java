@@ -47,6 +47,15 @@ public final class VehicleEntityRepository {
         return byEntityId.get(entityId);
     }
 
+    /** A confirmed continuity loss ends this identity, without touching neighbors or saved history. */
+    public synchronized void retireEntity(long entityId) {
+        VehicleEntity entity = byEntityId.remove(entityId);
+        if (entity == null) return;
+        entity.expire();
+        entityIdByVehicleTrack.remove(entity.vehicleTrackId());
+        removePlateOwnership(entity);
+    }
+
     public synchronized VehicleEntity findByVehicleTrackId(long vehicleTrackId) {
         Long entityId = entityIdByVehicleTrack.get(vehicleTrackId);
         return entityId == null ? null : byEntityId.get(entityId);
@@ -252,6 +261,11 @@ public final class VehicleEntityRepository {
     public synchronized void markActiveTarget(long entityId, boolean active) {
         required(entityId).setActiveTarget(active);
         if (active) required(entityId).setAcquisitionState(EntityAcquisitionState.ACQUIRING);
+    }
+
+    public synchronized void clearActiveTarget(long entityId) {
+        VehicleEntity entity = byEntityId.get(entityId);
+        if (entity != null) entity.setActiveTarget(false);
     }
 
     public synchronized void deferAcquisition(long entityId) {

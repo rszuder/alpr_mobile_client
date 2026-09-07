@@ -17,6 +17,19 @@ import org.junit.Test;
 import java.util.Arrays;
 
 public final class AcquisitionQueueTest {
+    @Test public void persistentOwnerBlocksDispatchAndBackgroundAdmissionUntilFreshQueueReset() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1L,candidate(1L,11L),candidate(2L,22L)),0L,1L);
+        queue.holdForTarget(1L);
+        queue.update(frame(1L,candidate(1L,11L),candidate(2L,22L),candidate(3L,33L)),1L,2L);
+        assertNull(queue.selectNext(3L));
+        assertNull(queue.snapshot(3L).find(3L));
+        assertEquals(1L,queue.snapshot(3L).activeEntityId);
+        queue.hardReset(1L);
+        assertNull(queue.selectNext(4L));
+        queue.update(frame(1L,candidate(3L,33L)),0L,5L);
+        assertEquals(3L,queue.selectNext(6L).candidate.entityId);
+    }
     @Test
     public void slowFreshMpStartsAcquisitionDespitePresentationConfidenceDecay() {
         VehicleTrackingCoordinator tracker = new VehicleTrackingCoordinator();

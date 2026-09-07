@@ -169,6 +169,8 @@ final class MobileAlprEngine implements AutoCloseable {
     private AcquisitionDirectiveAction scanDirectiveAction =
             AcquisitionDirectiveAction.NONE;
     private long scanActiveEntityId;
+    private long persistentTargetEntityId;
+    void setPersistentTargetEntityId(long entityId) { persistentTargetEntityId = entityId; }
     private long refinementEntityId;
     private volatile boolean forceVehicleRefresh;
     void requestVehicleRefreshAfterZoom() { forceVehicleRefresh = true; }
@@ -748,7 +750,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
         List<OverlayItem> overlays = new ArrayList<>();
         List<VehicleRoi> vehicleRois = new ArrayList<>();
-        boolean liveExecution = refinementEntityId > 0L
+        boolean liveExecution = refinementEntityId > 0L || persistentTargetEntityId > 0L
                 || mtExecutionPolicy == MtExecutionPolicy.LIVE_STAGGERED;
         trace.putAttribute("mt_execution_policy", mtExecutionPolicy.wireName());
         trace.putAttribute("mt_fallback_policy", mtFallbackPolicy.wireName());
@@ -1072,10 +1074,11 @@ final class MobileAlprEngine implements AutoCloseable {
                             ? MtWorkKind.TARGET_ROI_EXPANDED : MtWorkKind.TARGET_ROI;
                     break;
                 case VEHICLE_ROI:
-                    if (mtDecision.vehicleEntityId > 0L) {
+                    long requestedEntity = persistentTargetEntityId > 0L ? persistentTargetEntityId : mtDecision.vehicleEntityId;
+                    if (requestedEntity > 0L) {
                         scheduledVehicleRoi = ExactEntityRoiResolver.findByEntityId(
                                 vehicleRois,
-                                mtDecision.vehicleEntityId
+                                requestedEntity
                         );
                         if (scheduledVehicleRoi == null) {
                             scheduledVehicleRoi =
@@ -1083,7 +1086,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                             vehicleFrameForScan(sourceStamp).candidates,
                                             frame.getWidth(),
                                             frame.getHeight(),
-                                            mtDecision.vehicleEntityId,
+                                            requestedEntity,
                                             rapidCameraMotion
                                                     ? 0.28f : VEHICLE_REGION_MARGIN
                                     );
@@ -1093,12 +1096,12 @@ final class MobileAlprEngine implements AutoCloseable {
                             Math.max(0, mtDecision.vehicleRegionIndex),
                             Math.max(0, vehicleRois.size() - 1)
                     );
-                    if (mtDecision.vehicleEntityId > 0L
+                    if (requestedEntity > 0L
                             && scheduledVehicleRoi == null) {
                         trace.putAttribute("mt_scheduler_reason", "candidate_missing");
                         trace.putAttribute(
                                 "scan_requested_entity_id",
-                                String.valueOf(mtDecision.vehicleEntityId)
+                                String.valueOf(requestedEntity)
                         );
                         trace.putCount("scan_exact_entity_missing", 1);
                         mtInferenceScheduler.onMtResult(
@@ -1394,6 +1397,15 @@ final class MobileAlprEngine implements AutoCloseable {
                     frame,
                     plateAssociationCandidates
             );
+            if (persistentTargetEntityId > 0L && (workKind == MtWorkKind.TARGET_ROI || workKind == MtWorkKind.TARGET_ROI_EXPANDED)) {
+                PlateVehicleAssociation geometricOwner = plateVehicleAssociator.associate(plateDetection,
+                        frame.getWidth(), frame.getHeight(), plateAssociationCandidates);
+                if (geometricOwner.assigned() && geometricOwner.entityId != persistentTargetEntityId) association = geometricOwner;
+            }
+            if (persistentTargetEntityId > 0L && association.entityId != persistentTargetEntityId) {
+                trace.putCount("focus_other_plate_rejected", 1);
+                continue;
+            }
             workKindByPlateTrack.put(decision.trackId, workKind);
             workReasonByPlateTrack.put(decision.trackId, workReason);
 
@@ -1511,6 +1523,7 @@ final class MobileAlprEngine implements AutoCloseable {
          * Publikujemy teraz samą geometrię, aby UI nie czekało na OCR i mogło
          * utrzymywać świeżą ramkę przez cały dalszy przebieg auto-zoomu.
          */
+        decisions = focusedPlateDecisions(decisions, associationByPlateTrack, persistentTargetEntityId);
         publishFreshMtRecoveryIfReady();
         if (plateDetectionCallback != null && !decisions.isEmpty()) {
             List<OverlayItem> mtOverlays = new ArrayList<>(overlays);
@@ -1559,6 +1572,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
         for (PlateTrackCoordinator.Decision decision : decisions) {
             if (decision.sourceIndex < 0 || decision.sourceIndex >= candidates.size()) continue;
+            cancelIfRequested(cancellationRequested);
             PlateCandidate candidate = candidates.get(decision.sourceIndex);
             TemporalCharacterAggregator.Result trackResult = decision.currentResult;
             String predictionBefore = trackResult == null ? "" : trackResult.text;
@@ -2900,6 +2914,17 @@ final class MobileAlprEngine implements AutoCloseable {
             );
         }
         return PlateVehicleAssociation.unassigned("unsupported_mt_work_kind");
+    }
+
+    static List<PlateTrackCoordinator.Decision> focusedPlateDecisions(List<PlateTrackCoordinator.Decision> decisions,
+            Map<Long, PlateVehicleAssociation> associations, long entityId) {
+        if (entityId <= 0L) return decisions;
+        List<PlateTrackCoordinator.Decision> focused = new ArrayList<>();
+        for (PlateTrackCoordinator.Decision decision : decisions) {
+            PlateVehicleAssociation owner = associations.get(decision.trackId);
+            if (owner != null && owner.entityId == entityId) focused.add(decision);
+        }
+        return focused;
     }
 
     static List<VehicleCandidate> snapshotPlateAssociationCandidates(

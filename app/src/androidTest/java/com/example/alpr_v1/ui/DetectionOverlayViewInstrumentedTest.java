@@ -24,6 +24,55 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test public void l8l11PersistentFocusImmediatelyRemovesNeighborsAndTheirLateTransfers() {
+        AtomicReference<DetectionOverlayView> reference = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+            reference.set(view); view.layout(0,0,720,1280); view.setDiagnosticMode(true);
+            view.setPlateEntityResolver(track -> track == 11L ? 1L : track == 22L ? 2L : 0L);
+            List<OverlayItem> pool = Arrays.asList(
+                    item(OverlayItem.Kind.VEHICLE,new RectF(.1f,.2f,.45f,.8f),1L),
+                    item(OverlayItem.Kind.VEHICLE,new RectF(.55f,.2f,.9f,.8f),2L),
+                    item(OverlayItem.Kind.VEHICLE_ROI,new RectF(.1f,.2f,.45f,.8f),1L),
+                    item(OverlayItem.Kind.VEHICLE_ROI,new RectF(.55f,.2f,.9f,.8f),2L),
+                    item(OverlayItem.Kind.PLATE,new RectF(.2f,.6f,.35f,.7f),11L),
+                    item(OverlayItem.Kind.PLATE,new RectF(.65f,.6f,.8f,.7f),22L));
+            view.setItems(pool,720,1280);
+            view.animatePlateObservation(animationObservation(2L,22L));
+            view.setTargetFocus(1L,false);
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.VEHICLE));
+            assertEquals(0L,view.plateAbsorptionEntityForTesting());
+            assertFalse(view.recognizedVehicleForTesting(2L));
+            view.setItems(pool,720,1280);
+            view.setPreviewItems(pool);
+            view.setTrackedPlateItems(pool);
+            view.animatePlateObservation(animationObservation(2L,22L));
+            assertTrue(view.snapshotItemsForTesting().stream().allMatch(i -> i.trackId == 1L || i.trackId == 11L));
+            assertEquals(0,view.fadingPlateCountForTesting());
+        });
+        android.os.SystemClock.sleep(1100L);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            assertFalse(reference.get().recognizedVehicleForTesting(2L));
+            assertEquals(0L,reference.get().plateAbsorptionEntityForTesting());
+        });
+    }
+
+    @Test public void l13ReleaseDoesNotRestoreOldGeometryBeforeFreshMeasurement() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+            view.layout(0,0,720,1280);
+            List<OverlayItem> old = Collections.singletonList(item(OverlayItem.Kind.VEHICLE,new RectF(.1f,.2f,.4f,.8f),1L));
+            view.setItems(old,720,1280); view.setTargetFocus(1L,false);
+            view.setTargetFocus(0L,true);
+            view.setItems(old,720,1280); view.setPreviewItems(old);
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+            assertTrue(view.snapshotRenderBoundsForTesting().isEmpty());
+            view.setTargetFocus(0L,false);
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,new RectF(.6f,.2f,.9f,.8f),3L)),720,1280);
+            assertEquals(3L,view.snapshotItemsForTesting().get(0).trackId);
+        });
+    }
     @Test public void opticalZoomScalesVehiclesWithoutPlateAndReturnsToExactBaseBounds() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             DetectionOverlayView view = new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(), null);

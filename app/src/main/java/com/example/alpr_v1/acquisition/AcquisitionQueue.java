@@ -62,6 +62,13 @@ public final class AcquisitionQueue {
     private long sceneGeneration;
     private boolean sceneInitialized;
     private long activeEntityId;
+    private long exclusiveDispatchOwner;
+
+    public synchronized void holdForTarget(long entityId) {
+        exclusiveDispatchOwner = Math.max(0L, entityId);
+        activeEntityId = exclusiveDispatchOwner;
+        revision++;
+    }
 
     public AcquisitionQueue() {
         this(ScanAcquisitionProfile.DEFAULT);
@@ -78,6 +85,7 @@ public final class AcquisitionQueue {
             long nowRuntimeNanos
     ) {
         if (frame == null) return snapshot(nowRuntimeNanos);
+        if (exclusiveDispatchOwner > 0L) return snapshot(nowRuntimeNanos);
         long now = nonNegative(nowRuntimeNanos);
         if (!sceneInitialized || sceneGeneration != frame.sceneGeneration) {
             entries.clear();
@@ -192,6 +200,7 @@ public final class AcquisitionQueue {
     }
 
     public synchronized Selection selectNext(long nowRuntimeNanos) {
+        if (exclusiveDispatchOwner > 0L) return null;
         long now = nonNegative(nowRuntimeNanos);
         List<Ranked> ranked = ranked(now, true);
         if (ranked.isEmpty()) return null;
@@ -292,6 +301,7 @@ public final class AcquisitionQueue {
     }
 
     public synchronized void hardReset(long nextSceneGeneration) {
+        exclusiveDispatchOwner = 0L;
         entries.clear();
         activeEntityId = 0L;
         sceneGeneration = Math.max(0L, nextSceneGeneration);

@@ -22,6 +22,40 @@ import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
 public final class SceneModeHudInstrumentedTest {
+    @Test public void releasingTargetBeforeOpticalAnimationCancelsPendingZoomAndUnblocksPipeline() {
+        java.util.concurrent.atomic.AtomicBoolean animated = new java.util.concurrent.atomic.AtomicBoolean();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                try {
+                    java.lang.reflect.Field zoomField = MainActivity.class.getDeclaredField("autoZoomController");
+                    zoomField.setAccessible(true);
+                    com.example.alpr_v1.camera.AutoZoomController zoom =
+                            (com.example.alpr_v1.camera.AutoZoomController) zoomField.get(activity);
+                    zoom.setEnabled(true);
+                    zoom.requestRefinement(new com.example.alpr_v1.camera.AutoZoomController.Sample(
+                            1L,.5f,.5f,.1f,.3,false,1,true,true,true,"WI1234A",true));
+                    java.lang.reflect.Field pipelineField = MainActivity.class.getDeclaredField("pipeline");
+                    pipelineField.setAccessible(true);
+                    Object pipeline = pipelineField.get(activity);
+                    java.lang.reflect.Field owner = pipeline.getClass().getDeclaredField("dynamicZoomEntity");
+                    owner.setAccessible(true); owner.setLong(pipeline,1L);
+                    Runnable pending = () -> animated.set(true);
+                    java.lang.reflect.Field pendingField = MainActivity.class.getDeclaredField("pendingAutoZoomStartRunnable");
+                    pendingField.setAccessible(true); pendingField.set(activity,pending);
+                    java.lang.reflect.Field handlerField = MainActivity.class.getDeclaredField("autoZoomHandler");
+                    handlerField.setAccessible(true);
+                    ((android.os.Handler)handlerField.get(activity)).postDelayed(pending,300L);
+                    java.lang.reflect.Method release = MainActivity.class.getDeclaredMethod("returnZoomBeforeUserTargetChange");
+                    release.setAccessible(true); release.invoke(activity);
+                    assertEquals(com.example.alpr_v1.camera.AutoZoomController.State.READY,zoom.state());
+                    assertEquals(0L,owner.getLong(pipeline));
+                    org.junit.Assert.assertNull(pendingField.get(activity));
+                } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+            });
+            android.os.SystemClock.sleep(450L);
+            org.junit.Assert.assertFalse(animated.get());
+        }
+    }
     @Test
     public void hudIcon_switchesStaticAndDynamicMode() {
         Context context = ApplicationProvider.getApplicationContext();

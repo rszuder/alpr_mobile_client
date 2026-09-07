@@ -938,6 +938,73 @@ public final class ScanAcquisitionControllerTest {
         return controller;
     }
 
+    @Test public void l8l10l11ManualFocusOwnsDispatchAndIgnoresBackgroundMpAndOcr() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.pickVehicle(4L,10L);
+        long revision = controller.targetFocus().revision;
+        controller.onVehicleFrame(frame(candidate(4L,44L),candidate(5L,55L),candidate(6L,66L)),continuity(),20L);
+        assertEquals(4L,controller.targetFocus().entityId);
+        assertEquals(0,controller.snapshot(20L).queue.size());
+        assertEquals(4L,controller.currentDirective().entityId);
+        controller.onPipelineResult(result(observation(5L,55L,true,true,"OTHER55")),continuity(),30L);
+        assertFalse(controller.snapshot(30L).entityRecognitions.containsKey(5L));
+        assertEquals(4L,controller.targetFocus().entityId);
+        assertTrue(controller.claimLockZoom(40L));
+        controller.finishLockZoom(50L);
+        assertEquals(revision,controller.targetFocus().revision);
+        assertEquals(4L,controller.targetFocus().entityId);
+    }
+
+    @Test public void l9PossibleMatchDoesNotHidePoolButConfirmedPursuitDoes() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        assertEquals(0L,controller.targetFocus().entityId);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),30L);
+        assertEquals(4L,controller.targetFocus().entityId);
+        assertTrue(controller.targetFocus().revision > 0L);
+    }
+
+    @Test public void l12l14RecoveryKeepsFocusAndActualLossKeepsQueryWithoutRestoringIdentity() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),30L);
+        controller.onContinuityDecision(transition(SceneTransitionAction.SOFT_REACQUIRE,SceneContinuityState.REACQUIRING,false),40L);
+        assertEquals(4L,controller.targetFocus().entityId);
+        assertEquals(com.example.alpr_v1.domain.TargetSessionState.RECOVERING,controller.targetFocus().sessionState);
+        controller.onTerminalRecovery(SoftReacquireResult.TARGET_RECOVERED,
+                transition(SceneTransitionAction.NONE,SceneContinuityState.STABLE,false),50L);
+        assertEquals(4L,controller.targetFocus().entityId);
+        controller.onTerminalRecovery(SoftReacquireResult.ACTIVE_TARGET_LOST,
+                transition(SceneTransitionAction.RELEASE_ACTIVE_TARGET,SceneContinuityState.STABLE,false),60L);
+        assertEquals(0L,controller.targetFocus().entityId);
+        assertTrue(controller.targetFocus().awaitingFreshScanAnchor);
+        assertEquals("WI1234A",controller.searchText());
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED,controller.searchState());
+        assertFalse(controller.snapshot(60L).entityRecognitions.containsKey(4L));
+    }
+
+    @Test public void l13l15ReleaseWaitsForNewMpAndPreservesPreviouslyCollectedReadings() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onVehicleFrame(frame(candidate(4L,44L),candidate(5L,55L)),continuity(),2L);
+        controller.onPipelineResult(result(observation(5L,55L,true,true,"OTHER55")),continuity(),3L);
+        controller.pickVehicle(4L,10L);
+        assertTrue(controller.snapshot(10L).entityRecognitions.containsKey(5L));
+        controller.releaseForeground(false,20L);
+        controller.onVehicleFrame(frame(candidate(4L,44L),candidate(5L,55L)),continuity(),21L);
+        assertTrue(controller.targetFocus().awaitingFreshScanAnchor);
+        assertEquals(0L,controller.snapshot(21L).activeEntityId);
+        assertEquals(0,controller.snapshot(21L).queue.size());
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,controller.currentDirective().action);
+        VehicleTrackingFrame fresh = new VehicleTrackingFrame(2L,2L,2L,1L,Collections.singletonList(candidate(6L,66L)));
+        controller.onVehicleFrame(fresh,continuity(),25L);
+        assertTrue(controller.targetFocus().awaitingFreshScanAnchor);
+        controller.onFreshVehicleMeasurement(fresh,controller.targetFocus().revision - 1L);
+        assertTrue(controller.targetFocus().awaitingFreshScanAnchor);
+        controller.onFreshVehicleMeasurement(fresh,controller.targetFocus().revision);
+        controller.onVehicleFrame(fresh,continuity(),30L);
+        assertFalse(controller.targetFocus().awaitingFreshScanAnchor);
+        assertEquals(6L,controller.snapshot(30L).activeEntityId);
+        assertTrue(controller.snapshot(30L).entityRecognitions.containsKey(5L));
+    }
+
     private static ScanAcquisitionController verifyingKnownVehicle() {
         ScanAcquisitionController controller = startedWithCandidate(4L);
         controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,1L)),continuity(),10L);

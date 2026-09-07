@@ -9,6 +9,22 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public class VehicleEntityRepositoryTest {
+    @Test public void confirmedTargetLossRetiresOnlyItsIdentityAndKeepsSavedSummary() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleEntity target = repository.create(1L,new NormalizedBounds(.1f,.1f,.4f,.8f),null,1L);
+        VehicleEntity neighbor = repository.create(2L,new NormalizedBounds(.6f,.1f,.9f,.8f),null,1L);
+        repository.attachPlate(target.entityId(),11L,plateQuad(),descriptor(.8f),2L);
+        repository.updateRegistration(target.entityId(),new PlateTextConsensus("WI1234A",.9f,3,true),3L);
+        repository.finalizeAcquisition(target.entityId(),4L);
+        repository.retireEntity(target.entityId());
+        assertNull(repository.get(target.entityId()));
+        assertNull(repository.findByPlateTrackId(11L));
+        assertSame(neighbor,repository.get(neighbor.entityId()));
+        assertEquals(1,repository.completedEntities().size());
+        VehicleEntity reacquired = repository.create(1L,new NormalizedBounds(.1f,.1f,.4f,.8f),null,5L);
+        assertTrue(reacquired.entityId() > target.entityId());
+        assertTrue(reacquired.registration().text.isEmpty());
+    }
     private static final NormalizedBounds VEHICLE =
             new NormalizedBounds(0.1f, 0.2f, 0.7f, 0.8f);
 

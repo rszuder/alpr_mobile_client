@@ -396,6 +396,7 @@
     <string name="search_plate_active">Szukam: %1$s</string>
     <string name="search_plate_verifying">Możliwe dopasowanie · weryfikuję…</string>
     <string name="search_plate_unconfirmed">Nie potwierdzono · szukam: %1$s</string>
+    <string name="target_focus_recovering">P%1$d · odzyskuję cel…</string>
     <string name="search_plate_found">%1$s · cel znaleziony</string>
     <string name="release_vehicle">Zwolnij cel</string>
     <string name="vehicle_locked">P%1$d · cel wybrany</string>
@@ -425,7 +426,7 @@
     <string name="hud_auto_zoom_retry">AZ %1$.1f× · RETRY MT/MZ</string>
     <string name="hud_auto_zoom_returning">AZ · POWRÓT DO 1,0×…</string>
     <string name="settings_scene_mode_title">Tryb analizy sceny</string>
-    <string name="settings_scene_mode_description">Statyczny: zmiana próbki rozpoczyna nową scenę i nowe encje. Dynamiczny: aplikacja zachowuje ciągłość pojazdu podczas ruchu i chwilowej utraty celu.</string>
+    <string name="settings_scene_mode_description">Statyczny: istotna zmiana w obserwowanych regionach ALPR albo potwierdzona silna zmiana globalna rozpoczyna nową scenę. Obiekty nie są łączone pomiędzy scenami. Dynamiczny: aplikacja zachowuje ciągłość pojazdu podczas ruchu i chwilowej utraty celu.</string>
     <string name="settings_scene_mode_experiment_locked">Wybrany tryb zostanie zamrożony przy START sesji badawczej i zapisany w raporcie.</string>
     <string name="settings_scene_mode_dynamic">Dynamiczny</string>
     <string name="settings_scene_mode_strict">Statyczny</string>

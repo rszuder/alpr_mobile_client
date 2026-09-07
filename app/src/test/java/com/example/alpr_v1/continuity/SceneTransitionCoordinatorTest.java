@@ -9,6 +9,20 @@ import org.junit.Test;
 public final class SceneTransitionCoordinatorTest {
     private static final SceneContinuityProfile PROFILE = SceneContinuityProfile.INITIAL;
 
+    @Test public void userReleaseEndsRecoveryWithoutSceneResetAndCannotRecoverOldTargetLater() {
+        SceneTransitionCoordinator coordinator = coordinator(SceneHandlingMode.DYNAMIC_CONTINUITY);
+        coordinator.observe(unexplainedScene(1L),1000L);
+        assertEquals(SceneContinuityState.REACQUIRING,coordinator.snapshot().state);
+        long scene = coordinator.snapshot().sceneGeneration;
+        assertEquals(SceneTransitionAction.RELEASE_ACTIVE_TARGET,coordinator.cancelTargetRecovery(2000L).action);
+        assertEquals(SceneContinuityState.STABLE,coordinator.snapshot().state);
+        assertEquals(scene,coordinator.snapshot().sceneGeneration);
+        assertFalse(coordinator.snapshot().heavyInferenceSuspended);
+        assertFalse(coordinator.snapshot().finalizationSuspended);
+        assertEquals("terminal_recovery_outside_reacquiring",
+                coordinator.completeSoftReacquire(SoftReacquireResult.TARGET_RECOVERED,3000L).reason);
+    }
+
     @Test
     public void strictModeTurnsConfirmedRawChangeIntoHardReset() {
         SceneTransitionCoordinator coordinator = coordinator(

@@ -132,6 +132,20 @@ public final class SceneTransitionCoordinator {
         return hardReset("analysis_mode_changed", nowNanos);
     }
 
+    /** An explicit user command ends recovery of the previous target, not the scene. */
+    public synchronized SceneTransitionDecision cancelTargetRecovery(long nowNanos) {
+        if (currentState != SceneContinuityState.REACQUIRING && currentState != SceneContinuityState.MOTION_HOLD) {
+            return idleDecision("no_target_recovery_to_cancel");
+        }
+        resetRecoveryState();
+        lastActiveTargetPresent = false;
+        assessment = ContinuityAssessment.none();
+        enterState(SceneContinuityState.STABLE, nowNanos);
+        finalizationSuspended = false;
+        heavyInferenceSuspended = false;
+        return emitReleaseActiveTarget(nowNanos, "user_cancelled_target_recovery");
+    }
+
     public synchronized SceneTransitionDecision completeSoftReacquire(
             SoftReacquireResult result,
             long nowNanos

@@ -547,6 +547,7 @@ public final class AlprPipeline {
             final Bitmap inferenceFrame = frame;
             final long processingHardResetRevision = hardResetRevision.get();
             final long processingVisualEpochRevision = visualEpochRevision.get();
+            final long processingFocusRevision = dispatchedFocusRevision;
 
 
             trace.start(
@@ -565,6 +566,7 @@ public final class AlprPipeline {
                                         != processingHardResetRevision
                                         || visualEpochRevision.get()
                                         != processingVisualEpochRevision
+                                        || scanAcquisitionController.targetFocus().revision != processingFocusRevision
                         )
                 );
 
@@ -586,6 +588,9 @@ public final class AlprPipeline {
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
             );
+            if (scanAcquisitionController.targetFocus().revision != processingFocusRevision) {
+                result.close(); finishStaleResultTrace(trace); return null;
+            }
             result = stampAndValidateResult(result, processingStamp);
             if (result == null) {
                 finishStaleResultTrace(trace);
@@ -852,6 +857,7 @@ public final class AlprPipeline {
 
             final long processingHardResetRevision = hardResetRevision.get();
             final long processingVisualEpochRevision = visualEpochRevision.get();
+            final long processingFocusRevision = dispatchedFocusRevision;
             trace.start("engine_total");
             PipelineResult result;
             try {
@@ -862,7 +868,8 @@ public final class AlprPipeline {
                         plateDetectionCallback,
                         () -> hardResetRevision.get() != processingHardResetRevision
                                 || visualEpochRevision.get()
-                                != processingVisualEpochRevision,
+                                != processingVisualEpochRevision
+                                || scanAcquisitionController.targetFocus().revision != processingFocusRevision,
                         plateObservationCallback
                 );
             } finally {
@@ -880,6 +887,9 @@ public final class AlprPipeline {
                     "result_available_nanos",
                     String.valueOf(SystemClock.elapsedRealtimeNanos())
             );
+            if (scanAcquisitionController.targetFocus().revision != processingFocusRevision) {
+                result.close(); finishStaleResultTrace(trace); return null;
+            }
             result = stampAndValidateResult(result, processingStamp);
             if (result == null) {
                 finishStaleResultTrace(trace);
@@ -1539,6 +1549,7 @@ public final class AlprPipeline {
                         + " new=" + report.vehicles.newlyCreatedEntities
         );
         lastReacquireVehicleEvidence = report.vehicles;
+        long previousFocusEntity = scanAcquisitionController.targetFocus().entityId;
         long nowNanos = SystemClock.elapsedRealtimeNanos();
         SceneTransitionDecision decision =
                 sceneTransitionCoordinator.completeSoftReacquire(
@@ -1552,6 +1563,9 @@ public final class AlprPipeline {
                 decision,
                 nowNanos
         );
+        if (previousFocusEntity > 0L && scanAcquisitionController.targetFocus().entityId == 0L) {
+            vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
+        }
         AcquisitionDirective scanDirective =
                 scanAcquisitionController.currentDirective();
         if (engine != null) {
@@ -1623,11 +1637,20 @@ public final class AlprPipeline {
 
     // Accessed under the pipeline monitor; UI selection may change the controller during engine.run().
     private long dispatchedScanSessionId;
+    private long dispatchedFocusRevision;
 
     private void prepareScanAcquisition(
             MobileAlprEngine activeEngine,
             long nowRuntimeNanos
     ) {
+        com.example.alpr_v1.acquisition.TargetFocusSnapshot focus = scanAcquisitionController.targetFocus();
+        dispatchedFocusRevision = focus.revision;
+        activeEngine.setPersistentTargetEntityId(focus.entityId);
+        if (focus.awaitingFreshScanAnchor) {
+            activeEngine.releaseFocusedTarget("persistent_focus_released");
+            stableSceneVehicles.invalidate();
+            activeEngine.requestVehicleRefreshAfterZoom();
+        }
         activeEngine.setStaticSceneMode(staticMode());
         activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
         if (staticMode() && staticCycle.zoomEntity() > 0L || !staticMode() && dynamicZoomEntity > 0L) {
@@ -1677,6 +1700,7 @@ public final class AlprPipeline {
         );
         AcquisitionDirective next = decision.nextDirective;
         if ("scan_queue_updated".equals(result.status)) {
+            scanAcquisitionController.onFreshVehicleMeasurement(scanVehicleTrackingFrame(), dispatchedFocusRevision);
             next = scanAcquisitionController.onVehicleFrame(
                     scanWorkingViewportVehicleFrame(scanVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
@@ -2106,6 +2130,7 @@ public final class AlprPipeline {
     }
 
     private synchronized void applySceneTransition(SceneTransitionDecision decision) {
+        long previousFocusEntity = scanAcquisitionController.targetFocus().entityId;
         if (decision == null) return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
@@ -2176,6 +2201,10 @@ public final class AlprPipeline {
                 decision,
                 SystemClock.elapsedRealtimeNanos()
         );
+        if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET && previousFocusEntity > 0L
+                && scanAcquisitionController.targetFocus().entityId == 0L) {
+            vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
+        }
         recordContinuityEvents(decision, snapshot, lastSceneEvidence);
     }
 
@@ -2832,6 +2861,7 @@ public final class AlprPipeline {
 
     private boolean stationaryScanIdle() {
         if (staticMode()) return false;
+        if (scanAcquisitionController.targetFocus().awaitingFreshScanAnchor) return false;
         if (experimentModeEnabled || frozenResearchExecutionConfig != null) return false;
         long now = SystemClock.elapsedRealtimeNanos();
         ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(now);
@@ -2917,24 +2947,40 @@ public final class AlprPipeline {
 
     public void pickVehicle(long entityId) {
         if (staticMode() || vehicleTrackingCoordinator.repository().get(entityId) == null) return;
+        sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
+        vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
+        if (plateOwnerEntityId(targetSnapshot.trackId) != entityId) {
+            targetSnapshot = TargetSnapshot.searching().withContinuityStamp(sceneTransitionCoordinator.stamp(latestContinuitySourceFrame()));
+        }
         scanAcquisitionController.pickVehicle(entityId, SystemClock.elapsedRealtimeNanos());
         frameGate.requestImmediateFrame();
     }
 
     public void startRegistrationSearch(String text) {
         if (staticMode()) return;
+        sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
+        vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
         scanAcquisitionController.startSearch(text, SystemClock.elapsedRealtimeNanos());
         frameGate.requestImmediateFrame();
     }
 
     public void releaseSelectedTarget(boolean endSearch) {
+        sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
+        vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
         scanAcquisitionController.releaseForeground(endSearch, SystemClock.elapsedRealtimeNanos());
+        if (scanAcquisitionController.targetFocus().awaitingFreshScanAnchor) targetSnapshot = TargetSnapshot.searching()
+                .withContinuityStamp(sceneTransitionCoordinator.stamp(latestContinuitySourceFrame()));
         frameGate.requestImmediateFrame();
     }
 
     public String searchRegistration() { return scanAcquisitionController.searchText(); }
     public com.example.alpr_v1.domain.SearchMatchState searchMatchState() { return scanAcquisitionController.searchState(); }
     public long lockedEntityId() { return scanAcquisitionController.lockedEntityId(); }
+    public com.example.alpr_v1.acquisition.TargetFocusSnapshot targetFocus() { return scanAcquisitionController.targetFocus(); }
+    public long plateOwnerEntityId(long plateTrackId) {
+        com.example.alpr_v1.domain.VehicleEntity entity = vehicleTrackingCoordinator.repository().findByPlateTrackId(plateTrackId);
+        return entity == null ? 0L : entity.entityId();
+    }
     public long foregroundEntityId() {
         com.example.alpr_v1.domain.TargetPurpose purpose = scanAcquisitionController.foregroundPurpose();
         return purpose != null && purpose != com.example.alpr_v1.domain.TargetPurpose.SCAN_ACQUISITION

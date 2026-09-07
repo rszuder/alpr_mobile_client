@@ -40,6 +40,57 @@ public final class DetectionOverlayView extends View {
     private final Paint vehicleLeaderContrastPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint vehicleBadgeBarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private boolean stationaryScene;
+    private long exclusiveEntityId;
+    private boolean awaitingFreshScanAnchor;
+    private java.util.function.LongUnaryOperator plateEntityResolver = track -> 0L;
+
+    public void setPlateEntityResolver(java.util.function.LongUnaryOperator resolver) {
+        plateEntityResolver = resolver == null ? track -> 0L : resolver;
+    }
+
+    /** Persistent focus is a presentation boundary, not a scene or history reset. */
+    public void setTargetFocus(long entityId, boolean awaitingFreshAnchor) {
+        if (exclusiveEntityId == entityId && awaitingFreshScanAnchor == awaitingFreshAnchor) return;
+        exclusiveEntityId = Math.max(0L, entityId);
+        awaitingFreshScanAnchor = awaitingFreshAnchor;
+        if (overlayAnimator != null) { overlayAnimator.cancel(); overlayAnimator = null; }
+        cancelPlateFade();
+        cancelPlateAbsorption();
+        pendingPlateTransfers.clear();
+        pendingPlateReadings.clear();
+        transferredVehicleEntityIds.clear();
+        absorbedPlateTrackIds.clear();
+        Map<Long, EntityRecognitionSnapshot> retained = new HashMap<>();
+        EntityRecognitionSnapshot reading = requestedVehicleRecognitions.get(exclusiveEntityId);
+        if (exclusiveEntityId > 0L && reading != null) retained.put(exclusiveEntityId, reading);
+        requestedVehicleRecognitions = Collections.unmodifiableMap(retained);
+        vehicleRecognitions = requestedVehicleRecognitions;
+        identifiedVehicleEntityIds = focusIds(identifiedVehicleEntityIds);
+        completedVehicleEntityIds = focusIds(completedVehicleEntityIds);
+        items = exclusiveEntityId == 0L ? Collections.emptyList() : focusItems(items);
+        setActiveVehicleEntityId(0L);
+        setActiveVehicleEntityId(exclusiveEntityId);
+        focusedTrackId = 0L;
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    private Set<Long> focusIds(Set<Long> ids) {
+        if (awaitingFreshScanAnchor) return Collections.emptySet();
+        if (exclusiveEntityId == 0L) return ids;
+        return ids.contains(exclusiveEntityId) ? Collections.singleton(exclusiveEntityId) : Collections.emptySet();
+    }
+
+    private List<OverlayItem> focusItems(List<OverlayItem> incoming) {
+        if (awaitingFreshScanAnchor || incoming == null) return Collections.emptyList();
+        if (exclusiveEntityId == 0L) return incoming;
+        List<OverlayItem> scoped = new ArrayList<>();
+        for (OverlayItem item : incoming) {
+            long owner = item.kind == OverlayItem.Kind.PLATE ? plateEntityResolver.applyAsLong(item.trackId) : item.trackId;
+            if (owner == exclusiveEntityId) scoped.add(item);
+        }
+        return Collections.unmodifiableList(scoped);
+    }
     private final Paint recognizedVehiclePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint vehicleRoiPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint predictionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -264,6 +315,7 @@ public final class DetectionOverlayView extends View {
      * ponownie skladane ani animowane przy kazdej lekkiej klatce kamery.
      */
     public void setTrackedPlateItems(List<OverlayItem> trackedPlates) {
+        trackedPlates = focusItems(trackedPlates);
         trackedPlates = withoutAbsorbedPlates(trackedPlates);
         if (trackedPlates == null || trackedPlates.isEmpty()) return;
 
@@ -456,6 +508,7 @@ public final class DetectionOverlayView extends View {
     }
 
     public void setPreviewItems(List<OverlayItem> previewItems) {
+        previewItems = focusItems(previewItems);
         if (previewItems == null || previewItems.isEmpty()) pendingPlateReadings.clear();
         previewItems = stabilizeStationaryVehicles(previewItems, true);
         previewItems = withoutAbsorbedPlates(previewItems);
@@ -491,6 +544,7 @@ public final class DetectionOverlayView extends View {
             int sourceWidth,
             int sourceHeight
     ) {
+        newItems = focusItems(newItems);
 
         List<OverlayItem> incomingItems = new ArrayList<>(
                 newItems == null ? Collections.emptyList() : newItems
@@ -643,8 +697,8 @@ public final class DetectionOverlayView extends View {
     }
 
     public void setVehicleEntityProgress(Set<Long> identifiedEntityIds, Set<Long> completedEntityIds) {
-        Set<Long> identified = positiveEntityIds(identifiedEntityIds);
-        Set<Long> completed = positiveEntityIds(completedEntityIds);
+        Set<Long> identified = focusIds(positiveEntityIds(identifiedEntityIds));
+        Set<Long> completed = focusIds(positiveEntityIds(completedEntityIds));
         if (identifiedVehicleEntityIds.equals(identified) && completedVehicleEntityIds.equals(completed)) return;
         identifiedVehicleEntityIds = Collections.unmodifiableSet(identified);
         completedVehicleEntityIds = Collections.unmodifiableSet(completed);
@@ -658,10 +712,11 @@ public final class DetectionOverlayView extends View {
             Set<Long> completedEntityIds,
             Map<Long, EntityRecognitionSnapshot> recognitions
     ) {
-        identifiedVehicleEntityIds = Collections.unmodifiableSet(positiveEntityIds(identifiedEntityIds));
-        completedVehicleEntityIds = Collections.unmodifiableSet(positiveEntityIds(completedEntityIds));
+        identifiedVehicleEntityIds = Collections.unmodifiableSet(focusIds(positiveEntityIds(identifiedEntityIds)));
+        completedVehicleEntityIds = Collections.unmodifiableSet(focusIds(positiveEntityIds(completedEntityIds)));
         Map<Long, EntityRecognitionSnapshot> requested = new HashMap<>(requestedVehicleRecognitions);
         for (EntityRecognitionSnapshot candidate : positiveRecognitions(recognitions).values()) {
+            if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && candidate.entityId != exclusiveEntityId) continue;
             EntityRecognitionSnapshot old = requested.get(candidate.entityId);
             if (old != null && candidate.confirmed && old.plateTrackId != candidate.plateTrackId
                     && transferredVehicleEntityIds.contains(candidate.entityId)
@@ -738,6 +793,8 @@ public final class DetectionOverlayView extends View {
 
     /** Hard boundary: geometry, pending reads, badges and animations end together. */
     public void hardResetForNewScene(com.example.alpr_v1.continuity.ContinuityStamp stamp) {
+        exclusiveEntityId = 0L;
+        awaitingFreshScanAnchor = false;
         if (stamp == null || stamp.sceneGeneration < presentationScene) return;
         if (overlayAnimator != null) { overlayAnimator.cancel(); overlayAnimator = null; }
         cancelPlateFade();
@@ -835,6 +892,7 @@ public final class DetectionOverlayView extends View {
 
     /** The crop callback owns this exact source geometry, even after the short PLATE TTL expires. */
     public void animatePlateObservation(com.example.alpr_v1.pipeline.PlateObservation observation) {
+        if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && (observation == null || observation.entityId != exclusiveEntityId)) return;
         if (observation == null || !observation.freshMzAttempted) return;
         com.example.alpr_v1.pipeline.PlateGeometry geometry = observation.geometry;
         if (geometry.sourceWidthPx <= 0 || geometry.sourceHeightPx <= 0) return;
@@ -968,6 +1026,7 @@ public final class DetectionOverlayView extends View {
 
     public void setFocusedTrackId(long trackId) {
         long safeTrackId = Math.max(0L, trackId);
+        if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && plateEntityResolver.applyAsLong(safeTrackId) != exclusiveEntityId) safeTrackId = 0L;
         if (focusedTrackId == safeTrackId) return;
         focusedTrackId = safeTrackId;
         rebuildRenderItems();
@@ -981,6 +1040,7 @@ public final class DetectionOverlayView extends View {
      */
     public void setActiveVehicleEntityId(long entityId) {
         long safeEntityId = Math.max(0L, entityId);
+        if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && safeEntityId != exclusiveEntityId) safeEntityId = 0L;
         if (activeVehicleEntityId != safeEntityId) {
             activeVehicleEntityId = safeEntityId;
             activeVehicleNormalizedBounds = null;
@@ -2052,6 +2112,7 @@ public final class DetectionOverlayView extends View {
     }
 
     private void rebuildRenderItems() {
+        items = focusItems(items);
         refreshActiveVehicleBounds();
         float viewWidth = getWidth();
         float viewHeight = getHeight();
