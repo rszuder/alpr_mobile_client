@@ -1102,6 +1102,14 @@ public final class MainActivity extends AppCompatActivity {
         } else {
             stationarySceneSupport.observeUncertain(evidenceNow);
         }
+        if (motionPipeline != null) {
+            motionPipeline.recordStationarySceneEvidence(continuityStamp,
+                    stationarySceneSupported()
+                            && motionSample.sceneChange.globalSamples >= 128
+                            && motionSample.sceneChange.globalChangedFraction < 0.01f
+                            && motionSample.sceneChange.globalMeanDelta < 3f,
+                    evidenceNow);
+        }
         if (motionSample.sceneChange.globalChangedFraction >= 0.20f
                 || motionSample.sceneChange.changedFraction >= 0.08f) {
             android.util.Log.d(

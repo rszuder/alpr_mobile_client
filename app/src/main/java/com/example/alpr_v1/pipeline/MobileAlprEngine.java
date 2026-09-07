@@ -118,6 +118,22 @@ final class MobileAlprEngine implements AutoCloseable {
     private final PlateVehicleAssociator plateVehicleAssociator =
             new PlateVehicleAssociator();
     private long lastVehicleDetectionFrame = Long.MIN_VALUE;
+    private StableSceneVehicleCache stableSceneVehicles;
+
+    void setStableSceneVehicleCache(StableSceneVehicleCache cache) {
+        stableSceneVehicles = cache;
+    }
+
+    private VehicleTrackingFrame reusableVehicleFrame(ContinuityStamp stamp) {
+        if (!scanAcquisitionActive || rapidCameraMotion || cameraTransformInProgress
+                || continuityReacquireActive || continuityFreshMpRequired || stableSceneVehicles == null) return null;
+        return stableSceneVehicles.current(stamp, SystemClock.elapsedRealtimeNanos());
+    }
+
+    private VehicleTrackingFrame vehicleFrameForScan(ContinuityStamp stamp) {
+        VehicleTrackingFrame retained = reusableVehicleFrame(stamp);
+        return retained == null ? vehicleTrackingCoordinator.latestFrame() : retained;
+    }
     private long appliedAutoZoomTargetLockRevision = Long.MIN_VALUE;
     private int reportedTargetLockSwitches;
     private int reportedTargetLockLosses;
@@ -380,6 +396,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private void resetSceneDependentState() {
+        if (stableSceneVehicles != null) stableSceneVehicles.invalidate();
         trackCoordinator.reset();
         vehicleTrackingCoordinator.resetScene();
         cachedVehicleRois.clear();
@@ -450,6 +467,7 @@ final class MobileAlprEngine implements AutoCloseable {
         continuitySoftHold = false;
         continuityReason = reason == null ? "" : reason;
         cachedVehicleRois.clear();
+        if (stableSceneVehicles != null) stableSceneVehicles.invalidate();
         cachedVehicleDetections.clear();
         retainedPlateAssociationCandidates = Collections.emptyList();
         retainedPlateAssociationRuntimeNanos = 0L;
@@ -716,6 +734,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 ? TargetSnapshot.searching() : targetSnapshot;
         boolean targetLostSignal = liveTarget.state == TargetSnapshot.State.LOST;
         if (targetLostSignal) {
+            if (stableSceneVehicles != null) stableSceneVehicles.invalidate();
             trackCoordinator.onMtEvent(
                     PlateTrackCoordinator.MtStateEvent.TARGET_LOST,
                     SystemClock.elapsedRealtimeNanos()
@@ -729,6 +748,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 && (trackedGeometryAvailable || targetRoiActive);
         boolean vehicleRecoveryRequested =
                 mtInferenceScheduler.requiresVehicleRecovery();
+        if (vehicleRecoveryRequested && stableSceneVehicles != null) stableSceneVehicles.invalidate();
 
         MtInferenceScheduler.Decision mtDecision = null;
         if (anyTargetGeometry && !vehicleRecoveryRequested) {
@@ -772,7 +792,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         overlays,
                         cachedVehicleDetections,
                         cachedVehicleRois,
-                        vehicleTrackingCoordinator.latestFrame().candidates,
+                        vehicleFrameForScan(sourceStamp).candidates,
                         frame,
                         roiBudgetPolicy
                 );
@@ -802,12 +822,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 && roiBudgetPolicy.usesVehicleCascade()
                 && vehicleBackend != null;
         if (useVehicleRegions) {
-            boolean refreshVehicles = continuityFreshMpRequired
+            boolean refreshVehicles = reusableVehicleFrame(sourceStamp) == null && (continuityFreshMpRequired
                     || scanDirectiveAction
                     == AcquisitionDirectiveAction.REQUEST_FRESH_MP
                     || cachedVehicleRois.isEmpty()
                     || rapidCameraMotion
-                    || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES;
+                    || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES);
             if (refreshVehicles) {
                 VehicleDetectionResult vehicleResult =
                         detectVehicleRegions(frame, trace, sourceStamp);
@@ -841,7 +861,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     overlays,
                     cachedVehicleDetections,
                     cachedVehicleRois,
-                    vehicleTrackingCoordinator.latestFrame().candidates,
+                    vehicleFrameForScan(sourceStamp).candidates,
                     frame,
                     roiBudgetPolicy
             );
@@ -863,7 +883,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     overlays,
                     cachedVehicleDetections,
                     cachedVehicleRois,
-                    vehicleTrackingCoordinator.latestFrame().candidates,
+                    vehicleFrameForScan(sourceStamp).candidates,
                     frame,
                     roiBudgetPolicy
             );
@@ -899,7 +919,7 @@ final class MobileAlprEngine implements AutoCloseable {
         long associationSnapshotRuntimeNanos = SystemClock.elapsedRealtimeNanos();
         List<VehicleCandidate> currentAssociationCandidates =
                 snapshotPlateAssociationCandidates(
-                        vehicleTrackingCoordinator.latestFrame().candidates,
+                        vehicleFrameForScan(sourceStamp).candidates,
                         vehicleRois
                 );
         List<VehicleCandidate> plateAssociationCandidates;
@@ -1036,7 +1056,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         if (scheduledVehicleRoi == null) {
                             scheduledVehicleRoi =
                                     ExactEntityRoiResolver.buildFromTrackedEntity(
-                                            vehicleTrackingCoordinator.latestFrame().candidates,
+                                            vehicleFrameForScan(sourceStamp).candidates,
                                             frame.getWidth(),
                                             frame.getHeight(),
                                             mtDecision.vehicleEntityId,
@@ -2397,6 +2417,7 @@ final class MobileAlprEngine implements AutoCloseable {
             InferenceTrace trace,
             ContinuityStamp sourceStamp
     ) {
+        long stableRevision = stableSceneVehicles == null ? -1L : stableSceneVehicles.revision();
         long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
         VehicleRoiSelector.Region analysisRegion = fullFrameRegion(frame);
         Bitmap analysisBitmap = frame;
@@ -2633,6 +2654,10 @@ final class MobileAlprEngine implements AutoCloseable {
                         : java.util.Collections.emptySet(),
                 resultAvailableRuntimeNanos
         );
+        if (scanAcquisitionActive && stableSceneVehicles != null) {
+            stableSceneVehicles.record(trackingFrame.withContinuityStamp(sourceStamp),
+                    stableRevision, resultAvailableRuntimeNanos);
+        }
         trace.putConfidence(
                 "mp_observation_gap_ms",
                 vehicleTrackingCoordinator.lastMpObservationGapNanos() / 1_000_000.0
@@ -2717,12 +2742,17 @@ final class MobileAlprEngine implements AutoCloseable {
                 trace,
                 snapshotRuntimeNanos
         );
-        VehicleTrackingFrame trackingFrame = vehicleTrackingCoordinator.predict(
+        VehicleTrackingFrame retained = reusableVehicleFrame(trace.continuityStamp());
+        VehicleTrackingFrame trackingFrame = retained != null ? retained : vehicleTrackingCoordinator.predict(
                 trace.frameId(),
                 sourceTimestampNanos,
                 snapshotSourceTimestampNanos,
                 snapshotRuntimeNanos
         );
+        if (retained != null) {
+            trace.putCount("vehicle_stationary_reuse", 1);
+            trace.putAttribute("vehicle_background_state", "STATIONARY_REUSED");
+        }
         recordVehicleCandidateQuality(trace, trackingFrame.candidates);
         recordVehicleTrackingStats(trace);
         List<VehicleCandidate> fullFrameCandidates = trackingFrame.candidates;

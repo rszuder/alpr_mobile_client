@@ -161,6 +161,7 @@ public final class AlprPipeline {
     private final Object previewFrameMotionLock = new Object();
     private final ScanAcquisitionController scanAcquisitionController =
             new ScanAcquisitionController();
+    private final StableSceneVehicleCache stableSceneVehicles = new StableSceneVehicleCache();
     private long lastScanTelemetryRunId;
     private ScanRunState lastScanTelemetryRunState = ScanRunState.IDLE;
     private long lastScanTelemetryQueueRevision = -1L;
@@ -358,7 +359,7 @@ public final class AlprPipeline {
             }
             return null;
         }
-        if (!frameGate.shouldProcess(frameId)) {
+        if (stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
             metrics.frameSkippedByGate();
             return null;
         }
@@ -750,7 +751,7 @@ public final class AlprPipeline {
             }
             return null;
         }
-        if (!frameGate.shouldProcess(frameId)) {
+        if (stationaryScanIdle() || !frameGate.shouldProcess(frameId)) {
             metrics.frameSkippedByGate();
             return null;
         }
@@ -1625,7 +1626,7 @@ public final class AlprPipeline {
         AcquisitionDirective directive = before.directive;
         if (before.runState == ScanRunState.RUNNING) {
             directive = scanAcquisitionController.onVehicleFrame(
-                    scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()),
+                    scanWorkingViewportVehicleFrame(scanVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1659,7 +1660,7 @@ public final class AlprPipeline {
         AcquisitionDirective next = decision.nextDirective;
         if ("scan_queue_updated".equals(result.status)) {
             next = scanAcquisitionController.onVehicleFrame(
-                    scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()),
+                    scanWorkingViewportVehicleFrame(scanVehicleTrackingFrame()),
                     sceneTransitionCoordinator.snapshot(),
                     nowRuntimeNanos
             );
@@ -1669,7 +1670,7 @@ public final class AlprPipeline {
         );
         StringBuilder scanPool = new StringBuilder();
         for (com.example.alpr_v1.tracking.VehicleCandidate candidate
-                : scanWorkingViewportVehicleFrame(latestVehicleTrackingFrame()).candidates) {
+                : scanWorkingViewportVehicleFrame(scanVehicleTrackingFrame()).candidates) {
             if (scanPool.length() > 0) scanPool.append(';');
             scanPool.append(candidate.entityId)
                     .append('/')
@@ -2562,6 +2563,8 @@ public final class AlprPipeline {
         engine.setCameraTransformInProgress(cameraTransformInProgress);
         engine.setSoftReacquireResultListener(this::handleSoftReacquireReport);
         engine.setPreviewFrameMotionHistory(previewFrameMotionHistory);
+        stableSceneVehicles.invalidate();
+        engine.setStableSceneVehicleCache(stableSceneVehicles);
         android.util.Log.d("ALPR_PIPELINE_START", "models_ready_ms="
                 + (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000L);
     }
@@ -2784,6 +2787,37 @@ public final class AlprPipeline {
         if (activeEngine != null) activeEngine.setRapidCameraMotion(rapid);
     }
 
+    public void recordStationarySceneEvidence(ContinuityStamp stamp, boolean stable, long now) {
+        if (stamp == null || !isCurrentContinuityStamp(stamp)) return;
+        stableSceneVehicles.observe(stamp, stable, now);
+    }
+
+    private VehicleTrackingFrame scanVehicleTrackingFrame() {
+        VehicleTrackingFrame latest = latestVehicleTrackingFrame();
+        VehicleTrackingFrame retained = stableSceneVehicles.current(
+                latest.continuityStamp(), SystemClock.elapsedRealtimeNanos());
+        return retained == null ? latest : retained;
+    }
+
+    private boolean stationaryScanIdle() {
+        if (experimentModeEnabled || frozenResearchExecutionConfig != null) return false;
+        long now = SystemClock.elapsedRealtimeNanos();
+        ScanAcquisitionSnapshot scan = scanAcquisitionController.snapshot(now);
+        if (scan.runState != ScanRunState.RUNNING || scan.activeEntityId != 0L) return false;
+        VehicleTrackingFrame retained = stableSceneVehicles.current(
+                latestVehicleTrackingFrame().continuityStamp(), now);
+        if (retained == null) return false;
+        for (com.example.alpr_v1.acquisition.AcquisitionCandidate queued : scan.queue.candidates) {
+            if (now < queued.cooldownUntilRuntimeNanos) continue;
+            for (VehicleCandidate vehicle : retained.candidates) {
+                if (vehicle.entityId == queued.entityId) return false;
+            }
+        }
+        // Missing candidates wait for the control MP; cooldowns are reconsidered
+        // on each lightweight camera callback without running the engine.
+        return true;
+    }
+
     public void recordPreviewFrameMotion(
             ContinuityStamp stamp,
             long destinationTimestampNanos,
@@ -2813,6 +2847,7 @@ public final class AlprPipeline {
 
     public void setCameraTransformInProgress(boolean inProgress) {
         cameraTransformInProgress = inProgress;
+        if (inProgress) stableSceneVehicles.invalidate();
     }
 
     public void setCurrentCameraZoomRatio(float zoomRatio) {
@@ -2956,6 +2991,7 @@ public final class AlprPipeline {
     }
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
+        stableSceneVehicles.invalidate();
         scanAcquisitionController.startLiveRun(scanRunId, nowRuntimeNanos);
         JSONObject autoZoomDetails = new JSONObject();
         try {
@@ -2995,6 +3031,7 @@ public final class AlprPipeline {
     }
 
     public void stopScanRun(long nowRuntimeNanos) {
+        stableSceneVehicles.invalidate();
         scanAcquisitionController.stopRun(nowRuntimeNanos);
         AcquisitionDirective stopDirective =
                 scanAcquisitionController.currentDirective();

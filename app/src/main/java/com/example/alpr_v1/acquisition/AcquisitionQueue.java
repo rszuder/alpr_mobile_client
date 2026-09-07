@@ -350,14 +350,15 @@ public final class AcquisitionQueue {
     }
 
     private AcquisitionCandidate fromSource(VehicleCandidate source, long now) {
-        float readability = readability(source.bounds, source.effectiveConfidence);
+        float confidence = acquisitionConfidence(source);
+        float readability = readability(source.bounds, confidence);
         float freshness = freshness(source.predicted, source.predictionAgeNanos);
         return new AcquisitionCandidate(
                 source.entityId,
                 source.vehicleTrackId,
                 source.bounds,
                 EntityAcquisitionState.QUEUED,
-                source.effectiveConfidence,
+                confidence,
                 source.exitUrgency,
                 readability,
                 0f,
@@ -381,9 +382,9 @@ public final class AcquisitionQueue {
                 source.vehicleTrackId,
                 source.bounds,
                 EntityAcquisitionState.QUEUED,
-                source.effectiveConfidence,
+                acquisitionConfidence(source),
                 source.exitUrgency,
-                readability(source.bounds, source.effectiveConfidence),
+                readability(source.bounds, acquisitionConfidence(source)),
                 novelty(current),
                 source.predicted,
                 source.predictionAgeNanos
@@ -444,7 +445,14 @@ public final class AcquisitionQueue {
         return candidate.bounds != null
                 && candidate.bounds.valid()
                 && (candidate.predicted
-                || candidate.effectiveConfidence >= profile.minimumEffectiveConfidence);
+                || acquisitionConfidence(candidate) >= profile.minimumEffectiveConfidence);
+    }
+
+    private static float acquisitionConfidence(VehicleCandidate candidate) {
+        // A just-completed MP result is a measurement, even if inference took
+        // longer than the preview confidence-decay horizon. Decay only gates
+        // candidates carried forward by prediction, not this new measurement.
+        return candidate.predicted ? candidate.effectiveConfidence : candidate.detectionConfidence;
     }
 
     private boolean eligibleForSelection(AcquisitionCandidate candidate, long now) {

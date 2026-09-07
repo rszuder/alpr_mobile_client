@@ -9,12 +9,43 @@ import com.example.alpr_v1.domain.EntityAcquisitionState;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.tracking.VehicleCandidate;
 import com.example.alpr_v1.tracking.VehicleTrackingFrame;
+import com.example.alpr_v1.tracking.VehicleTrackingCoordinator;
+import com.example.alpr_v1.tracking.VehicleTrackManager;
 
 import org.junit.Test;
 
 import java.util.Arrays;
 
 public final class AcquisitionQueueTest {
+    @Test
+    public void slowFreshMpStartsAcquisitionDespitePresentationConfidenceDecay() {
+        VehicleTrackingCoordinator tracker = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame measured = tracker.updateFromMp(
+                1L, 1_000_000_000L, 3_200_000_000L,
+                java.util.Collections.singletonList(new VehicleTrackManager.Observation(
+                        new NormalizedBounds(0.25f, 0.2f, 0.75f, 0.8f), 0.60f, null, 0)));
+        VehicleCandidate vehicle = measured.candidates.get(0);
+        assertTrue(!vehicle.predicted);
+        assertTrue(vehicle.effectiveConfidence < ScanAcquisitionProfile.DEFAULT.minimumEffectiveConfidence);
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(measured, 0L, 3_200_000_000L);
+
+        AcquisitionQueue.Selection selected = queue.selectNext(3_200_000_000L);
+        assertNotNull(selected);
+        assertEquals(vehicle.entityId, selected.candidate.entityId);
+        assertEquals(0.60f, selected.candidate.effectiveConfidence, 0.0001f);
+    }
+
+    @Test
+    public void oldPredictionCannotUseHighHistoricalDetectionConfidenceToStartAcquisition() {
+        VehicleCandidate predicted = new VehicleCandidate(1L, 11L,
+                new NormalizedBounds(0.25f, 0.2f, 0.75f, 0.8f),
+                0.90f, 0.09f, 0f, true, 1, 1_000_000_000L, 3_200_000_000L);
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1L, predicted), 0L, 3_200_000_000L);
+        assertNull(queue.selectNext(3_200_000_000L));
+    }
+
     @Test
     public void entityIdOccursOnlyOnceEvenWhenSourceDuplicatesIt() {
         AcquisitionQueue queue = new AcquisitionQueue();
