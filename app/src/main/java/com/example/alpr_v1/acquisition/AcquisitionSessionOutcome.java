@@ -4,6 +4,7 @@ public enum AcquisitionSessionOutcome {
     NONE,
     STARTED,
     PROGRESS,
+    READ_CAPTURED,
     READY_TO_FINALIZE,
     DEFERRED,
     LOST,

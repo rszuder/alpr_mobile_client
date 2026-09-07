@@ -620,7 +620,7 @@ public final class DetectionOverlayView extends View {
                 pendingPlateReadings.remove(candidate.plateTrackId);
                 removeAbsorbedPlateLayers(candidate.plateTrackId);
             }
-            if (old == null || !old.confirmed || candidate.confirmed) requested.put(candidate.entityId, candidate);
+            requested.put(candidate.entityId, BadgeReadingPolicy.retainBest(old, candidate));
         }
         requestedVehicleRecognitions = Collections.unmodifiableMap(requested);
         for (EntityRecognitionSnapshot recognition : requested.values()) {
@@ -791,7 +791,7 @@ public final class DetectionOverlayView extends View {
         EntityRecognitionSnapshot recognition = new EntityRecognitionSnapshot(observation.entityId,
                 observation.plateTrackId, observation.freshPrediction,
                 observation.recognitionConfidence, observation.confirmed, observation.observations);
-        if (previous != null && previous.confirmed && !recognition.confirmed) recognition = previous;
+        recognition = BadgeReadingPolicy.retainBest(previous, recognition);
         RenderItem visiblePlate = findPlateRenderItem(observation.plateTrackId);
         RectF source = visiblePlate == null ? OverlayViewportTransform.mapNormalizedToView(
                 new RectF(geometry.bboxLeftPx / geometry.sourceWidthPx,
@@ -1682,7 +1682,9 @@ public final class DetectionOverlayView extends View {
             RectF bounds = OverlayViewportTransform.mapNormalizedToView(reading.bounds,
                     reading.sourceWidth, reading.sourceHeight, getWidth(), getHeight());
             canvas.drawRoundRect(bounds, dp(5), dp(5), boxPaint);
-            String text = getResources().getString(com.example.alpr_v1.R.string.overlay_plate_pending,
+            String text = getResources().getString(reading.text.isEmpty()
+                            ? com.example.alpr_v1.R.string.overlay_plate_pending
+                            : com.example.alpr_v1.R.string.overlay_plate_unassigned,
                     reading.text.isEmpty() ? "…" : reading.text);
             float height = fontHeight(detectionTextPaint) + dp(7f);
             float width = Math.min(getWidth(), detectionTextPaint.measureText(text) + dp(12f));

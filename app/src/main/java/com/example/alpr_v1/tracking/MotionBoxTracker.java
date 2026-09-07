@@ -138,7 +138,8 @@ public final class MotionBoxTracker {
 
     public synchronized void reset() {
         tracks.clear();
-        nextTrackId = 1L;
+        // Consumers can retain entity ownership across soft recovery/profile
+        // changes. A new detection must never reuse an earlier track's identity.
     }
 
     /** Przelicza aktywne tracki po kontrolowanym zoomie względem środka sensora. */

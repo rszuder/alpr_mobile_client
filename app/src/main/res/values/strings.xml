@@ -47,6 +47,7 @@
     <string name="history_subtitle">Jeden wpis na logiczny pojazd lub tablicę w bieżącej scenie</string>
     <string name="history_entity_assigned">P%1$d</string>
     <string name="overlay_plate_pending">T: %1$s · oczekuje</string>
+    <string name="overlay_plate_unassigned">T: %1$s · bez przypisania</string>
     <string name="history_entity_unassigned">Bez przypisania do pojazdu · track T%1$d</string>
     <string name="history_empty_title">Jeszcze nic tu nie ma</string>
     <string name="history_empty_description">Potwierdzone odczyty pojawią się automatycznie podczas analizy.</string>

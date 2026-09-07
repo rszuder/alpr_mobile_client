@@ -10,6 +10,21 @@ public final class PlateVehicleAssociator {
     public static final float MIN_ASSOCIATION_SCORE = 0.48f;
     public static final float MIN_ASSOCIATION_MARGIN = 0.12f;
 
+    /** Expanded crops can include a neighbor's plate; resolve its actual owner. */
+    public PlateVehicleAssociation associateVehicleRoi(
+            Detection plate, VehicleRoi roi, int width, int height,
+            List<VehicleCandidate> vehicles
+    ) {
+        PlateVehicleAssociation direct = validateDirectRoi(plate, roi, width, height, vehicles);
+        if (direct.assigned()) return direct;
+        PlateVehicleAssociation geometric = associate(plate, width, height, vehicles);
+        // Do not bypass the original owner's vertical-region validation.
+        if (geometric.assigned() && roi != null && geometric.entityId != roi.entityId) {
+            return geometric;
+        }
+        return direct;
+    }
+
     public PlateVehicleAssociation associate(
             Detection plate,
             int sourceWidth,

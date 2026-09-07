@@ -1905,6 +1905,9 @@ public final class AlprPipeline {
                     == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.READY_TO_FINALIZE) {
                 event = "scan_session_ready_to_finalize";
             } else if (decision.outcome
+                    == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.READ_CAPTURED) {
+                event = "scan_read_captured";
+            } else if (decision.outcome
                     == com.example.alpr_v1.acquisition.AcquisitionSessionOutcome.PROGRESS) {
                 event = "scan_session_progress";
             } else if (decision.outcome
@@ -2953,7 +2956,7 @@ public final class AlprPipeline {
     }
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
-        scanAcquisitionController.startRun(scanRunId, nowRuntimeNanos);
+        scanAcquisitionController.startLiveRun(scanRunId, nowRuntimeNanos);
         JSONObject autoZoomDetails = new JSONObject();
         try {
             autoZoomDetails.put("scan_run_id", scanRunId);

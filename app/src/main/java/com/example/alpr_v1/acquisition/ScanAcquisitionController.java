@@ -42,6 +42,7 @@ public final class ScanAcquisitionController {
     private int mtAttempts;
     private int freshMzAttempts;
     private boolean releasePending;
+    private boolean finishOnFirstRead;
     private long lastRuntimeNanos;
     private PlateAnchor plateAnchor;
     private boolean continuityPaused;
@@ -82,6 +83,16 @@ public final class ScanAcquisitionController {
     }
 
     public synchronized void startRun(long scanRunId, long nowRuntimeNanos) {
+        startRun(scanRunId, nowRuntimeNanos, false);
+    }
+
+    /** Live gallery acquisition ends at the first readable, assigned crop. */
+    public synchronized void startLiveRun(long scanRunId, long nowRuntimeNanos) {
+        startRun(scanRunId, nowRuntimeNanos, true);
+    }
+
+    private void startRun(long scanRunId, long nowRuntimeNanos, boolean finishOnFirstRead) {
+        this.finishOnFirstRead = finishOnFirstRead;
         rememberRuntime(nowRuntimeNanos);
         cancelActiveSession(TargetSessionState.CANCELLED, nowRuntimeNanos);
         if (run != null && run.state().active()) run.stop(nowRuntimeNanos);
@@ -367,6 +378,25 @@ public final class ScanAcquisitionController {
                     release,
                     "stable_registration_consensus"
             );
+        }
+        if (finishOnFirstRead && hasReadableCrop(matching)) {
+            long entityId = activeSession.entityId();
+            long sessionId = activeSession.sessionId();
+            modeController.finishSession(sessionId, TargetSessionState.COMPLETED, nowRuntimeNanos);
+            recordActiveSessionDuration(nowRuntimeNanos);
+            activeSession = null;
+            queue.complete(entityId);
+            completedEntityIds.add(entityId);
+            resetSessionBudgets();
+            plateAnchor = null;
+            releasePending = true;
+            AcquisitionDirective release = setDirective(
+                    AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,
+                    0L, 0L, "scan_read_captured");
+            // A captured provisional read is not a confirmed research record.
+            return new AcquisitionDecision(true, AcquisitionSessionOutcome.READ_CAPTURED,
+                    AcquisitionDeferReason.NONE, scanRunId(), sessionId, entityId,
+                    EntityAcquisitionState.READING_REGISTRATION, release, "assigned_read_captured");
         }
         if (freshMzAttempts >= profile.maximumFreshMzAttempts) {
             return deferActive(
@@ -861,10 +891,26 @@ public final class ScanAcquisitionController {
                     && (observation.acquisitionDirectiveRevision <= 0L
                     || observation.acquisitionDirectiveRevision
                     <= recentlyReleasedDirectiveRevision);
-            if (observation.confirmed || activeOwner || recentlyReleasedOwner) {
+            boolean currentLiveRead = finishOnFirstRead && hasReadableCrop(observation)
+                    && (observation.acquisitionDirectiveRevision <= 0L
+                    || activeOwner && directive.requestsMt()
+                    && observation.acquisitionDirectiveRevision == directive.revision
+                    || !activeOwner && observation.acquisitionDirectiveRevision <= directive.revision);
+            if (observation.confirmed || activeOwner || recentlyReleasedOwner || currentLiveRead) {
                 rememberEntityRecognition(observation);
             }
+            // Full-frame/expanded ROI work may read a queued neighbor or finish
+            // a released session. Retire that entity without releasing the current owner.
+            if (currentLiveRead && !activeOwner) {
+                queue.complete(observation.entityId);
+                completedEntityIds.add(observation.entityId);
+            }
         }
+    }
+
+    private static boolean hasReadableCrop(PlateObservation observation) {
+        return observation.freshMzAttempted
+                && RegistrationTextPolicy.displayable(observation.freshPrediction);
     }
 
     private ScanAcquisitionStats statistics(long nowRuntimeNanos) {

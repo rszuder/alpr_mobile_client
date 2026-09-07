@@ -24,6 +24,36 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
     @Test
+    public void badgeRejectsWeakerReadingsFromBothMzAndPipelineUpdates() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(context, null);
+            view.layout(0, 0, 720, 1280);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L)), 720, 1280);
+            view.animatePlateObservation(animationObservation(7L, 77L, "WX1234", 0.95, false));
+            String bestLabel = view.vehicleLabelForTesting(7L);
+            assertTrue(bestLabel.contains("WX1234"));
+            assertTrue(bestLabel.contains("95%"));
+            view.animatePlateObservation(animationObservation(7L, 88L, "WX1284", 0.6, false));
+            assertEquals(bestLabel, view.vehicleLabelForTesting(7L));
+            view.setVehicleEntityStates(Collections.singleton(7L), Collections.singleton(7L),
+                    Collections.singletonMap(7L, new EntityRecognitionSnapshot(7L, 88L, "WX1284", 0.65, true, 8)));
+            assertEquals(bestLabel, view.vehicleLabelForTesting(7L));
+            view.finishPlateAbsorptionForTesting();
+            assertEquals(bestLabel, view.vehicleLabelForTesting(7L));
+            view.animatePlateObservation(animationObservation(7L, 99L, "WX1254", 0.97, false));
+            assertTrue(view.vehicleLabelForTesting(7L).contains("WX1254"));
+            assertTrue(view.vehicleLabelForTesting(7L).contains("97%"));
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+            view.resetVehicleEntityStates();
+            view.animatePlateObservation(animationObservation(7L, 100L, "AB1234", 0.4, false));
+            assertTrue(view.vehicleLabelForTesting(7L).contains("AB1234"));
+            view.resetVehicleEntityStates();
+        });
+    }
+
+    @Test
     public void reusedPlateNumberInNewEpochIsNotHiddenByOldVehicleReading() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
@@ -193,17 +223,22 @@ public final class DetectionOverlayViewInstrumentedTest {
     }
 
     private static com.example.alpr_v1.pipeline.PlateObservation animationObservation(long entity, long track) {
+        return animationObservation(entity, track, "WX1234", 0.8, false);
+    }
+
+    private static com.example.alpr_v1.pipeline.PlateObservation animationObservation(
+            long entity, long track, String text, double confidence, boolean confirmed) {
         return new com.example.alpr_v1.pipeline.PlateObservation(track,
                 entity > 0L ? com.example.alpr_v1.pipeline.PlateVehicleAssociation.direct(entity, entity, "test")
                         : com.example.alpr_v1.pipeline.PlateVehicleAssociation.unassigned("test"),
                 com.example.alpr_v1.pipeline.MtWorkKind.VEHICLE_ROI,
                 com.example.alpr_v1.pipeline.MtReason.SCAN_NEXT_CANDIDATE,
-                1L, null, "WX1234", 0.9, 0.8, false, 1, Collections.emptyList(),
+                1L, null, text, 0.9, confidence, confirmed, 1, Collections.emptyList(),
                 1L, 1L, 0.5f, null, null,
                 com.example.alpr_v1.pipeline.PlateGeometry.from(720, 1280,
                         new com.example.alpr_v1.vision.Detection(0, 0.9f, 144, 768, 216, 832,
                                 Collections.emptyList()), Collections.emptyList()),
-                true, true, "WX1234", false, 1, "single_row", Collections.emptyList(), "", "WX1234");
+                true, true, text, false, 1, "single_row", Collections.emptyList(), "", text);
     }
 
     @Test

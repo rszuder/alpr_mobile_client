@@ -111,6 +111,28 @@ public class PlateVehicleAssociatorTest {
         assertEquals(VehicleAssociationStatus.AMBIGUOUS, result.status);
     }
 
+    @Test
+    public void expandedRoiNeighborPlateIsAssignedToActualNeighbor() {
+        VehicleCandidate owner = vehicle(1L, 11L, 0.05f, 0.1f, 0.45f, 0.9f);
+        VehicleCandidate neighbor = vehicle(2L, 12L, 0.50f, 0.1f, 0.95f, 0.9f);
+        PlateVehicleAssociation result = associator.associateVehicleRoi(
+                plate(120, 60, 140, 72), new VehicleRoi(owner, 0, 0, 160, 100),
+                200, 100, Arrays.asList(owner, neighbor));
+        assertEquals(2L, result.entityId);
+        assertEquals(VehicleAssociationStatus.ASSOCIATED_FULL_FRAME, result.status);
+    }
+
+    @Test
+    public void expandedRoiFallbackStillRefusesAmbiguousOverlap() {
+        VehicleCandidate owner = vehicle(1L, 11L, 0.20f, 0.1f, 0.65f, 0.9f);
+        VehicleCandidate neighbor = vehicle(2L, 12L, 0.45f, 0.1f, 0.85f, 0.9f);
+        PlateVehicleAssociation result = associator.associateVehicleRoi(
+                plate(100, 60, 120, 72), new VehicleRoi(owner, 20, 0, 150, 100),
+                200, 100, Arrays.asList(owner, neighbor));
+        assertEquals(VehicleAssociationStatus.AMBIGUOUS, result.status);
+        assertEquals(0L, result.entityId);
+    }
+
     private static VehicleCandidate vehicle(
             long entityId,
             long trackId,

@@ -1350,15 +1350,6 @@ final class MobileAlprEngine implements AutoCloseable {
                     frame,
                     plateAssociationCandidates
             );
-            android.util.Log.d(
-                    "ALPR_PLATE_ASSOC",
-                    "track=" + decision.trackId
-                            + " kind=" + workKind
-                            + " candidates=" + plateAssociationCandidates.size()
-                            + " status=" + association.status
-                            + " entity=" + association.entityId
-                            + " reason=" + association.reason
-            );
             workKindByPlateTrack.put(decision.trackId, workKind);
             workReasonByPlateTrack.put(decision.trackId, workReason);
 
@@ -1444,6 +1435,16 @@ final class MobileAlprEngine implements AutoCloseable {
                         SystemClock.elapsedRealtimeNanos(), association.reason
                 );
             }
+            // Log the final binding, including repository conflict rejection.
+            android.util.Log.d(
+                    "ALPR_PLATE_ASSOC",
+                    "track=" + decision.trackId
+                            + " kind=" + workKind
+                            + " candidates=" + plateAssociationCandidates.size()
+                            + " status=" + association.status
+                            + " entity=" + association.entityId
+                            + " reason=" + association.reason
+            );
             associationByPlateTrack.put(decision.trackId, association);
             if (association.assigned()) {
                 trackCoordinator.bindEntityState(
@@ -2809,7 +2810,7 @@ final class MobileAlprEngine implements AutoCloseable {
             List<VehicleCandidate> associationCandidates
     ) {
         if (directRoi != null) {
-            return plateVehicleAssociator.validateDirectRoi(
+            return plateVehicleAssociator.associateVehicleRoi(
                     plate,
                     directRoi,
                     frame.getWidth(),

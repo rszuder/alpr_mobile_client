@@ -742,6 +742,92 @@ public final class ScanAcquisitionControllerTest {
         assertEquals(4L, controller.snapshot(100L).activeEntityId);
     }
 
+    @Test
+    public void liveReadReleasesVehicleWithoutRequiringConsensusOrRequeueingIt() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startLiveRun(1L, 0L);
+        VehicleTrackingFrame vehicles = frame(candidate(1L, 11L), candidate(2L, 12L));
+        controller.onVehicleFrame(vehicles, continuity(), 1L);
+        long first = controller.snapshot(1L).activeEntityId;
+        AcquisitionDecision read = controller.onPipelineResult(
+                result(observation(first, first + 10L, false, true, "WX12")), continuity(), 100L);
+
+        assertEquals(AcquisitionSessionOutcome.READ_CAPTURED, read.outcome);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET, read.nextDirective.action);
+        assertTrue(controller.snapshot(100L).completedEntityIds.contains(first));
+        assertFalse(controller.snapshot(100L).entityRecognitions.get(first).confirmed);
+        assertTrue(controller.snapshot(100L).acquisitionRecords.isEmpty());
+        controller.onVehicleFrame(vehicles, continuity(), 101L);
+        long second = controller.snapshot(101L).activeEntityId;
+        assertTrue(second > 0L && second != first);
+        controller.onPipelineResult(result(observation(second, second + 10L,
+                false, true, "AB123")), continuity(), 102L);
+        controller.onVehicleFrame(vehicles, continuity(), 103L);
+        assertEquals(0L, controller.snapshot(103L).activeEntityId);
+        assertEquals(0, controller.snapshot(103L).queue.size());
+    }
+
+    @Test
+    public void liveNeighborReadLeavesActiveOwnerAndRetiresOnlyNeighbor() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startLiveRun(1L, 0L);
+        VehicleTrackingFrame vehicles = frame(candidate(1L, 11L), candidate(2L, 12L));
+        controller.onVehicleFrame(vehicles, continuity(), 1L);
+        long active = controller.snapshot(1L).activeEntityId;
+        long neighbor = active == 1L ? 2L : 1L;
+        controller.onPipelineResult(result(observation(neighbor, neighbor + 10L,
+                false, true, "WX1234", controller.currentDirective().revision)), continuity(), 100L);
+        assertEquals(active, controller.snapshot(100L).activeEntityId);
+        assertTrue(controller.snapshot(100L).completedEntityIds.contains(neighbor));
+        assertFalse(controller.snapshot(100L).completedEntityIds.contains(active));
+        assertEquals("WX1234", controller.snapshot(100L).entityRecognitions.get(neighbor).text);
+        controller.onPipelineResult(result(observation(active, active + 10L,
+                false, true, "AB1234")), continuity(), 101L);
+        controller.onVehicleFrame(vehicles, continuity(), 102L);
+        assertEquals(0L, controller.snapshot(102L).activeEntityId);
+    }
+
+    @Test
+    public void liveShortOrStaleReadDoesNotRetireActiveVehicle() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startLiveRun(1L, 0L);
+        controller.onVehicleFrame(frame(candidate(4L, 44L)), continuity(), 1L);
+        controller.onPipelineResult(result(observation(4L, 44L, false, true,
+                "WX1234", controller.currentDirective().revision + 1L)), continuity(), 99L);
+        assertTrue(controller.snapshot(99L).completedEntityIds.isEmpty());
+        controller.onPipelineResult(result(observation(4L, 44L, false, true, "A")), continuity(), 100L);
+        assertEquals(4L, controller.snapshot(100L).activeEntityId);
+        assertTrue(controller.snapshot(100L).completedEntityIds.isEmpty());
+    }
+
+    @Test
+    public void liveLateReadAfterTimeoutRetiresReleasedEntity() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startLiveRun(1L, 0L);
+        VehicleTrackingFrame vehicles = frame(candidate(4L, 44L));
+        controller.onVehicleFrame(vehicles, continuity(), 1L);
+        long revision = controller.currentDirective().revision;
+        long timeout = ScanAcquisitionProfile.DEFAULT.maximumActiveSessionNanos + 1L;
+        controller.onVehicleFrame(vehicles, continuity(), timeout);
+        assertEquals(0L, controller.snapshot(timeout).activeEntityId);
+        controller.onPipelineResult(result(observation(4L, 44L, false, true,
+                "WX1234", revision)), continuity(), timeout + 1L);
+        controller.onVehicleFrame(vehicles, continuity(), timeout + 10L * SECOND);
+        assertEquals(0L, controller.snapshot(timeout + 10L * SECOND).activeEntityId);
+        assertTrue(controller.snapshot(timeout + 10L * SECOND).completedEntityIds.contains(4L));
+    }
+
+    @Test
+    public void liveUnassignedReadDoesNotCompleteAnyVehicle() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startLiveRun(1L, 0L);
+        controller.onVehicleFrame(frame(candidate(4L, 44L)), continuity(), 1L);
+        controller.onPipelineResult(result(observation(0L, 0L, false, true,
+                "WX1234")), continuity(), 100L);
+        assertTrue(controller.snapshot(100L).completedEntityIds.isEmpty());
+        assertEquals(4L, controller.snapshot(100L).activeEntityId);
+    }
+
     private static ScanAcquisitionController startedWithCandidate(long entityId) {
         ScanAcquisitionController controller = new ScanAcquisitionController();
         controller.startRun(1L, 0L);
@@ -851,7 +937,7 @@ public final class ScanAcquisitionControllerTest {
     ) {
         return new PlateObservation(
                 entityId + 100L,
-                PlateVehicleAssociation.direct(
+                entityId == 0L ? PlateVehicleAssociation.unassigned("test_unassigned") : PlateVehicleAssociation.direct(
                         entityId,
                         vehicleTrackId,
                         "scan_test"

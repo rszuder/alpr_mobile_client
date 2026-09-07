@@ -1,6 +1,11 @@
 package com.example.alpr_v1.pipeline;
 
 import com.example.alpr_v1.tracking.MotionBoxTracker;
+import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.domain.PlateTextConsensus;
+import com.example.alpr_v1.domain.PlateTrackAttachmentStatus;
+import com.example.alpr_v1.domain.VehicleEntity;
+import com.example.alpr_v1.domain.VehicleEntityRepository;
 import com.example.alpr_v1.vision.Detection;
 
 import org.junit.Test;
@@ -14,6 +19,43 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 
 public class PlateTrackCoordinatorTest {
+    @Test
+    public void reacquireDoesNotReusePlateOwnedByAnotherRetainedVehicle() {
+        PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        NormalizedBounds bounds = new NormalizedBounds(0.1f, 0.1f, 0.8f, 0.9f);
+        VehicleEntity previous = repository.create(11L, bounds, null, 1L);
+        PlateTrackCoordinator.Decision before = update(coordinator, 1L, 0.8f);
+        repository.attachPlate(previous.entityId(), before.trackId, null, null, 1L);
+        repository.updateRegistration(previous.entityId(),
+                new PlateTextConsensus("AB123", 0.9f, 3, true), 1L);
+        coordinator.recordRecognition(before.trackId, 0.8f, 1L, characters(), labels());
+
+        // Soft scene recovery resets the plate tracker while retaining entities.
+        coordinator.reset();
+        VehicleEntity next = repository.create(22L, bounds, null, 2L);
+        PlateTrackCoordinator.Decision after = update(coordinator, 2L, 0.8f);
+        assertEquals(PlateTrackAttachmentStatus.ATTACHED,
+                repository.attachPlate(next.entityId(), after.trackId, null, null, 2L));
+        assertTrue(after.trackId > before.trackId);
+        assertEquals(next.entityId(), repository.findByPlateTrackId(after.trackId).entityId());
+        assertEquals("AB123", previous.registration().text);
+        assertTrue(after.recognize);
+        assertTrue(after.currentResult == null || after.currentResult.text.isEmpty());
+
+        // A real collision in one tracker lifetime must still be rejected.
+        assertEquals(PlateTrackAttachmentStatus.CONFLICT_REJECTED,
+                repository.attachPlate(previous.entityId(), after.trackId, null, null, 3L));
+    }
+
+    @Test
+    public void profileChangeAlsoKeepsPlateIdsUnique() {
+        PlateTrackCoordinator coordinator = new PlateTrackCoordinator();
+        long before = update(coordinator, 1L, 0.8f).trackId;
+        coordinator.setProfile(RecognitionProfile.FAST);
+        assertTrue(update(coordinator, 2L, 0.8f).trackId > before);
+    }
+
     @Test
     public void stableRecognitionStillAllowsLaterMzRetry() {
 
