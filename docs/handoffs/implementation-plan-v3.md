@@ -13,7 +13,7 @@ Specification: [handoff](static-dynamic-scene-identity-az-lock-v3.md).
 - [x] Gate AZ by scene policy, geometry, normal MZ, acquisition phase, motion, and per-scene/per-lock budgets.
 - [x] Freeze the selected analysis mode in research configuration and export semantic analysis_mode alongside legacy fields.
 - [x] Run automated acceptance coverage S1–S12, D1–D3, M1, C1, H1–H2, R1–R2, AZ1–AZ8, L1–L7 and applicable existing regression suites; distinguish camera evidence in the report.
-- [ ] Install and verify the final application, commit, and record evidence and limitations.
+- [x] Install and verify the final application, commit, and record evidence and limitations.
 
 ## Preserved baseline
 
