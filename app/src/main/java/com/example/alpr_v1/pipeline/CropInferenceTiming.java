@@ -8,6 +8,9 @@ public final class CropInferenceTiming {
     public final long frameId;
     public final long cameraConversionNanos;
     public final long vehicleStagesNanos;
+    public final long platePreprocessNanos;
+    public final long plateInferenceNanos;
+    public final long platePostprocessNanos;
     public final long plateStagesNanos;
     public final long rectificationNanos;
     public final long characterPreprocessNanos;
@@ -26,10 +29,43 @@ public final class CropInferenceTiming {
             long characterPostprocessNanos,
             long pipelineToObservationNanos
     ) {
+        this(
+                frameId,
+                cameraConversionNanos,
+                vehicleStagesNanos,
+                0L,
+                plateStagesNanos,
+                0L,
+                rectificationNanos,
+                characterPreprocessNanos,
+                characterInferenceNanos,
+                characterPostprocessNanos,
+                pipelineToObservationNanos
+        );
+    }
+
+    public CropInferenceTiming(
+            long frameId,
+            long cameraConversionNanos,
+            long vehicleStagesNanos,
+            long platePreprocessNanos,
+            long plateInferenceNanos,
+            long platePostprocessNanos,
+            long rectificationNanos,
+            long characterPreprocessNanos,
+            long characterInferenceNanos,
+            long characterPostprocessNanos,
+            long pipelineToObservationNanos
+    ) {
         this.frameId = frameId;
         this.cameraConversionNanos = nonNegative(cameraConversionNanos);
         this.vehicleStagesNanos = nonNegative(vehicleStagesNanos);
-        this.plateStagesNanos = nonNegative(plateStagesNanos);
+        this.platePreprocessNanos = nonNegative(platePreprocessNanos);
+        this.plateInferenceNanos = nonNegative(plateInferenceNanos);
+        this.platePostprocessNanos = nonNegative(platePostprocessNanos);
+        this.plateStagesNanos = this.platePreprocessNanos
+                + this.plateInferenceNanos
+                + this.platePostprocessNanos;
         this.rectificationNanos = nonNegative(rectificationNanos);
         this.characterPreprocessNanos = nonNegative(characterPreprocessNanos);
         this.characterInferenceNanos = nonNegative(characterInferenceNanos);
@@ -38,12 +74,17 @@ public final class CropInferenceTiming {
     }
 
     public double totalMilliseconds() { return pipelineToObservationNanos / 1_000_000.0; }
+    public double plateInferenceMilliseconds() { return millis(plateInferenceNanos); }
+    public double characterInferenceMilliseconds() { return millis(characterInferenceNanos); }
 
     public JSONObject toJson() throws JSONException {
         JSONObject json = new JSONObject();
         json.put("frame_id", frameId);
         json.put("camera_conversion_ms", millis(cameraConversionNanos));
         json.put("vehicle_stages_ms", millis(vehicleStagesNanos));
+        json.put("plate_preprocess_ms", millis(platePreprocessNanos));
+        json.put("plate_inference_ms", millis(plateInferenceNanos));
+        json.put("plate_postprocess_ms", millis(platePostprocessNanos));
         json.put("plate_stages_ms", millis(plateStagesNanos));
         json.put("rectification_ms", millis(rectificationNanos));
         json.put("character_preprocess_ms", millis(characterPreprocessNanos));

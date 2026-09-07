@@ -15,13 +15,33 @@
         app:cardCornerRadius="16dp"
         app:cardElevation="0dp">
 
-        <ImageView
+        <com.example.alpr_v1.ui.PlateCropView
             android:id="@+id/history_detail_preview"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:contentDescription="@null"
-            android:scaleType="fitCenter" />
+            android:importantForAccessibility="no"
+            android:padding="8dp" />
     </com.google.android.material.card.MaterialCardView>
+
+    <TextView
+        android:id="@+id/history_detail_timing"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="@string/gallery_timing_unavailable"
+        android:textColor="@color/alpr_text_primary"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/history_detail_characters"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:text="@string/gallery_character_boxes_empty"
+        android:textColor="@color/alpr_text_secondary"
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/history_detail_number"
@@ -56,6 +76,7 @@
             android:layout_height="48dp"
             android:layout_marginEnd="3dp"
             android:layout_weight="1"
+            android:maxLines="1"
             android:text="@string/history_copy_action"
             android:textSize="11sp" />
 
@@ -66,6 +87,7 @@
             android:layout_height="48dp"
             android:layout_marginHorizontal="3dp"
             android:layout_weight="1"
+            android:maxLines="1"
             android:text="@string/history_save_action"
             android:textSize="11sp"
             app:icon="@drawable/ic_save_24"
@@ -78,6 +100,7 @@
             android:layout_height="48dp"
             android:layout_marginStart="3dp"
             android:layout_weight="1"
+            android:maxLines="1"
             android:text="@string/history_delete_action"
             android:textColor="@color/alpr_error"
             android:textSize="11sp"

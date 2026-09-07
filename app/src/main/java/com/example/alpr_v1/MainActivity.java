@@ -94,6 +94,8 @@ import com.example.alpr_v1.model.ModelRole;
 import com.example.alpr_v1.model.ModelVariant;
 import com.example.alpr_v1.model.ModelRegistry;
 import com.example.alpr_v1.pipeline.AlprPipeline;
+import com.example.alpr_v1.pipeline.CropInferenceTiming;
+import com.example.alpr_v1.pipeline.PlateCharacter;
 import com.example.alpr_v1.acquisition.PlateAnchor;
 import com.example.alpr_v1.acquisition.AcquisitionDirectiveAction;
 import com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot;
@@ -1714,6 +1716,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextView verificationStatus;
     private TextView verificationModelText;
     private TextView verificationConsensusText;
+    private TextView verificationTiming;
+    private TextView verificationCharacters;
     private TextView verificationMetrics;
     private MaterialButton verificationAcceptButton;
     private MaterialButton verificationCorrectButton;
@@ -7875,6 +7879,8 @@ public final class MainActivity extends AppCompatActivity {
         verificationStatus = content.findViewById(R.id.verification_status);
         verificationModelText = content.findViewById(R.id.verification_model_text);
         verificationConsensusText = content.findViewById(R.id.verification_consensus_text);
+        verificationTiming = content.findViewById(R.id.verification_timing);
+        verificationCharacters = content.findViewById(R.id.verification_characters);
         verificationMetrics = content.findViewById(R.id.verification_metrics);
         verificationAcceptButton = content.findViewById(R.id.verification_accept);
         verificationCorrectButton = content.findViewById(R.id.verification_correct);
@@ -8000,6 +8006,8 @@ public final class MainActivity extends AppCompatActivity {
         verificationStatus = null;
         verificationModelText = null;
         verificationConsensusText = null;
+        verificationTiming = null;
+        verificationCharacters = null;
         verificationMetrics = null;
         verificationAcceptButton = null;
         verificationCorrectButton = null;
@@ -8021,13 +8029,15 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         collectionActive = !collectionActive;
+        if (collectionActive) {
+            captureGalleryState.beginCollectionWindow();
+        }
         if (collectionActive && collectionSessionId.isEmpty()) {
             collectionSessionId = "s-" + new SimpleDateFormat(
                     "yyyyMMdd-HHmmss", Locale.ROOT
             ).format(new Date()) + "-" + UUID.randomUUID().toString().substring(0, 6);
             collectionSessionStartedElapsedNanos = android.os.SystemClock.elapsedRealtimeNanos();
             collectionSequence = 0;
-            lastCaptureByTrack.clear();
             metricsCollector.startCropSession(collectionSessionId, resolvedCropLimit);
             recordInfo("Rozpoczęto sesję cropów " + collectionSessionId);
         } else if (collectionActive) {
@@ -8435,6 +8445,8 @@ public final class MainActivity extends AppCompatActivity {
                     ? getString(R.string.result_placeholder) : item.text);
             verificationConsensusText.setText(item.consensusText.isEmpty()
                     ? getString(R.string.result_placeholder) : item.consensusText);
+            verificationTiming.setText(cropTimingText(item.timing, item.characters.size()));
+            verificationCharacters.setText(characterBoxesText(item.characters));
             verificationMetrics.setText(getString(
                     R.string.verification_metrics_format,
                     percent(item.plateConfidence),
@@ -8629,6 +8641,33 @@ public final class MainActivity extends AppCompatActivity {
         return false;
     }
 
+    private String cropTimingText(CropInferenceTiming timing, int characterBoxCount) {
+        if (timing == null) return getString(R.string.gallery_timing_unavailable);
+        return getString(
+                R.string.gallery_timing_format,
+                timing.plateInferenceMilliseconds(),
+                timing.characterInferenceMilliseconds(),
+                timing.totalMilliseconds(),
+                Math.max(0, characterBoxCount)
+        );
+    }
+
+    private String characterBoxesText(List<PlateCharacter> characters) {
+        if (characters == null || characters.isEmpty()) {
+            return getString(R.string.gallery_character_boxes_empty);
+        }
+        StringBuilder values = new StringBuilder();
+        for (PlateCharacter character : characters) {
+            if (character == null) continue;
+            if (values.length() > 0) values.append(" · ");
+            values.append(character.label.isEmpty() ? "?" : character.label)
+                    .append(' ')
+                    .append(percent(character.confidence))
+                    .append('%');
+        }
+        return getString(R.string.gallery_character_boxes, values.toString());
+    }
+
     private static int percent(double confidence) {
         return (int) Math.round(Math.max(0.0, Math.min(1.0, confidence)) * 100.0);
     }
@@ -8781,6 +8820,8 @@ public final class MainActivity extends AppCompatActivity {
                     observation.plateConfidence,
                     observation.capturedAtMillis,
                     observation.previewBitmap,
+                    observation.characters,
+                    observation.timing,
                     observation.confirmed,
                     observation.observations,
                     observation.sharpness,
@@ -8810,14 +8851,19 @@ public final class MainActivity extends AppCompatActivity {
                 (ViewGroup) findViewById(android.R.id.content),
                 false
         );
-        ImageView preview = content.findViewById(R.id.history_detail_preview);
+        PlateCropView preview = content.findViewById(R.id.history_detail_preview);
         TextView number = content.findViewById(R.id.history_detail_number);
         TextView meta = content.findViewById(R.id.history_detail_meta);
+        TextView timing = content.findViewById(R.id.history_detail_timing);
+        TextView characters = content.findViewById(R.id.history_detail_characters);
         MaterialButton copy = content.findViewById(R.id.history_detail_copy);
         MaterialButton save = content.findViewById(R.id.history_detail_save);
         MaterialButton delete = content.findViewById(R.id.history_detail_delete);
-        preview.setImageBitmap(item.previewBitmap);
+        preview.setPlate(item.previewBitmap, item.characters);
+        preview.setBoxesVisible(true);
         number.setText(item.text);
+        timing.setText(cropTimingText(item.timing, item.characters.size()));
+        characters.setText(characterBoxesText(item.characters));
         meta.setText(getString(
                 R.string.history_detail_full,
                 getString(

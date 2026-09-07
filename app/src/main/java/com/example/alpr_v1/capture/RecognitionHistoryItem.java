@@ -2,6 +2,13 @@ package com.example.alpr_v1.capture;
 
 import android.graphics.Bitmap;
 
+import com.example.alpr_v1.pipeline.CropInferenceTiming;
+import com.example.alpr_v1.pipeline.PlateCharacter;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 public final class RecognitionHistoryItem {
     public final String historyId;
     public final long sceneGeneration;
@@ -14,6 +21,8 @@ public final class RecognitionHistoryItem {
     public double plateConfidence;
     public long capturedAtMillis;
     public Bitmap previewBitmap;
+    public List<PlateCharacter> characters;
+    public CropInferenceTiming timing;
     public boolean confirmed;
     public int observations;
     public float previewSharpness;
@@ -33,6 +42,8 @@ public final class RecognitionHistoryItem {
             double plateConfidence,
             long capturedAtMillis,
             Bitmap previewBitmap,
+            List<PlateCharacter> characters,
+            CropInferenceTiming timing,
             boolean confirmed,
             int observations,
             float previewSharpness,
@@ -49,12 +60,28 @@ public final class RecognitionHistoryItem {
         this.plateConfidence = plateConfidence;
         this.capturedAtMillis = capturedAtMillis;
         this.previewBitmap = previewBitmap;
+        this.characters = immutableCharacters(characters);
+        this.timing = timing;
         this.confirmed = confirmed;
         this.observations = observations;
         this.previewSharpness = previewSharpness;
         this.previewConfidence = confidence;
         this.previewCapturedAtMillis = capturedAtMillis;
         this.captureSource = captureSource;
+    }
+
+    void replacePreviewMetadata(
+            List<PlateCharacter> characters,
+            CropInferenceTiming timing
+    ) {
+        this.characters = immutableCharacters(characters);
+        this.timing = timing;
+    }
+
+    private static List<PlateCharacter> immutableCharacters(List<PlateCharacter> characters) {
+        return Collections.unmodifiableList(new ArrayList<>(
+                characters == null ? Collections.emptyList() : characters
+        ));
     }
 
     void recycle() {

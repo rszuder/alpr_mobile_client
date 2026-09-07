@@ -4,7 +4,6 @@ import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -89,7 +88,7 @@ public final class RecognitionHistoryAdapter
     }
 
     static final class Holder extends RecyclerView.ViewHolder {
-        private final ImageView preview;
+        private final PlateCropView preview;
         private final TextView number;
         private final TextView time;
         private final TextView confidence;
@@ -106,7 +105,8 @@ public final class RecognitionHistoryAdapter
 
         void bind(RecognitionHistoryItem item, Listener listener) {
             Context context = itemView.getContext();
-            preview.setImageBitmap(item.previewBitmap);
+            preview.setPlate(item.previewBitmap, item.characters);
+            preview.setBoxesVisible(true);
             number.setText(item.text);
             time.setText(new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
                     new Date(item.capturedAtMillis)

@@ -32,6 +32,9 @@ public final class CaptureGalleryViewModelInstrumentedTest {
         );
         Bitmap historyPreview = first.recognitionHistory().newestFirst().get(0).previewBitmap;
         first.retainSession(true, "rotation-session", 123L, 7);
+        first.lastCaptureByTrack().put(11L, new CropSamplingPolicy.Previous(
+                "KR12345", true, 0.9, 0.8f, 100L
+        ));
 
         ViewModelProvider recreatedOwner = provider(retainedStore);
         CaptureGalleryViewModel restored = recreatedOwner.get(CaptureGalleryViewModel.class);
@@ -45,6 +48,9 @@ public final class CaptureGalleryViewModelInstrumentedTest {
         assertFalse(bitmap.isRecycled());
         assertEquals(1, restored.recognitionHistory().size());
         assertFalse(historyPreview.isRecycled());
+
+        restored.beginCollectionWindow();
+        assertTrue(restored.lastCaptureByTrack().isEmpty());
 
         retainedStore.clear();
         assertTrue(bitmap.isRecycled());

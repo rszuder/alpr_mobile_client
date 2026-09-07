@@ -288,6 +288,42 @@
                         </FrameLayout>
                     </com.google.android.material.card.MaterialCardView>
 
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        app:cardBackgroundColor="@color/alpr_surface"
+                        app:cardCornerRadius="12dp"
+                        app:cardElevation="0dp"
+                        app:strokeColor="@color/alpr_outline"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="12dp">
+
+                            <TextView
+                                android:id="@+id/verification_timing"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="@string/gallery_timing_unavailable"
+                                android:textColor="@color/alpr_text_primary"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/verification_characters"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="5dp"
+                                android:text="@string/gallery_character_boxes_empty"
+                                android:textColor="@color/alpr_text_secondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
                     <TextView
                         android:id="@+id/verification_status"
                         android:layout_width="wrap_content"
@@ -406,15 +442,14 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
-                        android:orientation="horizontal">
+                        android:orientation="vertical">
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/verification_correct"
                             style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
+                            android:layout_width="match_parent"
                             android:layout_height="50dp"
-                            android:layout_marginEnd="3dp"
-                            android:layout_weight="1"
+                            android:maxLines="1"
                             android:text="@string/verification_correct_action"
                             android:textSize="11sp"
                             app:icon="@drawable/ic_edit_24"
@@ -423,10 +458,10 @@
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/verification_reject"
                             style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
+                            android:layout_width="match_parent"
                             android:layout_height="50dp"
-                            android:layout_marginStart="3dp"
-                            android:layout_weight="1"
+                            android:layout_marginTop="6dp"
+                            android:maxLines="1"
                             android:text="@string/verification_unreadable_action"
                             android:textColor="@color/alpr_warning"
                             android:textSize="11sp"
@@ -504,15 +539,14 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
+                        android:orientation="vertical">
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/verification_save_current"
                             style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
+                            android:layout_width="match_parent"
                             android:layout_height="48dp"
-                            android:layout_marginEnd="3dp"
-                            android:layout_weight="1"
+                            android:maxLines="1"
                             android:text="@string/verification_save_current"
                             android:textSize="11sp"
                             app:icon="@drawable/ic_save_24"
@@ -521,10 +555,10 @@
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/gallery_sheet_save_selected"
                             style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="0dp"
+                            android:layout_width="match_parent"
                             android:layout_height="48dp"
-                            android:layout_marginStart="3dp"
-                            android:layout_weight="1"
+                            android:layout_marginTop="6dp"
+                            android:maxLines="1"
                             android:text="@string/verification_save_reviewed"
                             android:textSize="11sp"
                             app:icon="@drawable/ic_save_24"

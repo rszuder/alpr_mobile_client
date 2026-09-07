@@ -42,6 +42,10 @@ public final class CaptureGalleryViewModel extends ViewModel {
     }
     public int collectionSequence() { return collectionSequence; }
 
+    public void beginCollectionWindow() {
+        lastCaptureByTrack.clear();
+    }
+
     public void retainSession(
             boolean active,
             String sessionId,

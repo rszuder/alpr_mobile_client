@@ -10,8 +10,13 @@ import android.graphics.Color;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
+import com.example.alpr_v1.pipeline.CropInferenceTiming;
+import com.example.alpr_v1.pipeline.PlateCharacter;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.util.Collections;
 
 @RunWith(AndroidJUnit4.class)
 public final class RecognitionHistoryStoreInstrumentedTest {
@@ -98,6 +103,37 @@ public final class RecognitionHistoryStoreInstrumentedTest {
         store.clear();
     }
 
+    @Test
+    public void improvedPreviewCarriesMatchingCharacterBoxesAndTiming() {
+        RecognitionHistoryStore store = new RecognitionHistoryStore();
+        Bitmap first = bitmap(Color.RED);
+        Bitmap better = bitmap(Color.BLUE);
+        CropInferenceTiming firstTiming = timing(10_000_000L);
+        CropInferenceTiming betterTiming = timing(20_000_000L);
+        assertTrue(store.upsert(
+                1L, 1L, 1L, 1L, 1L, "A", 0.8, 0.9,
+                1L, first,
+                Collections.singletonList(character("A", 0.8)),
+                firstTiming,
+                true, 2, 0.6f, "normal"
+        ));
+        assertTrue(store.upsert(
+                1L, 1L, 1L, 1L, 1L, "B", 0.9, 0.9,
+                2L, better,
+                Collections.singletonList(character("B", 0.95)),
+                betterTiming,
+                true, 3, 0.7f, "normal"
+        ));
+
+        RecognitionHistoryItem item = store.newestFirst().get(0);
+        assertEquals("B", item.characters.get(0).label);
+        assertEquals(0.95, item.characters.get(0).confidence, 0.0001);
+        assertEquals(20.0, item.timing.totalMilliseconds(), 0.0001);
+        first.recycle();
+        better.recycle();
+        store.clear();
+    }
+
     private static void upsert(
             RecognitionHistoryStore store,
             long scene,
@@ -121,5 +157,15 @@ public final class RecognitionHistoryStoreInstrumentedTest {
         Bitmap bitmap = Bitmap.createBitmap(4, 2, Bitmap.Config.ARGB_8888);
         bitmap.eraseColor(color);
         return bitmap;
+    }
+
+    private static PlateCharacter character(String label, double confidence) {
+        return new PlateCharacter(label, confidence, 0.1f, 0.2f, 0.3f, 0.8f);
+    }
+
+    private static CropInferenceTiming timing(long totalNanos) {
+        return new CropInferenceTiming(
+                1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, totalNanos
+        );
     }
 }

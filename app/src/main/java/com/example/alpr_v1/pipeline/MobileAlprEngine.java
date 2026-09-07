@@ -1583,9 +1583,9 @@ final class MobileAlprEngine implements AutoCloseable {
                             trace.durationNanos("vehicle_preprocess")
                                     + trace.durationNanos("vehicle_inference")
                                     + trace.durationNanos("vehicle_postprocess"),
-                            trace.durationNanos("plate_preprocess")
-                                    + trace.durationNanos("plate_inference")
-                                    + trace.durationNanos("plate_postprocess"),
+                            trace.durationNanos("plate_preprocess"),
+                            trace.durationNanos("plate_inference"),
+                            trace.durationNanos("plate_postprocess"),
                             cropRectificationNanos,
                             cropCharacterPreprocessNanos,
                             cropCharacterInferenceNanos,

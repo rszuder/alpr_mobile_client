@@ -20,13 +20,12 @@ import java.util.List;
 public final class PlateCropView extends View {
     private final Paint imagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint boxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint bandPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint badgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint characterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint confidencePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint separatorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF imageBounds = new RectF();
-    private final RectF badgeBand = new RectF();
     private final RectF characterBox = new RectF();
+    private final RectF characterBadge = new RectF();
     private Bitmap bitmap;
     private List<PlateCharacter> characters = Collections.emptyList();
     private boolean boxesVisible = true;
@@ -35,17 +34,15 @@ public final class PlateCropView extends View {
         super(context, attrs);
         boxPaint.setColor(Color.rgb(255, 152, 0));
         boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(dp(1.5f));
-        bandPaint.setColor(Color.rgb(8, 13, 21));
-        bandPaint.setStyle(Paint.Style.FILL);
+        boxPaint.setStrokeWidth(dp(2f));
+        badgePaint.setColor(Color.argb(235, 8, 13, 21));
+        badgePaint.setStyle(Paint.Style.FILL);
         characterPaint.setColor(Color.rgb(125, 211, 252));
-        characterPaint.setTextSize(dp(8.5f));
+        characterPaint.setTextSize(sp(9f));
         characterPaint.setFakeBoldText(true);
         confidencePaint.setColor(Color.rgb(94, 230, 168));
-        confidencePaint.setTextSize(dp(8f));
+        confidencePaint.setTextSize(sp(9f));
         confidencePaint.setFakeBoldText(true);
-        separatorPaint.setColor(Color.rgb(100, 116, 139));
-        separatorPaint.setTextSize(dp(8f));
         setWillNotDraw(false);
     }
 
@@ -71,73 +68,79 @@ public final class PlateCropView extends View {
         if (bitmap == null || bitmap.isRecycled()) return;
 
         boolean drawBoxes = boxesVisible && !characters.isEmpty();
-        float bandHeight = drawBoxes ? dp(19f) : 0f;
-        float bandGap = drawBoxes ? dp(3f) : 0f;
-        float imageAreaHeight = Math.max(1f, getHeight() - bandHeight - bandGap);
+        float contentLeft = getPaddingLeft();
+        float contentTop = getPaddingTop();
+        float contentWidth = Math.max(
+                1f,
+                getWidth() - getPaddingLeft() - getPaddingRight()
+        );
+        float contentHeight = Math.max(
+                1f,
+                getHeight() - getPaddingTop() - getPaddingBottom()
+        );
         float scale = Math.min(
-                getWidth() / (float) bitmap.getWidth(),
-                imageAreaHeight / bitmap.getHeight()
+                contentWidth / bitmap.getWidth(),
+                contentHeight / bitmap.getHeight()
         );
         float width = bitmap.getWidth() * scale;
         float height = bitmap.getHeight() * scale;
-        float left = (getWidth() - width) * 0.5f;
-        float top = (imageAreaHeight - height) * 0.5f;
+        float left = contentLeft + (contentWidth - width) * 0.5f;
+        float top = contentTop + (contentHeight - height) * 0.5f;
         imageBounds.set(left, top, left + width, top + height);
         canvas.drawBitmap(bitmap, null, imageBounds, imagePaint);
 
         if (drawBoxes) {
             for (PlateCharacter character : characters) {
+                float boxLeft = imageBounds.left + character.left * imageBounds.width();
+                float boxTop = imageBounds.top + character.top * imageBounds.height();
+                float boxRight = imageBounds.left + character.right * imageBounds.width();
+                float boxBottom = imageBounds.top + character.bottom * imageBounds.height();
                 characterBox.set(
-                        imageBounds.left + character.left * imageBounds.width(),
-                        imageBounds.top + character.top * imageBounds.height(),
-                        imageBounds.left + character.right * imageBounds.width(),
-                        imageBounds.top + character.bottom * imageBounds.height()
+                        Math.min(boxLeft, boxRight),
+                        Math.min(boxTop, boxBottom),
+                        Math.max(boxLeft, boxRight),
+                        Math.max(boxTop, boxBottom)
                 );
                 canvas.drawRoundRect(characterBox, dp(1.5f), dp(1.5f), boxPaint);
+                drawCharacterBadge(canvas, character);
             }
-            drawLegend(canvas, imageAreaHeight + bandGap);
         }
     }
 
-    private void drawLegend(Canvas canvas, float top) {
-        badgeBand.set(0f, top, getWidth(), getHeight());
-        canvas.drawRoundRect(badgeBand, dp(3), dp(3), bandPaint);
+    private void drawCharacterBadge(Canvas canvas, PlateCharacter character) {
+        String label = character.label == null || character.label.isEmpty()
+                ? "?" : character.label;
+        String confidence = Math.round(character.confidence * 100) + "%";
+        float horizontalPadding = dp(3f);
+        float textGap = dp(2f);
+        float badgeWidth = horizontalPadding * 2f
+                + characterPaint.measureText(label)
+                + textGap
+                + confidencePaint.measureText(confidence);
+        Paint.FontMetrics metrics = confidencePaint.getFontMetrics();
+        float badgeHeight = Math.max(dp(15f), metrics.descent - metrics.ascent + dp(4f));
+        float left = characterBox.centerX() - badgeWidth * 0.5f;
+        left = Math.max(imageBounds.left, Math.min(left, imageBounds.right - badgeWidth));
+        float top = characterBox.top - badgeHeight - dp(2f);
+        if (top < imageBounds.top) top = characterBox.top + dp(2f);
+        top = Math.min(top, imageBounds.bottom - badgeHeight);
+        characterBadge.set(left, top, left + badgeWidth, top + badgeHeight);
+        canvas.drawRoundRect(characterBadge, dp(3f), dp(3f), badgePaint);
 
-        float gap = dp(3f);
-        float separatorGap = dp(4f);
-        float totalWidth = 0f;
-        for (int index = 0; index < characters.size(); index++) {
-            PlateCharacter character = characters.get(index);
-            String confidence = Math.round(character.confidence * 100) + "%";
-            totalWidth += characterPaint.measureText(character.label)
-                    + gap + confidencePaint.measureText(confidence);
-            if (index + 1 < characters.size()) {
-                totalWidth += separatorGap * 2f + separatorPaint.measureText("·");
-            }
-        }
-        float x = Math.max(dp(4), (getWidth() - totalWidth) * 0.5f);
-        float baseline = badgeBand.centerY() - (
-                characterPaint.ascent() + characterPaint.descent()
+        float baseline = characterBadge.centerY() - (
+                confidencePaint.ascent() + confidencePaint.descent()
         ) * 0.5f;
-        canvas.save();
-        canvas.clipRect(badgeBand);
-        for (int index = 0; index < characters.size(); index++) {
-            PlateCharacter character = characters.get(index);
-            String confidence = Math.round(character.confidence * 100) + "%";
-            canvas.drawText(character.label, x, baseline, characterPaint);
-            x += characterPaint.measureText(character.label) + gap;
-            canvas.drawText(confidence, x, baseline, confidencePaint);
-            x += confidencePaint.measureText(confidence);
-            if (index + 1 < characters.size()) {
-                x += separatorGap;
-                canvas.drawText("·", x, baseline, separatorPaint);
-                x += separatorPaint.measureText("·") + separatorGap;
-            }
-        }
-        canvas.restore();
+        float textLeft = characterBadge.left + horizontalPadding;
+        canvas.drawText(label, textLeft, baseline, characterPaint);
+        textLeft += characterPaint.measureText(label) + textGap;
+        canvas.drawText(confidence, textLeft, baseline, confidencePaint);
     }
 
     private float dp(float value) {
         return value * getResources().getDisplayMetrics().density;
+    }
+
+    private float sp(float value) {
+        return value * getResources().getDisplayMetrics().scaledDensity;
     }
 }

@@ -2,6 +2,9 @@ package com.example.alpr_v1.capture;
 
 import android.graphics.Bitmap;
 
+import com.example.alpr_v1.pipeline.CropInferenceTiming;
+import com.example.alpr_v1.pipeline.PlateCharacter;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -38,6 +41,44 @@ public final class RecognitionHistoryStore {
             float sharpness,
             String captureSource
     ) {
+        return upsert(
+                sceneGeneration,
+                entityId,
+                vehicleTrackId,
+                plateTrackId,
+                trackId,
+                text,
+                confidence,
+                plateConfidence,
+                capturedAtMillis,
+                sourcePreview,
+                Collections.emptyList(),
+                null,
+                confirmed,
+                observations,
+                sharpness,
+                captureSource
+        );
+    }
+
+    public synchronized boolean upsert(
+            long sceneGeneration,
+            long entityId,
+            long vehicleTrackId,
+            long plateTrackId,
+            long trackId,
+            String text,
+            double confidence,
+            double plateConfidence,
+            long capturedAtMillis,
+            Bitmap sourcePreview,
+            List<PlateCharacter> characters,
+            CropInferenceTiming timing,
+            boolean confirmed,
+            int observations,
+            float sharpness,
+            String captureSource
+    ) {
         if (!confirmed || text == null || text.trim().isEmpty()
                 || sourcePreview == null || sourcePreview.isRecycled()) {
             return false;
@@ -61,6 +102,8 @@ public final class RecognitionHistoryStore {
                     plateConfidence,
                     capturedAtMillis,
                     preview,
+                    characters,
+                    timing,
                     true,
                     Math.max(0, observations),
                     sharpness,
@@ -90,6 +133,7 @@ public final class RecognitionHistoryStore {
                     existing.previewConfidence = confidence;
                     existing.previewSharpness = sharpness;
                     existing.previewCapturedAtMillis = capturedAtMillis;
+                    existing.replacePreviewMetadata(characters, timing);
                 }
             }
         }
