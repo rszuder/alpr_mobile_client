@@ -395,6 +395,7 @@
     <string name="search_plate_invalid">Wpisz co najmniej 4 litery lub cyfry</string>
     <string name="search_plate_active">Szukam: %1$s</string>
     <string name="search_plate_verifying">Możliwe dopasowanie · weryfikuję…</string>
+    <string name="search_plate_unconfirmed">Nie potwierdzono · szukam: %1$s</string>
     <string name="search_plate_found">%1$s · cel znaleziony</string>
     <string name="release_vehicle">Zwolnij cel</string>
     <string name="vehicle_locked">P%1$d · cel wybrany</string>

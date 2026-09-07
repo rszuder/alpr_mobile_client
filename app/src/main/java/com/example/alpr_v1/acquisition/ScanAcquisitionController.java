@@ -52,6 +52,9 @@ public final class ScanAcquisitionController {
     private com.example.alpr_v1.domain.SearchMatchState searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
     private long verificationFrameId, verificationSourceSequence;
     private int verificationAttempts;
+    private long lastVehicleFrameId;
+    private long foregroundRefreshAfterFrameId = -1L;
+    private long zoomBudgetSessionId;
     private final Set<Long> zoomedLockSessions = new HashSet<>();
     private final Map<Long, Long> readingFrames = new HashMap<>(), readingSequences = new HashMap<>();
 
@@ -61,9 +64,21 @@ public final class ScanAcquisitionController {
     public synchronized TargetPurpose foregroundPurpose() { return activeSession == null ? null : activeSession.purpose(); }
 
     public synchronized boolean claimLockZoom() {
-        return !staticBaseline && activeSession != null
-                && (activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION)
-                && zoomedLockSessions.add(activeSession.sessionId());
+        return claimLockZoom(lastRuntimeNanos);
+    }
+
+    public synchronized boolean claimLockZoom(long now) {
+        if (staticBaseline || activeSession == null
+                || !(activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION)
+                || !zoomedLockSessions.add(activeSession.sessionId())) return false;
+        zoomBudgetSessionId = activeSession.sessionId();
+        pauseSessionBudgets(now);
+        return true;
+    }
+
+    public synchronized void finishLockZoom(long now) {
+        if (zoomBudgetSessionId > 0L && zoomBudgetSessionId == activeSessionId()) resumeSessionBudgets(now);
+        zoomBudgetSessionId = 0L;
     }
 
     public synchronized void pickVehicle(long entityId, long now) {
@@ -99,7 +114,10 @@ public final class ScanAcquisitionController {
             cancelActiveSession(TargetSessionState.CANCELLED, now);
             queue.defer(entityId, now, 0L);
         }
-        if (endSearch) searchText = "";
+        if (endSearch) {
+            searchText = "";
+            searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+        }
         modeController.switchMode(searchText.isEmpty() ? ApplicationMode.SCAN_ACQUIRE : ApplicationMode.SEARCH_VERIFY_PURSUIT, now);
         plateAnchor = null;
         resetSessionBudgets();
@@ -108,6 +126,7 @@ public final class ScanAcquisitionController {
     }
 
     private void beginForeground(long entityId, TargetPurpose purpose, long now) {
+        foregroundRefreshAfterFrameId = -1L;
         vehiclesSeen.add(entityId);
         activeSession = modeController.startSession(entityId, purpose, now);
         activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
@@ -248,6 +267,7 @@ public final class ScanAcquisitionController {
             );
         }
         if (continuity.heavyInferenceSuspended) return currentDirective();
+        lastVehicleFrameId = Math.max(lastVehicleFrameId, frame.sourceFrameId);
 
         if (releasePending) {
             releasePending = false;
@@ -268,7 +288,19 @@ public final class ScanAcquisitionController {
         }
         AcquisitionDirective timeout = enforceSessionBudgets(nowRuntimeNanos);
         if (timeout != null) return timeout;
-        if (activeSession != null) return currentDirective();
+        if (activeSession != null) {
+            if (directive.action == AcquisitionDirectiveAction.REQUEST_FRESH_MP
+                    && frame.sourceFrameId > foregroundRefreshAfterFrameId) {
+                for (com.example.alpr_v1.tracking.VehicleCandidate candidate : frame.candidates) {
+                    if (candidate.entityId == activeSession.entityId() && !candidate.predicted) {
+                        resetNoProgressBudget(nowRuntimeNanos);
+                        return setDirective(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,
+                                activeSession.sessionId(), activeSession.entityId(), "foreground_geometry_refreshed");
+                    }
+                }
+            }
+            return currentDirective();
+        }
         if (modeController.mode() == ApplicationMode.PICK_ACQUIRE_LOCK) {
             modeController.switchMode(searchText.isEmpty() ? ApplicationMode.SCAN_ACQUIRE : ApplicationMode.SEARCH_VERIFY_PURSUIT, nowRuntimeNanos);
         }
@@ -316,6 +348,12 @@ public final class ScanAcquisitionController {
             SceneContinuitySnapshot continuity,
             long nowRuntimeNanos
     ) {
+        return onPipelineResult(result, continuity, nowRuntimeNanos, activeSessionId());
+    }
+
+    /** The session at dispatch also owns empty MT results, which have no PlateObservation stamp. */
+    public synchronized AcquisitionDecision onPipelineResult(PipelineResult result,
+            SceneContinuitySnapshot continuity, long nowRuntimeNanos, long dispatchedSessionId) {
         rememberRuntime(nowRuntimeNanos);
         if (run == null || !run.state().active() || result == null) {
             return ignored("scan_has_no_active_session");
@@ -329,15 +367,22 @@ public final class ScanAcquisitionController {
         }
         rememberCurrentEntityRecognitions(result);
         if (!running()) return ignored("queue_paused_result_retained");
+        if (activeSession != null && activeSession.sessionId() != dispatchedSessionId) {
+            return ignored("result_from_previous_acquisition_session");
+        }
         AcquisitionDecision searchDecision = evaluateSearch(result, nowRuntimeNanos);
         if (searchDecision != null) return searchDecision;
         if (activeSession == null) {
             return ignored("scan_has_no_active_session");
         }
+        if ("scan_queue_updated".equals(result.status)) {
+            return ignored("vehicle_measurement_is_not_an_mt_attempt");
+        }
         if ("candidate_missing".equals(result.status)) {
-            if (activeSession.persistent()) {
+            if (activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
+                foregroundRefreshAfterFrameId = lastVehicleFrameId;
                 AcquisitionDirective refresh = setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
-                        activeSession.sessionId(), activeSession.entityId(), "persistent_lock_refresh_vehicle_geometry");
+                        activeSession.sessionId(), activeSession.entityId(), "foreground_refresh_vehicle_geometry");
                 return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
                         EntityAcquisitionState.ACQUIRING, refresh, "persistent_lock_waits_for_fresh_mp");
             }
@@ -352,6 +397,9 @@ public final class ScanAcquisitionController {
                 activeSession.entityId()
         );
         if (matching == null) {
+            if (activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION && "tracking".equals(result.status)) {
+                return ignored("verification_waits_for_actual_mt");
+            }
             if (activeSession.persistent()) {
                 if ("tracking".equals(result.status)) {
                     return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
@@ -574,6 +622,7 @@ public final class ScanAcquisitionController {
             completedEntityIds.clear();
             entityRecognitions.clear();
             readingFrames.clear(); readingSequences.clear();
+            lastVehicleFrameId = 0L; foregroundRefreshAfterFrameId = -1L;
             zoomedLockSessions.clear();
             vehiclesSeen.clear(); vehiclesQueued.clear();
             firstObservationRuntimeNanos.clear(); bestCropByEntityId.clear();
@@ -799,6 +848,9 @@ public final class ScanAcquisitionController {
         recentlyReleasedEntityId = entityId;
         recentlyReleasedDirectiveRevision = directive.revision;
         recentlyReleasedAtRuntimeNanos = nowRuntimeNanos;
+        if (activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
+            searchState = com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH;
+        }
         modeController.finishSession(sessionId, TargetSessionState.LOST,
                 nowRuntimeNanos);
         activeSession = null;
@@ -896,6 +948,11 @@ public final class ScanAcquisitionController {
             long nowRuntimeNanos
     ) {
         if (activeSession == null) return;
+        if (activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
+            searchState = com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH;
+        } else if (activeSession.purpose() == TargetPurpose.SEARCH_PURSUIT) {
+            searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
+        }
         modeController.finishSession(
                 activeSession.sessionId(),
                 terminal,
@@ -916,10 +973,12 @@ public final class ScanAcquisitionController {
     }
 
     private void resetNoProgressBudget(long nowRuntimeNanos) {
-        if (noProgressBudget != null) noProgressBudget.reset(nowRuntimeNanos, true);
+        if (noProgressBudget != null) noProgressBudget.reset(nowRuntimeNanos,
+                zoomBudgetSessionId == 0L || zoomBudgetSessionId != activeSessionId());
     }
 
     private void resetSessionBudgets() {
+        zoomBudgetSessionId = 0L;
         activeSessionBudget = null;
         noProgressBudget = null;
         mtAttempts = 0;
@@ -934,6 +993,7 @@ public final class ScanAcquisitionController {
     }
 
     private void resetStatistics() {
+        lastVehicleFrameId = 0L; foregroundRefreshAfterFrameId = -1L;
         searchText = "";
         searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
         zoomedLockSessions.clear();
@@ -988,6 +1048,7 @@ public final class ScanAcquisitionController {
                     && observation.recognitionConfidence >= 0.65) {
                 boolean consumedZoom = zoomedLockSessions.contains(activeSession.sessionId());
                 activeSession = modeController.promoteSearchToPursuit(now);
+                if (zoomBudgetSessionId > 0L) zoomBudgetSessionId = activeSession.sessionId();
                 if (consumedZoom) zoomedLockSessions.add(activeSession.sessionId());
                 activeSession.transitionTo(TargetSessionState.ACQUIRING_PLATE, now);
                 activeSession.setCameraAttentionOwned(true, now);

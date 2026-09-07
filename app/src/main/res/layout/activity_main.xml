@@ -98,16 +98,6 @@
             android:visibility="gone"
             tools:text="" />
 
-        <ImageButton
-            android:id="@+id/live_scene_mode_toggle"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:layout_marginStart="4dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/scene_mode_dynamic_action"
-            android:padding="5dp"
-            android:src="@drawable/ic_scene_dynamic_24"
-            app:tint="@color/alpr_accent" />
 
         <ImageButton
             android:id="@+id/live_diagnostics_toggle"
@@ -218,15 +208,53 @@
 
     <FrameLayout
         android:id="@+id/auto_zoom_control"
-        android:layout_width="72dp"
+        android:layout_width="0dp"
         android:layout_height="72dp"
+        android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="12dp"
         android:elevation="8dp"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/experiment_thermal_button"
         app:layout_goneMarginBottom="16dp"
+        app:layout_constraintWidth_max="352dp"
+        app:layout_constraintStart_toStartOf="@id/camera_preview"
         app:layout_constraintEnd_toEndOf="@id/camera_preview">
+
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="match_parent" android:orientation="horizontal">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/live_scene_mode_toggle"
+                style="@style/CameraActionButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="0dp"
+                android:contentDescription="@string/scene_mode_dynamic_action"
+                android:text="@string/scene_control_dynamic"
+                app:icon="@drawable/ic_scene_dynamic_24" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/search_plate_button"
+                style="@style/CameraActionButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:contentDescription="@string/search_vehicle"
+                android:text="@string/search_plate_start"
+                app:icon="@drawable/ic_search_24" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/release_target_button"
+                style="@style/CameraActionButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:contentDescription="@string/release_vehicle"
+                android:text="@string/release_target_short"
+                app:icon="@drawable/ic_release_lock_32" />
+        <FrameLayout android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1" android:layout_marginStart="8dp">
 
         <View
             android:id="@+id/auto_zoom_glow"
@@ -257,6 +285,8 @@
             app:iconSize="32dp"
             app:rippleColor="@color/alpr_accent"
             app:strokeWidth="1dp" />
+        </FrameLayout>
+        </LinearLayout>
     </FrameLayout>
 
     <LinearLayout

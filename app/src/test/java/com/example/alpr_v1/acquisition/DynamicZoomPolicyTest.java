@@ -18,7 +18,8 @@ public class DynamicZoomPolicyTest {
             assertTrue(DynamicZoomPolicy.allows(purpose,sample(true,true,true,.5f),false,SceneContinuityState.STABLE));
             assertFalse(DynamicZoomPolicy.allows(purpose,sample(false,true,true,.5f),false,SceneContinuityState.STABLE));
             assertFalse(DynamicZoomPolicy.allows(purpose,sample(true,false,true,.5f),false,SceneContinuityState.STABLE));
-            assertFalse(DynamicZoomPolicy.allows(purpose,sample(true,true,false,.5f),false,SceneContinuityState.STABLE));
+            assertEquals(purpose == TargetPurpose.SEARCH_VERIFICATION,
+                    DynamicZoomPolicy.allows(purpose,sample(true,true,false,.5f),false,SceneContinuityState.STABLE));
             assertFalse(DynamicZoomPolicy.allows(purpose,sample(true,true,true,.95f),false,SceneContinuityState.STABLE));
             assertFalse(DynamicZoomPolicy.allows(purpose,sample(true,true,true,.5f),true,SceneContinuityState.STABLE));
             assertFalse(DynamicZoomPolicy.allows(purpose,sample(true,true,true,.5f),false,SceneContinuityState.REACQUIRING));
@@ -30,5 +31,13 @@ public class DynamicZoomPolicyTest {
         assertTrue(DynamicZoomPolicy.shouldAbort(false,false,SceneContinuityState.REACQUIRING));
         assertTrue(DynamicZoomPolicy.shouldAbort(false,false,SceneContinuityState.HARD_RESETTING));
         assertFalse(DynamicZoomPolicy.shouldAbort(false,false,SceneContinuityState.STABLE));
+    }
+
+    @Test public void possibleMatchUsesFreshQuadWithoutWaitingForAnotherTrackerCycle() {
+        AutoZoomController.Sample fresh = sample(true, true, false, .5f);
+        assertTrue(DynamicZoomPolicy.allows(TargetPurpose.SEARCH_VERIFICATION, fresh, false, SceneContinuityState.STABLE));
+        assertFalse(DynamicZoomPolicy.allows(TargetPurpose.USER_PICK, fresh, false, SceneContinuityState.STABLE));
+        assertFalse(DynamicZoomPolicy.allows(TargetPurpose.SEARCH_VERIFICATION, fresh, true, SceneContinuityState.STABLE));
+        assertFalse(DynamicZoomPolicy.allows(TargetPurpose.SEARCH_VERIFICATION, sample(false,true,false,.5f),false,SceneContinuityState.STABLE));
     }
 }

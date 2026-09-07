@@ -471,6 +471,17 @@ public final class DetectionOverlayView extends View {
         postInvalidateOnAnimation();
     }
 
+    /** Camera progress already provides interpolation; do not apply stationary hold or another animator. */
+    public void setOpticalTransformItems(List<OverlayItem> transformed, int width, int height) {
+        sourceWidth = width;
+        sourceHeight = height;
+        setPreviewSourceSize(width, height);
+        boolean wasStationary = stationaryScene;
+        stationaryScene = false;
+        setPreviewItems(transformed);
+        stationaryScene = wasStationary;
+    }
+
     List<OverlayItem> snapshotItemsForTesting() {
         return Collections.unmodifiableList(new ArrayList<>(items));
     }

@@ -24,6 +24,32 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test public void opticalZoomScalesVehiclesWithoutPlateAndReturnsToExactBaseBounds() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(), null);
+            view.layout(0, 0, 720, 1280);
+            RectF baseBounds = new RectF(.1f, .25f, .8f, .65f);
+            List<OverlayItem> base = ZoomVehicleOverlay.snapshot(Collections.singletonList(item(OverlayItem.Kind.VEHICLE, baseBounds, 7L)));
+            view.setStationaryScene(true);
+            view.setItems(base,720,1280);
+            // Small optical steps must bypass the stationary jitter threshold.
+            view.setOpticalTransformItems(ZoomVehicleOverlay.atZoom(Collections.emptyList(),base,1.01f),720,1280);
+            assertEquals(.096f,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+            List<OverlayItem> zoomed = ZoomVehicleOverlay.atZoom(base,base,1.8f);
+            view.setOpticalTransformItems(zoomed,720,1280);
+            assertEquals(.72f,view.snapshotItemsForTesting().get(0).normalizedBounds.height(),.0001f);
+            assertEquals(0f,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+            // Fresh MT may carry a stale vehicle box; the retained base owns optical geometry.
+            assertEquals(zoomed.get(0).normalizedBounds,ZoomVehicleOverlay.atZoom(base,base,1.8f).get(0).normalizedBounds);
+            view.setOpticalTransformItems(ZoomVehicleOverlay.atZoom(zoomed,base,1f),720,1280);
+            RectF returned = view.snapshotItemsForTesting().get(0).normalizedBounds;
+            assertEquals(baseBounds.left, returned.left, .0001f);
+            assertEquals(baseBounds.top, returned.top, .0001f);
+            assertEquals(baseBounds.right, returned.right, .0001f);
+            assertEquals(baseBounds.bottom, returned.bottom, .0001f);
+            assertEquals(7L,view.snapshotItemsForTesting().get(0).trackId);
+        });
+    }
     @Test public void s10s12StaticBoundaryClearsGeometryBadgesAndInFlightAnimations() {
         AtomicReference<DetectionOverlayView> reference = new AtomicReference<>();
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {

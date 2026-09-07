@@ -356,6 +356,11 @@ public final class CameraController implements AutoCloseable {
             float normalizedY,
             ControlCallback callback
     ) {
+        zoomAndFocus(requestedZoomRatio, normalizedX, normalizedY, callback, 300L);
+    }
+
+    public void zoomAndFocus(float requestedZoomRatio, float normalizedX, float normalizedY,
+            ControlCallback callback, long animationMillis) {
         Camera boundCamera = camera;
         if (boundCamera == null) {
             callback.onError(new IllegalStateException("Kamera nie jest jeszcze związana"));
@@ -366,7 +371,7 @@ public final class CameraController implements AutoCloseable {
                 boundCamera,
                 requestedZoomRatio
         );
-        animateZoomRatio(boundCamera, appliedRatio, 300L, () -> {
+        animateZoomRatio(boundCamera, appliedRatio, animationMillis, () -> {
             try {
                 /*
                  * Zoom CameraX jest wykonywany względem środka sensora.
@@ -414,6 +419,10 @@ public final class CameraController implements AutoCloseable {
             float requestedZoomRatio,
             ControlCallback callback
     ) {
+        setZoomRatio(requestedZoomRatio, callback, requestedZoomRatio <= 1.01f ? 560L : 300L);
+    }
+
+    public void setZoomRatio(float requestedZoomRatio, ControlCallback callback, long animationMillis) {
         Camera boundCamera = camera;
         if (boundCamera == null) {
             callback.onError(new IllegalStateException("Kamera nie jest jeszcze związana"));
@@ -423,7 +432,7 @@ public final class CameraController implements AutoCloseable {
         animateZoomRatio(
                 boundCamera,
                 appliedRatio,
-                requestedZoomRatio <= 1.01f ? 560L : 300L,
+                animationMillis,
                 () -> callback.onSuccess(appliedRatio),
                 callback
         );
@@ -440,7 +449,7 @@ public final class CameraController implements AutoCloseable {
         float startRatio = state == null ? 1f : state.getZoomRatio();
         int generation = ++cameraControlGeneration;
         cameraControlHandler.removeCallbacksAndMessages(null);
-        int steps = Math.max(18, (int) (durationMillis / 16L));
+        int steps = Math.max(2, (int) (durationMillis / 16L));
         boolean returning = targetRatio < startRatio;
         for (int step = 1; step <= steps; step++) {
             final int scheduledStep = step;

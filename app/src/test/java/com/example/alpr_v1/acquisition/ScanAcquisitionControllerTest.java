@@ -938,6 +938,84 @@ public final class ScanAcquisitionControllerTest {
         return controller;
     }
 
+    private static ScanAcquisitionController verifyingKnownVehicle() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,1L)),continuity(),10L);
+        controller.startSearch("WI1234A",20L);
+        return controller;
+    }
+
+    private static PipelineResult statusResult(String status) {
+        return new PipelineResult(status,"",Collections.<PlateRecognition>emptyList(),Collections.emptyList(),
+                100,100,Collections.emptyList(),false,new ContinuityStamp(1L,0L,0L,1L));
+    }
+
+    @Test public void searchVerificationRefreshesMissingGeometryBeforeMtAndDoesNotCountMpAsFailure() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        long session = controller.snapshot(20L).activeSessionId;
+        controller.onPipelineResult(statusResult("candidate_missing"),continuity(),30L);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,controller.currentDirective().action);
+        controller.onVehicleFrame(frame(candidate(4L,44L)),continuity(),31L);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP,controller.currentDirective().action);
+        controller.onPipelineResult(statusResult("scan_queue_updated"),continuity(),40L);
+        assertEquals(1,controller.snapshot(40L).mtAttempts);
+        VehicleTrackingFrame fresh = new VehicleTrackingFrame(2L,2L,2L,1L,
+                Collections.singletonList(candidate(4L,99L)));
+        controller.onVehicleFrame(fresh,continuity(),41L);
+        assertEquals(session,controller.snapshot(41L).activeSessionId);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,controller.currentDirective().action);
+        controller.onPipelineResult(result(observation(4L,99L,true,true,"WI1234A",0L,3L)),continuity(),50L);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.CONFIRMED_MATCH,controller.searchState());
+        assertEquals(4L,controller.lockedEntityId());
+    }
+
+    @Test public void cancelledOrExhaustedVerificationCannotLeaveOrphanPossibleMatch() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        controller.onPipelineResult(statusResult("no_plate"),continuity(),30L);
+        controller.onPipelineResult(statusResult("no_plate"),continuity(),40L);
+        assertEquals(0L,controller.snapshot(40L).activeEntityId);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH,controller.searchState());
+        controller.startSearch("WI1234A",50L);
+        controller.releaseForeground(false,60L);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH,controller.searchState());
+        controller.startSearch("WI1234A",70L);
+        controller.releaseForeground(true,80L);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED,controller.searchState());
+        assertEquals("",controller.searchText());
+    }
+
+    @Test public void verificationWithoutProgressTimesOutAndReturnsToSearch() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        controller.onVehicleFrame(frame(),continuity(),16L*SECOND);
+        assertEquals(0L,controller.snapshot(16L*SECOND).activeEntityId);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH,controller.searchState());
+        assertEquals("WI1234A",controller.searchText());
+    }
+
+    @Test public void inFlightEmptyMtFromPreviousSessionCannotConsumeNewVerificationBudget() {
+        ScanAcquisitionController controller = startedWithCandidate(4L);
+        long previous = controller.snapshot(1L).activeSessionId;
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,1L)),continuity(),10L);
+        controller.startSearch("WI1234A",20L);
+        long verification = controller.snapshot(20L).activeSessionId;
+        assertFalse(controller.onPipelineResult(statusResult("no_plate"),continuity(),30L,previous).accepted);
+        assertFalse(controller.onPipelineResult(statusResult("candidate_missing"),continuity(),40L,previous).accepted);
+        assertEquals(verification,controller.snapshot(40L).activeSessionId);
+        assertEquals(1,controller.snapshot(40L).mtAttempts);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT,controller.currentDirective().action);
+    }
+
+    @Test public void opticalVerificationDoesNotConsumeNormalAcquisitionTimeout() {
+        ScanAcquisitionController controller = verifyingKnownVehicle();
+        assertTrue(controller.claimLockZoom(1L*SECOND));
+        controller.onVehicleFrame(frame(candidate(4L,44L)),continuity(),16L*SECOND);
+        assertEquals(com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH,controller.searchState());
+        assertTrue(controller.snapshot(16L*SECOND).activeEntityId > 0L);
+        controller.finishLockZoom(17L*SECOND);
+        controller.onPipelineResult(result(observation(4L,44L,true,true,"WI1234A",0L,2L)),continuity(),18L*SECOND);
+        assertEquals(4L,controller.lockedEntityId());
+    }
+
     private static SceneContinuitySnapshot continuity() {
         return new SceneContinuitySnapshot(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,

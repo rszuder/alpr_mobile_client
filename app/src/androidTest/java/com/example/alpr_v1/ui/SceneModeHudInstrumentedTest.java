@@ -5,7 +5,8 @@ import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.widget.ImageButton;
+import android.view.View;
+import com.google.android.material.button.MaterialButton;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
@@ -50,10 +51,11 @@ public final class SceneModeHudInstrumentedTest {
         try (ActivityScenario<MainActivity> scenario =
                      ActivityScenario.launch(MainActivity.class)) {
             scenario.onActivity(activity -> {
-                ImageButton toggle = activity.findViewById(
+                MaterialButton toggle = activity.findViewById(
                         R.id.live_scene_mode_toggle
                 );
                 assertTrue(toggle.isEnabled());
+                assertEquals(View.VISIBLE, activity.findViewById(R.id.search_plate_button).getVisibility());
                 assertEquals(
                         activity.getString(R.string.scene_mode_dynamic_action),
                         toggle.getContentDescription().toString()
@@ -64,6 +66,8 @@ public final class SceneModeHudInstrumentedTest {
                         SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName(),
                         preferences.getString(SettingsActivity.KEY_SCENE_HANDLING_MODE, "")
                 );
+                assertEquals(View.INVISIBLE, activity.findViewById(R.id.search_plate_button).getVisibility());
+                assertEquals(activity.getString(R.string.scene_control_static), toggle.getText().toString());
                 assertEquals(
                         activity.getString(R.string.scene_mode_static_action),
                         toggle.getContentDescription().toString()

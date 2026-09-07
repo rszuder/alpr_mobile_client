@@ -9,7 +9,8 @@ public final class DynamicZoomPolicy {
     public static boolean allows(TargetPurpose purpose, AutoZoomController.Sample sample,
             boolean moving, SceneContinuityState continuity) {
         return purpose != null && purpose != TargetPurpose.SCAN_ACQUISITION
-                && sample != null && sample.stableTargetGeometry
+                && sample != null && (sample.stableTargetGeometry
+                    || purpose == TargetPurpose.SEARCH_VERIFICATION && sample.validQuad && sample.recognitionExecuted)
                 && !moving && continuity == SceneContinuityState.STABLE
                 && sample.centerX >= .15f && sample.centerX <= .85f
                 && sample.centerY >= .15f && sample.centerY <= .85f

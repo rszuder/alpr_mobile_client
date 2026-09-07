@@ -1621,6 +1621,9 @@ public final class AlprPipeline {
                 || result == SoftReacquireResult.VEHICLE_POOL_RECOVERED;
     }
 
+    // Accessed under the pipeline monitor; UI selection may change the controller during engine.run().
+    private long dispatchedScanSessionId;
+
     private void prepareScanAcquisition(
             MobileAlprEngine activeEngine,
             long nowRuntimeNanos
@@ -1628,6 +1631,7 @@ public final class AlprPipeline {
         activeEngine.setStaticSceneMode(staticMode());
         activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
         if (staticMode() && staticCycle.zoomEntity() > 0L || !staticMode() && dynamicZoomEntity > 0L) {
+            dispatchedScanSessionId = scanAcquisitionController.snapshot(nowRuntimeNanos).activeSessionId;
             activeEngine.setScanAcquisitionDirective(false, AcquisitionDirective.none(0L, 0L));
             return;
         }
@@ -1649,6 +1653,7 @@ public final class AlprPipeline {
                     0f, 0f, 0f, 0f
             );
         }
+        dispatchedScanSessionId = directive.sessionId;
         applyScanDirectiveToEngine(
                 activeEngine,
                 scanActive,
@@ -1667,7 +1672,8 @@ public final class AlprPipeline {
         AcquisitionDecision decision = scanAcquisitionController.onPipelineResult(
                 result,
                 sceneTransitionCoordinator.snapshot(),
-                nowRuntimeNanos
+                nowRuntimeNanos,
+                dispatchedScanSessionId
         );
         AcquisitionDirective next = decision.nextDirective;
         if ("scan_queue_updated".equals(result.status)) {
@@ -2939,12 +2945,13 @@ public final class AlprPipeline {
         if (staticMode() || !com.example.alpr_v1.acquisition.DynamicZoomPolicy.allows(
                 scanAcquisitionController.foregroundPurpose(), sample,
                 rapidCameraMotion || cameraMoving || cameraTransformInProgress, sceneTransitionCoordinator.snapshot().state)
-                || !scanAcquisitionController.claimLockZoom()) return false;
+                || !scanAcquisitionController.claimLockZoom(SystemClock.elapsedRealtimeNanos())) return false;
         dynamicZoomEntity = foregroundEntityId();
         return dynamicZoomEntity > 0L;
     }
 
     public void finishDynamicZoom() {
+        scanAcquisitionController.finishLockZoom(SystemClock.elapsedRealtimeNanos());
         long finishedEntity = dynamicZoomEntity;
         dynamicZoomEntity = 0L;
         stableSceneVehicles.invalidate();
