@@ -128,7 +128,7 @@ public final class CapturedPlateItem {
                 recognitionConfidence, confirmed, characters, capturedAtMillis,
                 capturedElapsedNanos, sharpness, timing, cameraZoomRatio, captureSource,
                 PlateGeometry.unavailable(), ImageDifficultyMetrics.measure(bitmap), confirmed,
-                false, false, 0, 0, "unknown", Collections.emptyList(), ""
+                false, false, 0, 0, "unknown", Collections.emptyList(), null
         );
     }
 
@@ -211,7 +211,8 @@ public final class CapturedPlateItem {
             }
         }
         if (labels.length() > 0) return labels.toString();
-        if (freshPrediction != null && !freshPrediction.isEmpty()) {
+        // Empty means no characters read. Only legacy callers without fresh evidence use consensus.
+        if (freshPrediction != null) {
             return freshPrediction;
         }
         return consensusText == null ? "" : consensusText;

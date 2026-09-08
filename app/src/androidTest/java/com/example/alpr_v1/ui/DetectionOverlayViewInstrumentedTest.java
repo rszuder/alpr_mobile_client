@@ -24,6 +24,120 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test public void zoomRetainsConfidenceUntilNewTrackGetsItsVehicleAssociation() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view=new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+            view.layout(0,0,720,1280);
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1,1,0,1));
+            OverlayItem car=item(OverlayItem.Kind.VEHICLE,new RectF(.1f,.3f,.7f,.8f),7L);
+            view.setItems(Collections.singletonList(car),720,1280);
+            view.animatePlateObservation(animationObservation(7,77,"WXOLD",.4,false));
+            view.finishPlateAbsorptionForTesting(); view.setZoomPresentationActive(true);
+            OverlayItem plate=new OverlayItem(OverlayItem.Kind.PLATE,new RectF(.2f,.6f,.3f,.65f),
+                    Collections.emptyList(),"",78L,true);
+            view.setOpticalTransformItems(Arrays.asList(car,plate),720,1280);
+            view.animatePlateObservation(animationObservation(0,78,"WX1234",.93,false));
+            assertEquals(1,view.pendingPlateReadingCountForTesting());
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1,1,1,2));
+            assertEquals(1,view.pendingPlateReadingCountForTesting());
+            try {
+                java.lang.reflect.Field pending=DetectionOverlayView.class.getDeclaredField("pendingPlateReadings");
+                pending.setAccessible(true); Object reading=((java.util.Map<?,?>)pending.get(view)).get(78L);
+                java.lang.reflect.Field seen=reading.getClass().getDeclaredField("seenAtNanos"); seen.setAccessible(true);
+                seen.setLong(reading,android.os.SystemClock.elapsedRealtimeNanos()-5_000_000_000L);
+                java.lang.reflect.Method paint=DetectionOverlayView.class.getDeclaredMethod("paintFor",OverlayItem.class);
+                paint.setAccessible(true);
+                android.graphics.Paint stroke=(android.graphics.Paint)paint.invoke(view,plate);
+                assertTrue("AZ plate must use the strong detection stroke",stroke.getAlpha()>=240);
+                org.junit.Assert.assertNull(stroke.getPathEffect());
+            } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+            view.animatePlateObservation(animationObservation(7,78,"",0,false));
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1234"));
+            assertEquals(0,view.pendingPlateReadingCountForTesting());
+            view.animatePlateObservation(animationObservation(7,78,"WXBADD",.6,true));
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1234"));
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+        });
+    }
+
+    @Test public void zoomKeepsDetectedPlateWhileBadgeAcceptsOnlyStrongerReadings() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view=new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+            view.layout(0,0,720,1280);
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1,1,0,1));
+            view.setZoomPresentationActive(true);
+            List<OverlayItem> measured=Arrays.asList(
+                    item(OverlayItem.Kind.VEHICLE,new RectF(.1f,.3f,.7f,.8f),7L),
+                    item(OverlayItem.Kind.PLATE,new RectF(.2f,.6f,.3f,.65f),77L));
+            view.setItems(measured,720,1280);
+            view.animatePlateObservation(animationObservation(7,77,"WX1234",.4,false));
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            view.finishPlateAbsorptionForTesting();
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1234"));
+            view.animatePlateObservation(animationObservation(7,77,"WX1235",.41,false));
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1235"));
+            view.animatePlateObservation(animationObservation(7,77,"WX0000",.39,true));
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1235"));
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            view.setOpticalTransformItems(measured,720,1280);
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1,1,1,2));
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            view.setOpticalTransformItems(measured,720,1280);
+            view.setPresentationStamp(new com.example.alpr_v1.continuity.ContinuityStamp(1,1,2,3));
+            assertEquals(1,view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            assertTrue(view.vehicleLabelForTesting(7).contains("WX1235"));
+            view.hardResetForNewScene(new com.example.alpr_v1.continuity.ContinuityStamp(2,2,2,4));
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+        });
+    }
+
+    @Test public void plateAndVehicleCorrectionsAnimateFromCurrentPositionInBothScenePolicies() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            for (boolean stationary:new boolean[]{false,true}) {
+                DetectionOverlayView view=new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);
+                view.layout(0,0,720,1280); view.setStationaryScene(stationary);
+                List<OverlayItem> before=Arrays.asList(
+                        item(OverlayItem.Kind.VEHICLE,new RectF(.1f,.2f,.5f,.8f),7L),
+                        item(OverlayItem.Kind.PLATE,new RectF(.2f,.6f,.3f,.65f),77L));
+                List<OverlayItem> after=Arrays.asList(
+                        item(OverlayItem.Kind.VEHICLE,new RectF(.2f,.2f,.6f,.8f),7L),
+                        new OverlayItem(OverlayItem.Kind.PLATE,new RectF(.3f,.6f,.4f,.65f),
+                                Arrays.asList(new PointF(.3f,.6f),new PointF(.4f,.6f),
+                                        new PointF(.4f,.65f),new PointF(.3f,.65f)),"",77L,false));
+                view.setItems(before,720,1280); view.setItems(after,720,1280);
+                assertEquals(.1f,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+                overlayAnimation(view).setCurrentFraction(.5f);
+                for (int i=0;i<2;i++) {
+                    float current=view.snapshotItemsForTesting().get(i).normalizedBounds.left;
+                    assertTrue(current>before.get(i).normalizedBounds.left);
+                    assertTrue(current<after.get(i).normalizedBounds.left);
+                }
+                float corner=view.snapshotItemsForTesting().get(1).normalizedKeypoints.get(0).x;
+                assertTrue(corner>.2f && corner<.3f);
+                float midpoint=view.snapshotItemsForTesting().get(0).normalizedBounds.left;
+                view.setPreviewItems(after);
+                assertEquals(midpoint,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+                overlayAnimation(view).end();
+                assertEquals(.2f,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+                view.setPreviewItems(before); overlayAnimation(view).setCurrentFraction(.5f);
+                corner=view.snapshotItemsForTesting().get(1).normalizedKeypoints.get(0).x;
+                assertTrue(corner>.2f && corner<.3f);
+                overlayAnimation(view).end();
+                assertTrue(view.snapshotItemsForTesting().get(1).normalizedKeypoints.isEmpty());
+                view.setOpticalTransformItems(before,720,1280);
+                assertEquals(.1f,view.snapshotItemsForTesting().get(0).normalizedBounds.left,.0001f);
+            }
+        });
+    }
+
+    private static android.animation.ValueAnimator overlayAnimation(DetectionOverlayView view) {
+        try {
+            java.lang.reflect.Field field=DetectionOverlayView.class.getDeclaredField("overlayAnimator");
+            field.setAccessible(true); android.animation.ValueAnimator animator=(android.animation.ValueAnimator)field.get(view);
+            assertNotNull(animator); return animator;
+        } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+    }
+
     @Test public void l8l11PersistentFocusImmediatelyRemovesNeighborsAndTheirLateTransfers() {
         AtomicReference<DetectionOverlayView> reference = new AtomicReference<>();
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
@@ -268,6 +382,9 @@ public final class DetectionOverlayViewInstrumentedTest {
             assertEquals(1, view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
             view.setItems(Arrays.asList(item(OverlayItem.Kind.VEHICLE,
                     new RectF(0.1f, 0.3f, 0.5f, 0.7f), 7L), plate), 720, 1280);
+            assertEquals(0L, view.plateAbsorptionEntityForTesting());
+            assertEquals(1, view.renderedKindCountForTesting(OverlayItem.Kind.PLATE));
+            overlayAnimation(view).end();
             assertEquals(7L, view.plateAbsorptionEntityForTesting());
             view.finishPlateAbsorptionForTesting();
             view.resetVehicleEntityStates();
@@ -293,6 +410,8 @@ public final class DetectionOverlayViewInstrumentedTest {
             view.setStationaryScene(false);
             view.setPreviewItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
                     new RectF(0.103f, 0.302f, 0.504f, 0.702f), 7L)));
+            assertEquals(before, view.vehicleBoundsForTesting(7L));
+            overlayAnimation(view).end();
             assertFalse(before.equals(view.vehicleBoundsForTesting(7L)));
             view.setItems(Collections.emptyList(), 720, 1280);
             assertTrue(view.snapshotItemsForTesting().isEmpty());
@@ -615,6 +734,9 @@ public final class DetectionOverlayViewInstrumentedTest {
                     new RectF(0.31f, 0.46f, 0.43f, 0.50f),
                     70L
             )));
+            assertEquals(new RectF(0.30f, 0.45f, 0.42f, 0.49f),
+                    view.snapshotItemsForTesting().get(2).normalizedBounds);
+            overlayAnimation(view).end();
             rendered.set(view.snapshotItemsForTesting());
         });
 

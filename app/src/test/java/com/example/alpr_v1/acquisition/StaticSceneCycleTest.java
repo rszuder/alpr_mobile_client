@@ -51,8 +51,8 @@ public class StaticSceneCycleTest {
     @Test public void eachPlateOnTheSameVehicleAndUnassignedPlateGetsItsOwnZoom() {
         StaticSceneCycle cycle = new StaticSceneCycle(); cycle.reset(1L);
         cycle.observe(observation(1L,1L,11L,true,true));
-        cycle.observe(observation(1L,1L,12L,true,true));
-        cycle.observe(observation(1L,0L,13L,false,false));
+        cycle.observe(observation(1L,1L,12L,true,true,75,95));
+        cycle.observe(observation(1L,0L,13L,false,false,5,20));
         cycle.finishBaseline();
         for (long track : new long[]{11L,12L,13L}) {
             assertEquals(track, cycle.nextRefinement(true).trackId);
@@ -87,12 +87,37 @@ public class StaticSceneCycleTest {
         assertEquals(AutoZoomController.Action.REQUEST_ZOOM, controller.requestStaticRefinement(detected).action);
     }
 
+    @Test public void changedTrackForTheSamePlateGetsOneZoomUsingTheStrongerReading() {
+        StaticSceneCycle cycle=new StaticSceneCycle(); cycle.reset(1L);
+        cycle.observe(observation(1L,1L,11L,true,false));
+        cycle.observe(observation(1L,1L,12L,true,true,31,71));
+        cycle.finishBaseline();
+        assertEquals(12L,cycle.nextRefinement(true).trackId);
+        assertEquals(1L,cycle.zoomEntity());
+        assertEquals(.31f,cycle.zoomBounds().left,.0001f);
+        cycle.finishZoom(); assertNull(cycle.zoomBounds()); assertNull(cycle.nextRefinement(true));
+        cycle.enableRefinement(); assertNull(cycle.nextRefinement(true));
+        cycle.reset(2L); cycle.observe(observation(2L,1L,13L,true,true)); cycle.finishBaseline();
+        assertNotNull(cycle.nextRefinement(true));
+    }
+
+    @Test public void laterVehicleAssociationDoesNotDuplicateAnUnassignedPlate() {
+        StaticSceneCycle cycle=new StaticSceneCycle(); cycle.reset(1L);
+        cycle.observe(observation(1L,0L,11L,true,false));
+        cycle.observe(observation(1L,1L,12L,true,true)); cycle.finishBaseline();
+        assertEquals(12L,cycle.nextRefinement(true).trackId); assertEquals(1L,cycle.zoomEntity());
+        cycle.finishZoom(); assertNull(cycle.nextRefinement(true));
+    }
+
     private static PlateObservation observation(long scene,long entity,boolean quad,boolean strong) {
         return observation(scene,entity,entity+10L,quad,strong);
     }
     private static PlateObservation observation(long scene,long entity,long track,boolean quad,boolean strong) {
-        List<Point2> corners=quad?Arrays.asList(new Point2(30,45),new Point2(70,45),new Point2(70,55),new Point2(30,55)):Collections.emptyList();
-        PlateGeometry geometry=PlateGeometry.from(100,100,new Detection(0,.9f,30,45,70,55,Collections.emptyList()),corners);
+        return observation(scene,entity,track,quad,strong,30,70);
+    }
+    private static PlateObservation observation(long scene,long entity,long track,boolean quad,boolean strong,float left,float right) {
+        List<Point2> corners=quad?Arrays.asList(new Point2(left,45),new Point2(right,45),new Point2(right,55),new Point2(left,55)):Collections.emptyList();
+        PlateGeometry geometry=PlateGeometry.from(100,100,new Detection(0,.9f,left,45,right,55,Collections.emptyList()),corners);
         return new PlateObservation(track,entity > 0L ? PlateVehicleAssociation.direct(entity,entity,"test")
                 : PlateVehicleAssociation.unassigned("test"),MtWorkKind.VEHICLE_ROI,
                 MtReason.SCAN_NEXT_CANDIDATE,1L,null,"WI1234A",.9,strong?.95:.4,strong,strong?3:1,

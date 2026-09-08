@@ -17,10 +17,13 @@ public final class StaticSceneCycle {
     private Phase phase = Phase.BASELINE;
     private final Map<Long, AutoZoomController.Sample> candidates = new LinkedHashMap<>();
     private final Map<Long, Long> owners = new HashMap<>();
+    private final Map<Long, NormalizedBounds> candidateBounds = new HashMap<>();
     private final Set<Long> attempted = new HashSet<>();
     private final List<NormalizedBounds> vehicleBounds = new ArrayList<>(), plateBounds = new ArrayList<>();
     private long zoomEntity;
     private long zoomTrackId;
+    private NormalizedBounds zoomBounds;
+    public synchronized NormalizedBounds zoomBounds() { return zoomBounds; }
     private List<VehicleCandidate> baselineVehicles = Collections.emptyList();
     public synchronized List<VehicleCandidate> baselineVehicles() { return baselineVehicles; }
     public synchronized Phase phase() { return phase; }
@@ -28,7 +31,8 @@ public final class StaticSceneCycle {
     public synchronized boolean refining() { return zoomTrackId > 0L; }
     public synchronized void reset(long scene) {
         this.scene = scene; phase = Phase.BASELINE; zoomEntity = 0L; zoomTrackId = 0L;
-        candidates.clear(); owners.clear(); attempted.clear(); vehicleBounds.clear(); plateBounds.clear();
+        zoomBounds = null;
+        candidates.clear(); owners.clear(); candidateBounds.clear(); attempted.clear(); vehicleBounds.clear(); plateBounds.clear();
         baselineVehicles = Collections.emptyList();
     }
     public synchronized void observeVehicles(VehicleTrackingFrame frame) {
@@ -57,10 +61,20 @@ public final class StaticSceneCycle {
                 observation.observations, g.cornersNorm.size() == 4 && g.quadAreaRatio > 0,
                 observation.freshMzAttempted, observation.freshMzSuccessful,
                 observation.freshPrediction, true);
-        owners.put(observation.plateTrackId, observation.entityId);
-        AutoZoomController.Sample old = candidates.get(observation.plateTrackId);
+        // Track numbers can change during the baseline. Overlapping detections of
+        // the same physical plate share one refinement budget; distinct plates do not.
+        long key = observation.plateTrackId;
+        for (long existing : candidates.keySet()) {
+            long owner = owners.getOrDefault(existing, 0L);
+            if (owner > 0L && observation.entityId > 0L && owner != observation.entityId) continue;
+            NormalizedBounds oldBounds = candidateBounds.get(existing);
+            if (oldBounds != null && oldBounds.iou(b) >= 0.5f) { key = existing; break; }
+        }
+        if (observation.entityId > 0L || !owners.containsKey(key)) owners.put(key, observation.entityId);
+        candidateBounds.put(key, b);
+        AutoZoomController.Sample old = candidates.get(key);
         if (old == null || sample.recognitionConfidence > old.recognitionConfidence)
-            candidates.put(observation.plateTrackId, sample);
+            candidates.put(key, sample);
     }
     public synchronized void finishBaseline() { if (phase == Phase.BASELINE) phase = Phase.AZ_REFINEMENT; }
     public synchronized AutoZoomController.Sample nextRefinement(boolean enabled) {
@@ -68,13 +82,14 @@ public final class StaticSceneCycle {
         if (enabled) for (Map.Entry<Long, AutoZoomController.Sample> entry : candidates.entrySet()) {
             AutoZoomController.Sample s = entry.getValue();
             if (attempted.contains(entry.getKey())) continue;
-            attempted.add(entry.getKey()); zoomTrackId = entry.getKey();
-            zoomEntity = owners.getOrDefault(zoomTrackId, 0L); return s;
+            attempted.add(entry.getKey()); zoomTrackId = s.trackId;
+            zoomBounds = candidateBounds.get(entry.getKey());
+            zoomEntity = owners.getOrDefault(entry.getKey(), 0L); return s;
         }
         phase = Phase.STATIC_IDLE;
         return null;
     }
-    public synchronized void finishZoom() { zoomEntity = 0L; zoomTrackId = 0L; }
+    public synchronized void finishZoom() { zoomEntity = 0L; zoomTrackId = 0L; zoomBounds = null; }
     public synchronized void enableRefinement() { if (phase == Phase.STATIC_IDLE) phase = Phase.AZ_REFINEMENT; }
     public synchronized StaticSceneWatchRegions watchRegions() {
         return new StaticSceneWatchRegions(vehicleBounds, plateBounds, StaticSceneWatcher.DEFAULT.margin);

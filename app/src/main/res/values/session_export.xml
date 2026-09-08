@@ -1,0 +1,7 @@
+<resources>
+    <string name="session_export_title">Wybierz sesję do eksportu</string>
+    <string name="session_export_action">Eksportuj ›</string>
+    <string name="session_export_complete">KOMPLETNA</string>
+    <string name="session_export_partial">NIEKOMPLETNA</string>
+    <string name="session_export_no_metadata">BRAK METADANYCH</string>
+</resources>

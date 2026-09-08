@@ -99,16 +99,17 @@
             tools:text="" />
 
 
-        <ImageButton
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/live_diagnostics_toggle"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:layout_marginStart="4dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/diagnostics_title"
-            android:padding="5dp"
-            android:src="@drawable/ic_info_24"
-            app:tint="@color/alpr_text_secondary" />
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="62dp" android:layout_height="32dp"
+            android:layout_marginStart="4dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:insetTop="0dp" android:insetBottom="0dp" android:paddingHorizontal="7dp"
+            android:text="@string/hud_label" android:textSize="9sp" android:textStyle="bold"
+            android:textColor="@color/alpr_accent" android:contentDescription="@string/hud_toggle"
+            app:icon="@drawable/ic_hud_32" app:iconSize="19dp" app:iconPadding="4dp"
+            app:iconTint="@color/alpr_accent" app:strokeColor="@color/alpr_outline"
+            app:backgroundTint="@color/alpr_card_blue" app:cornerRadius="10dp" />
 
     </LinearLayout>
 
@@ -130,31 +131,19 @@
         app:layout_constraintTop_toBottomOf="@id/live_status_strip"
         tools:text="Cel ustabilizowany" />
 
-    <LinearLayout
+    <com.example.alpr_v1.ui.LiveHudView
         android:id="@+id/live_hud_row"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="8dp"
-        android:elevation="7dp"
-        android:orientation="vertical"
-        android:visibility="gone"
+        android:layout_width="0dp" android:layout_height="wrap_content"
+        android:layout_marginHorizontal="12dp" android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp"
+        android:elevation="9dp" android:visibility="gone"
+        app:layout_constraintWidth_max="420dp"
+        app:layout_constrainedHeight="true"
+        app:layout_constraintVertical_bias="0"
+        app:layout_constraintBottom_toTopOf="@id/confirmed_result_tray"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_event">
-
-        <TextView
-            android:id="@+id/live_hud"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/live_hud_background"
-            android:fontFamily="monospace"
-            android:includeFontPadding="false"
-            android:maxWidth="230dp"
-            android:padding="9dp"
-            android:textColor="@color/white"
-            android:textSize="10sp"
-            tools:text="MP 0,38 s · MT 1,20 s&#10;MZ 0,31 s · PIPE 1,96 s&#10;YUV 10 FPS · 8/8 inlier" />
-    </LinearLayout>
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/live_status_strip" />
 
     <ImageView
         android:id="@+id/auto_zoom_target"
@@ -301,7 +290,7 @@
         android:paddingHorizontal="12dp"
         android:paddingVertical="9dp"
         android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/control_panel"
+        app:layout_constraintBottom_toTopOf="@id/auto_zoom_control"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -378,79 +367,41 @@
             android:textSize="12sp" />
 
 
-        <!-- Osobne sterowanie podglądem kadru i uruchamianiem analizy. -->
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginTop="10dp"
+            android:id="@+id/camera_action_row"
+            android:layout_width="match_parent" android:layout_height="72dp"
             android:orientation="horizontal">
-
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/camera_preview_button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="0.42"
-                android:minWidth="0dp"
-                android:text="@string/camera_preview_start"
-                android:textSize="12sp"
-                app:icon="@drawable/ic_visibility_24"
-                app:iconPadding="6dp"
-                app:iconSize="21dp" />
-
+                android:id="@+id/analysis_start_button" style="@style/CameraActionButton"
+                android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:text="@string/camera_action_start" android:contentDescription="@string/analysis_start"
+                app:icon="@drawable/ic_analysis_play_32" />
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/analysis_start_button"
-                style="@style/Widget.Material3.Button"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_marginStart="8dp"
-                android:layout_weight="0.58"
-                android:minWidth="0dp"
-                android:text="@string/analysis_start"
-                android:textSize="13sp"
-                app:icon="@drawable/ic_camera_24"
-                app:iconPadding="6dp"
-                app:iconSize="21dp" />
-
-        </LinearLayout>
-
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-
+                android:id="@+id/collection_toggle" style="@style/CameraActionButton"
+                android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginStart="8dp" android:enabled="false"
+                android:text="@string/camera_action_crops" android:contentDescription="@string/collection_start"
+                app:icon="@drawable/ic_plate_crops_32" />
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/collection_toggle"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:enabled="false"
-                android:minWidth="0dp"
-                android:text="@string/collection_start"
-                android:textSize="11sp"
-                app:icon="@drawable/ic_session_24"
-                app:iconPadding="5dp"
-                app:iconSize="20dp" />
-
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/gallery_open_button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:minWidth="0dp"
-                android:text="@string/history_open_zero"
-                android:textSize="11sp"
-                app:icon="@drawable/ic_gallery_24"
-                app:iconPadding="5dp"
-                app:iconSize="20dp" />
-
+                android:id="@+id/camera_preview_button" style="@style/CameraActionButton"
+                android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginStart="8dp" android:text="@string/camera_action_preview"
+                android:contentDescription="@string/camera_preview_start" app:icon="@drawable/ic_camera_preview_32" />
+            <FrameLayout android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1" android:layout_marginStart="8dp">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/gallery_open_button" style="@style/CameraActionButton"
+                    android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:text="@string/camera_action_recent" android:contentDescription="@string/history_open_zero"
+                    app:icon="@drawable/ic_recent_plates_32" />
+                <TextView android:id="@+id/gallery_count_badge"
+                    android:layout_width="wrap_content" android:layout_height="20dp"
+                    android:layout_gravity="top|end" android:layout_marginTop="4dp" android:layout_marginEnd="5dp"
+                    android:minWidth="20dp" android:paddingHorizontal="5dp" android:gravity="center"
+                    android:background="@drawable/bg_recent_badge" android:text="0"
+                    android:textColor="@color/alpr_background" android:textSize="9sp" android:textStyle="bold"
+                    android:includeFontPadding="false" android:importantForAccessibility="no" />
+            </FrameLayout>
         </LinearLayout>
         <com.google.android.material.button.MaterialButton
             android:id="@+id/export_report_button"

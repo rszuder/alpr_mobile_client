@@ -126,7 +126,7 @@ public final class RecognitionHistoryStore {
             return promoted;
         }
         // The per-MZ callback and final pipeline result may contain the same crop.
-        if (existing != null && capturedAtMillis <= existing.capturedAtMillis) {
+        if (existing != null && capturedAtMillis <= existing.lastObservationAtMillis) {
             trimToCapacity();
             return promoted;
         }
@@ -153,14 +153,8 @@ public final class RecognitionHistoryStore {
                     captureSource == null ? "normal" : captureSource
             );
         } else {
-            existing.text = normalizedText;
-            existing.confidence = confidence;
-            existing.plateConfidence = plateConfidence;
-            existing.capturedAtMillis = capturedAtMillis;
-            existing.confirmed = confirmed;
+            existing.lastObservationAtMillis = capturedAtMillis;
             existing.observations = Math.max(existing.observations, observations);
-            existing.captureSource = captureSource == null
-                    ? existing.captureSource : captureSource;
             if (isBetterPreview(
                     confidence,
                     sharpness,
@@ -171,8 +165,16 @@ public final class RecognitionHistoryStore {
             )) {
                 Bitmap replacement = copy(sourcePreview);
                 if (replacement != null) {
+                    // Caption, confidence and provenance belong to the selected bitmap and MZ boxes.
+                    // A weaker observation must not relabel an older, better crop.
                     existing.recycle();
                     existing.previewBitmap = replacement;
+                    existing.text = normalizedText;
+                    existing.confidence = confidence;
+                    existing.plateConfidence = plateConfidence;
+                    existing.capturedAtMillis = capturedAtMillis;
+                    existing.confirmed = confirmed;
+                    existing.captureSource = captureSource == null ? "normal" : captureSource;
                     existing.vehicleTrackId = vehicleTrackId;
                     existing.plateTrackId = plateTrackId;
                     existing.trackId = trackId;

@@ -235,6 +235,14 @@ public final class PlateObservation {
         this.predictionAfter = predictionAfter == null ? "" : predictionAfter;
     }
 
+    /** Confidence of the MZ boxes on this image, independent of temporal registration consensus. */
+    public double freshRecognitionConfidence() {
+        if (characters.isEmpty()) return 0.0;
+        double total = 0.0;
+        for (PlateCharacter character : characters) total += character.confidence;
+        return total / characters.size();
+    }
+
     public ContinuityStamp continuityStamp() {
         return new ContinuityStamp(
                 sceneGeneration,

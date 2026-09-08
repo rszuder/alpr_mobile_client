@@ -14,14 +14,14 @@ import org.junit.Test;
 
 public final class DetectionOverlayGeometryPolicyTest {
     @Test
-    public void onlyPlateGeometryIsInterpolated() {
+    public void plateAndVehicleGeometryAreInterpolated() {
         assertTrue(DetectionOverlayView.shouldInterpolateGeometry(
                 OverlayItem.Kind.PLATE
         ));
-        assertFalse(DetectionOverlayView.shouldInterpolateGeometry(
+        assertTrue(DetectionOverlayView.shouldInterpolateGeometry(
                 OverlayItem.Kind.VEHICLE
         ));
-        assertFalse(DetectionOverlayView.shouldInterpolateGeometry(
+        assertTrue(DetectionOverlayView.shouldInterpolateGeometry(
                 OverlayItem.Kind.VEHICLE_ROI
         ));
     }

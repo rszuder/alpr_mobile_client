@@ -223,6 +223,56 @@ public final class RecognitionHistoryStoreInstrumentedTest {
         store.clear();
     }
 
+    @Test public void weakerDifferentReadingCannotRelabelRetainedCropOrItsProvenance() {
+        RecognitionHistoryStore store=new RecognitionHistoryStore();
+        Bitmap a=bitmap(Color.RED), b=bitmap(Color.BLUE);
+        try {
+            store.upsert(1,7,8,1,1,"A",.95,.9,10,a,
+                    Collections.singletonList(character("A",.95)),timing(10_000_000),false,1,.8f,"normal");
+            RecognitionHistoryItem selected=store.newestFirst().get(0);
+            store.upsert(1,7,9,2,2,"B",.4,.8,30,b,
+                    Collections.singletonList(character("B",.4)),timing(20_000_000),true,2,.9f,"auto_zoom_retry");
+            assertEquals("A",selected.text);assertEquals("A",selected.characters.get(0).label);
+            assertEquals(.95,selected.confidence,.0001);assertEquals(.9,selected.plateConfidence,.0001);
+            assertEquals(Color.RED,selected.previewBitmap.getPixel(0,0));
+            assertEquals(10,selected.capturedAtMillis);assertEquals(30,selected.lastObservationAtMillis);
+            assertEquals(1,selected.plateTrackId);assertEquals(8,selected.vehicleTrackId);
+            assertFalse(selected.confirmed);assertEquals("normal",selected.captureSource);
+            assertEquals(10,selected.timing.totalMilliseconds(),.0001);
+            assertEquals(2,selected.observations);
+            try(RecognitionHistoryItem snapshot=selected.snapshot()) {
+                assertEquals("A",snapshot.text);assertEquals(10,snapshot.previewCapturedAtMillis);
+                assertEquals(30,snapshot.lastObservationAtMillis);assertEquals(.95,snapshot.previewConfidence,.0001);
+            }
+            // A delayed callback is rejected using last observation time, not the retained image's time.
+            assertFalse(store.upsert(1,7,9,2,2,"B",1,.8,20,b,
+                    Collections.singletonList(character("B",1)),timing(20_000_000),true,2,.9f,"auto_zoom_retry"));
+            assertEquals("A",selected.text);
+            store.upsert(1,7,9,2,2,"B",.98,.8,40,b,
+                    Collections.singletonList(character("B",.98)),timing(40_000_000),true,3,.9f,"auto_zoom_retry");
+            assertEquals("B",selected.text);assertEquals("B",selected.characters.get(0).label);
+            assertEquals(Color.BLUE,selected.previewBitmap.getPixel(0,0));assertEquals(40,selected.capturedAtMillis);
+            assertEquals("auto_zoom_retry",selected.captureSource);assertEquals(2,selected.plateTrackId);
+            assertEquals(.98,selected.confidence,.0001);assertEquals(40,selected.timing.totalMilliseconds(),.0001);
+        } finally { a.recycle();b.recycle();store.clear(); }
+    }
+
+    @Test public void associationPromotionPreservesTheSelectedCropPackage() {
+        RecognitionHistoryStore store=new RecognitionHistoryStore();Bitmap a=bitmap(Color.RED),b=bitmap(Color.BLUE);
+        try {
+            store.upsert(1,0,0,1,1,"A",.95,.9,10,a,
+                    Collections.singletonList(character("A",.95)),timing(10_000_000),false,1,.8f,"normal");
+            store.upsert(1,0,0,1,1,"B",.4,.8,30,b,
+                    Collections.singletonList(character("B",.4)),timing(20_000_000),true,2,.9f,"auto_zoom_retry");
+            store.upsert(1,7,8,1,1,"B",.4,.8,30,null,
+                    Collections.emptyList(),null,true,2,.9f,"auto_zoom_retry");
+            RecognitionHistoryItem selected=store.newestFirst().get(0);
+            assertEquals(7,selected.entityId);assertEquals("A",selected.text);
+            assertEquals("A",selected.characters.get(0).label);assertEquals(Color.RED,selected.previewBitmap.getPixel(0,0));
+            assertEquals(10,selected.capturedAtMillis);assertEquals(30,selected.lastObservationAtMillis);
+        } finally {a.recycle();b.recycle();store.clear();}
+    }
+
     private static void upsert(
             RecognitionHistoryStore store,
             long scene,

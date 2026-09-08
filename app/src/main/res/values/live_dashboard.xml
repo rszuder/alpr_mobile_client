@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="camera_action_start">Start</string>
+    <string name="camera_action_stop">Stop</string>
+    <string name="camera_action_cancel">Anuluj</string>
+    <string name="camera_action_crops">Cropy</string>
+    <string name="camera_action_preview">Podgląd</string>
+    <string name="camera_action_recent">Ostatnie</string>
+    <string name="camera_action_review">Weryfikuj</string>
+    <string name="hud_label">HUD</string>
+    <string name="hud_toggle">Pokaż lub ukryj HUD z parametrami analizy</string>
+    <string name="hud_close">Zamknij HUD</string>
+    <string name="hud_live">TELEMETRIA NA ŻYWO</string>
+    <string name="hud_camera_fps">FPS KAMERY</string>
+    <string name="hud_pipeline">PIPELINE</string>
+    <string name="hud_frame_rate_unit">klatek / sekundę</string>
+    <string name="hud_last_measurement">ostatni pomiar</string>
+    <string name="hud_vehicle_stage">MP · pojazd</string>
+    <string name="hud_plate_stage">MT · tablica</string>
+    <string name="hud_character_stage">MZ · znaki</string>
+    <string name="hud_resolution">ROZDZIELCZOŚĆ</string>
+    <string name="hud_frame_flow">Analiza %1$s FPS   ·   Pominięte %2$d</string>
+    <string name="hud_overhead">Inferencja %1$s   ·   Pozostałe %2$s</string>
+    <style name="HudCaption">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">9sp</item>
+        <item name="android:textColor">@color/alpr_text_secondary</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:letterSpacing">0.06</item>
+    </style>
+    <style name="HudValue">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">24sp</item>
+        <item name="android:textColor">@color/alpr_text_primary</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:layout_marginTop">6dp</item>
+    </style>
+</resources>

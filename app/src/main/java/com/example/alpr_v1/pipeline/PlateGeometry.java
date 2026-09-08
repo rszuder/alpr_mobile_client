@@ -23,6 +23,8 @@ public final class PlateGeometry {
     public final double bboxAreaRatio;
     public final double quadAreaRatio;
     public final List<Point2> cornersNorm;
+    private final PlateGeometry effectiveCropGeometry;
+    public final long cropReferenceSourceSequence;
 
     private PlateGeometry(
             int sourceWidthPx,
@@ -35,6 +37,13 @@ public final class PlateGeometry {
             double quadAreaRatio,
             List<Point2> cornersNorm
     ) {
+        this(sourceWidthPx, sourceHeightPx, bboxLeftPx, bboxTopPx, bboxRightPx, bboxBottomPx,
+                bboxAreaRatio, quadAreaRatio, cornersNorm, null, 0L);
+    }
+
+    private PlateGeometry(int sourceWidthPx, int sourceHeightPx, float bboxLeftPx, float bboxTopPx,
+                          float bboxRightPx, float bboxBottomPx, double bboxAreaRatio, double quadAreaRatio,
+                          List<Point2> cornersNorm, PlateGeometry cropGeometry, long referenceSequence) {
         this.sourceWidthPx = sourceWidthPx;
         this.sourceHeightPx = sourceHeightPx;
         this.bboxLeftPx = bboxLeftPx;
@@ -44,6 +53,19 @@ public final class PlateGeometry {
         this.bboxAreaRatio = bboxAreaRatio;
         this.quadAreaRatio = quadAreaRatio;
         this.cornersNorm = Collections.unmodifiableList(new ArrayList<>(cornersNorm));
+        this.effectiveCropGeometry = cropGeometry;
+        this.cropReferenceSourceSequence = referenceSequence;
+    }
+
+    /** Raw MT fields remain untouched; consumers drawing or interpreting the crop use this view. */
+    public PlateGeometry forRecognition() {
+        return effectiveCropGeometry == null ? this : effectiveCropGeometry;
+    }
+
+    public PlateGeometry withAutoZoomCropGeometry(PlateGeometry effective, long referenceSequence) {
+        if (effective == null || !effective.available()) return this;
+        return new PlateGeometry(sourceWidthPx, sourceHeightPx, bboxLeftPx, bboxTopPx, bboxRightPx,
+                bboxBottomPx, bboxAreaRatio, quadAreaRatio, cornersNorm, effective.forRecognition(), referenceSequence);
     }
 
     public static PlateGeometry unavailable() {
@@ -116,6 +138,11 @@ public final class PlateGeometry {
             points.put(pair);
         }
         json.put("plate_corners_norm", points);
+        if (effectiveCropGeometry != null) {
+            json.put("crop_geometry_source", "pre_zoom_reference");
+            json.put("crop_reference_source_sequence", cropReferenceSourceSequence);
+            json.put("effective_crop_geometry", effectiveCropGeometry.toJson());
+        }
         return json;
     }
 

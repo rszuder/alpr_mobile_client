@@ -52,6 +52,24 @@ public final class AutoZoomOverlayTransformTest {
     }
 
     @Test
+    public void leftEdgeMustangPlateStaysFullyVisibleAfterRefinementZoom() {
+        // Device reproduction: plate x=115..172 in a 720 px wide preview.
+        float left = 115f / 720f;
+        float right = 172f / 720f;
+        float ratio = CameraController.centeredZoomKeepingBoundsVisible(
+                AutoZoomController.REQUESTED_ZOOM_RATIO,
+                left, 0.46f, right, 0.54f,
+                0f, 0f, 1f, 1f,
+                0.05f
+        );
+
+        org.junit.Assert.assertTrue(0.5f + 1.8f * (left - 0.5f) < 0f);
+        assertEquals(1.322449f, ratio, 0.0001f);
+        assertEquals(0.05f, 0.5f + ratio * (left - 0.5f), 0.0001f);
+        org.junit.Assert.assertTrue(0.5f + ratio * (right - 0.5f) < 0.95f);
+    }
+
+    @Test
     public void previewCropIsIncludedInSafeZoomLimit() {
         float ratio = CameraController.centeredZoomKeepingBoundsVisible(
                 1.8f,

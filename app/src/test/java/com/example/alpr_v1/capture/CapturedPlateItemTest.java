@@ -33,10 +33,14 @@ public final class CapturedPlateItemTest {
                 "WUA3G",
                 CapturedPlateItem.textForCrop(
                         "WUA3G",
-                        "",
+                        null,
                         Collections.emptyList()
                 )
         );
+    }
+
+    @Test public void explicitEmptyMzResultCannotBorrowAnEarlierConsensus() {
+        assertEquals("", CapturedPlateItem.textForCrop("WUA3G", "", Collections.emptyList()));
     }
 
     private static PlateCharacter character(String label) {

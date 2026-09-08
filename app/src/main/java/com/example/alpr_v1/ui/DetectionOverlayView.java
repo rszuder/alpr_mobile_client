@@ -123,6 +123,7 @@ public final class DetectionOverlayView extends View {
 
 
     private ValueAnimator overlayAnimator;
+    private List<OverlayItem> overlayAnimationTarget = Collections.emptyList();
     private ValueAnimator activeVehicleMarkerAnimator;
     private ValueAnimator plateFadeAnimator;
     private ValueAnimator plateAbsorbAnimator;
@@ -148,6 +149,13 @@ public final class DetectionOverlayView extends View {
     private Map<Long, EntityRecognitionSnapshot> requestedVehicleRecognitions =
             Collections.emptyMap();
     private final Set<Long> absorbedPlateTrackIds = new HashSet<>();
+    private boolean zoomPresentationActive;
+
+    /** During AZ, a reading flies to the badge while its measured plate stays visible. */
+    public void setZoomPresentationActive(boolean active) {
+        zoomPresentationActive = active;
+        if (active) cancelPlateFade();
+    }
     private final Set<Long> transferredVehicleEntityIds = new HashSet<>();
     private final Map<Long, PendingPlateReading> pendingPlateReadings = new java.util.LinkedHashMap<>();
     private long presentationScene = -1L;
@@ -321,13 +329,10 @@ public final class DetectionOverlayView extends View {
 
         removeReappearedFadingPlates(trackedPlates);
 
-        if (overlayAnimator != null) {
-            overlayAnimator.cancel();
-            overlayAnimator = null;
-        }
-
         List<OverlayItem> updated = new ArrayList<>(items.size());
-        for (OverlayItem item : items) {
+        List<OverlayItem> destination = overlayAnimator != null && overlayAnimator.isRunning()
+                ? overlayAnimationTarget : items;
+        for (OverlayItem item : destination) {
             if (item.kind != OverlayItem.Kind.PLATE) updated.add(item);
         }
         if (trackedPlates != null) {
@@ -337,9 +342,7 @@ public final class DetectionOverlayView extends View {
                 }
             }
         }
-        items = Collections.unmodifiableList(updated);
-        rebuildRenderItems();
-        postInvalidateOnAnimation();
+        setItems(updated, sourceWidth, sourceHeight, true);
     }
 
     /** Natychmiast usuwa PLATE, np. podczas STOP lub pełnego resetu sceny. */
@@ -508,6 +511,10 @@ public final class DetectionOverlayView extends View {
     }
 
     public void setPreviewItems(List<OverlayItem> previewItems) {
+        setItems(previewItems, sourceWidth, sourceHeight, true);
+    }
+
+    private void setImmediatePreviewItems(List<OverlayItem> previewItems) {
         previewItems = focusItems(previewItems);
         if (previewItems == null || previewItems.isEmpty()) pendingPlateReadings.clear();
         previewItems = stabilizeStationaryVehicles(previewItems, true);
@@ -520,6 +527,7 @@ public final class DetectionOverlayView extends View {
         items = Collections.unmodifiableList(
                 withoutCarriedFadingPlates(previewItems)
         );
+        overlayAnimationTarget = items;
         rebuildRenderItems();
         postInvalidateOnAnimation();
     }
@@ -531,11 +539,15 @@ public final class DetectionOverlayView extends View {
         setPreviewSourceSize(width, height);
         boolean wasStationary = stationaryScene;
         stationaryScene = false;
-        setPreviewItems(transformed);
+        setImmediatePreviewItems(transformed);
         stationaryScene = wasStationary;
     }
 
     List<OverlayItem> snapshotItemsForTesting() {
+        return snapshotVisibleItems();
+    }
+
+    public List<OverlayItem> snapshotVisibleItems() {
         return Collections.unmodifiableList(new ArrayList<>(items));
     }
 
@@ -544,18 +556,23 @@ public final class DetectionOverlayView extends View {
             int sourceWidth,
             int sourceHeight
     ) {
+        setItems(newItems, sourceWidth, sourceHeight, false);
+    }
+
+    private void setItems(List<OverlayItem> newItems, int sourceWidth, int sourceHeight, boolean preview) {
         newItems = focusItems(newItems);
 
         List<OverlayItem> incomingItems = new ArrayList<>(
                 newItems == null ? Collections.emptyList() : newItems
         );
         if (incomingItems.isEmpty()) pendingPlateReadings.clear();
-        incomingItems = stabilizeStationaryVehicles(incomingItems, false);
+        incomingItems = stabilizeStationaryVehicles(incomingItems, preview);
         incomingItems = withoutAbsorbedPlates(incomingItems);
         removeReappearedFadingPlates(incomingItems);
         List<OverlayItem> targetItems = Collections.unmodifiableList(
                 withoutCarriedFadingPlates(incomingItems)
         );
+        overlayAnimationTarget = targetItems;
 
         if (targetItems.isEmpty() && !analysisViewportEnabled) {
             cancelPlateFade();
@@ -619,7 +636,7 @@ public final class DetectionOverlayView extends View {
             return;
         }
 
-        if (sameTrackedTargets(items, targetItems)) {
+        if (sameGeometry(items, targetItems)) {
             items = targetItems;
             rebuildRenderItems();
             postInvalidateOnAnimation();
@@ -651,7 +668,7 @@ public final class DetectionOverlayView extends View {
 
 
         overlayAnimator.setDuration(
-                OVERLAY_TRANSITION_MS
+                preview ? 80L : OVERLAY_TRANSITION_MS
         );
 
 
@@ -668,11 +685,11 @@ public final class DetectionOverlayView extends View {
 
 
                     items =
-                            interpolateItems(
+                            Collections.unmodifiableList(withoutAbsorbedPlates(interpolateItems(
                                     startItems,
                                     finalTargetItems,
                                     progress
-                            );
+                            )));
 
 
                     rebuildRenderItems();
@@ -682,6 +699,11 @@ public final class DetectionOverlayView extends View {
         );
 
 
+        // New detections are visible in this callback; matched objects start at
+        // their current positions and converge over subsequent display frames.
+        items = Collections.unmodifiableList(withoutAbsorbedPlates(
+                interpolateItems(startItems, finalTargetItems, 0f)));
+        rebuildRenderItems();
         overlayAnimator.start();
     }
 
@@ -744,6 +766,7 @@ public final class DetectionOverlayView extends View {
     }
 
     public void resetVehicleEntityStates() {
+        zoomPresentationActive = false;
         cancelPlateAbsorption();
         pendingPlateTransfers.clear();
         transferredVehicleEntityIds.clear();
@@ -775,7 +798,8 @@ public final class DetectionOverlayView extends View {
                 transferredVehicleEntityIds.remove(pending.recognition.entityId);
             }
             pendingPlateTransfers.clear();
-            pendingPlateReadings.clear();
+            if (!zoomPresentationActive || presentationTransform == stamp.cameraTransformGeneration)
+                pendingPlateReadings.clear();
             absorbedPlateTrackIds.clear();
             if (absorbingPlate != null) {
                 Map<Long, EntityRecognitionSnapshot> committed = new HashMap<>(vehicleRecognitions);
@@ -784,7 +808,7 @@ public final class DetectionOverlayView extends View {
                 vehicleRecognitions = Collections.unmodifiableMap(committed);
             }
             cancelPlateAbsorption();
-            clearPlateItems();
+            if (!zoomPresentationActive || presentationTransform == stamp.cameraTransformGeneration) clearPlateItems();
         }
         presentationScene = stamp.sceneGeneration;
         presentationEpoch = stamp.visualEpoch;
@@ -848,6 +872,7 @@ public final class DetectionOverlayView extends View {
     }
 
     private void removeAbsorbedPlateLayers(long plateTrackId) {
+        if (zoomPresentationActive) return;
         List<OverlayItem> retained = new ArrayList<>();
         for (OverlayItem item : items) {
             if (item.kind != OverlayItem.Kind.PLATE
@@ -865,7 +890,8 @@ public final class DetectionOverlayView extends View {
     private List<OverlayItem> withoutAbsorbedPlates(List<OverlayItem> source) {
         if (source != null) {
             for (OverlayItem item : source) {
-                if (item == null || item.kind != OverlayItem.Kind.PLATE || item.carriedPrediction) continue;
+                if (item == null || item.kind != OverlayItem.Kind.PLATE
+                        || item.carriedPrediction && !zoomPresentationActive) continue;
                 PendingPlateReading waiting = pendingPlateReadings.get(item.trackId);
                 if (waiting != null) {
                     waiting.bounds.set(item.normalizedBounds);
@@ -874,6 +900,7 @@ public final class DetectionOverlayView extends View {
             }
         }
         expirePendingPlateReadings();
+        if (zoomPresentationActive) return source == null ? Collections.emptyList() : new ArrayList<>(source);
         if (source == null || source.isEmpty()
                 || absorbedPlateTrackIds.isEmpty() && pendingPlateReadings.isEmpty()) {
             return source == null ? Collections.emptyList() : new ArrayList<>(source);
@@ -894,20 +921,27 @@ public final class DetectionOverlayView extends View {
     public void animatePlateObservation(com.example.alpr_v1.pipeline.PlateObservation observation) {
         if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && (observation == null || observation.entityId != exclusiveEntityId)) return;
         if (observation == null || !observation.freshMzAttempted) return;
-        com.example.alpr_v1.pipeline.PlateGeometry geometry = observation.geometry;
+        com.example.alpr_v1.pipeline.PlateGeometry geometry = observation.geometry.forRecognition();
         if (geometry.sourceWidthPx <= 0 || geometry.sourceHeightPx <= 0) return;
-        if (observation.entityId <= 0L || observation.freshPrediction.isEmpty()) {
-            if (absorbedPlateTrackIds.contains(observation.plateTrackId)) return;
+        expirePendingPlateReadings();
+        PendingPlateReading old = pendingPlateReadings.get(observation.plateTrackId);
+        String text = observation.freshPrediction;
+        double confidence = observation.recognitionConfidence;
+        boolean confirmed = observation.confirmed;
+        int observations = observation.observations;
+        if (old != null && !old.text.isEmpty() && (text.isEmpty() || old.confidence > confidence)) {
+            text = old.text; confidence = old.confidence;
+            confirmed = old.confirmed; observations = old.observations;
+        }
+        if (observation.entityId <= 0L || text.isEmpty()) {
+            if (!zoomPresentationActive && absorbedPlateTrackIds.contains(observation.plateTrackId)) return;
             if (transferredVehicleEntityIds.contains(observation.entityId)) return;
-            PendingPlateReading old = pendingPlateReadings.get(observation.plateTrackId);
-            String text = observation.freshPrediction.isEmpty() && old != null
-                    ? old.text : observation.freshPrediction;
             pendingPlateReadings.put(observation.plateTrackId, new PendingPlateReading(
                     new RectF(geometry.bboxLeftPx / geometry.sourceWidthPx,
                             geometry.bboxTopPx / geometry.sourceHeightPx,
                             geometry.bboxRightPx / geometry.sourceWidthPx,
                             geometry.bboxBottomPx / geometry.sourceHeightPx),
-                    geometry.sourceWidthPx, geometry.sourceHeightPx, text,
+                    geometry.sourceWidthPx, geometry.sourceHeightPx, text, confidence, confirmed, observations,
                     android.os.SystemClock.elapsedRealtimeNanos()));
             while (pendingPlateReadings.size() > 16) {
                 pendingPlateReadings.remove(pendingPlateReadings.keySet().iterator().next());
@@ -919,8 +953,7 @@ public final class DetectionOverlayView extends View {
         }
         EntityRecognitionSnapshot previous = requestedVehicleRecognitions.get(observation.entityId);
         EntityRecognitionSnapshot recognition = new EntityRecognitionSnapshot(observation.entityId,
-                observation.plateTrackId, observation.freshPrediction,
-                observation.recognitionConfidence, observation.confirmed, observation.observations);
+                observation.plateTrackId, text, confidence, confirmed, observations);
         recognition = BadgeReadingPolicy.retainBest(previous, recognition);
         RenderItem visiblePlate = findPlateRenderItem(observation.plateTrackId);
         RectF source = visiblePlate == null ? OverlayViewportTransform.mapNormalizedToView(
@@ -1126,33 +1159,18 @@ public final class DetectionOverlayView extends View {
         super.onDetachedFromWindow();
     }
 
-    private static boolean sameTrackedTargets(
+    private static boolean sameGeometry(
             List<OverlayItem> previous,
             List<OverlayItem> next
     ) {
-        if (previous == null || next == null || previous.isEmpty()) return false;
-        int previousPlateCount = 0;
-        int nextPlateCount = 0;
-        for (OverlayItem item : previous) {
-            if (item.kind == OverlayItem.Kind.PLATE && item.trackId > 0L) {
-                previousPlateCount++;
-            }
+        if (previous == null || next == null || previous.size() != next.size()) return false;
+        for (int index = 0; index < next.size(); index++) {
+            OverlayItem a = previous.get(index), b = next.get(index);
+            if (a.kind != b.kind || a.trackId != b.trackId
+                    || !a.normalizedBounds.equals(b.normalizedBounds)
+                    || !a.normalizedKeypoints.equals(b.normalizedKeypoints)) return false;
         }
-        for (OverlayItem target : next) {
-            if (target.kind != OverlayItem.Kind.PLATE) continue;
-            if (target.trackId <= 0L) return false;
-            nextPlateCount++;
-            boolean found = false;
-            for (OverlayItem old : previous) {
-                if (old.kind == OverlayItem.Kind.PLATE
-                        && old.trackId == target.trackId) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) return false;
-        }
-        return nextPlateCount > 0 && nextPlateCount == previousPlateCount;
+        return true;
     }
 
     /**
@@ -1245,12 +1263,7 @@ public final class DetectionOverlayView extends View {
         for (OverlayItem target :
                 targetItems) {
 
-            /*
-             * Animacja sluzy wyłącznie lagodnej korekcie ramki tablicy.
-             * VEHICLE i VEHICLE_ROI pochodza z innej fazy inferencji; ich
-             * morphowanie przy pojawieniu sie PLATE dawalo falszywy impuls
-             * zmiany wysokosci wszystkich ramek pojazdow.
-             */
+            // Correct each matched object's own geometry; never morph between entities.
             if (!shouldInterpolateGeometry(target.kind)) {
                 result.add(target);
                 continue;
@@ -1306,7 +1319,7 @@ public final class DetectionOverlayView extends View {
     }
 
     static boolean shouldInterpolateGeometry(OverlayItem.Kind kind) {
-        return kind == OverlayItem.Kind.PLATE;
+        return kind != null;
     }
 
     private static int findPreviousMatch(
@@ -1344,6 +1357,7 @@ public final class DetectionOverlayView extends View {
                     return index;
                 }
             }
+            if (target.kind != OverlayItem.Kind.PLATE) return -1;
         }
 
 
@@ -1470,6 +1484,10 @@ public final class DetectionOverlayView extends View {
                         target.normalizedKeypoints,
                         amount
                 );
+        if (target.kind == OverlayItem.Kind.PLATE && amount < 1f
+                && (previous.normalizedKeypoints.size() == 4 || target.normalizedKeypoints.size() == 4)) {
+            points = interpolatePoints(animationCorners(previous), animationCorners(target), amount);
+        }
 
 
         /*
@@ -1486,6 +1504,13 @@ public final class DetectionOverlayView extends View {
                 target.trackId,
                 target.carriedPrediction
         );
+    }
+
+    private static List<PointF> animationCorners(OverlayItem item) {
+        if (item.normalizedKeypoints.size() == 4) return item.normalizedKeypoints;
+        RectF b = item.normalizedBounds;
+        return java.util.Arrays.asList(new PointF(b.left,b.top), new PointF(b.right,b.top),
+                new PointF(b.right,b.bottom), new PointF(b.left,b.bottom));
     }
 
     private static List<PointF> interpolatePoints(
@@ -1803,7 +1828,8 @@ public final class DetectionOverlayView extends View {
 
     private void expirePendingPlateReadings() {
         long now = android.os.SystemClock.elapsedRealtimeNanos();
-        long maximumAge = stationaryScene ? 30_000_000_000L : PlateOverlayFreshness.MAXIMUM_AGE_NANOS;
+        long maximumAge = stationaryScene || zoomPresentationActive
+                ? 30_000_000_000L : PlateOverlayFreshness.MAXIMUM_AGE_NANOS;
         pendingPlateReadings.values().removeIf(reading -> now < reading.seenAtNanos
                 || now - reading.seenAtNanos > maximumAge);
     }
@@ -2050,6 +2076,7 @@ public final class DetectionOverlayView extends View {
         }
     }
     private Paint paintFor(OverlayItem item) {
+        if (zoomPresentationActive && item.kind == OverlayItem.Kind.PLATE) return boxPaint;
         // A reading delivered to the badge wins over the still-active scan target.
         if (item.kind == OverlayItem.Kind.VEHICLE
                 && vehicleRecognitions.containsKey(item.trackId)) {
@@ -2548,13 +2575,20 @@ public final class DetectionOverlayView extends View {
         final int sourceWidth;
         final int sourceHeight;
         final String text;
+        final double confidence;
+        final boolean confirmed;
+        final int observations;
         long seenAtNanos;
 
-        PendingPlateReading(RectF bounds, int sourceWidth, int sourceHeight, String text, long seenAtNanos) {
+        PendingPlateReading(RectF bounds, int sourceWidth, int sourceHeight, String text,
+                            double confidence, boolean confirmed, int observations, long seenAtNanos) {
             this.bounds = bounds;
             this.sourceWidth = sourceWidth;
             this.sourceHeight = sourceHeight;
             this.text = text;
+            this.confidence = confidence;
+            this.confirmed = confirmed;
+            this.observations = observations;
             this.seenAtNanos = seenAtNanos;
         }
     }

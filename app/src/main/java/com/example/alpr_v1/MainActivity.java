@@ -401,6 +401,8 @@ public final class MainActivity extends AppCompatActivity {
     private long scanOverlayPresentationEntityId;
     private List<OverlayItem> autoZoomBaseMemoryOverlayItems =
             java.util.Collections.emptyList();
+    private final com.example.alpr_v1.ui.ZoomPlateReturnGeometry autoZoomReturnGeometry =
+            new com.example.alpr_v1.ui.ZoomPlateReturnGeometry();
     private int latestOverlaySourceWidth;
     private int latestOverlaySourceHeight;
 
@@ -1451,6 +1453,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void submitDirectLumaFrame(LumaFrame frame) {
         if (frame == null || directLumaTrackingExecutor.isShutdown()) return;
+        liveCameraFrameRate.onFrame(android.os.SystemClock.elapsedRealtimeNanos());
         pendingDirectLumaFrame.set(frame);
         if (directLumaWorkerRunning.compareAndSet(false, true)) {
             scheduleDirectLumaDrain();
@@ -1644,6 +1647,7 @@ public final class MainActivity extends AppCompatActivity {
     private ExperimentSession experimentSession = new ExperimentSession();
     private com.example.alpr_v1.experiment.ResearchSessionViewModel researchSessions;
     private java.io.File pendingPersistentResearchArchive;
+    private boolean researchArchivePickerLoading;
     private CrashSessionMarker crashSessionMarker;
     private final Set<Long> telemetryActiveTrackIds = new HashSet<>();
     private final Set<Long> telemetryConfirmedTrackIds = new HashSet<>();
@@ -1730,6 +1734,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextView liveStatus;
     private TextView liveStatusSecondary;
     private TextView liveHud;
+    private final com.example.alpr_v1.camera.LiveFrameRateMeter liveCameraFrameRate =
+            new com.example.alpr_v1.camera.LiveFrameRateMeter();
     private LinearLayout liveHudRow;
     private View liveStatusStrip;
     private View liveStatusDot;
@@ -2181,8 +2187,13 @@ public final class MainActivity extends AppCompatActivity {
                 confirmedResultMeta
         );
         livePresentation.setDiagnosticsVisibilityListener(
-                overlayView::setDiagnosticMode
+                visible -> {
+                    overlayView.setDiagnosticMode(visible);
+                    tintCameraAction(findViewById(R.id.live_diagnostics_toggle),
+                            visible ? R.color.alpr_success : R.color.alpr_accent);
+                }
         );
+        findViewById(R.id.hud_close).setOnClickListener(view -> findViewById(R.id.live_diagnostics_toggle).performClick());
 
         collectionToggle =
                 findViewById(
@@ -2351,6 +2362,7 @@ public final class MainActivity extends AppCompatActivity {
             latestPreviewMotionItems = focusPresentationItems(latestPreviewMotionItems, focus);
             autoZoomBaseVehicleItems = focusPresentationItems(autoZoomBaseVehicleItems, focus);
             autoZoomBaseMemoryOverlayItems = focusPresentationItems(autoZoomBaseMemoryOverlayItems, focus);
+            autoZoomReturnGeometry.discardForDifferentOwner(focus.entityId);
             TargetSnapshot previousTarget = targetStateMachine.snapshot();
             if (focus.entityId > 0L && previousTarget.trackId > 0L
                     && pipeline.plateOwnerEntityId(previousTarget.trackId) != focus.entityId) {
@@ -2943,42 +2955,43 @@ public final class MainActivity extends AppCompatActivity {
     private void renderAnalysisControls() {
 
         if (cameraPreviewButton != null) {
-            cameraPreviewButton.setText(
+            cameraPreviewButton.setText(R.string.camera_action_preview);
+            cameraPreviewButton.setContentDescription(getString(
                     cameraPreviewActive
                             ? R.string.camera_preview_stop
                             : R.string.camera_preview_start
-            );
-            cameraPreviewButton.setIconResource(
-                    cameraPreviewActive
-                            ? R.drawable.ic_visibility_off_24
-                            : R.drawable.ic_visibility_24
-            );
+            ));
+            cameraPreviewButton.setIconResource(R.drawable.ic_camera_preview_32);
             cameraPreviewButton.setEnabled(
                     !cameraStarted && !waitingForThermalStart
             );
+            styleDashboardAction(cameraPreviewButton, cameraPreviewActive ? R.color.alpr_success : R.color.alpr_accent);
         }
 
         analysisStartButton.setText(
                 cameraStarted
 
-                        ? R.string.analysis_stop
+                        ? R.string.camera_action_stop
 
                         : waitingForThermalStart
 
-                          ? R.string.analysis_cancel_waiting
+                          ? R.string.camera_action_cancel
 
-                          : R.string.analysis_start
+                          : R.string.camera_action_start
         );
+        analysisStartButton.setContentDescription(getString(cameraStarted ? R.string.analysis_stop
+                : waitingForThermalStart ? R.string.analysis_cancel_waiting : R.string.analysis_start));
 
 
         analysisStartButton.setIconResource(
                 cameraStarted
                         || waitingForThermalStart
 
-                        ? R.drawable.ic_stop_24
+                        ? R.drawable.ic_analysis_stop_32
 
-                        : R.drawable.ic_camera_24
+                        : R.drawable.ic_analysis_play_32
         );
+        styleDashboardAction(analysisStartButton, cameraStarted ? R.color.alpr_error : R.color.alpr_accent);
 
 
         /*
@@ -3049,6 +3062,7 @@ public final class MainActivity extends AppCompatActivity {
                 liveHud.setVisibility(
                         View.GONE
                 );
+                ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).clearMetrics();
             }
         }
     }
@@ -4163,6 +4177,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startCamera(boolean beginNewMeasurement) {
         if (cameraStarted) return;
+        liveCameraFrameRate.reset();
         lastRenderedContinuityState =
                 com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
         if (beginNewMeasurement) {
@@ -4832,59 +4847,9 @@ public final class MainActivity extends AppCompatActivity {
          *
          * Dlatego pokazujemy kreski.
          */
-        double vehicleInference =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.vehicleInferenceMs;
-
-        double plateInference =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.plateInferenceMs;
-
-        double characterInference =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.characterInferenceMs;
-
-        double pipelineInference =
-                liveHudAwaitingFreshResult
-                        ? Double.NaN
-                        : snapshot.pipelineMs;
-        String firstDiagnosticsLine =
-                "MP "
-                        + hudDuration(
-                        vehicleInference
-                )
-                        + " · MT "
-                        + hudDuration(
-                        plateInference
-                )
-                        + " · MZ "
-                        + hudDuration(
-                        characterInference
-                );
-
-
-        /*
-         * DROP jest licznikiem całej aktywnej sesji,
-         * więc może pozostać widoczny również podczas
-         * oczekiwania na nowy trace.
-         */
-        String secondDiagnosticsLine =
-                "PIPE "
-                        + hudDuration(
-                        pipelineInference
-                )
-                        + " · DROP "
-                        + snapshot.droppedFrames;
-
-        StringBuilder hudText = new StringBuilder()
-                .append(firstDiagnosticsLine)
-                .append('\n')
-                .append(secondDiagnosticsLine)
-                .append('\n')
-                .append(resolution);
+        ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).render(snapshot, resolution, liveHudAwaitingFreshResult,
+                liveCameraFrameRate.rate(android.os.SystemClock.elapsedRealtimeNanos()));
+        StringBuilder hudText = new StringBuilder();
         ScanAcquisitionSnapshot scan = pipeline == null
                 ? null : pipeline.scanAcquisitionSnapshot();
         boolean scanActive = scan != null && scan.runState.active();
@@ -4944,7 +4909,7 @@ public final class MainActivity extends AppCompatActivity {
             overlayView.setActiveVehicleEntityId(0L);
             livePresentation.showState(presentationState, "");
         }
-        livePresentation.updateDiagnostics(hudText);
+        livePresentation.updateDiagnostics(hudText.toString().trim());
         updateAutoZoomButton();
         } finally {
             if (cameraStarted && pipeline != null && livePresentation != null) {
@@ -5196,6 +5161,9 @@ public final class MainActivity extends AppCompatActivity {
 
         if (autoZoomController.state()
                 == AutoZoomController.State.ZOOMED_RETRY) {
+            // MT geometry is useful even when MZ has no new reading or loses to the badge.
+            presentZoomedMtStage(result.overlayItems, result.sourceWidth, result.sourceHeight,
+                    result.continuityStamp());
             repositionAutoZoomTarget(result);
             if (!hasFreshAutoZoomTargetRecognition(result)) {
                 livePresentation.showState(
@@ -5966,10 +5934,35 @@ public final class MainActivity extends AppCompatActivity {
                 ? trackedTarget.normalizedBounds.centerY()
                 : decision.centerY;
 
-        final float requestedZoomRatio = effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY
-                ? AutoZoomController.REQUESTED_ZOOM_RATIO : autoZoomRatioKeepingTargetVisible(decision);
+        // CameraX zoom is centered on the sensor in both scene modes.
+        final float requestedZoomRatio = autoZoomRatioKeepingTargetVisible(decision);
+        overlayView.setZoomPresentationActive(true);
+        com.example.alpr_v1.domain.NormalizedBounds baselinePlate = pipeline.staticRefinementBounds();
+        if (baselinePlate != null) {
+            // Baseline presentation may already have absorbed/expired this plate.
+            // The static cycle still owns its actual measured bounds at base zoom.
+            overlayView.setTrackedPlateItems(java.util.Collections.singletonList(new OverlayItem(
+                    OverlayItem.Kind.PLATE, new RectF(baselinePlate.left, baselinePlate.top,
+                    baselinePlate.right, baselinePlate.bottom), java.util.Collections.emptyList(),
+                    "", decision.trackId, false)));
+        } else if (!latestPipelinePlateItems.isEmpty()) overlayView.setTrackedPlateItems(latestPipelinePlateItems);
         autoZoomBestText = autoZoomController.targetText();
         autoZoomBestConfidence = decision.beforeConfidence;
+        OverlayItem returnPlate = null;
+        for (OverlayItem item : latestPipelinePlateItems) {
+            if (item.kind == OverlayItem.Kind.PLATE && item.trackId == decision.trackId && !item.carriedPrediction) {
+                returnPlate = item; break;
+            }
+        }
+        if (returnPlate == null && useTrackedGeometry) returnPlate = trackedTarget.overlayItem;
+        if (returnPlate == null && baselinePlate != null) returnPlate = new OverlayItem(OverlayItem.Kind.PLATE,
+                new RectF(baselinePlate.left,baselinePlate.top,baselinePlate.right,baselinePlate.bottom),
+                java.util.Collections.emptyList(),"",decision.trackId,false);
+        if (returnPlate == null) for (OverlayItem item : overlayView.snapshotVisibleItems()) {
+            if (item.kind == OverlayItem.Kind.PLATE && item.trackId == decision.trackId) { returnPlate = item; break; }
+        }
+        autoZoomReturnGeometry.capture(returnPlate, currentPreviewSourceFrameStamp().continuityStamp(),
+                pipeline.plateOwnerEntityId(decision.trackId));
         capturePreZoomSceneAnchor();
         freezeCurrentOverlayAsMemory();
         showAutoZoomTarget(autoZoomTargetSceneX, autoZoomTargetSceneY);
@@ -6040,7 +6033,9 @@ public final class MainActivity extends AppCompatActivity {
         } else if (target != null) {
             bounds = target.normalizedBounds;
         } else {
-            return AutoZoomController.REQUESTED_ZOOM_RATIO;
+            com.example.alpr_v1.domain.NormalizedBounds baseline = pipeline.staticRefinementBounds();
+            if (baseline == null) return AutoZoomController.REQUESTED_ZOOM_RATIO;
+            bounds = new RectF(baseline.left, baseline.top, baseline.right, baseline.bottom);
         }
         RectF visible = overlayView.normalizedVisibleBounds();
         return CameraController.centeredZoomKeepingBoundsVisible(
@@ -6200,6 +6195,7 @@ public final class MainActivity extends AppCompatActivity {
             autoZoomMemoryVisible = !autoZoomBaseMemoryOverlayItems.isEmpty();
             transformMemoryOverlay(currentCameraZoomRatio);
         }
+        prepareAutoZoomReturnGeometry();
         autoZoomController.requestReturn();
         try {
             JSONObject event = new JSONObject();
@@ -6535,9 +6531,10 @@ public final class MainActivity extends AppCompatActivity {
 
     private void freezeCurrentOverlayAsMemory() {
         if (latestOverlaySourceWidth <= 0 || latestOverlaySourceHeight <= 0) return;
-        autoZoomBaseVehicleItems = com.example.alpr_v1.ui.ZoomVehicleOverlay.snapshot(currentOverlayItems());
+        List<OverlayItem> visible = overlayView.snapshotVisibleItems();
+        autoZoomBaseVehicleItems = com.example.alpr_v1.ui.ZoomVehicleOverlay.snapshot(visible);
         List<OverlayItem> frozen = memoryOverlayItems(
-                overlayItemsWithAutoZoomRecognitionMemory(currentOverlayItems()),
+                overlayItemsWithAutoZoomRecognitionMemory(visible),
                 false
         );
         autoZoomBaseMemoryOverlayItems = java.util.Collections.unmodifiableList(frozen);
@@ -6561,6 +6558,9 @@ public final class MainActivity extends AppCompatActivity {
         if (!autoZoomMemoryVisible
                 || latestOverlaySourceWidth <= 0
                 || latestOverlaySourceHeight <= 0) return;
+        List<OverlayItem> returned = autoZoomReturnGeometry.atZoom(zoomRatio,
+                currentPreviewSourceFrameStamp().continuityStamp());
+        if (returned != null) autoZoomBaseMemoryOverlayItems = returned;
         List<OverlayItem> transformed = transformOverlayItems(
                 autoZoomBaseMemoryOverlayItems,
                 Math.max(0.1f, zoomRatio),
@@ -6574,8 +6574,18 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private void prepareAutoZoomReturnGeometry() {
+        long track = autoZoomController.targetTrackId();
+        if (autoZoomReturnGeometry.beginReturn(autoZoomBaseMemoryOverlayItems, currentCameraZoomRatio,
+                currentPreviewSourceFrameStamp().continuityStamp(), track,
+                pipeline == null ? 0L : pipeline.plateOwnerEntityId(track))) {
+            autoZoomMemoryVisible = true;
+            android.util.Log.i("ALPR_AZ_GEOMETRY", "return_to_pre_zoom_outline track=" + track);
+        }
+    }
+
     private void freezeZoomResultForReturn() {
-        List<OverlayItem> visible = withZoomVehicleGeometry(currentOverlayItems());
+        List<OverlayItem> visible = withZoomVehicleGeometry(overlayView.snapshotVisibleItems());
         if (visible.isEmpty()) return;
         float inverseRatio = 1f / Math.max(1f, currentCameraZoomRatio);
         List<OverlayItem> sceneItems = transformOverlayItems(
@@ -7280,6 +7290,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void clearAutoZoomRecognitionMemory() {
+        autoZoomReturnGeometry.clear();
+        if (overlayView != null) overlayView.setZoomPresentationActive(false);
         cancelPendingAutoZoomStart();
         if (pipeline != null) pipeline.clearAutoZoomTargetRoi();
         autoZoomMemoryVisible = false;
@@ -7354,6 +7366,7 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         /* Ta sama scena: zachowujemy wynik i jedynie ponownie kotwiczymy UI. */
+        transformMemoryOverlay(1f);
         previewSceneDetector.reset();
         previewSceneDetector.update(previewBitmap);
         previewSceneAnchorGuard.anchor(previewBitmap);
@@ -8188,6 +8201,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void resetAutoZoomForStoppedCamera() {
+        if (overlayView != null) overlayView.setZoomPresentationActive(false);
         autoZoomHandler.removeCallbacksAndMessages(null);
         if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
         cameraTransformInProgress = false;
@@ -8488,9 +8502,17 @@ public final class MainActivity extends AppCompatActivity {
         if (collectionToggle == null) return;
         boolean automatic=experimentSession.isRunning();
         collectionToggle.setEnabled(cameraStarted && !automatic && !exportInProgress);
-        collectionToggle.setText(automatic ? R.string.research_collection_automatic
-                : collectionActive ? R.string.collection_stop : R.string.collection_start);
-        collectionToggle.setIconResource(automatic || !collectionActive ? R.drawable.ic_session_24 : R.drawable.ic_stop_24);
+        collectionToggle.setText(R.string.camera_action_crops);
+        collectionToggle.setContentDescription(getString(automatic ? R.string.research_collection_automatic
+                : collectionActive ? R.string.collection_stop : R.string.collection_start));
+        collectionToggle.setIconResource(R.drawable.ic_plate_crops_32);
+        styleDashboardAction(collectionToggle, collectionActive ? R.color.alpr_magenta : R.color.alpr_accent);
+    }
+
+    private void styleDashboardAction(MaterialButton button, int color) {
+        tintCameraAction(button, color);
+        button.setAlpha(button.isEnabled() ? 1f : .45f);
+        button.setTooltipText(button.getContentDescription());
     }
 
     private void toggleCollection() {
@@ -8754,7 +8776,7 @@ public final class MainActivity extends AppCompatActivity {
                     bitmap,
                     observation.text,
                     observation.plateConfidence,
-                    observation.recognitionConfidence,
+                    observation.freshRecognitionConfidence(),
                     observation.confirmed,
                     observation.characters,
                     observation.capturedAtMillis,
@@ -8840,7 +8862,8 @@ public final class MainActivity extends AppCompatActivity {
             recognitionHistoryAdapter.setItems(recognitionHistory.newestFirst());
         }
         if (galleryOpenButton != null) {
-            galleryOpenButton.setText(
+            galleryOpenButton.setText(experimentModeEnabled ? R.string.camera_action_review : R.string.camera_action_recent);
+            galleryOpenButton.setContentDescription(
                     getString(
                             experimentModeEnabled
                                     ? R.string.verification_open_count
@@ -8850,6 +8873,10 @@ public final class MainActivity extends AppCompatActivity {
                                     : recognitionHistory.size()
                     )
             );
+            int count = experimentModeEnabled ? capturedCrops.size() : recognitionHistory.size();
+            TextView badge = findViewById(R.id.gallery_count_badge);
+            badge.setText(count > 99 ? "99+" : String.valueOf(count));
+            styleDashboardAction(galleryOpenButton, R.color.alpr_accent);
         }
         renderCollectionControl();
         if (galleryRecentContainer == null || galleryResearchContainer == null) return;
@@ -9310,7 +9337,7 @@ public final class MainActivity extends AppCompatActivity {
                     observation.plateTrackId,
                     observation.trackId,
                     cropText,
-                    observation.recognitionConfidence,
+                    observation.freshRecognitionConfidence(),
                     observation.plateConfidence,
                     observation.capturedAtMillis,
                     observation.previewBitmap,
@@ -9702,6 +9729,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void requestExportDestination(ResearchArchive.Kind kind) {
+        if (researchArchivePickerLoading) return;
         if (experimentSession.isRunning() || researchSessions.finalizing()) {
             Toast.makeText(this,"Paczka badawcza powstaje automatycznie po zakończeniu pomiaru i zapisu",Toast.LENGTH_LONG).show();
             return;
@@ -9710,19 +9738,19 @@ public final class MainActivity extends AppCompatActivity {
         if (kind == ResearchArchive.Kind.RESEARCH_SESSION) {
             List<java.io.File> archives = researchSessions.archives();
             if (!archives.isEmpty()) {
-                String[] names = new String[archives.size()];
-                for (int i=0;i<names.length;i++) {
-                    java.io.File archive = archives.get(i);
-                    boolean complete=false;
-                    try { complete=new JSONObject(new String(java.nio.file.Files.readAllBytes(new java.io.File(
-                            archive.getParentFile().getParentFile(),"session.json").toPath()),java.nio.charset.StandardCharsets.UTF_8))
-                            .optBoolean("collection_complete"); } catch (Exception ignored) { }
-                    names[i]=archive.getName()+(complete ? "" : " · NIEKOMPLETNA");
-                }
-                new MaterialAlertDialogBuilder(this).setTitle("Zapisane sesje badawcze")
-                        .setItems(names,(dialog,index) -> {
-                            pendingPersistentResearchArchive=archives.get(index); launchExportDestination(kind);
-                        }).setNegativeButton(R.string.menu_close,null).show();
+                researchArchivePickerLoading = true;
+                backgroundExecutor.execute(() -> {
+                    List<com.example.alpr_v1.experiment.ResearchSessionSummary> sessions =
+                            com.example.alpr_v1.experiment.ResearchSessionSummary.load(archives);
+                    runOnUiThread(() -> {
+                        researchArchivePickerLoading = false;
+                        if (isFinishing() || isDestroyed() || experimentSession.isRunning() || researchSessions.finalizing()) return;
+                        com.example.alpr_v1.ui.ResearchSessionPicker.show(this, sessions, archive -> {
+                            pendingPersistentResearchArchive = archive;
+                            launchExportDestination(kind);
+                        });
+                    });
+                });
                 return;
             }
         }

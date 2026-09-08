@@ -2957,6 +2957,10 @@ public final class AlprPipeline {
         scanAcquisitionController.resumeRun(SystemClock.elapsedRealtimeNanos());
     }
 
+    public com.example.alpr_v1.domain.NormalizedBounds staticRefinementBounds() {
+        return staticMode() ? staticCycle.zoomBounds() : null;
+    }
+
     public void pickVehicle(long entityId) {
         if (staticMode() || vehicleTrackingCoordinator.repository().get(entityId) == null) return;
         sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
@@ -3022,7 +3026,8 @@ public final class AlprPipeline {
     public SceneTransitionDecision observeStaticLuma(ContinuityStamp stamp, byte[] gray, int width, int height,
             long now, boolean transformed) {
         if (!staticMode() || !isCurrentContinuityStamp(stamp)) return null;
-        com.example.alpr_v1.continuity.StaticSceneWatcher.Result result = staticWatcher.observe(gray, width, height, now, transformed);
+        com.example.alpr_v1.continuity.StaticSceneWatcher.Result result = staticWatcher.observe(
+                gray, width, height, now, transformed, currentCameraZoomRatio);
         if (!result.changed) return null;
         SceneTransitionDecision decision;
         SceneContinuitySnapshot snapshot;
@@ -3056,10 +3061,15 @@ public final class AlprPipeline {
             details.put("reason", result.reason);
             details.put("local_changed_fraction", result.localFraction);
             details.put("global_changed_fraction", result.globalFraction);
+            details.put("feature_points", result.featurePoints);
+            details.put("feature_lost_fraction", result.featureLostFraction);
+            details.put("feature_moved_fraction", result.featureMovedFraction);
         } catch (JSONException ignored) { }
         metrics.recordEvent("static_scene_boundary", 0L, 0L, details);
         android.util.Log.i("ALPR_STATIC", "boundary=" + result.reason + " scene=" + stamp.sceneGeneration
-                + "->" + snapshot.sceneGeneration + " local=" + result.localFraction + " global=" + result.globalFraction);
+                + "->" + snapshot.sceneGeneration + " local=" + result.localFraction + " global=" + result.globalFraction
+                + " features=" + result.featurePoints + " lost=" + result.featureLostFraction
+                + " moved=" + result.featureMovedFraction);
         return decision;
     }
 

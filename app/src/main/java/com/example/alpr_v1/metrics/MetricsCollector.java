@@ -56,6 +56,8 @@ public final class MetricsCollector {
         }
     }
     public static final class LiveSnapshot {
+        public final double receivedFps;
+        public final double processedFps;
 
         public final int sourceWidth;
 
@@ -86,8 +88,12 @@ public final class MetricsCollector {
                 double characterInferenceMs,
                 double pipelineMs,
                 double inferenceSumMs,
-                double auxiliarySumMs
+                double auxiliarySumMs,
+                double receivedFps,
+                double processedFps
         ) {
+            this.receivedFps = receivedFps;
+            this.processedFps = processedFps;
             this.sourceWidth =
                     sourceWidth;
 
@@ -441,7 +447,9 @@ public final class MetricsCollector {
                     Double.NaN,
                     Double.NaN,
                     Double.NaN,
-                    Double.NaN
+                    Double.NaN,
+                    recentFrameRate(false),
+                    recentFrameRate(true)
 
 
             );
@@ -481,8 +489,22 @@ public final class MetricsCollector {
                 stageMilliseconds(
                         trace,
                         "auxiliary_sum"
-                )
+                ),
+                recentFrameRate(false),
+                recentFrameRate(true)
         );
+    }
+
+    /** Last two completed seconds; reading the HUD never creates research telemetry buckets. */
+    private double recentFrameRate(boolean processed) {
+        long end = elapsedMillis(SystemClock.elapsedRealtime()) / 1_000L * 1_000L;
+        if (end <= 0L) return Double.NaN;
+        long begin = Math.max(0L, end - 2_000L), frames = 0L;
+        for (long second = begin; second < end; second += 1_000L) {
+            FrameFlowBucket bucket = frameFlowBuckets.get(second);
+            if (bucket != null) frames += processed ? bucket.framesProcessed : bucket.framesReceived;
+        }
+        return frames * 1_000.0 / (end - begin);
     }
 
     private static double stageMilliseconds(

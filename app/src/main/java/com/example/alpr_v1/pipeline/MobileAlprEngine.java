@@ -114,6 +114,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private long retainedPlateAssociationRuntimeNanos;
     private final Map<Long, float[]> plateAppearanceByTrack = new java.util.HashMap<>();
     private final AutoZoomTargetLock autoZoomTargetLock = new AutoZoomTargetLock();
+    private final AutoZoomGeometryGuard autoZoomGeometryGuard = new AutoZoomGeometryGuard();
     private final MtInferenceScheduler mtInferenceScheduler = new MtInferenceScheduler();
     private final PlateVehicleAssociator plateVehicleAssociator =
             new PlateVehicleAssociator();
@@ -208,6 +209,9 @@ final class MobileAlprEngine implements AutoCloseable {
         final PlateQualityScorer.Score quality;
         final float sharpness;
         final float schedulingQuality;
+        Detection recognitionDetection;
+        List<Point2> recognitionCorners;
+        long geometryReferenceSourceSequence;
 
         PlateCandidate(
                 Detection detection,
@@ -217,6 +221,8 @@ final class MobileAlprEngine implements AutoCloseable {
         ) {
             this.detection = detection;
             this.corners = corners;
+            this.recognitionDetection = detection;
+            this.recognitionCorners = corners;
             this.quality = quality;
             this.sharpness = sharpness;
             // Ostrość może przyspieszyć wybór lepszej kolejnej klatki, ale nie może
@@ -427,6 +433,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private void resetSceneDependentState() {
+        autoZoomGeometryGuard.clear();
         lastMeasuredVehicles = VehicleTrackingFrame.empty(0L);
         staticRefinement = false;
         forceVehicleRefresh = false;
@@ -465,6 +472,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void beginSoftHold(long visualEpoch, String reason) {
+        autoZoomGeometryGuard.clear();
         continuityVisualEpoch = Math.max(continuityVisualEpoch, visualEpoch);
         continuitySoftHold = true;
         continuityReason = reason == null ? "" : reason;
@@ -555,6 +563,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void releaseFocusedTarget(String reason) {
+        autoZoomGeometryGuard.releaseTarget(reason);
         long focusedEntityId = continuityActiveEntityId > 0L
                 ? continuityActiveEntityId : scanActiveEntityId;
         if (focusedEntityId <= 0L && targetSnapshot != null) {
@@ -665,6 +674,9 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void applyCameraZoomTransform(float relativeRatio) {
+        autoZoomGeometryGuard.cameraTransform(relativeRatio);
+        android.util.Log.d("ALPR_AZ_GEOMETRY", "transform ratio=" + relativeRatio + " "
+                + autoZoomGeometryGuard.diagnosticState());
         trackCoordinator.applyCameraZoomTransform(relativeRatio);
         mtInferenceScheduler.forceRefresh("zoom_transform");
         if (relativeRatio > 1.001f) {
@@ -1551,6 +1563,38 @@ final class MobileAlprEngine implements AutoCloseable {
          * utrzymywać świeżą ramkę przez cały dalszy przebieg auto-zoomu.
          */
         decisions = focusedPlateDecisions(decisions, associationByPlateTrack, persistentTargetEntityId);
+        for (PlateTrackCoordinator.Decision decision : decisions) {
+            if (decision.sourceIndex < 0 || decision.sourceIndex >= candidates.size()) continue;
+            PlateCandidate candidate = candidates.get(decision.sourceIndex);
+            PlateVehicleAssociation owner = associationByPlateTrack.getOrDefault(decision.trackId,
+                    PlateVehicleAssociation.unassigned("missing_association"));
+            long now = SystemClock.elapsedRealtimeNanos();
+            if (researchZoomRatio <= 1.01f) {
+                mutate(sourceStamp, () -> {
+                    autoZoomGeometryGuard.remember(decision.trackId, owner.entityId,
+                            candidate.detection, frame.getWidth(), frame.getHeight(), sourceStamp, now);
+                    return null;
+                });
+            } else if (!rapidCameraMotion && !cameraTransformInProgress
+                    && owner.status != VehicleAssociationStatus.AMBIGUOUS
+                    && (staticRefinement || refinementEntityId > 0L || autoZoomTargetLock.active())
+                    && (refinementEntityId <= 0L || owner.entityId == refinementEntityId)) {
+                AutoZoomGeometryGuard.Result geometry = autoZoomGeometryGuard.select(candidate.detection,
+                        decision.trackId, owner.entityId, frame.getWidth(), frame.getHeight(), sourceStamp, now);
+                android.util.Log.d("ALPR_AZ_GEOMETRY", "checked track=" + decision.trackId + " "
+                        + autoZoomGeometryGuard.diagnosticState() + " retained=" + (geometry.detection != candidate.detection));
+                if (geometry.detection != candidate.detection) {
+                    candidate.recognitionDetection = geometry.detection;
+                    candidate.recognitionCorners = geometry.detection.keypoints;
+                    candidate.geometryReferenceSourceSequence = geometry.referenceSourceSequence;
+                    trace.putAttribute("auto_zoom_crop_geometry", "pre_zoom_reference");
+                    android.util.Log.i("ALPR_AZ_GEOMETRY", "held_pre_zoom_quad track=" + decision.trackId
+                            + " entity=" + owner.entityId + " reference=" + geometry.referenceSourceSequence
+                            + " raw_right=" + candidate.detection.right
+                            + " effective_right=" + geometry.detection.right);
+                }
+            }
+        }
         publishFreshMtRecoveryIfReady();
         if (plateDetectionCallback != null && !decisions.isEmpty()) {
             List<OverlayItem> mtOverlays = new ArrayList<>(overlays);
@@ -1560,11 +1604,11 @@ final class MobileAlprEngine implements AutoCloseable {
                 PlateCandidate candidate = candidates.get(decision.sourceIndex);
                 mtOverlays.add(overlayBox(
                         frame,
-                        candidate.detection.left,
-                        candidate.detection.top,
-                        candidate.detection.right,
-                        candidate.detection.bottom,
-                        candidate.corners,
+                        candidate.recognitionDetection.left,
+                        candidate.recognitionDetection.top,
+                        candidate.recognitionDetection.right,
+                        candidate.recognitionDetection.bottom,
+                        candidate.recognitionCorners,
                         "Tablica",
                         candidate.detection.confidence,
                         decision.trackId
@@ -1627,7 +1671,7 @@ final class MobileAlprEngine implements AutoCloseable {
             if (decision.recognize) {
                 long started = SystemClock.elapsedRealtimeNanos();
                 if (audit != null) audit.put("rectification_status","FAILED");
-                Bitmap rectified = PlateRectifier.rectify(frame, candidate.corners);
+                Bitmap rectified = PlateRectifier.rectify(frame, candidate.recognitionCorners);
                 cropRectificationNanos = SystemClock.elapsedRealtimeNanos() - started;
                 rectificationNanos += cropRectificationNanos;
                 try {
@@ -1793,12 +1837,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     candidate.sharpness,
                     plateAppearanceByTrack.get(decision.trackId),
                     cropTiming,
-                    PlateGeometry.from(
-                            frame.getWidth(),
-                            frame.getHeight(),
-                            candidate.detection,
-                            candidate.corners
-                    ),
+                    observationGeometry(candidate, frame.getWidth(), frame.getHeight()),
                     decision.recognize,
                     decision.recognize && !freshPrediction.isEmpty(),
                     freshPrediction,
@@ -1853,11 +1892,11 @@ final class MobileAlprEngine implements AutoCloseable {
             overlays.add(
                     overlayBox(
                             frame,
-                            candidate.detection.left,
-                            candidate.detection.top,
-                            candidate.detection.right,
-                            candidate.detection.bottom,
-                            candidate.corners,
+                            candidate.recognitionDetection.left,
+                            candidate.recognitionDetection.top,
+                            candidate.recognitionDetection.right,
+                            candidate.recognitionDetection.bottom,
+                            candidate.recognitionCorners,
                             overlayText,
                             overlayConfidence,
                             decision.trackId
@@ -3637,6 +3676,13 @@ final class MobileAlprEngine implements AutoCloseable {
             return YoloEndToEndDecoder.decode(values, first, second, yoloSpec);
         }
         return YoloRawDecoder.decode(values, first, second, yoloSpec);
+    }
+
+    private static PlateGeometry observationGeometry(PlateCandidate candidate, int width, int height) {
+        PlateGeometry raw = PlateGeometry.from(width, height, candidate.detection, candidate.corners);
+        return candidate.recognitionDetection == candidate.detection ? raw : raw.withAutoZoomCropGeometry(
+                PlateGeometry.from(width, height, candidate.recognitionDetection, candidate.recognitionCorners),
+                candidate.geometryReferenceSourceSequence);
     }
 
     private static OverlayItem overlayBox(

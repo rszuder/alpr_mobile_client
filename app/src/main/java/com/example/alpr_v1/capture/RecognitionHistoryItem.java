@@ -20,6 +20,7 @@ public final class RecognitionHistoryItem implements AutoCloseable {
     public double confidence;
     public double plateConfidence;
     public long capturedAtMillis;
+    public long lastObservationAtMillis;
     public Bitmap previewBitmap;
     public List<PlateCharacter> characters;
     public CropInferenceTiming timing;
@@ -59,6 +60,7 @@ public final class RecognitionHistoryItem implements AutoCloseable {
         this.confidence = confidence;
         this.plateConfidence = plateConfidence;
         this.capturedAtMillis = capturedAtMillis;
+        this.lastObservationAtMillis = capturedAtMillis;
         this.previewBitmap = previewBitmap;
         this.characters = immutableCharacters(characters);
         this.timing = timing;
@@ -81,10 +83,13 @@ public final class RecognitionHistoryItem implements AutoCloseable {
     public RecognitionHistoryItem snapshot() {
         if (previewBitmap == null || previewBitmap.isRecycled()) return null;
         Bitmap copy = previewBitmap.copy(Bitmap.Config.ARGB_8888, false);
-        return copy == null ? null : new RecognitionHistoryItem(historyId, sceneGeneration,
+        if (copy == null) return null;
+        RecognitionHistoryItem snapshot = new RecognitionHistoryItem(historyId, sceneGeneration,
                 entityId, vehicleTrackId, plateTrackId, trackId, text, confidence,
                 plateConfidence, capturedAtMillis, copy, characters, timing, confirmed,
                 observations, previewSharpness, captureSource);
+        snapshot.lastObservationAtMillis = lastObservationAtMillis;
+        return snapshot;
     }
 
     /** Transfers the retained crop to a proven entity without copying or recycling it. */
@@ -95,6 +100,7 @@ public final class RecognitionHistoryItem implements AutoCloseable {
                 confirmed, observations, previewSharpness, captureSource);
         moved.previewConfidence = previewConfidence;
         moved.previewCapturedAtMillis = previewCapturedAtMillis;
+        moved.lastObservationAtMillis = lastObservationAtMillis;
         previewBitmap = null;
         return moved;
     }
