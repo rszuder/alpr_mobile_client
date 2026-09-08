@@ -60,7 +60,7 @@
         android:orientation="horizontal"
         android:paddingHorizontal="10dp"
         android:visibility="gone"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/live_diagnostics_toggle"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/top_app_bar">
 
@@ -98,20 +98,22 @@
             android:visibility="gone"
             tools:text="" />
 
+    </LinearLayout>
 
-        <com.google.android.material.button.MaterialButton
+    <com.google.android.material.button.MaterialButton
             android:id="@+id/live_diagnostics_toggle"
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="62dp" android:layout_height="32dp"
-            android:layout_marginStart="4dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:layout_marginEnd="22dp" android:layout_marginTop="10dp"
+            android:elevation="6dp" android:minWidth="0dp" android:minHeight="0dp"
             android:insetTop="0dp" android:insetBottom="0dp" android:paddingHorizontal="7dp"
             android:text="@string/hud_label" android:textSize="9sp" android:textStyle="bold"
             android:textColor="@color/alpr_accent" android:contentDescription="@string/hud_toggle"
             app:icon="@drawable/ic_hud_32" app:iconSize="19dp" app:iconPadding="4dp"
             app:iconTint="@color/alpr_accent" app:strokeColor="@color/alpr_outline"
-            app:backgroundTint="@color/alpr_card_blue" app:cornerRadius="10dp" />
-
-    </LinearLayout>
+            app:backgroundTint="@color/alpr_card_blue" app:cornerRadius="10dp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/top_app_bar" />
 
     <TextView
         android:id="@+id/live_event"
@@ -128,7 +130,7 @@
         android:visibility="gone"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_status_strip"
+        app:layout_constraintTop_toBottomOf="@id/live_diagnostics_toggle"
         tools:text="Cel ustabilizowany" />
 
     <com.example.alpr_v1.ui.LiveHudView
@@ -143,7 +145,7 @@
         app:layout_constraintBottom_toTopOf="@id/confirmed_result_tray"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/live_status_strip" />
+        app:layout_constraintTop_toBottomOf="@id/live_diagnostics_toggle" />
 
     <ImageView
         android:id="@+id/auto_zoom_target"

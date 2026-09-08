@@ -48,6 +48,7 @@ public final class LiveHudView extends LinearLayout {
         for (int id : new int[]{R.id.hud_camera_fps,R.id.hud_pipeline_time,R.id.hud_mp_time,
                 R.id.hud_mt_time,R.id.hud_mz_time,R.id.hud_resolution}) text(id,"—");
         text(R.id.hud_frame_flow,"");text(R.id.hud_overhead,"");
+        text(R.id.live_hud,"");
     }
     private void text(int id, String value) {
         TextView view = findViewById(id);

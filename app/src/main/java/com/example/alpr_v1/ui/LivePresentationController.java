@@ -109,10 +109,10 @@ public final class LivePresentationController {
         // w rozwijanej diagnostyce. Pasek główny pokazuje tylko komunikat użytkowy.
         statusSecondary.setText("");
         statusSecondary.setVisibility(View.GONE);
+        diagnosticsPanel.setVisibility(diagnosticsExpanded ? View.VISIBLE : View.GONE);
+        diagnosticsText.setVisibility(diagnosticsExpanded ? View.VISIBLE : View.GONE);
         if (state == State.STOPPED) {
             statusStrip.setVisibility(View.GONE);
-            diagnosticsPanel.setVisibility(View.GONE);
-            diagnosticsText.setVisibility(View.GONE);
             event.setVisibility(View.GONE);
             calmHint.setText(R.string.recognition_searching);
             return;
@@ -123,9 +123,6 @@ public final class LivePresentationController {
             calmHint.setText(hintText(state));
             tintDot(state);
         }
-        boolean showDiagnostics = diagnosticsExpanded;
-        diagnosticsPanel.setVisibility(showDiagnostics ? View.VISIBLE : View.GONE);
-        diagnosticsText.setVisibility(showDiagnostics ? View.VISIBLE : View.GONE);
     }
 
     public void showTransient(CharSequence message) {
@@ -247,14 +244,14 @@ public final class LivePresentationController {
     public void stop() {
         handler.removeCallbacksAndMessages(null);
         eventGeneration++;
-        setDiagnosticsExpanded(false);
+        diagnosticsText.setText("");
         clearResult();
         showState(State.STOPPED, "");
     }
 
     private void setDiagnosticsExpanded(boolean expanded) {
         diagnosticsExpanded = expanded;
-        boolean showDiagnostics = expanded && state != State.STOPPED;
+        boolean showDiagnostics = expanded;
         diagnosticsPanel.setVisibility(showDiagnostics ? View.VISIBLE : View.GONE);
         diagnosticsText.setVisibility(showDiagnostics ? View.VISIBLE : View.GONE);
         if (diagnosticsVisibilityListener != null) {

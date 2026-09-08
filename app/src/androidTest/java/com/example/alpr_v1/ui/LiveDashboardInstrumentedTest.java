@@ -49,9 +49,21 @@ public class LiveDashboardInstrumentedTest {
             scenario.onActivity(activity->{
                 try {
                     LivePresentationController presentation=(LivePresentationController)field(activity,"livePresentation").get(activity);
-                    presentation.showState(LivePresentationController.State.SEARCHING,"");
+                    presentation.showState(LivePresentationController.State.STOPPED,"");
+                    assertTrue(activity.findViewById(R.id.live_diagnostics_toggle).isShown());
                     activity.findViewById(R.id.live_diagnostics_toggle).performClick();
                     assertEquals(View.VISIBLE,activity.findViewById(R.id.live_hud_row).getVisibility());
+                    java.lang.reflect.Method renderHud=MainActivity.class.getDeclaredMethod("renderLiveHud");
+                    renderHud.setAccessible(true);renderHud.invoke(activity);
+                    assertEquals(View.VISIBLE,activity.findViewById(R.id.live_hud_row).getVisibility());
+                    assertEquals("—",((TextView)activity.findViewById(R.id.hud_camera_fps)).getText().toString());
+                    for(LivePresentationController.State state:new LivePresentationController.State[]{
+                            LivePresentationController.State.PREVIEW,LivePresentationController.State.SETUP_REQUIRED,
+                            LivePresentationController.State.SEARCHING}) {
+                        presentation.showState(state,"");
+                        assertTrue(activity.findViewById(R.id.live_diagnostics_toggle).isShown());
+                        assertEquals(View.VISIBLE,activity.findViewById(R.id.live_hud_row).getVisibility());
+                    }
                     MetricsCollector metrics=new MetricsCollector();
                     metrics.startMeasurementSession(System.currentTimeMillis(),android.os.SystemClock.elapsedRealtimeNanos()-2_500_000_000L,System.nanoTime());
                     Map<Long,Object> buckets=(Map<Long,Object>)field(metrics,"frameFlowBuckets").get(metrics);
@@ -70,6 +82,12 @@ public class LiveDashboardInstrumentedTest {
                     assertEquals("29,5",((TextView)activity.findViewById(R.id.hud_camera_fps)).getText().toString());
                     assertEquals("—",((TextView)activity.findViewById(R.id.hud_pipeline_time)).getText().toString());
                     assertEquals("—",((TextView)activity.findViewById(R.id.hud_mp_time)).getText().toString());
+                    presentation.stop();
+                    java.lang.reflect.Method resetZoom=MainActivity.class.getDeclaredMethod("resetAutoZoomForStoppedCamera");
+                    resetZoom.setAccessible(true);resetZoom.invoke(activity);
+                    assertTrue(activity.findViewById(R.id.live_diagnostics_toggle).isShown());
+                    assertEquals(View.VISIBLE,activity.findViewById(R.id.live_hud_row).getVisibility());
+                    assertEquals("—",((TextView)activity.findViewById(R.id.hud_camera_fps)).getText().toString());
                     activity.findViewById(R.id.hud_close).performClick();
                     assertEquals(View.GONE,activity.findViewById(R.id.live_hud_row).getVisibility());
                     metrics.startMeasurementSession();assertTrue(Double.isNaN(metrics.liveSnapshot().receivedFps));

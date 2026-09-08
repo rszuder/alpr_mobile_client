@@ -448,5 +448,4 @@
     <string name="scan_status_recovering">Odzyskuję wybrany pojazd</string>
     <string name="scan_hint_recovering">Nie zmieniaj gwałtownie kadru</string>
     <string name="scan_diagnostics">SCAN · kolejka %1$d · MT %2$d/2 · MZ %3$d/2</string>
-    <string name="scan_auto_zoom_disabled">Auto zoom pominięty podczas skanowania</string>
 </resources>

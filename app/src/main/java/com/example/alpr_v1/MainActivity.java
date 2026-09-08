@@ -3059,9 +3059,6 @@ public final class MainActivity extends AppCompatActivity {
 
             } else {
 
-                liveHud.setVisibility(
-                        View.GONE
-                );
                 ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).clearMetrics();
             }
         }
@@ -4771,7 +4768,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
         if (!cameraStarted) {
-            if (livePresentation != null) livePresentation.stop();
+            ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).clearMetrics();
             return;
         }
 
@@ -4853,7 +4850,7 @@ public final class MainActivity extends AppCompatActivity {
         ScanAcquisitionSnapshot scan = pipeline == null
                 ? null : pipeline.scanAcquisitionSnapshot();
         boolean scanActive = scan != null && scan.runState.active();
-        if (autoZoomController.enabled() && !scanActive) {
+        if (autoZoomController.enabled()) {
             hudText.append('\n').append(autoZoomHudLabel());
         }
         if (scanActive) {
@@ -4863,11 +4860,6 @@ public final class MainActivity extends AppCompatActivity {
                     scan.mtAttempts,
                     scan.freshMzAttempts
             ));
-            if (autoZoomController.enabled()) {
-                hudText.append('\n').append(
-                        getString(R.string.scan_auto_zoom_disabled)
-                );
-            }
         }
         TargetSnapshot target = targetStateMachine.snapshot();
         if (target.trackId > 0L) {
@@ -8214,7 +8206,7 @@ public final class MainActivity extends AppCompatActivity {
         resetAutoZoomSessionAfterReturn = false;
         autoZoomController.resetSession();
         if (pipeline != null) pipeline.finishCameraTransform();
-        if (liveHudRow != null) liveHudRow.setVisibility(View.GONE);
+        if (liveHudRow != null) ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).clearMetrics();
         if (autoZoomControl != null) autoZoomControl.setVisibility(View.GONE);
         hideAutoZoomTarget();
         updateAutoZoomButton();
