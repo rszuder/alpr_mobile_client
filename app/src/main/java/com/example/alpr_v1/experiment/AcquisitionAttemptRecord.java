@@ -18,6 +18,9 @@ public final class AcquisitionAttemptRecord {
     final JSONObject data = new JSONObject();
     Bitmap image;
     long imageBytes;
+    Bitmap mtInputImage;
+    long mtInputImageBytes;
+    boolean ownsAttemptPermit = true;
     boolean plateCrop;
     private PlateObservation observation;
 
@@ -34,6 +37,9 @@ public final class AcquisitionAttemptRecord {
         put("captured_at_ms",System.currentTimeMillis()); put("roi_policy",roiPolicy);
         put("capture_source",zoom > 1.01f ? "auto_zoom" : "normal"); put("camera_zoom_ratio",zoom);
         put("mt_status",MtStatus.NOT_RUN.name()); put("rectification_status",RectificationStatus.NOT_RUN.name());
+        put("mt_executed",false); put("mt_invocation_id","");
+        put("mt_detection_index",JSONObject.NULL); put("mt_detection_count",JSONObject.NULL);
+        put("mt_input_evidence_entry",""); put("mt_input_missing_evidence_reason","");
         put("mz_status",MzStatus.NOT_RUN.name()); put("prediction",""); put("consensus_prediction","");
         put("plate_confidence",0); put("recognition_confidence",0);
         put("evidence_kind",""); put("evidence_entry",""); put("missing_evidence_reason","");
@@ -53,7 +59,15 @@ public final class AcquisitionAttemptRecord {
         return new ResearchSampleIdentity(attemptId,sessionId,data.optLong("scene_generation"),
                 data.optLong("entity_id"),data.optLong("vehicle_track_id"),data.optLong("plate_track_id"));
     }
-    public void copyEvidence(Bitmap bitmap) { store.copyImage(this,bitmap,false); }
+    /** Called immediately before entering the MT backend, including calls that throw. */
+    public void mtStarted() {
+        put("mt_invocation_id",attemptId); put("mt_executed",true);
+        put("mt_status",MtStatus.NO_DETECTION.name()); put("mt_detection_count",0);
+    }
+    public void copyEvidence(Bitmap bitmap) {
+        store.copyImage(this,bitmap,false);
+        put("mt_input_missing_evidence_reason",data.optString("missing_evidence_reason"));
+    }
     public void copyPlateCrop(Bitmap bitmap) {
         put("rectification_status",RectificationStatus.OK.name()); store.copyImage(this,bitmap,true);
     }

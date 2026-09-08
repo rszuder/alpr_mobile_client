@@ -116,6 +116,12 @@ public final class ResearchExecutionConfigInstrumentedTest {
         assertTrue(appBuild.has("git_dirty"));
         assertTrue(appBuild.has("git_dirty_available"));
         assertTrue(appBuild.has("source_state"));
+        assertEquals(com.example.alpr_v1.BuildConfig.GIT_COMMIT,appBuild.getString("git_commit"));
+        java.time.Instant.parse(appBuild.getString("built_at_utc"));
+        assertTrue(report.has("app_version"));
+        assertEquals(com.example.alpr_v1.BuildConfig.GIT_DIRTY_AVAILABLE
+                ? (com.example.alpr_v1.BuildConfig.GIT_DIRTY ? "dirty" : "clean") : "unknown",
+                appBuild.getString("source_state"));
         JSONObject experiment = report.getJSONObject("experiment");
         JSONObject effective = experiment.getJSONObject("effective_execution_config");
 

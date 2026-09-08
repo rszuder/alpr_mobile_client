@@ -8,7 +8,19 @@
     "subject_identity": {"const": "scene_generation+entity_id"},
     "human_review": {"const": "desktop"},
     "attempts_file": {"const": "samples/attempts.csv"},
-    "crops_file": {"const": "samples/index.csv"}
+    "crops_file": {"const": "samples/index.csv"},
+    "mt_invocation_identity": {
+      "const": "one_backend_execution_one_input",
+      "description": "mt_invocation_id groups 0..N decoder detections from one actual MT backend call. Shared session, continuity stamp and ROI/input geometry; empty when NOT_RUN. subject_key retains object identity."
+    },
+    "mt_detection_index_base": {
+      "const": 0,
+      "description": "mt_detection_index is zero-based in decoder order; empty for NO_DETECTION and NOT_RUN."
+    },
+    "mt_detection_order": {
+      "const": "decoder_output",
+      "description": "mt_detection_count is identical on all child rows, including invalid quads. Zero detections produces one NO_DETECTION row with count=0; NOT_RUN has empty count. Errors and cancellations require separate treatment."
+    }
   },
   "additionalProperties": true
 }

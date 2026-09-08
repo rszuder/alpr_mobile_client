@@ -25,6 +25,29 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public final class ResearchAutoCollectionInstrumentedTest {
+    @Test public void lateLumaCallbackAndRescheduleAfterActivityDestructionAreHarmless() throws Exception {
+        AtomicReference<MainActivity> destroyed=new AtomicReference<>();
+        try (ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(destroyed::set);
+        }
+        MainActivity activity=destroyed.get();
+        assertTrue(((java.util.concurrent.ExecutorService)get(activity,"directLumaTrackingExecutor")).isShutdown());
+        java.lang.reflect.Constructor<com.example.alpr_v1.camera.LumaFrame> constructor=
+                com.example.alpr_v1.camera.LumaFrame.class.getDeclaredConstructor(byte[].class,int.class,int.class,
+                        long.class,long.class,com.example.alpr_v1.continuity.SourceTimestampDomain.class);
+        constructor.setAccessible(true);
+        com.example.alpr_v1.camera.LumaFrame frame=constructor.newInstance(new byte[16],4,4,1L,1L,
+                com.example.alpr_v1.continuity.SourceTimestampDomain.UNKNOWN);
+        invoke(activity,"submitDirectLumaFrame",new Class<?>[]{com.example.alpr_v1.camera.LumaFrame.class},frame);
+        java.util.concurrent.atomic.AtomicReference<?> pending=(java.util.concurrent.atomic.AtomicReference<?>)get(activity,"pendingDirectLumaFrame");
+        assertNull(pending.get());
+        // Also exercise shutdown between admission and execute, shared with worker rescheduling.
+        ((java.util.concurrent.atomic.AtomicBoolean)get(activity,"directLumaWorkerRunning")).set(true);
+        invoke(activity,"scheduleDirectLumaDrain",new Class<?>[0]);
+        assertNull(pending.get());
+        assertFalse(((java.util.concurrent.atomic.AtomicBoolean)get(activity,"directLumaWorkerRunning")).get());
+    }
+
     @Test public void singleStartCollectsAutomaticallySurvivesRecreationAndTimerBuildsFrozenArchive() throws Exception {
         org.junit.Assume.assumeTrue("Requires camera and installed models: -e liveResearch true",
                 "true".equals(InstrumentationRegistry.getArguments().getString("liveResearch")));
@@ -72,9 +95,17 @@ public final class ResearchAutoCollectionInstrumentedTest {
                 assertTrue(recreated.store().accepting());
                 assertTrue((Boolean)get(activity,"collectionActive"));
             });
-            await(()->!original.experiment.isRunning() && !original.finalizing(),45000);
+            // Closing admission finishes the domain before the finalizer is scheduled.
+            // Wait for the durable terminal state as well as the ViewModel flag.
+            await(()->!original.experiment.isRunning() && !original.finalizing()
+                    && (original.store().state()==ResearchSessionStore.State.COMPLETED
+                        || original.store().state()==ResearchSessionStore.State.PARTIAL
+                        || original.store().state()==ResearchSessionStore.State.ERROR),45000);
             File archive=new File(created,"final/"+id+".alprsession");
-            assertTrue(archive.isFile()); assertFalse(original.store().accepting());
+            assertTrue("Missing final archive; state="+original.store().state()+"; message="+original.messages.getValue()
+                    +"; metadata="+new String(Files.readAllBytes(new File(created,"session.json").toPath()),StandardCharsets.UTF_8),
+                    archive.isFile());
+            assertFalse(original.store().accepting());
             ResearchArchive.verifyEntryHashes(archive);
             JSONObject session=new JSONObject(new String(Files.readAllBytes(new File(created,"session.json").toPath()),StandardCharsets.UTF_8));
             assertEquals("timer",session.getString("completion_reason"));

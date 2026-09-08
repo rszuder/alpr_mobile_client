@@ -83,10 +83,17 @@ public final class ResearchAttemptAuditInstrumentedTest {
             File archive=store.finish(new ResearchSessionStore.Telemetry("{}","","","","",""),frozen);
             ResearchArchive.verifyEntryHashes(archive);
             int crops=0,cancelled=0;
+            Map<String,List<JSONObject>> invocations=new HashMap<>();
             try (java.util.zip.ZipFile zip=new java.util.zip.ZipFile(archive);
                  BufferedReader reader=new BufferedReader(new InputStreamReader(zip.getInputStream(zip.getEntry("samples/attempts.jsonl")),StandardCharsets.UTF_8))) {
                 String line; while ((line=reader.readLine())!=null) {
                     JSONObject row=new JSONObject(line);
+                    if (row.optBoolean("mt_executed")) {
+                        String invocation=row.getString("mt_invocation_id"); assertFalse(invocation.isEmpty());
+                        invocations.computeIfAbsent(invocation,key->new ArrayList<>()).add(row);
+                        assertNotNull(zip.getEntry(row.getString("mt_input_evidence_entry")));
+                        assertEquals("",row.getString("mt_input_missing_evidence_reason"));
+                    }
                     if (row.optBoolean("mz_executed")) {
                         crops++; assertEquals("plate_crop",row.getString("evidence_kind"));
                         assertNotNull(zip.getEntry(row.getString("evidence_entry")));
@@ -95,6 +102,19 @@ public final class ResearchAttemptAuditInstrumentedTest {
                 }
             }
             assertTrue(crops>=mz+1); assertTrue(cancelled>0);
+            assertFalse(invocations.isEmpty());
+            for (List<JSONObject> rows:invocations.values()) {
+                int count=rows.get(0).getInt("mt_detection_count");
+                assertEquals(Math.max(1,count),rows.size());
+                for (int index=0;index<rows.size();index++) {
+                    JSONObject row=rows.get(index); assertEquals(count,row.getInt("mt_detection_count"));
+                    if (count==0) assertTrue(row.isNull("mt_detection_index"));
+                    else assertEquals(index,row.getInt("mt_detection_index"));
+                    for (String key:new String[]{"session_id","scene_generation","visual_epoch","camera_transform_generation",
+                            "source_sequence","source_timestamp_nanos","roi_left","roi_top","roi_right","roi_bottom",
+                            "input_width","input_height"}) assertEquals(key,rows.get(0).get(key),row.get(key));
+                }
+            }
             Files.copy(archive.toPath(),new File(target.getExternalFilesDir(null),"research-qa-mz.alprsession").toPath(),StandardCopyOption.REPLACE_EXISTING);
         } finally {
             frame.recycle();

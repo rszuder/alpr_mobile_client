@@ -1450,10 +1450,21 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void submitDirectLumaFrame(LumaFrame frame) {
-        if (frame == null) return;
+        if (frame == null || directLumaTrackingExecutor.isShutdown()) return;
         pendingDirectLumaFrame.set(frame);
         if (directLumaWorkerRunning.compareAndSet(false, true)) {
+            scheduleDirectLumaDrain();
+        }
+    }
+
+    private void scheduleDirectLumaDrain() {
+        try {
             directLumaTrackingExecutor.execute(this::drainDirectLumaFrames);
+        } catch (java.util.concurrent.RejectedExecutionException stopped) {
+            // Camera callbacks and a draining worker can race Activity destruction.
+            if (!directLumaTrackingExecutor.isShutdown()) throw stopped;
+            pendingDirectLumaFrame.set(null);
+            directLumaWorkerRunning.set(false);
         }
     }
 
@@ -1468,7 +1479,7 @@ public final class MainActivity extends AppCompatActivity {
             directLumaWorkerRunning.set(false);
             if (pendingDirectLumaFrame.get() != null
                     && directLumaWorkerRunning.compareAndSet(false, true)) {
-                directLumaTrackingExecutor.execute(this::drainDirectLumaFrames);
+                scheduleDirectLumaDrain();
             }
         }
     }

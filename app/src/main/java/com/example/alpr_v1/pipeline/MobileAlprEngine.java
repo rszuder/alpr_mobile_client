@@ -3308,8 +3308,8 @@ final class MobileAlprEngine implements AutoCloseable {
             durations[0] += SystemClock.elapsedRealtimeNanos() - started;
 
             started = SystemClock.elapsedRealtimeNanos();
+            if (audit != null) audit.mtStarted();
             InferenceRunResult run = plateBackend.run(input.buffer);
-            if (audit != null) { audit.put("mt_executed",true); audit.put("mt_status","NO_DETECTION"); }
             durations[1] += SystemClock.elapsedRealtimeNanos() - started;
 
             started = SystemClock.elapsedRealtimeNanos();

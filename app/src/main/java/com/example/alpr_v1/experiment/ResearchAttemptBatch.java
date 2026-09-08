@@ -1,10 +1,8 @@
 package com.example.alpr_v1.experiment;
 
-import android.graphics.Bitmap;
 import com.example.alpr_v1.continuity.ContinuityStamp;
 import com.example.alpr_v1.pipeline.PlateObservation;
 import com.example.alpr_v1.vision.Detection;
-import org.json.JSONObject;
 import java.util.*;
 
 /** Passive, frame-local audit of actual MT calls and their downstream MZ work. */
@@ -15,29 +13,39 @@ public final class ResearchAttemptBatch {
     private final float zoom;
     private final List<AcquisitionAttemptRecord> records = new ArrayList<>();
     private final Map<Detection,AcquisitionAttemptRecord> detections = new IdentityHashMap<>();
-    private final Set<AcquisitionAttemptRecord> assigned = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Map<AcquisitionAttemptRecord,Integer> detectionCounts = new IdentityHashMap<>();
+    private final Map<AcquisitionAttemptRecord,AcquisitionAttemptRecord> invocations = new IdentityHashMap<>();
     public ResearchAttemptBatch(ResearchSessionStore store,ContinuityStamp stamp,String policy,float zoom) {
         this.store=store; this.stamp=stamp; this.policy=policy; this.zoom=zoom;
     }
     public AcquisitionAttemptRecord beginMt(long entity,long vehicle,int left,int top,int right,int bottom,
                                             int inputWidth,int inputHeight) {
-        AcquisitionAttemptRecord record = store.beginAttempt(stamp,policy,zoom,entity,vehicle);
+        AcquisitionAttemptRecord record = store.beginInvocationAttempt(stamp,policy,zoom,entity,vehicle);
         if (record != null) {
-            record.put("mt_invocation_id",record.attemptId);
             record.put("roi_left",left); record.put("roi_top",top); record.put("roi_right",right); record.put("roi_bottom",bottom);
             record.put("input_width",inputWidth); record.put("input_height",inputHeight);
             records.add(record);
+            detectionCounts.put(record,0); invocations.put(record,record);
         }
         return record;
     }
     public void detected(AcquisitionAttemptRecord call,Detection detection,boolean validQuad) {
         if (call == null) return;
+        int index = detectionCounts.get(call);
+        detectionCounts.put(call,index+1);
         AcquisitionAttemptRecord record = call;
-        if (!assigned.add(call)) {
-            record = store.beginAttempt(stamp,policy,zoom,call.data.optLong("entity_id"),call.data.optLong("vehicle_track_id"));
+        if (index > 0) {
+            record = store.beginInvocationAttempt(stamp,policy,zoom,call.data.optLong("entity_id"),call.data.optLong("vehicle_track_id"));
             if (record == null) return;
-            record.put("mt_invocation_id",call.attemptId); record.copyEvidence(call.image); records.add(record);
+            for (String key : new String[]{"mt_invocation_id","mt_executed","attempt_started_elapsed_nanos",
+                    "roi_left","roi_top","roi_right","roi_bottom","input_width","input_height",
+                    "input_scale","input_pad_x","input_pad_y"}) record.put(key,call.data.opt(key));
+            record.copyEvidence(call.plateCrop ? call.mtInputImage : call.image);
+            if (!record.plateCrop) record.put("evidence_kind",call.data.optString("mt_input_evidence_kind",
+                    call.data.optString("evidence_kind")));
+            records.add(record); invocations.put(record,call);
         }
+        record.put("mt_detection_index",index);
         record.put("mt_status",validQuad ? "VALID_QUAD" : "DETECTION_INVALID_QUAD");
         record.put("plate_confidence",detection.confidence);
         record.put("plate_left",detection.left); record.put("plate_top",detection.top);
@@ -51,10 +59,12 @@ public final class ResearchAttemptBatch {
     }
     public void finish(String cancellation,String failure) {
         for (AcquisitionAttemptRecord record : records) {
+            if (record.data.optBoolean("mt_executed"))
+                record.put("mt_detection_count",detectionCounts.get(invocations.get(record)));
             if (!cancellation.isEmpty()) record.cancel(cancellation);
             if (!failure.isEmpty()) record.put("execution_error",failure);
             store.submit(record);
         }
-        records.clear(); detections.clear();
+        records.clear(); detections.clear(); detectionCounts.clear(); invocations.clear();
     }
 }
