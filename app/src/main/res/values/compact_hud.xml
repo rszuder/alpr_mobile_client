@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hud_1_label">HUD 1</string>
+    <string name="hud_2_label">HUD 2</string>
+    <string name="hud_1_toggle">Pokaż lub ukryj HUD 1: FPS, temperatura, CPU i czasy modeli</string>
+    <string name="hud_2_toggle">Pokaż lub ukryj HUD 2: warianty modeli i rozdzielczość</string>
+    <string name="hud_source_unknown">Kadr: —</string>
+    <string name="hud_source_actual">Kadr: %1$d×%2$d</string>
+    <string name="hud_source_requested">Kadr: %1$d×%2$d · zadana</string>
+    <style name="HudModelLine">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:textColor">#D3DFEA</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:paddingVertical">1dp</item>
+    </style>
+    <string name="hud_temperature_description">Temperatura baterii: %1$s</string>
+    <string name="hud_resources_description">CPU aplikacji, udział we wszystkich rdzeniach: %1$s</string>
+    <string name="hud_stage_description">%1$s, ostatnie uruchomienie: %2$s</string>
+    <string name="phone_orientation_level">Telefon ustawiony poprawnie. Odchylenie %1$d°</string>
+    <string name="phone_orientation_tilted">Ustaw telefon pionowo do analizy. Odchylenie %1$d°</string>
+    <style name="HudPill">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minWidth">58dp</item>
+        <item name="android:paddingHorizontal">7dp</item>
+        <item name="android:paddingVertical">6dp</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:gravity">center</item>
+        <item name="android:background">@drawable/bg_hud_pill</item>
+    </style>
+    <style name="HudPillCaption" parent="HudCaption">
+        <item name="android:drawablePadding">3dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">#D3DFEA</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+    <style name="HudPillValue">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">2dp</item>
+        <item name="android:text">—</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/white</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:maxLines">1</item>
+    </style>
+    <style name="HudStage">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minWidth">94dp</item>
+        <item name="android:layout_gravity">end</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingHorizontal">9dp</item>
+        <item name="android:paddingVertical">5dp</item>
+        <item name="android:background">@drawable/bg_hud_pill</item>
+    </style>
+    <style name="HudStageCaption" parent="HudCaption">
+        <item name="android:textStyle">bold</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+    <style name="HudStageValue" parent="HudPillValue">
+        <item name="android:layout_marginTop">2dp</item>
+    </style>
+    <style name="HudArrow">
+        <item name="android:layout_width">94dp</item>
+        <item name="android:layout_height">14dp</item>
+        <item name="android:layout_gravity">end</item>
+        <item name="android:scaleType">center</item>
+        <item name="android:src">@drawable/ic_hud_down</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+</resources>

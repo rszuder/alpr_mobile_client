@@ -24,6 +24,31 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(AndroidJUnit4.class)
 public final class DetectionOverlayViewInstrumentedTest {
+    @Test public void dynamicSmallPositionAndSizeChangesAnimateWithoutStationaryDeadband() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            DetectionOverlayView view = new DetectionOverlayView(
+                    InstrumentationRegistry.getInstrumentation().getTargetContext(), null);
+            view.layout(0, 0, 720, 1280);
+            view.setDynamicVehicleMotion(true);
+            view.setStationaryScene(true);
+            view.setItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(.1f, .2f, .5f, .8f), 7L)), 720, 1280);
+            view.setPreviewItems(Collections.singletonList(item(OverlayItem.Kind.VEHICLE,
+                    new RectF(.105f, .205f, .509f, .809f), 7L)));
+            assertEquals(.1f, view.snapshotItemsForTesting().get(0).normalizedBounds.left, .0001f);
+            android.animation.ValueAnimator animation = overlayAnimation(view);
+            assertTrue(animation != null);
+            animation.setCurrentFraction(.5f);
+            RectF middle = view.snapshotItemsForTesting().get(0).normalizedBounds;
+            assertEquals(.1025f, middle.left, .0001f);
+            assertEquals(.402f, middle.width(), .0001f);
+            animation.end();
+            assertEquals(.509f, view.snapshotItemsForTesting().get(0).normalizedBounds.right, .0001f);
+            view.hardResetForNewScene(new com.example.alpr_v1.continuity.ContinuityStamp(2, 2, 0, 1));
+            assertTrue(view.snapshotItemsForTesting().isEmpty());
+        });
+    }
+
     @Test public void zoomRetainsConfidenceUntilNewTrackGetsItsVehicleAssociation() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             DetectionOverlayView view=new DetectionOverlayView(InstrumentationRegistry.getInstrumentation().getTargetContext(),null);

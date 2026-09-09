@@ -103,13 +103,28 @@
     <com.google.android.material.button.MaterialButton
             android:id="@+id/live_diagnostics_toggle"
             style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="62dp" android:layout_height="32dp"
-            android:layout_marginEnd="22dp" android:layout_marginTop="10dp"
+            android:layout_width="68dp" android:layout_height="40dp"
+            android:layout_marginEnd="6dp" android:layout_marginTop="10dp"
             android:elevation="6dp" android:minWidth="0dp" android:minHeight="0dp"
             android:insetTop="0dp" android:insetBottom="0dp" android:paddingHorizontal="7dp"
-            android:text="@string/hud_label" android:textSize="9sp" android:textStyle="bold"
-            android:textColor="@color/alpr_accent" android:contentDescription="@string/hud_toggle"
+            android:text="@string/hud_1_label" android:textSize="9sp" android:textStyle="bold"
+            android:textColor="@color/alpr_accent" android:contentDescription="@string/hud_1_toggle"
             app:icon="@drawable/ic_hud_32" app:iconSize="19dp" app:iconPadding="4dp"
+            app:iconTint="@color/alpr_accent" app:strokeColor="@color/alpr_outline"
+            app:backgroundTint="@color/alpr_card_blue" app:cornerRadius="10dp"
+            app:layout_constraintEnd_toStartOf="@id/live_model_info_toggle"
+            app:layout_constraintTop_toBottomOf="@id/top_app_bar" />
+
+    <com.google.android.material.button.MaterialButton
+            android:id="@+id/live_model_info_toggle"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="68dp" android:layout_height="40dp"
+            android:layout_marginEnd="12dp" android:layout_marginTop="10dp"
+            android:elevation="6dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:insetTop="0dp" android:insetBottom="0dp" android:paddingHorizontal="7dp"
+            android:text="@string/hud_2_label" android:textSize="9sp" android:textStyle="bold"
+            android:textColor="@color/alpr_accent" android:contentDescription="@string/hud_2_toggle"
+            app:icon="@drawable/ic_hud_cpu" app:iconSize="19dp" app:iconPadding="4dp"
             app:iconTint="@color/alpr_accent" app:strokeColor="@color/alpr_outline"
             app:backgroundTint="@color/alpr_card_blue" app:cornerRadius="10dp"
             app:layout_constraintEnd_toEndOf="parent"
@@ -117,35 +132,56 @@
 
     <TextView
         android:id="@+id/live_event"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="8dp"
         android:layout_marginTop="8dp"
         android:background="@drawable/status_pill_background"
         android:elevation="7dp"
-        android:maxWidth="300dp"
+        android:maxLines="3"
+        android:ellipsize="end"
         android:paddingHorizontal="12dp"
         android:paddingVertical="7dp"
         android:textColor="@color/white"
         android:textSize="12sp"
         android:visibility="gone"
-        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintWidth_max="220dp"
+        app:layout_constraintHorizontal_bias="0"
+        app:layout_constraintEnd_toStartOf="@id/live_hud_row"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/live_diagnostics_toggle"
         tools:text="Cel ustabilizowany" />
 
     <com.example.alpr_v1.ui.LiveHudView
         android:id="@+id/live_hud_row"
-        android:layout_width="0dp" android:layout_height="wrap_content"
-        android:layout_marginHorizontal="12dp" android:layout_marginTop="8dp"
-        android:layout_marginBottom="8dp"
-        android:elevation="9dp" android:visibility="gone"
-        app:layout_constraintWidth_max="420dp"
-        app:layout_constrainedHeight="true"
-        app:layout_constraintVertical_bias="0"
-        app:layout_constraintBottom_toTopOf="@id/confirmed_result_tray"
-        app:layout_constraintStart_toStartOf="parent"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp" android:layout_marginTop="8dp"
+        android:visibility="gone"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toBottomOf="@id/live_diagnostics_toggle" />
+
+    <com.example.alpr_v1.ui.PhoneLevelView
+        android:id="@+id/phone_orientation_panel"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_marginStart="14dp"
+        android:layout_marginBottom="8dp"
+        android:visibility="visible"
+        android:importantForAccessibility="yes"
+        app:layout_constraintStart_toStartOf="@id/camera_preview"
+        app:layout_constraintBottom_toTopOf="@id/confirmed_result_tray" />
+
+    <com.example.alpr_v1.ui.LiveModelInfoView
+        android:id="@+id/live_model_info"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/auto_zoom_control" />
 
     <ImageView
         android:id="@+id/auto_zoom_target"
@@ -205,7 +241,7 @@
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="12dp"
         android:elevation="8dp"
-        android:visibility="gone"
+        android:visibility="visible"
         app:layout_constraintBottom_toTopOf="@id/experiment_thermal_button"
         app:layout_goneMarginBottom="16dp"
         app:layout_constraintWidth_max="352dp"
@@ -292,7 +328,7 @@
         android:paddingHorizontal="12dp"
         android:paddingVertical="9dp"
         android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/auto_zoom_control"
+        app:layout_constraintBottom_toTopOf="@id/live_model_info"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -354,6 +390,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
+
 
 
         <TextView

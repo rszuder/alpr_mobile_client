@@ -16,6 +16,73 @@ import java.util.List;
 
 public class VehicleTrackingCoordinatorTest {
     @Test
+    public void firstSlowMpResultIsNotExpiredBeforeItCanBePresented() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleTrackingFrame first = coordinator.updateFromMp(1L, 1_000_000_000L, 5_000_000_000L,
+                Collections.singletonList(observation(.2f)));
+        assertEquals(1, first.candidates.size());
+        assertFalse(first.candidates.get(0).predicted);
+        assertEquals(1_000_000_000L, first.candidates.get(0).lastMeasurementTimestampNanos);
+        assertEquals(0L, coordinator.stats().tracksExpired);
+        long expiresAt = 1_000_000_000L + coordinator.currentTrackTtlNanos() + 1L;
+        assertTrue(coordinator.predict(2L, expiresAt, expiresAt).candidates.isEmpty());
+    }
+    @Test
+    public void slowMpGapDoesNotExpireTrackWhileApplyingCameraCompensation() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        VehicleCandidate first = coordinator.updateFromMp(1L, 1_000_000_000L, 1_000_000_000L,
+                Collections.singletonList(observation(.2f))).candidates.get(0);
+        coordinator.updateFromMp(2L, 3_500_000_000L, 3_500_000_000L,
+                Collections.singletonList(observation(.2f)));
+        // A longer model pass follows a short one. Compensation precedes updateFromMp.
+        coordinator.applyCameraMotion(FrameMotionTransform.translation(.03f, 0f), 9_000_000_000L);
+        assertEquals(0L, coordinator.stats().tracksExpired);
+        VehicleCandidate next = coordinator.updateFromMp(3L, 9_000_000_000L, 11_500_000_000L,
+                Collections.singletonList(observation(.23f))).candidates.get(0);
+        assertEquals(first.entityId, next.entityId);
+        assertEquals(first.vehicleTrackId, next.vehicleTrackId);
+        assertEquals(1L, coordinator.stats().entitiesCreated);
+    }
+    @Test
+    public void rawMpSizeSurvivesSlowInferenceAndDoesNotBecomePredictedGeometry() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        NormalizedBounds raw = observation(0.2f).bounds;
+        coordinator.updateFromMp(1L, 1_000_000_000L, 5_000_000_000L,
+                Collections.singletonList(observation(0.2f)));
+        java.util.Map<Long, NormalizedBounds> measurement = coordinator.rawMpBounds(1L, 1_000_000_000L);
+        assertEquals(1, measurement.size());
+        assertEquals(raw, measurement.values().iterator().next());
+        coordinator.predict(2L, 6_000_000_000L, 6_000_000_000L);
+        assertEquals(measurement, coordinator.rawMpBounds(1L, 1_000_000_000L));
+        assertTrue(coordinator.rawMpBounds(2L, 6_000_000_000L).isEmpty());
+        coordinator.resetScene();
+        assertTrue(coordinator.rawMpBounds(1L, 1_000_000_000L).isEmpty());
+    }
+
+    @Test
+    public void predictionOutsideFrameDoesNotAbortTrackingOtherVehicles() {
+        VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator();
+        long target = coordinator.updateFromMp(1L, 1_000_000_000L, 1_000_000_000L,
+                Collections.singletonList(observation(0.05f))).candidates.get(0).entityId;
+        coordinator.setPriorityTarget(target, 1_000_000_000L);
+        coordinator.updateFromMp(2L, 1_200_000_000L, 1_200_000_000L,
+                Collections.singletonList(observation(0.32f)));
+        coordinator.updateFromMp(3L, 1_400_000_000L, 1_400_000_000L,
+                Collections.singletonList(observation(0.59f)));
+        coordinator.updateFromMp(4L, 1_600_000_000L, 1_600_000_000L,
+                Collections.singletonList(observation(0.8f)));
+
+        VehicleTrackingFrame offscreen = coordinator.predict(5L, 2_600_000_000L, 2_600_000_000L);
+        assertTrue(offscreen.candidates.isEmpty());
+        assertEquals(1_600_000_000L, coordinator.repository().get(target).lastMpNanos());
+        VehicleTrackingFrame fresh = coordinator.updateFromMp(6L, 2_700_000_000L, 2_700_000_000L,
+                Collections.singletonList(observation(0.1f, new float[]{0f, 1f}, 0)));
+        assertEquals(1, fresh.candidates.size());
+        assertFalse(fresh.candidates.get(0).predicted);
+        assertTrue(fresh.candidates.get(0).entityId != target);
+    }
+
+    @Test
     public void stateSurvivesConsumerRecreationUntilExplicitSceneReset() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         VehicleTrackingCoordinator coordinator = new VehicleTrackingCoordinator(repository);

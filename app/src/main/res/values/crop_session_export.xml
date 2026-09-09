@@ -1,0 +1,11 @@
+<resources>
+    <string name="crop_session_export">Zapisz paczkę sesji</string>
+    <string name="crop_session_choose">Wybierz sesję cropów</string>
+    <string name="crop_session_empty">Brak zapisanych cropów sesji. Włącz zbieranie i odczytaj tablicę.</string>
+    <string name="crop_session_loading">Przygotowuję listę sesji…</string>
+    <string name="crop_session_writing">Zapisuję paczkę cropów…</string>
+    <string name="crop_session_saved">Zapisano paczkę: %1$d cropów.</string>
+    <string name="crop_session_failed">Nie udało się zapisać paczki: %1$s</string>
+    <string name="crop_session_capture_failed">Nie udało się zachować cropa w sesji: %1$s</string>
+    <string name="crop_session_row">%1$s · %2$d cropów · %3$d obserwacji</string>
+</resources>

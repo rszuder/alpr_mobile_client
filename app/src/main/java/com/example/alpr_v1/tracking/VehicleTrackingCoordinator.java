@@ -26,9 +26,21 @@ public final class VehicleTrackingCoordinator {
     public static final double TRACK_TTL_GAP_MULTIPLIER = 1.75;
     private static final float[] MISSED_UPDATE_PENALTIES = {1f, 0.75f, 0.50f, 0.25f};
     private final VehicleEntityRepository repository;
+    private final com.example.alpr_v1.acquisition.DynamicVehicleSizeGate vehicleSizeGate =
+            new com.example.alpr_v1.acquisition.DynamicVehicleSizeGate();
+    public com.example.alpr_v1.acquisition.DynamicVehicleSizeGate vehicleSizeGate() { return vehicleSizeGate; }
     private final VehicleTrackManager tracker;
     private long sceneGeneration;
     private long lastMpSourceTimestampNanos;
+    private long rawMpFrameId, rawMpTimestampNanos;
+    private Map<Long, com.example.alpr_v1.domain.NormalizedBounds> rawMpBounds = Collections.emptyMap();
+
+    /** Positive MP boxes before Kalman projection, keyed by durable entity. */
+    public synchronized Map<Long, com.example.alpr_v1.domain.NormalizedBounds> rawMpBounds(
+            long sourceFrameId, long sourceTimestampNanos) {
+        return rawMpFrameId == sourceFrameId && rawMpTimestampNanos == sourceTimestampNanos
+                ? rawMpBounds : Collections.emptyMap();
+    }
     private long lastMpObservationGapNanos;
     private VehicleTrackingFrame latestFrame = VehicleTrackingFrame.empty(0L);
     private VehicleTrackingStats lastReportedStats = VehicleTrackingStats.zero();
@@ -68,6 +80,10 @@ public final class VehicleTrackingCoordinator {
             FrameMotionTransform transform,
             long sourceTimestampNanos
     ) {
+        // This runs before updateFromMp. Its intermediate prediction must already
+        // use the incoming MP gap, otherwise it expires tracks with the previous,
+        // shorter cadence just before the new measurements can associate.
+        adaptTrackLifetime(sourceTimestampNanos, sourceTimestampNanos);
         tracker.applyCameraMotion(transform, sourceTimestampNanos);
         if (latestFrame.candidates.isEmpty()) return;
         latestFrame = frame(
@@ -156,10 +172,10 @@ public final class VehicleTrackingCoordinator {
                 latestFrame.candidates
         );
         Set<Long> activeBefore = activeEntityIds();
+        adaptTrackLifetime(sourceTimestampNanos, snapshotTimestampNanos);
         if (lastMpSourceTimestampNanos > 0L
                 && sourceTimestampNanos >= lastMpSourceTimestampNanos) {
             lastMpObservationGapNanos = sourceTimestampNanos - lastMpSourceTimestampNanos;
-            tracker.setTrackTtlNanos(adaptiveTrackTtl(lastMpObservationGapNanos));
         }
         lastMpSourceTimestampNanos = Math.max(
                 lastMpSourceTimestampNanos, sourceTimestampNanos
@@ -169,6 +185,21 @@ public final class VehicleTrackingCoordinator {
                 sourceTimestampNanos,
                 protectedReassociationEntityIds
         );
+        Map<Long, com.example.alpr_v1.domain.NormalizedBounds> raw = new HashMap<>();
+        Map<Integer, com.example.alpr_v1.domain.NormalizedBounds> boundsBySource = new HashMap<>();
+        if (observations != null) for (VehicleTrackManager.Observation observation : observations) {
+            if (observation != null && observation.sourceIndex >= 0 && observation.bounds != null
+                    && observation.bounds.valid()) boundsBySource.put(observation.sourceIndex, observation.bounds);
+        }
+        for (VehicleTrackManager.Snapshot snapshot : measured) {
+            if (!snapshot.predicted && snapshot.missedUpdates == 0 && snapshot.sourceIndex >= 0
+                    && boundsBySource.containsKey(snapshot.sourceIndex)) {
+                raw.put(snapshot.entityId, boundsBySource.get(snapshot.sourceIndex));
+            }
+        }
+        rawMpFrameId = sourceFrameId;
+        rawMpTimestampNanos = sourceTimestampNanos;
+        rawMpBounds = Collections.unmodifiableMap(raw);
         List<VehicleTrackManager.Snapshot> snapshots = snapshotTimestampNanos
                 > sourceTimestampNanos
                 ? tracker.projectAfterMeasurement(snapshotTimestampNanos) : measured;
@@ -242,6 +273,16 @@ public final class VehicleTrackingCoordinator {
     }
     public synchronized long currentTrackTtlNanos() { return tracker.trackTtlNanos(); }
     public VehicleEntityRepository repository() { return repository; }
+    public synchronized void setPriorityTarget(long entityId, long recoveryGraceNanos) {
+        tracker.setPriorityTarget(entityId, recoveryGraceNanos);
+    }
+
+    private void adaptTrackLifetime(long sourceTimestampNanos, long snapshotTimestampNanos) {
+        long incomingGap = lastMpSourceTimestampNanos > 0L
+                ? Math.max(0L, sourceTimestampNanos - lastMpSourceTimestampNanos) : 0L;
+        long processingLatency = Math.max(0L, snapshotTimestampNanos - sourceTimestampNanos);
+        tracker.setTrackTtlNanos(adaptiveTrackTtl(Math.max(incomingGap, processingLatency)));
+    }
     public synchronized VehicleTrackingStats stats() { return tracker.stats(); }
 
     /** Event counters for one trace; gauges and durations remain current values. */
@@ -281,6 +322,9 @@ public final class VehicleTrackingCoordinator {
 
     /** Explicit scene boundary; model-engine recreation does not call this method. */
     public synchronized long resetScene() {
+        vehicleSizeGate.reset();
+        rawMpBounds = Collections.emptyMap();
+        rawMpFrameId = rawMpTimestampNanos = 0L;
         for (com.example.alpr_v1.domain.VehicleEntity entity : repository.activeEntities()) {
             addEvent(new VehicleTrackingEvent(
                     "vehicle_entity_expired",
@@ -430,6 +474,9 @@ public final class VehicleTrackingCoordinator {
     ) {
         List<VehicleCandidate> candidates = new ArrayList<>(snapshots.size());
         for (VehicleTrackManager.Snapshot snapshot : snapshots) {
+            // Prediction outside the frame is not a visible candidate. Keep the
+            // technical track for bounded recovery without aborting the MP frame.
+            if (snapshot.bounds == null || !snapshot.bounds.valid()) continue;
             float effectiveConfidence = effectiveConfidence(snapshot, snapshotTimestampNanos);
             com.example.alpr_v1.domain.VehicleEntity entity = repository.get(
                     snapshot.entityId

@@ -23,6 +23,9 @@ public final class VisualMotionEvidenceDecay {
             this.quality = quality == null
                     ? FrameMotionQuality.unavailable(0) : quality;
         }
+
+        /** Both the fresh evidence window and its settling tail protect a camera reversal. */
+        public boolean protectsContinuity() { return motionEstimated || settling; }
     }
 
     private long lastReliableMotionNanos;

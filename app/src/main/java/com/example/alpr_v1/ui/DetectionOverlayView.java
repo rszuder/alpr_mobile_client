@@ -136,6 +136,15 @@ public final class DetectionOverlayView extends View {
 
     private final DecelerateInterpolator overlayInterpolator =
             new DecelerateInterpolator();
+    private final LinearInterpolator dynamicOverlayInterpolator = new LinearInterpolator();
+    private boolean dynamicVehicleMotion;
+    private long lastDynamicPresentationMillis;
+
+    public void setDynamicVehicleMotion(boolean enabled) {
+        if (dynamicVehicleMotion == enabled) return;
+        dynamicVehicleMotion = enabled;
+        lastDynamicPresentationMillis = 0L;
+    }
 
 
     private int sourceWidth;
@@ -479,7 +488,7 @@ public final class DetectionOverlayView extends View {
     }
 
     private List<OverlayItem> stabilizeStationaryVehicles(List<OverlayItem> incoming, boolean preview) {
-        if (!stationaryScene || incoming == null || incoming.isEmpty()) return incoming;
+        if (dynamicVehicleMotion || !stationaryScene || incoming == null || incoming.isEmpty()) return incoming;
         List<OverlayItem> stable = new ArrayList<>();
         Set<Long> incomingVehicles = new HashSet<>();
         for (OverlayItem next : incoming) {
@@ -560,6 +569,10 @@ public final class DetectionOverlayView extends View {
     }
 
     private void setItems(List<OverlayItem> newItems, int sourceWidth, int sourceHeight, boolean preview) {
+        long presentationMillis = android.os.SystemClock.uptimeMillis();
+        long dynamicDurationMillis = lastDynamicPresentationMillis == 0L ? 50L
+                : Math.max(16L, Math.min(80L, presentationMillis - lastDynamicPresentationMillis));
+        lastDynamicPresentationMillis = presentationMillis;
         newItems = focusItems(newItems);
 
         List<OverlayItem> incomingItems = new ArrayList<>(
@@ -668,12 +681,12 @@ public final class DetectionOverlayView extends View {
 
 
         overlayAnimator.setDuration(
-                preview ? 80L : OVERLAY_TRANSITION_MS
+                dynamicVehicleMotion ? dynamicDurationMillis : preview ? 80L : OVERLAY_TRANSITION_MS
         );
 
 
         overlayAnimator.setInterpolator(
-                overlayInterpolator
+                dynamicVehicleMotion ? dynamicOverlayInterpolator : overlayInterpolator
         );
 
 

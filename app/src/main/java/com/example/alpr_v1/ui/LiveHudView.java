@@ -1,54 +1,82 @@
 package com.example.alpr_v1.ui;
 
 import android.content.Context;
+import android.os.Process;
+import android.os.SystemClock;
 import android.util.AttributeSet;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.ScrollView;
 import com.example.alpr_v1.R;
 import com.example.alpr_v1.metrics.MetricsCollector;
 import java.util.Locale;
 
-/** Presentation only: FPS comes from frame-flow counters, never from reciprocal inference time. */
+/** Transparent overlay; FPS is measured from camera frames, CPU from process time. */
 public final class LiveHudView extends LinearLayout {
     private long lastUpdate;
+    private double lastCpuPercent = Double.NaN;
+    public double cpuPercent() { return lastCpuPercent; }
+    private final ProcessCpuUsage cpuUsage = new ProcessCpuUsage();
+
     public LiveHudView(Context context, AttributeSet attributes) {
         super(context, attributes);
         setOrientation(VERTICAL);
-        setBackgroundResource(R.drawable.bg_hud_card);
-        int padding = Math.round(14 * getResources().getDisplayMetrics().density);
-        setPadding(padding, padding / 2, padding, padding);
-        ScrollView scroll = new ScrollView(context);
-        scroll.setVerticalScrollBarEnabled(false);
-        LinearLayout content = new LinearLayout(context);
-        content.setOrientation(VERTICAL);
-        LayoutInflater.from(context).inflate(R.layout.view_live_hud, content, true);
-        scroll.addView(content);
-        addView(scroll, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        setGravity(Gravity.END);
+        setClickable(false);
+        LayoutInflater.from(context).inflate(R.layout.view_live_hud, this, true);
     }
 
     public void render(MetricsCollector.LiveSnapshot snapshot, String resolution, boolean awaitingFresh, double cameraFps) {
-        long now = android.os.SystemClock.elapsedRealtime();
-        if (now - lastUpdate < 1_000L) return;
+        long now = SystemClock.elapsedRealtime();
+        if (lastUpdate != 0L && now - lastUpdate < 1_000L) return;
         lastUpdate = now;
         text(R.id.hud_camera_fps, rate(cameraFps));
-        text(R.id.hud_pipeline_time, duration(awaitingFresh ? Double.NaN : snapshot.pipelineMs));
-        text(R.id.hud_mp_time, duration(awaitingFresh ? Double.NaN : snapshot.vehicleInferenceMs));
-        text(R.id.hud_mt_time, duration(awaitingFresh ? Double.NaN : snapshot.plateInferenceMs));
-        text(R.id.hud_mz_time, duration(awaitingFresh ? Double.NaN : snapshot.characterInferenceMs));
-        text(R.id.hud_resolution, resolution);
-        text(R.id.hud_frame_flow, getContext().getString(R.string.hud_frame_flow, rate(snapshot.processedFps), snapshot.droppedFrames));
-        text(R.id.hud_overhead, getContext().getString(R.string.hud_overhead,
-                duration(awaitingFresh ? Double.NaN : snapshot.inferenceSumMs),
-                duration(awaitingFresh ? Double.NaN : snapshot.auxiliarySumMs)));
+        findViewById(R.id.hud_camera_fps).setContentDescription(
+                getContext().getString(R.string.hud_camera_fps) + ": " + rate(cameraFps));
+        stage(R.id.hud_mp_time, R.string.hud_vehicle_stage, awaitingFresh ? Double.NaN : snapshot.vehicleInferenceMs);
+        stage(R.id.hud_mt_time, R.string.hud_plate_stage, awaitingFresh ? Double.NaN : snapshot.plateInferenceMs);
+        stage(R.id.hud_mz_time, R.string.hud_character_stage, awaitingFresh ? Double.NaN : snapshot.characterInferenceMs);
     }
+
+    /** Reuses the existing thermal poll; no extra sensor or /proc polling. */
+    public void renderDeviceMetrics(double batteryTemperatureC) {
+        String temperature = Double.isFinite(batteryTemperatureC)
+                ? String.format(Locale.forLanguageTag("pl-PL"), "%.1f°", batteryTemperatureC) : "—";
+        double cpu = cpuUsage.sample(Process.getElapsedCpuTime(), SystemClock.uptimeMillis(),
+                Runtime.getRuntime().availableProcessors());
+        lastCpuPercent = cpu;
+        String resources = Double.isFinite(cpu)
+                ? String.format(Locale.forLanguageTag("pl-PL"), "%.0f%%", cpu) : "—";
+        text(R.id.hud_temperature, temperature);
+        text(R.id.hud_resources, resources);
+        findViewById(R.id.hud_temperature).setContentDescription(
+                getContext().getString(R.string.hud_temperature_description, temperature));
+        findViewById(R.id.hud_resources).setContentDescription(
+                getContext().getString(R.string.hud_resources_description, resources));
+    }
+
+    public void resetDeviceSampling() {
+        cpuUsage.reset();
+        lastCpuPercent = Double.NaN;
+        text(R.id.hud_temperature, "—");
+        text(R.id.hud_resources, "—");
+    }
+
     public void clearMetrics() {
         lastUpdate = 0L;
-        for (int id : new int[]{R.id.hud_camera_fps,R.id.hud_pipeline_time,R.id.hud_mp_time,
-                R.id.hud_mt_time,R.id.hud_mz_time,R.id.hud_resolution}) text(id,"—");
-        text(R.id.hud_frame_flow,"");text(R.id.hud_overhead,"");
-        text(R.id.live_hud,"");
+        for (int id : new int[]{R.id.hud_camera_fps, R.id.hud_mp_time, R.id.hud_mt_time, R.id.hud_mz_time}) {
+            text(id, "—");
+            findViewById(id).setContentDescription(null);
+        }
+        text(R.id.live_hud, "");
+    }
+
+    private void stage(int id, int label, double millis) {
+        String value = duration(millis);
+        text(id, value);
+        findViewById(id).setContentDescription(
+                getContext().getString(R.string.hud_stage_description, getContext().getString(label), value));
     }
     private void text(int id, String value) {
         TextView view = findViewById(id);

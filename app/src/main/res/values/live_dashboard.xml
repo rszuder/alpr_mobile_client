@@ -3,9 +3,9 @@
     <string name="camera_action_start">Start</string>
     <string name="camera_action_stop">Stop</string>
     <string name="camera_action_cancel">Anuluj</string>
-    <string name="camera_action_crops">Cropy</string>
+    <string name="camera_action_crops">Akwizycja</string>
     <string name="camera_action_preview">Podgląd</string>
-    <string name="camera_action_recent">Ostatnie</string>
+    <string name="camera_action_recent">Galeria</string>
     <string name="camera_action_review">Weryfikuj</string>
     <string name="hud_label">HUD</string>
     <string name="hud_toggle">Pokaż lub ukryj HUD z parametrami analizy</string>

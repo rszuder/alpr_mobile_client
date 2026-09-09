@@ -388,6 +388,52 @@ public final class AcquisitionQueueTest {
         assertNotNull(snapshot.find(2L));
     }
 
+    @Test public void largestVisibleBoxWinsOverConfidenceCenterAndPreviousAttempts() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        VehicleCandidate large = sized(1, .02f, .02f, .72f, .62f, .25f, 0f);
+        VehicleCandidate small = sized(6, .45f, .45f, .65f, .65f, .99f, 1f);
+        queue.update(frame(1, small, large), 0, 100);
+        // Old accumulated attempt debt must not force the smaller vehicle first.
+        for (int i=0;i<8;i++) queue.recordMtAttempt(1,100);
+        queue.defer(1,100,0);
+        assertEquals(1,queue.selectNext(101).candidate.entityId);
+        queue.defer(1,101,0);
+        assertEquals(6,queue.selectNext(102).candidate.entityId);
+        queue.defer(6,102,0);
+        assertEquals(1,queue.selectNext(103).candidate.entityId);
+    }
+
+    @Test public void eachNewRoundReevaluatesVehicleSizeWithoutStarvingNeighbors() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1, sized(1,.1f,.1f,.7f,.7f,.8f,0), sized(6,.7f,.1f,.9f,.3f,.8f,0)),0,100);
+        assertEquals(1,queue.selectNext(100).candidate.entityId); queue.defer(1,100,0);
+        assertEquals(6,queue.selectNext(101).candidate.entityId); queue.defer(6,101,0);
+        queue.update(frame(1, sized(1,.1f,.1f,.2f,.2f,.8f,0), sized(6,.3f,.1f,.9f,.7f,.8f,0)),0,102);
+        assertEquals(6,queue.selectNext(102).candidate.entityId); queue.defer(6,102,0);
+        assertEquals(1,queue.selectNext(103).candidate.entityId);
+    }
+
+    @Test public void largestBoxMustStillPassSizeGateAndCooldown() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1, sized(1,.1f,.1f,.8f,.8f,.8f,0), sized(6,.4f,.4f,.6f,.6f,.8f,0)),0,100);
+        queue.setMtEligibility(id -> id != 1);
+        assertEquals(6,queue.selectNext(100).candidate.entityId);
+        queue.defer(6,100,0); queue.setMtEligibility(id -> true);
+        queue.defer(1,100,1000);
+        assertEquals(6,queue.selectNext(101).candidate.entityId);
+    }
+
+    @Test public void offscreenPartDoesNotInflatePriority() {
+        AcquisitionQueue queue = new AcquisitionQueue();
+        queue.update(frame(1, sized(1,-2f,.2f,.1f,.8f,.9f,0), sized(6,.3f,.2f,.7f,.8f,.9f,0)),0,100);
+        assertEquals(6,queue.selectNext(100).candidate.entityId);
+    }
+
+    private static VehicleCandidate sized(long id, float left, float top, float right, float bottom, float confidence, float urgency) {
+        return new VehicleCandidate(id,id+10,new NormalizedBounds(left,top,right,bottom),confidence,confidence,
+                urgency,false,0,1,1,0,EntityAcquisitionState.NEW);
+    }
+
     private static ScanAcquisitionProfile profileWithLimit(int limit) {
         ScanAcquisitionProfile base = ScanAcquisitionProfile.DEFAULT;
         return new ScanAcquisitionProfile(

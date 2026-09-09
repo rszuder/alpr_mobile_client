@@ -44,7 +44,7 @@ import java.util.List;
 @RunWith(AndroidJUnit4.class)
 public final class GalleryPresentationInstrumentedTest {
     @Test
-    public void galleryCollectsFirstEmptyAndPartialMzInsteadOfWaitingForConsensus() {
+    public void cropsButtonControlsBothHistoryAndVerificationCopies() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Intent intent = new Intent(context, MainActivity.class)
                 .putExtra("debug_baseline_profile", "live");
@@ -52,12 +52,91 @@ public final class GalleryPresentationInstrumentedTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(intent)) {
             scenario.onActivity(activity -> {
                 try {
+                    java.lang.reflect.Field started = MainActivity.class.getDeclaredField("cameraStarted");
+                    started.setAccessible(true);
+                    // Enable the real button without starting camera inference.
+                    started.setBoolean(activity, true);
+                    java.lang.reflect.Method render = MainActivity.class.getDeclaredMethod("renderCollectionControl");
+                    render.setAccessible(true);
+                    render.invoke(activity);
+                    MaterialButton button = activity.findViewById(R.id.collection_toggle);
+                    CaptureGalleryViewModel gallery = new ViewModelProvider(activity)
+                            .get(CaptureGalleryViewModel.class);
+                    assertEquals(activity.getString(R.string.camera_action_crops_off), button.getText().toString());
+
+                    deliverCrop(activity, bitmap, 1L, "OFF1234", 1L);
+                    assertEquals(0, gallery.recognitionHistory().size());
+                    assertEquals(0, gallery.capturedCrops().size());
+
+                    button.performClick();
+                    assertEquals(activity.getString(R.string.camera_action_crops_on), button.getText().toString());
+                    deliverCrop(activity, bitmap, 1L, "ON12345", 2L);
+                    assertEquals(1, gallery.recognitionHistory().size());
+                    assertEquals(1, gallery.capturedCrops().size());
+
+                    button.performClick();
+                    // Exercise both a late update of an existing row and a new entity.
+                    deliverCrop(activity, bitmap, 1L, "CHANGED", 3L);
+                    deliverCrop(activity, bitmap, 2L, "OFF5678", 4L);
+                    assertEquals(1, gallery.recognitionHistory().size());
+                    assertEquals("ON12345", gallery.recognitionHistory().newestFirst().get(0).text);
+                    assertEquals(1, gallery.capturedCrops().size());
+                    assertFalse(button.isActivated());
+
+                    button.performClick();
+                    deliverCrop(activity, bitmap, 2L, "ON56789", 5L);
+                    assertEquals(2, gallery.recognitionHistory().size());
+                    assertEquals(2, gallery.capturedCrops().size());
+                    button.performClick();
+                    started.setBoolean(activity, false);
+                } catch (ReflectiveOperationException error) {
+                    throw new AssertionError(error);
+                }
+            });
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    private static void deliverCrop(MainActivity activity, Bitmap bitmap, long entity,
+            String text, long sequence) throws ReflectiveOperationException {
+        com.example.alpr_v1.pipeline.PlateObservation observation =
+                new com.example.alpr_v1.pipeline.PlateObservation(
+                        entity, com.example.alpr_v1.pipeline.PlateVehicleAssociation.direct(entity, entity, "test"),
+                        com.example.alpr_v1.pipeline.MtWorkKind.VEHICLE_ROI,
+                        com.example.alpr_v1.pipeline.MtReason.SCAN_NEXT_CANDIDATE,
+                        sequence, bitmap, text, 0.9, 0.8, false, 1,
+                        java.util.Collections.emptyList(), sequence, sequence * 1_000_000_000L,
+                        0.5f, null, timing(),
+                        com.example.alpr_v1.pipeline.PlateGeometry.unavailable(),
+                        true, true, text, false, 1, "single_row",
+                        java.util.Collections.emptyList(), "", text);
+        for (String method : new String[]{"collectRecognitionHistory", "collectCrops"}) {
+            java.lang.reflect.Method collect = MainActivity.class.getDeclaredMethod(method, List.class);
+            collect.setAccessible(true);
+            collect.invoke(activity, java.util.Collections.singletonList(observation));
+        }
+    }
+
+    @Test
+    public void galleryRejectsEmptyMzButCollectsPartialReadWithoutWaitingForConsensus() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        Intent intent = new Intent(context, MainActivity.class)
+                .putExtra("debug_baseline_profile", "live");
+        Bitmap bitmap = Bitmap.createBitmap(32, 16, Bitmap.Config.ARGB_8888);
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(intent)) {
+            scenario.onActivity(activity -> {
+                try {
+                    java.lang.reflect.Field active = MainActivity.class.getDeclaredField("collectionActive");
+                    active.setAccessible(true);
+                    active.setBoolean(activity, true);
                     java.lang.reflect.Method collect = MainActivity.class.getDeclaredMethod(
                             "collectRecognitionHistory", List.class);
                     collect.setAccessible(true);
                     com.example.alpr_v1.capture.RecognitionHistoryStore history =
                             new ViewModelProvider(activity).get(CaptureGalleryViewModel.class)
                                     .recognitionHistory();
+                    int expectedReadings = 0;
                     for (String raw : new String[]{"", "W", "WI1"}) {
                         com.example.alpr_v1.pipeline.PlateObservation observation =
                                 new com.example.alpr_v1.pipeline.PlateObservation(
@@ -72,7 +151,11 @@ public final class GalleryPresentationInstrumentedTest {
                                         true, !raw.isEmpty(), raw, false, 1, "single_row",
                                         java.util.Collections.emptyList(), "", "OLD1234");
                         collect.invoke(activity, java.util.Collections.singletonList(observation));
-                        assertEquals(1, history.size());
+                        if (raw.isEmpty()) {
+                            assertEquals(0, history.size());
+                            continue;
+                        }
+                        assertEquals(++expectedReadings, history.size());
                         assertEquals(raw, history.newestFirst().get(0).text);
                         assertFalse(history.newestFirst().get(0).confirmed);
                     }
@@ -165,10 +248,12 @@ public final class GalleryPresentationInstrumentedTest {
             onView(withId(R.id.gallery_sheet_list)).check(matches(isDisplayed()));
             onView(withId(R.id.history_number)).check(matches(withText("WI1234A")));
             onView(withId(R.id.history_number)).perform(click());
-            onView(withId(R.id.crop_timing_mp)).check(matches(withText(String.format("%.1f", 2.0))));
-            onView(withId(R.id.crop_timing_mt)).check(matches(withText(String.format("%.1f", 4.0))));
-            onView(withId(R.id.crop_timing_mz)).check(matches(withText(String.format("%.1f", 8.0))));
-            onView(withId(R.id.crop_timing_pipeline)).check(matches(withText(String.format("%.1f", 40.0))));
+            onView(withId(R.id.history_detail_pager)).check((view,error) -> {
+                if(error != null) throw error;
+                String details = DynamicDetailsAndSettingsInstrumentedTest.allText(view);
+                for(String expected : new String[]{"2,0 ms","4,0 ms","8,0 ms","40,0 ms"})
+                    assertTrue(details.contains(expected));
+            });
             onView(withId(R.id.history_detail_characters)).check(matches(withText(
                     containsString("W 97%")
             )));
@@ -207,7 +292,7 @@ public final class GalleryPresentationInstrumentedTest {
             )));
             onView(withId(R.id.verification_scroll)).check(matches(isDisplayed()));
             onView(withId(R.id.verification_model_text)).check(matches(withText("WI1234A")));
-            onView(withId(R.id.verification_accept)).check(matches(isDisplayed()));
+            onView(withId(R.id.verification_accept)).perform(scrollTo()).check(matches(isDisplayed()));
             onView(withId(R.id.crop_timing_pipeline)).check(matches(withText(String.format("%.1f", 40.0))));
             onView(withId(R.id.verification_characters)).check(matches(withText(
                     containsString("W 97%")

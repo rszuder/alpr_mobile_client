@@ -18,6 +18,20 @@ import java.util.Map;
 public final class EntityOverlayMotionProjector {
     private static final float MAXIMUM_LOCAL_PLATE_DELTA = 0.30f;
 
+    /** Caller must bound global geometry age and validate its source transform. */
+    public List<OverlayItem> mergeVehicleGeometry(List<OverlayItem> local, List<OverlayItem> global) {
+        Map<Long, OverlayItem> merged = new java.util.LinkedHashMap<>();
+        if (local != null) for (OverlayItem item : local) {
+            if (item != null && item.kind == OverlayItem.Kind.VEHICLE && item.trackId > 0)
+                merged.put(item.trackId, item);
+        }
+        if (global != null) for (OverlayItem item : global) {
+            if (item != null && item.kind == OverlayItem.Kind.VEHICLE && item.trackId > 0)
+                merged.putIfAbsent(item.trackId, item);
+        }
+        return Collections.unmodifiableList(new ArrayList<>(merged.values()));
+    }
+
     public List<OverlayItem> project(
             List<OverlayItem> diagnostics,
             List<OverlayItem> trackedPlates,

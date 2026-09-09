@@ -30,6 +30,17 @@ public final class RecognitionHistoryItem implements AutoCloseable {
     public double previewConfidence;
     public long previewCapturedAtMillis;
     public String captureSource;
+    private final java.util.LinkedHashMap<String, RecognitionHistoryObservation> observationRecords = new java.util.LinkedHashMap<>();
+    public List<RecognitionHistoryObservation> observationRecords() {
+        return Collections.unmodifiableList(new ArrayList<>(observationRecords.values()));
+    }
+    boolean record(RecognitionHistoryObservation observation) {
+        if (!text.equals(observation.text)) return false;
+        RecognitionHistoryObservation old = observationRecords.get(observation.key());
+        if (old != null && !(old.entityId == 0L && observation.entityId > 0L)) return false;
+        observationRecords.put(observation.key(), observation);
+        return true;
+    }
 
     RecognitionHistoryItem(
             String historyId,
@@ -89,6 +100,7 @@ public final class RecognitionHistoryItem implements AutoCloseable {
                 plateConfidence, capturedAtMillis, copy, characters, timing, confirmed,
                 observations, previewSharpness, captureSource);
         snapshot.lastObservationAtMillis = lastObservationAtMillis;
+        snapshot.observationRecords.putAll(observationRecords);
         return snapshot;
     }
 
@@ -101,6 +113,7 @@ public final class RecognitionHistoryItem implements AutoCloseable {
         moved.previewConfidence = previewConfidence;
         moved.previewCapturedAtMillis = previewCapturedAtMillis;
         moved.lastObservationAtMillis = lastObservationAtMillis;
+        moved.observationRecords.putAll(observationRecords);
         previewBitmap = null;
         return moved;
     }

@@ -1,4 +1,10 @@
 <resources>
+    <string name="camera_action_crops_on">Akwizycja: WŁ.</string>
+    <string name="camera_action_crops_off">Akwizycja: WYŁ.</string>
+    <string name="camera_action_crops_automatic">Akwizycja: AUTO</string>
+    <string name="phone_orientation_warning">Ustaw telefon pionowo do analizy</string>
+    <string name="phone_orientation_angles">Od pionu: %1$d°\nBok: %2$s · Przód/tył: %3$d°</string>
+    <string name="phone_orientation_unavailable">Odchylenie telefonu: brak aktualnego pomiaru</string>
     <string name="research_collection_automatic">Zapis automatyczny</string>
     <string name="app_name">Mobilny ALPR</string>
     <string name="camera_permission_required">Do podglądu i analizy potrzebny jest dostęp do kamery.</string>
@@ -38,13 +44,13 @@
     <string name="settings_import_in_progress_wait">Trwa import modeli — poczekaj na jego zakończenie</string>
     <string name="camera_content_description">Podgląd obrazu z kamery</string>
     <string name="result_count_zero">0</string>
-    <string name="collection_start">Zbieraj cropy</string>
-    <string name="collection_stop">Wstrzymaj</string>
-    <string name="history_open_zero">Ostatnie · 0</string>
-    <string name="history_open_count">Ostatnie · %1$d</string>
+    <string name="collection_start">Włącz akwizycję</string>
+    <string name="collection_stop">Wstrzymaj akwizycję</string>
+    <string name="history_open_zero">Galeria · 0</string>
+    <string name="history_open_count">Galeria · %1$d</string>
     <string name="verification_open_count">Próbki · %1$d</string>
     <string name="history_mode_label">Historia rozpoznawania</string>
-    <string name="history_title">Ostatnie odczyty</string>
+    <string name="history_title">Galeria odczytów</string>
     <string name="history_subtitle">Jeden wpis na logiczny pojazd lub tablicę w bieżącej scenie</string>
     <string name="history_entity_assigned">P%1$d</string>
     <string name="overlay_plate_pending">T: %1$s · oczekuje</string>

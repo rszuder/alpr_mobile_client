@@ -39,7 +39,8 @@ public final class ResearchAttemptBatch {
             if (record == null) return;
             for (String key : new String[]{"mt_invocation_id","mt_executed","attempt_started_elapsed_nanos",
                     "roi_left","roi_top","roi_right","roi_bottom","input_width","input_height",
-                    "input_scale","input_pad_x","input_pad_y"}) record.put(key,call.data.opt(key));
+                    "input_scale","input_pad_x","input_pad_y","mt_roi_policy",
+                    "primary_plate_region_top_fraction"}) record.put(key,call.data.opt(key));
             record.copyEvidence(call.plateCrop ? call.mtInputImage : call.image);
             if (!record.plateCrop) record.put("evidence_kind",call.data.optString("mt_input_evidence_kind",
                     call.data.optString("evidence_kind")));

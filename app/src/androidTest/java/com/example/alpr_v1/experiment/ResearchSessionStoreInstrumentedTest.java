@@ -289,6 +289,52 @@ public final class ResearchSessionStoreInstrumentedTest {
         }
     }
 
+    @Test public void adaptiveRoiRetryKeepsDistinctInvocationInputsAndRawCountsAfterTop1() throws Exception {
+        ResearchSessionStore store = running();
+        ResearchAttemptBatch batch = batch(store);
+        AcquisitionAttemptRecord primary = mtCall(batch,true);
+        primary.put("mt_roi_policy","PRIMARY_LOWER_VEHICLE");
+        primary.put("primary_plate_region_top_fraction",.35);
+        for (int i=0;i<3;i++) {
+            com.example.alpr_v1.vision.Detection detection = detection(i);
+            batch.detected(primary,detection,true);
+            AcquisitionAttemptRecord item = batch.forDetection(detection);
+            item.put("raw_assigned_count",3);
+            item.put("mt_top1_selected",i==1);
+            item.put("mz_executed",i==1);
+            if (i == 1) {
+                Bitmap crop = Bitmap.createBitmap(20,10,Bitmap.Config.ARGB_8888);
+                crop.eraseColor(Color.RED); item.copyPlateCrop(crop); crop.recycle();
+            }
+        }
+        AcquisitionAttemptRecord retry = batch.beginMt(42,42,0,0,200,150,64,32);
+        Bitmap input = Bitmap.createBitmap(64,32,Bitmap.Config.ARGB_8888);
+        input.eraseColor(Color.BLUE); retry.copyEvidence(input); input.recycle();
+        retry.put("mt_roi_policy","EXPANDED_VEHICLE"); retry.mtStarted();
+        assertFalse(primary.mtInvocationId().equals(retry.mtInvocationId()));
+        batch.finish("","");
+        File archive = finish(store);
+        ResearchArchive.verifyEntryHashes(archive);
+        try(java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive)) {
+            int primaryRows=0,selected=0,retryRows=0;
+            for (String line:entry(zip,"samples/attempts.jsonl").split("\n")) {
+                JSONObject row = new JSONObject(line);
+                assertNotNull(zip.getEntry(row.getString("mt_input_evidence_entry")));
+                if (row.getString("mt_roi_policy").equals("PRIMARY_LOWER_VEHICLE")) {
+                    primaryRows++;
+                    assertEquals(3,row.getInt("mt_detection_count"));
+                    assertEquals(.35,row.getDouble("primary_plate_region_top_fraction"),.001);
+                    if (row.getBoolean("mt_top1_selected")) selected++;
+                } else {
+                    retryRows++;
+                    assertEquals(0,row.getInt("mt_detection_count"));
+                    assertEquals(200,row.getInt("roi_right"));
+                }
+            }
+            assertEquals(3,primaryRows); assertEquals(1,selected); assertEquals(1,retryRows);
+        }
+    }
+
     @Test public void mtCancelledAfterBackendKeepsInvocationAndDecoderIndicesAcrossStop() throws Exception {
         ResearchSessionStore store=running(); ResearchAttemptBatch batch=batch(store);
         AcquisitionAttemptRecord call=mtCall(batch,true); batch.detected(call,detection(0),true);

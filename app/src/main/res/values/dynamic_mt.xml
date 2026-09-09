@@ -1,0 +1,13 @@
+<resources>
+    <string name="settings_dynamic_mt_title">DYNAMIC: próg pojazdu i obszar MT</string>
+    <string name="settings_dynamic_mt_description">Minimalny rozmiar ramki MP w pikselach obrazu źródłowego. Oba wymiary muszą spełniać próg. Mniejszy pojazd pozostaje śledzony.</string>
+    <string name="settings_dynamic_mt_enter_width">Szerokość wejścia (px)</string>
+    <string name="settings_dynamic_mt_enter_height">Wysokość wejścia (px)</string>
+    <string name="settings_dynamic_mt_keep_width">Szerokość podtrzymania (px)</string>
+    <string name="settings_dynamic_mt_keep_height">Wysokość podtrzymania (px)</string>
+    <string name="settings_dynamic_mt_primary_top">Pomiń górną część pojazdu (%)</string>
+    <string name="settings_dynamic_mt_primary_top_help" formatted="false">Górna część ramki pomijana przy szukaniu tablicy. Np. 35% oznacza szukanie w dolnych 65% ramki pojazdu. Jeśli tablica nie zostanie znaleziona, obszar szukania zostanie poszerzony.</string>
+    <string name="settings_dynamic_mt_invalid">Wymiary muszą wynosić 1–8192 px, podtrzymanie nie może przekraczać wejścia, a pomijana część wysokości pojazdu musi wynosić 0–80%.</string>
+    <string name="settings_dynamic_mt_save">Zapisz</string>
+    <string name="settings_dynamic_mt_defaults">Domyślne</string>
+</resources>

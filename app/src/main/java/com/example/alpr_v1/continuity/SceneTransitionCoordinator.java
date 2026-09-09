@@ -40,6 +40,19 @@ public final class SceneTransitionCoordinator {
     private String lastReacquireResult = "";
     private boolean lastReacquireVehiclePoolRecovered;
     private boolean lastReacquireDeadlineReached;
+    private long longestProcessingDurationNanos;
+    private static final long MAXIMUM_ADAPTIVE_RECOVERY_NANOS = 15_000_000_000L;
+
+    /** Recovery must allow a fresh model pass, including waiting for an in-flight pass. */
+    public synchronized void recordProcessingDuration(long durationNanos) {
+        longestProcessingDurationNanos = Math.max(longestProcessingDurationNanos,
+                Math.min(MAXIMUM_ADAPTIVE_RECOVERY_NANOS, Math.max(0L, durationNanos)));
+    }
+
+    public synchronized long reacquireTimeoutNanos() {
+        return Math.max(profile.reacquireTimeoutNanos, Math.min(MAXIMUM_ADAPTIVE_RECOVERY_NANOS,
+                profile.reacquireTimeoutNanos + 2L * longestProcessingDurationNanos));
+    }
 
     public SceneTransitionCoordinator(
             SceneHandlingMode mode,
@@ -115,6 +128,21 @@ public final class SceneTransitionCoordinator {
         if (currentState == SceneContinuityState.REACQUIRING
                 && reacquireContext != null) {
             reacquireContext = reacquireContext.observe(assessment);
+            boolean freshTarget = assessment.focusedTargetPreserved && assessment.finalizationAllowed
+                    && evidence.target.geometryValidated
+                    && (evidence.target.freshVehicleMeasurement || evidence.target.freshPlateMeasurement)
+                    && evidence.target.level != TargetContinuityLevel.PREDICTED_ONLY;
+            boolean freshPool = assessment.vehiclePoolPreserved
+                    && evidence.vehicles.freshMeasuredEntities > 0
+                    && evidence.vehicles.entitiesReassociated > 0
+                    && evidence.vehicles.newestMeasurementAgeNanos <= profile.maximumFocusedEvidenceAgeNanos;
+            if (freshTarget || freshPool && !lastActiveTargetPresent) {
+                resetRecoveryState();
+                enterState(SceneContinuityState.STABLE, nowNanos);
+                finalizationSuspended = !assessment.finalizationAllowed || evidence.motion.rapidCameraMotion;
+                heavyInferenceSuspended = false;
+                return emitNone(nowNanos, freshTarget ? "fresh_target_revalidated" : "fresh_vehicle_pool_revalidated");
+            }
         }
         if (currentState == SceneContinuityState.REACQUIRING
                 && reacquireDeadlineReached(nowNanos)) {
@@ -406,6 +434,7 @@ public final class SceneTransitionCoordinator {
     ) {
         if (currentState != SceneContinuityState.REACQUIRING
                 && !evidence.rawVisualChange
+                && !assessment.vehiclePoolPreserved
                 && (evidence.focusedTrackingLost
                 || evidence.focusedTrackingDegraded)) {
             if (evidence.motion.cameraMoving
@@ -438,11 +467,11 @@ public final class SceneTransitionCoordinator {
 
         if (assessment.classification
                 == VisualChangeClassification.MOTION_EXPLAINED_CHANGE
-                && assessment.focusedTargetPreserved
-                && !evidence.motion.rapidCameraMotion) {
+                && (assessment.focusedTargetPreserved && !evidence.motion.rapidCameraMotion
+                || assessment.vehiclePoolPreserved)) {
             resetRecoveryState();
             enterState(SceneContinuityState.STABLE, nowNanos);
-            finalizationSuspended = !assessment.finalizationAllowed;
+            finalizationSuspended = !assessment.finalizationAllowed || evidence.motion.rapidCameraMotion;
             heavyInferenceSuspended = false;
             return emitNone(nowNanos, assessment.reason);
         }
@@ -467,10 +496,10 @@ public final class SceneTransitionCoordinator {
             long nowNanos
     ) {
         if (currentState == SceneContinuityState.MOTION_HOLD) {
-            if (assessment.focusedTargetPreserved) {
+            if (assessment.focusedTargetPreserved || assessment.vehiclePoolPreserved) {
                 resetRecoveryState();
                 enterState(SceneContinuityState.STABLE, nowNanos);
-                finalizationSuspended = !assessment.finalizationAllowed;
+                finalizationSuspended = !assessment.finalizationAllowed || evidence.motion.rapidCameraMotion;
                 heavyInferenceSuspended = false;
                 return emitNone(nowNanos, "target_continuity_restored_during_hold");
             }
@@ -511,7 +540,7 @@ public final class SceneTransitionCoordinator {
 
         resetRecoveryState();
         enterState(SceneContinuityState.STABLE, nowNanos);
-        finalizationSuspended = !assessment.finalizationAllowed;
+        finalizationSuspended = !assessment.finalizationAllowed || evidence.motion.rapidCameraMotion;
         heavyInferenceSuspended = false;
         return emitNone(nowNanos, assessment.reason);
     }
@@ -519,7 +548,7 @@ public final class SceneTransitionCoordinator {
     private boolean reacquireDeadlineReached(long nowNanos) {
         return reacquireContext != null
                 && elapsedSince(reacquireContext.startedRuntimeNanos, nowNanos)
-                >= profile.reacquireTimeoutNanos;
+                >= reacquireTimeoutNanos();
     }
 
     private SceneTransitionDecision finishUnsuccessfulReacquire(long nowNanos) {
@@ -563,10 +592,10 @@ public final class SceneTransitionCoordinator {
         return emit(
                 SceneTransitionAction.SOFT_HOLD,
                 true, true, true,
-                true, true, true,
+                false, true, true,
                 false, false, false,
                 false, false,
-                true, false,
+                false, false,
                 reason,
                 nowNanos
         );

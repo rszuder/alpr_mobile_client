@@ -1,5 +1,8 @@
 # Architektura klienta mobilnego ALPR
 
+Układ nakładki telemetrycznej i wskaźnika orientacji:
+[lekki HUD kamery](compact_live_hud.md).
+
 ## Wybór wariantu wykonawczego MP/MT/MZ
 
 Każdy węzeł kompozycji udostępnia osobno wybór modelu, wybór wariantu
@@ -29,6 +32,98 @@ precision, rozmiar i typ wejścia oraz pliki.
 Schemat i importer nie zmieniają się. W szczególności ONNX INT8 QDQ nadal
 zachowuje publiczne wejście FLOAT32. Wyniki walidacji wdrożenia:
 `docs/handoffs/implementation-report-model-variants-v1.md`.
+
+## Mechanizm priorytetowego śledzenia encji i bramka rozmiaru pojazdu w trybie dynamicznym
+
+W trybie DYNAMIC pojazd może zostać wykryty i objęty śledzeniem wcześniej,
+zmieniać rozmiar w kolejnych klatkach i pozostawać tą samą `VehicleEntity`
+mimo chwilowego braku kwalifikacji do MT. Priorytet aktywnego celu określa
+pierwszeństwo jego śledzenia i odzyskiwania, natomiast bramka rozmiaru określa
+możliwość rozpoczęcia analizy tablicy.
+
+**Status na 2026-09-09:** roboczy kod zawiera priorytet śledzenia aktywnego celu
+oraz `DynamicVehicleSizeGate`, podłączoną do kolejki Scan i wywołań MT.
+Progi startowe to 120×80 px, a progi podtrzymania wynoszą 100×64 px.
+Oba wymiary muszą spełniać próg. Wartości znajdują się w
+`DynamicVehicleSizeGate.Config.INITIAL` i wymagają kalibracji na próbkach.
+Są konfigurowalne w Opcje → DYNAMIC: próg pojazdu i obszar MT. Rozszerzenie
+ROI i galerii opisuje [raport wdrożenia](dynamic_mt_gallery_implementation.md).
+
+Zakres mechanizmu jest następujący:
+
+```text
+SceneHandlingMode = DYNAMIC (w kodzie: DYNAMIC_CONTINUITY)
++ śledzona VehicleEntity
++ bramka rozmiaru przed MT
+
+śledzenie encji ≠ zgoda na uruchomienie MT
+```
+
+Mały pojazd nadal jest śledzony, ale MT dla tej encji nie jest uruchamiany,
+dopóki aktualna, świeżo zmierzona przez MP geometria nie spełni minimalnych
+wymiarów. Sama predykcja trackera lub powiększenie wycinka do rozdzielczości
+wejściowej modelu nie zastępuje świeżego pomiaru. Niespełnienie progu rozmiaru
+nie usuwa encji ani nie zmienia jej `entityId`; utrata tożsamości nadal wynika
+z odrębnych zasad ciągłości śledzenia.
+
+Kwalifikacja rozmiarowa przed skierowaniem encji do MT oraz druga kontrola
+bezpośrednio przed wywołaniem MT korzystają z aktualnej, świeżo zmierzonej
+ramki pojazdu. Oczekiwanie z powodu zbyt małego pojazdu jest odnotowane
+w telemetrii jako `VEHICLE_TOO_SMALL`. Histereza rozdziela progi wejścia
+i podtrzymania. Bramka nie zmienia hierarchii encji ani polityki AutoZoom.
+
+Implementacja wykorzystuje surowe ramki MP zachowane w
+`VehicleTrackingCoordinator.rawMpBounds()` przed predykcją Kalmana, razem
+z identyfikatorem i czasem klatki źródłowej. Kolejka wybiera spośród encji
+kwalifikujących się według ostatniego rzeczywistego pomiaru MP. Przed MT
+silnik wymaga pomiaru dla dokładnie tej klatki źródłowej, jej rozdzielczości,
+sceny, epoki wizualnej i generacji transformacji kamery. Jeśli go brakuje,
+odświeża MP. Opóźnienie obliczeń nie zmienia rozmiarów tej samej klatki,
+natomiast wynik z poprzedniej klatki nie zastępuje nowego pomiaru.
+
+Pierwsza kontrola odrzuca zbyt małe encje przed wyborem z kolejki i przed
+przydzieleniem budżetu ROI. Druga kontrola znajduje się bezpośrednio przed
+`plateBackend.run()`, dodatkowo poprzedzona kontrolą przed przygotowaniem
+tensora. Oczekiwanie aktywnej encji z potwierdzoną zbyt małą ramką zawiesza
+jej budżety czasu akwizycji. Rzeczywisty brak pojazdu w kolejnym MP przywraca
+normalne zasady utraty celu i timeoutów. Nie rejestruje się nieudanej detekcji
+MT, jeśli model nie został wywołany.
+
+Bramka działa w DYNAMIC z aktywną kaskadą MP (R1/R2). R0 bez encji pojazdu
+pozostaje poza jej zakresem. MT ukierunkowane na znaną encję, także przez ROI
+celu lub pełnoklatkową próbę odzyskania, podlega kontroli tej encji. Gdy
+wszystkie świeżo zmierzone pojazdy są za małe, pusty wybór ROI nie uruchamia
+pełnoklatkowego fallbacku omijającego bramkę. Nie zmieniono zasad wyzwalania
+ani budżetów AutoZoom; powiększenie wymaga nowego MP do kwalifikacji MT.
+
+Telemetria zapisuje `VEHICLE_TOO_SMALL`, identyfikator encji, zmierzone
+wymiary, wymagane progi i etap kontroli. Brak właściwego pomiaru ma osobną
+przyczynę `VEHICLE_MEASUREMENT_REQUIRED`. Trace zawiera również konfigurację
+progów i faktyczną liczbę wywołań MT. Weryfikacja na telefonie i kalibracja
+progów pozostają osobnym etapem od testów jednostkowych. Wymóg pomiaru z tej
+samej klatki może zwiększyć częstotliwość MP przed MT; wpływ na opóźnienie
+wymaga pomiaru na urządzeniu.
+
+Walidacja implementacji: 400/400 testów JVM dla akwizycji, trackingu, pipeline'u
+i ciągłości, w tym 13 nowych przypadków; `assembleDebug` i
+`assembleDebugAndroidTest` zakończone powodzeniem. Testów instrumentacyjnych
+nie uruchamiano na telefonie.
+
+Mechanizm ten dotyczy trybu dynamicznego, w którym geometria pojazdu zmienia
+się w czasie. Tryb statyczny wykorzystuje odrębną politykę analizy sceny.
+Oczekiwanie na spełnienie progu nie przełącza DYNAMIC w STATIC i nie rozszerza
+opisanych zasad oczekiwania na wzrost ramki na tryb STATIC.
+
+W trybie dynamicznym pojazd może być śledzony od chwili jego wykrycia,
+natomiast model MT zostaje uruchomiony dopiero po osiągnięciu przez aktualną,
+świeżo zmierzoną ramkę pojazdu minimalnych wymiarów wymaganych do analizy tablicy.
+
+Źródło doprecyzowania: [handoff zakresu DYNAMIC](handoffs/dynamic-vehicle-size-gate-scope-v1.md).
+
+Śledzenie i prezentację ramek podczas ruchu kamery opisuje również
+[poprawka ciągłości overlayu DYNAMIC](dynamic_vehicle_overlay_motion_fix.md).
+Zasady zachowania identyfikatora i sceny podczas zmiany kadru opisuje
+[poprawka ciągłości encji DYNAMIC](dynamic_scene_identity_continuity_fix.md).
 
 ## Tryb statyczny: granica zdjęcia i autozoom tablic
 

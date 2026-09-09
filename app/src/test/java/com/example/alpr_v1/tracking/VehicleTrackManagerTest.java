@@ -20,6 +20,144 @@ import java.util.List;
 
 public class VehicleTrackManagerTest {
     @Test
+    public void priorityTargetSurvivesTechnicalTtlAndRecoversBeforeNewEntityIsCreated() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        List<VehicleTrackManager.Snapshot> initial = manager.update(Arrays.asList(
+                observation(0.05f, 0.2f, 0.25f, 0.5f, red(), 0),
+                observation(0.7f, 0.2f, 0.9f, 0.5f, blue(), 1)), 1_000_000_000L);
+        VehicleTrackManager.Snapshot target = bySource(initial, 0);
+        manager.setPriorityTarget(target.entityId, 1_000_000_000L);
+
+        List<VehicleTrackManager.Snapshot> held = manager.predict(2_100_000_000L);
+        assertEquals(1, held.size());
+        assertEquals(target.vehicleTrackId, held.get(0).vehicleTrackId);
+        assertEquals(1_000_000_000L, held.get(0).lastMeasurementTimestampNanos);
+        assertTrue(held.get(0).predicted);
+        // Without a motion transform, strong, unambiguous appearance still
+        // allows bounded recovery of the selected target after a camera jump.
+        VehicleTrackManager.Snapshot recovered = manager.update(Collections.singletonList(
+                observation(0.32f, 0.2f, 0.52f, 0.5f, red(), 0)),
+                2_200_000_000L).get(0);
+        assertEquals(target.entityId, recovered.entityId);
+        assertEquals(target.vehicleTrackId, recovered.vehicleTrackId);
+        assertEquals(2, repository.size());
+    }
+
+    @Test
+    public void priorityGraceExpiresWithoutFreshEvidenceAndSelectionDoesNotRenewIt() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long target = manager.update(Collections.singletonList(
+                observation(0.1f, 0.2f, 0.3f, 0.5f, red(), 0)),
+                1_000_000_000L).get(0).entityId;
+        manager.setPriorityTarget(target, 1_000_000_000L);
+        assertEquals(1, manager.predict(2_500_000_000L).size());
+        manager.setPriorityTarget(target, 1_000_000_000L);
+        assertTrue(manager.predict(3_100_000_000L).isEmpty());
+        assertEquals(1_000_000_000L, repository.get(target).lastMpNanos());
+    }
+
+    @Test
+    public void releasingPriorityRestoresNormalTrackExpiry() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long target = manager.update(Collections.singletonList(
+                observation(0.1f, 0.2f, 0.3f, 0.5f, red(), 0)),
+                1_000_000_000L).get(0).entityId;
+        manager.setPriorityTarget(target, 1_000_000_000L);
+        assertEquals(1, manager.predict(2_100_000_000L).size());
+        manager.setPriorityTarget(0L, 0L);
+        assertTrue(manager.predict(2_200_000_000L).isEmpty());
+    }
+
+    @Test
+    public void ambiguousPriorityTargetWaitsForEvidenceWithoutCreatingDuplicates() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long target = manager.update(Collections.singletonList(
+                observation(0.4f, 0.2f, 0.6f, 0.5f, red(), 0)),
+                1_000_000_000L).get(0).entityId;
+        manager.setPriorityTarget(target, 1_000_000_000L);
+        List<VehicleTrackManager.Snapshot> uncertain = manager.update(Arrays.asList(
+                observation(0.35f, 0.2f, 0.55f, 0.5f, red(), 0),
+                observation(0.45f, 0.2f, 0.65f, 0.5f, red(), 1)), 1_200_000_000L);
+        assertEquals(1, uncertain.size());
+        assertTrue(uncertain.get(0).predicted);
+        assertEquals(1_000_000_000L, repository.get(target).lastMpNanos());
+        assertEquals(1, repository.size());
+        assertEquals(target, manager.update(Collections.singletonList(
+                observation(0.4f, 0.2f, 0.6f, 0.5f, red(), 0)),
+                1_400_000_000L).get(0).entityId);
+        assertEquals(1_400_000_000L, repository.get(target).lastMpNanos());
+    }
+
+    @Test
+    public void priorityDoesNotTransferIdentityToDifferentVehicle() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long target = manager.update(Collections.singletonList(
+                observation(0.4f, 0.2f, 0.6f, 0.5f, red(), 0)),
+                1_000_000_000L).get(0).entityId;
+        manager.setPriorityTarget(target, 1_000_000_000L);
+        List<VehicleTrackManager.Snapshot> result = manager.update(Collections.singletonList(
+                observation(0.4f, 0.2f, 0.6f, 0.5f, blue(), 0)), 1_200_000_000L);
+        assertNotEquals(target, bySource(result, 0).entityId);
+        assertEquals(1_000_000_000L, repository.get(target).lastMpNanos());
+    }
+
+    @Test
+    public void priorityCannotTakeObservationThatBelongsToSimilarNeighbor() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        List<VehicleTrackManager.Snapshot> initial = manager.update(Arrays.asList(
+                observation(0.1f, 0.2f, 0.3f, 0.5f, red(), 0),
+                observation(0.5f, 0.2f, 0.7f, 0.5f, red(), 1)), 1_000_000_000L);
+        long target = bySource(initial, 0).entityId;
+        long neighbor = bySource(initial, 1).entityId;
+        manager.setPriorityTarget(target, 1_000_000_000L);
+
+        List<VehicleTrackManager.Snapshot> result = manager.update(Collections.singletonList(
+                observation(0.5f, 0.2f, 0.7f, 0.5f, red(), 0)), 1_200_000_000L);
+        assertEquals(neighbor, bySource(result, 0).entityId);
+        assertEquals(1_000_000_000L, repository.get(target).lastMpNanos());
+        assertEquals(2, repository.size());
+    }
+
+    @Test
+    public void changingTargetTransfersExpiryProtectionToNewSelection() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        List<VehicleTrackManager.Snapshot> initial = manager.update(Arrays.asList(
+                observation(0.1f, 0.2f, 0.3f, 0.5f, red(), 0),
+                observation(0.5f, 0.2f, 0.7f, 0.5f, blue(), 1)), 1_000_000_000L);
+        manager.setPriorityTarget(bySource(initial, 0).entityId, 1_000_000_000L);
+        long newTarget = bySource(initial, 1).entityId;
+        manager.setPriorityTarget(newTarget, 1_000_000_000L);
+        List<VehicleTrackManager.Snapshot> held = manager.predict(2_100_000_000L);
+        assertEquals(1, held.size());
+        assertEquals(newTarget, held.get(0).entityId);
+    }
+
+    @Test
+    public void dormantEntityFollowsCameraMotionWithoutRefreshingMeasurement() {
+        VehicleEntityRepository repository = new VehicleEntityRepository();
+        VehicleTrackManager manager = manager(repository);
+        long entityId = manager.update(Collections.singletonList(
+                observation(0.05f, 0.2f, 0.25f, 0.5f, red(), 0)),
+                1_000_000_000L).get(0).entityId;
+        manager.predict(2_100_000_000L);
+        manager.applyCameraMotion(FrameMotionTransform.translation(0.27f, 0f),
+                2_100_000_000L);
+
+        assertEquals(1_000_000_000L, repository.get(entityId).lastMpNanos());
+        assertEquals(entityId, manager.update(Collections.singletonList(
+                observation(0.32f, 0.2f, 0.52f, 0.5f, red(), 0)),
+                2_200_000_000L).get(0).entityId);
+        assertEquals(1, repository.size());
+    }
+
+    @Test
     public void keepsTwoEntityIdsWhenVehiclesApproachEachOther() {
         VehicleEntityRepository repository = new VehicleEntityRepository();
         VehicleTrackManager manager = manager(repository);

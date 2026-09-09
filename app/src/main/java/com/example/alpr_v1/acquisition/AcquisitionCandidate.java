@@ -5,6 +5,11 @@ import com.example.alpr_v1.domain.NormalizedBounds;
 
 /** Immutable entity-keyed input and state retained by the Scan queue. */
 public final class AcquisitionCandidate {
+    /** Visible source-frame area; independent of analysis resolution or ROI expansion. */
+    public float visibleAreaRatio() {
+        return Math.max(0f, Math.min(1f, bounds.right) - Math.max(0f, bounds.left))
+                * Math.max(0f, Math.min(1f, bounds.bottom) - Math.max(0f, bounds.top));
+    }
     public final long entityId;
     public final long vehicleTrackId;
     public final NormalizedBounds bounds;

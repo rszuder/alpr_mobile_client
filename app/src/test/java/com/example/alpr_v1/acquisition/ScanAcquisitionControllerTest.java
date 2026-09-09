@@ -38,6 +38,91 @@ public final class ScanAcquisitionControllerTest {
     private static final long SECOND = 1_000_000_000L;
 
     @Test
+    public void smallCandidateDoesNotBlockEligibleNeighborOrDisappearFromQueue() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        DynamicVehicleSizeGate gate = new DynamicVehicleSizeGate();
+        gate.setEnabled(true);
+        controller.setVehicleSizeGate(gate);
+        controller.startRun(1L, 0L);
+        java.util.Map<Long, NormalizedBounds> raw = new java.util.HashMap<>();
+        raw.put(2L, new NormalizedBounds(0, 0, .1f, .1f));
+        raw.put(3L, new NormalizedBounds(0, 0, .3f, .3f));
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 1L), 640, 480, raw);
+        AcquisitionDirective selected = controller.onVehicleFrame(
+                frame(candidate(2L, 22L), candidate(3L, 33L)), continuity(), 10L);
+        assertEquals(3L, selected.entityId);
+        assertEquals(1, controller.snapshot(10L).queue.candidates.size());
+        assertEquals(2L, controller.snapshot(10L).queue.candidates.get(0).entityId);
+    }
+
+    @Test
+    public void lossAfterSizeWaitRestoresNormalSessionTimeout() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        DynamicVehicleSizeGate gate = new DynamicVehicleSizeGate();
+        gate.setEnabled(true);
+        controller.setVehicleSizeGate(gate);
+        controller.startRun(1L, 0L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 1L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .3f, .3f)));
+        controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 10L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 2L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .1f, .1f)));
+        controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 20L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 3L), 640, 480, Collections.emptyMap());
+        controller.onVehicleFrame(frame(), continuity(), 30L);
+        controller.onVehicleFrame(frame(), continuity(), 100 * SECOND);
+        assertEquals(0L, controller.snapshot(100 * SECOND).activeEntityId);
+    }
+
+    @Test
+    public void smallVehicleStaysQueuedWithoutMtAndSameEntityStartsAfterGrowth() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        DynamicVehicleSizeGate gate = new DynamicVehicleSizeGate();
+        gate.setEnabled(true);
+        controller.setVehicleSizeGate(gate);
+        controller.startRun(1L, 0L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 1L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .1f, .1f)));
+        AcquisitionDirective waiting = controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 10L);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP, waiting.action);
+        assertEquals(0, controller.snapshot(10L).mtAttempts);
+        assertEquals(0L, controller.snapshot(10L).activeEntityId);
+        assertEquals(1, controller.snapshot(10L).queue.candidates.size());
+
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 2L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .3f, .3f)));
+        AcquisitionDirective started = controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 20L);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT, started.action);
+        assertEquals(2L, started.entityId);
+        assertEquals(1, controller.snapshot(20L).mtAttempts);
+    }
+
+    @Test
+    public void activeTargetCanWaitForGrowthWithoutExhaustingSessionBudget() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        DynamicVehicleSizeGate gate = new DynamicVehicleSizeGate();
+        gate.setEnabled(true);
+        controller.setVehicleSizeGate(gate);
+        controller.startRun(1L, 0L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 1L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .3f, .3f)));
+        AcquisitionDirective selected = controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 10L);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 2L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .1f, .1f)));
+        controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 20L);
+        AcquisitionDirective waiting = controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 100 * SECOND);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_FRESH_MP, waiting.action);
+        assertEquals(selected.sessionId, waiting.sessionId);
+        assertEquals(2L, waiting.entityId);
+        assertEquals(1, controller.snapshot(100 * SECOND).mtAttempts);
+        gate.observe(new ContinuityStamp(1L, 0L, 0L, 3L), 640, 480,
+                Collections.singletonMap(2L, new NormalizedBounds(0, 0, .3f, .3f)));
+        AcquisitionDirective resumed = controller.onVehicleFrame(frame(candidate(2L, 22L)), continuity(), 100 * SECOND + 10);
+        assertEquals(AcquisitionDirectiveAction.REQUEST_EXACT_ENTITY_MT, resumed.action);
+        assertEquals(selected.sessionId, resumed.sessionId);
+    }
+
+    @Test
     public void runSupportsStartPauseResumeAndStop() {
         ScanAcquisitionController controller = new ScanAcquisitionController();
         controller.startRun(7L, 100L);
@@ -1132,6 +1217,41 @@ public final class ScanAcquisitionControllerTest {
                 hardReset,
                 "test_transition"
         );
+    }
+
+    @Test public void continuationMzAttemptsExhaustBudgetAndYieldToLargerWaitingVehicle() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1,0);
+        VehicleCandidate small = new VehicleCandidate(6,16,new NormalizedBounds(.7f,.2f,.9f,.4f),.9f,.9f,0,false,0,1,1);
+        AcquisitionDirective first = controller.onVehicleFrame(frame(small),continuity(),1);
+        controller.onVehicleFrame(frame(candidate(1,11),small),continuity(),2);
+        AcquisitionDecision reading = controller.onPipelineResult(result(observation(6,16,false,true,"W",first.revision,10)),continuity(),3);
+        assertEquals(AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION,reading.nextDirective.action);
+        AcquisitionDecision exhausted = controller.onPipelineResult(result(observation(6,16,false,true,"",reading.nextDirective.revision,11)),continuity(),4);
+        assertEquals(AcquisitionDeferReason.MZ_ATTEMPTS_EXHAUSTED,exhausted.deferReason);
+        assertEquals(AcquisitionDirectiveAction.RELEASE_ACTIVE_TARGET,exhausted.nextDirective.action);
+        AcquisitionDirective next = controller.onVehicleFrame(frame(candidate(1,11),small),continuity(),5);
+        assertEquals(1,next.entityId);
+        assertNotNull(controller.snapshot(5).queue.find(6));
+    }
+
+    @Test public void carriedPlateGeometryDoesNotRenewNoProgressBudget() {
+        ScanAcquisitionController controller = new ScanAcquisitionController();
+        controller.startRun(1,0);
+        AcquisitionDirective first = controller.onVehicleFrame(frame(candidate(6,16)),continuity(),1);
+        AcquisitionDecision found = controller.onPipelineResult(result(observation(6,16,false,false,"",first.revision,10)),continuity(),SECOND);
+        for(int i=2;i<=7;i++) controller.onPipelineResult(result(observation(6,16,false,false,"",found.nextDirective.revision,10+i)),continuity(),i*SECOND);
+        AcquisitionDirective timeout = controller.onVehicleFrame(frame(candidate(1,11),candidate(6,16)),continuity(),9*SECOND);
+        assertEquals("scan_deferred_no_progress_timeout",timeout.reason);
+    }
+
+    @Test public void oldDirectiveStillCannotConsumeContinuationBudget() {
+        ScanAcquisitionController controller = new ScanAcquisitionController(); controller.startRun(1,0);
+        AcquisitionDirective first = controller.onVehicleFrame(frame(candidate(6,16)),continuity(),1);
+        controller.onPipelineResult(result(observation(6,16,false,true,"W",first.revision,10)),continuity(),2);
+        AcquisitionDecision stale = controller.onPipelineResult(result(observation(6,16,false,true,"L",first.revision,11)),continuity(),3);
+        assertFalse(stale.accepted);
+        assertEquals(1,controller.snapshot(3).freshMzAttempts);
     }
 
     private static VehicleTrackingFrame frame(VehicleCandidate... candidates) {

@@ -30,6 +30,30 @@ import java.io.File;
 
 @RunWith(AndroidJUnit4.class)
 public final class ResearchExecutionConfigInstrumentedTest {
+    @Test public void dynamicMtThresholdsAndRoiFractionAreFrozenAndExported() throws Exception {
+        ResearchExecutionConfig base = configuration();
+        com.example.alpr_v1.acquisition.DynamicMtConfig selected = new com.example.alpr_v1.acquisition.DynamicMtConfig(
+                new com.example.alpr_v1.acquisition.DynamicVehicleSizeGate.Config(160,120,140,100),.4f);
+        ResearchExecutionConfig config = new ResearchExecutionConfig("roi_budget","dynamic",base.roiBudgetPolicy,
+                base.recognitionProfile,base.cameraRequestedResolution,false,false,true,true,true,true,
+                base.vehicle,base.plate,base.character,null,false,base.packageSizeBytes,
+                com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY,selected);
+        ExperimentSession session = new ExperimentSession();
+        assertTrue(session.start(config.experimentType,config.variant,TimerConfig.disabled(),ThermalConfig.disabled(),
+                ExperimentIdentity.defaults(),config));
+        selected = com.example.alpr_v1.acquisition.DynamicMtConfig.INITIAL;
+        JSONObject frozen = session.snapshot().frozenExecutionConfig.toJson().getJSONObject("dynamic_mt");
+        assertEquals("adaptive_entity_top1_v1",frozen.getString("policy"));
+        assertEquals(5000,frozen.getInt("local_max_age_ms"));
+        assertEquals(.5,frozen.getDouble("local_margin_x"),.0001);
+        assertEquals(160,frozen.getInt("enter_width_px"));
+        assertEquals(120,frozen.getInt("enter_height_px"));
+        assertEquals(140,frozen.getInt("keep_width_px"));
+        assertEquals(100,frozen.getInt("keep_height_px"));
+        assertEquals(.4,frozen.getDouble("primary_plate_region_top_fraction"),.0001);
+        assertEquals(120,selected.size.enterWidth);
+        session.finish(ExperimentSession.CompletionReason.MANUAL);
+    }
     @Test public void r1r2StaticAndDynamicAreFrozenForEveryRoiPolicyAndExported() throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         ResearchExecutionConfig base=configuration();

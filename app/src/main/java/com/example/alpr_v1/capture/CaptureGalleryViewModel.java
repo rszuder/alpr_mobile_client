@@ -18,6 +18,15 @@ public final class CaptureGalleryViewModel extends ViewModel {
     private final Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack = new HashMap<>();
     private final MetricsCollector metricsCollector = new MetricsCollector();
     private final RecognitionHistoryStore recognitionHistory = new RecognitionHistoryStore();
+    public final RecentReadCache recentReads = new RecentReadCache(40);
+    private CropSessionStore cropSessions;
+    public String pendingCropSessionExport;
+    public volatile boolean cropSessionExportBusy;
+    public final androidx.lifecycle.MutableLiveData<String> cropSessionMessages = new androidx.lifecycle.MutableLiveData<>();
+    public synchronized CropSessionStore cropSessions(android.content.Context context) {
+        if (cropSessions == null) cropSessions = new CropSessionStore(context.getApplicationContext());
+        return cropSessions;
+    }
 
     private boolean collectionActive;
     private String collectionSessionId = "";
@@ -62,6 +71,8 @@ public final class CaptureGalleryViewModel extends ViewModel {
 
     @Override
     protected void onCleared() {
+        recentReads.clear();
+        if (cropSessions != null) cropSessions.close();
         for (CapturedPlateItem item : capturedCrops) item.recycle();
         capturedCrops.clear();
         lastCaptureByTrack.clear();

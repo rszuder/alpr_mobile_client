@@ -7,6 +7,29 @@ import org.junit.Test;
 
 public final class VisualMotionEvidenceDecayTest {
     @Test
+    public void rockingCameraDropoutDoesNotBecomeHardCutInsideFreshEvidenceWindow() {
+        VisualMotionEvidenceDecay decay = new VisualMotionEvidenceDecay();
+        long lastMotion = 10_000_000_000L;
+        decay.record(lastMotion, FrameMotionQuality.syntheticReliable(), false);
+        // Phone log: valid motion at 16:55:52.913, failed flow 150 ms later,
+        // 51.6% changed pixels, gyro momentarily quiet at the reversal.
+        for (long offset : new long[]{150_000_000L, 497_000_000L, 700_000_000L}) {
+            VisualMotionEvidenceDecay.Snapshot recent = decay.snapshot(lastMotion + offset);
+            assertFalse(com.example.alpr_v1.ui.PreviewContinuityUiPolicy
+                    .shouldForceHardSceneBoundaryFromDirectLuma(
+                            true, .516f, 49.7f, true, .516f, 49.7f,
+                            false, recent.protectsContinuity()));
+        }
+        VisualMotionEvidenceDecay.Snapshot expired = decay.snapshot(
+                lastMotion + VisualMotionEvidenceDecay.SETTLE_RETENTION_NANOS + 1L);
+        assertTrue(com.example.alpr_v1.ui.PreviewContinuityUiPolicy
+                .shouldForceHardSceneBoundaryFromDirectLuma(
+                        true, .516f, 49.7f, true, .516f, 49.7f,
+                        false, expired.protectsContinuity()));
+        decay.reset();
+        assertFalse(decay.snapshot(lastMotion).protectsContinuity());
+    }
+    @Test
     public void oneMotionFrameIsNoLongerCurrentEvidenceAfterOneSecond() {
         VisualMotionEvidenceDecay decay = new VisualMotionEvidenceDecay();
         long started = 10_000_000_000L;

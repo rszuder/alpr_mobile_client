@@ -178,6 +178,7 @@ public final class SettingsActivity extends AppCompatActivity {
         configureResolutionControls();
         configureCropControls();
         configureSceneHandlingControls();
+        configureDynamicMtControls();
         configureRoiBudgetControls();
         configureExperimentIdentity();
         configurePipelineControls();
@@ -528,6 +529,47 @@ public final class SettingsActivity extends AppCompatActivity {
             saveString(KEY_SCENE_HANDLING_MODE, selected.wireName());
         });
         refreshSceneHandlingControls();
+    }
+
+    private void configureDynamicMtControls() {
+        findViewById(R.id.settings_dynamic_mt).setOnClickListener(ignored -> {
+            View form = getLayoutInflater().inflate(R.layout.dialog_dynamic_mt, null);
+            int[] ids = {R.id.dynamic_mt_enter_width, R.id.dynamic_mt_enter_height,
+                    R.id.dynamic_mt_keep_width, R.id.dynamic_mt_keep_height, R.id.dynamic_mt_primary_top};
+            com.example.alpr_v1.acquisition.DynamicMtConfig config =
+                    com.example.alpr_v1.acquisition.DynamicMtSettings.read(preferences);
+            int[] values = {config.size.enterWidth, config.size.enterHeight,
+                    config.size.keepWidth, config.size.keepHeight, Math.round(config.primaryTopFraction * 100f)};
+            for (int i = 0; i < ids.length; i++) ((android.widget.EditText) form.findViewById(ids[i])).setText(Integer.toString(values[i]));
+            androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                    .setBackground(androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_dynamic_mt_dialog))
+                    .setTitle(R.string.settings_dynamic_mt_title).setView(form)
+                    .setNegativeButton(R.string.menu_close, null)
+                    .setNeutralButton(R.string.settings_dynamic_mt_defaults, null)
+                    .setPositiveButton(R.string.settings_dynamic_mt_save, null).create();
+            dialog.setOnShowListener(shown -> {
+                dialog.getButton(android.content.DialogInterface.BUTTON_NEUTRAL).setOnClickListener(button -> {
+                    int[] defaults = {120, 80, 100, 64, 35};
+                    for (int i = 0; i < ids.length; i++) ((android.widget.EditText) form.findViewById(ids[i])).setText(Integer.toString(defaults[i]));
+                });
+                dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener(button -> {
+                    try {
+                        int[] entered = new int[ids.length];
+                        for (int i = 0; i < ids.length; i++) entered[i] = Integer.parseInt(((android.widget.EditText) form.findViewById(ids[i])).getText().toString());
+                        for (int i = 0; i < 4; i++) if (entered[i] < 1 || entered[i] > 8192) throw new IllegalArgumentException();
+                        com.example.alpr_v1.acquisition.DynamicMtConfig next = new com.example.alpr_v1.acquisition.DynamicMtConfig(
+                                new com.example.alpr_v1.acquisition.DynamicVehicleSizeGate.Config(entered[0], entered[1], entered[2], entered[3]),
+                                entered[4] / 100f);
+                        com.example.alpr_v1.acquisition.DynamicMtSettings.save(preferences, next);
+                        markChanged();
+                        dialog.dismiss();
+                    } catch (IllegalArgumentException invalid) {
+                        ((android.widget.EditText) form.findViewById(ids[0])).setError(getString(R.string.settings_dynamic_mt_invalid));
+                    }
+                });
+            });
+            dialog.show();
+        });
     }
 
     private void refreshSceneHandlingControls() {

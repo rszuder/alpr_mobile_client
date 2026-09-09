@@ -155,6 +155,8 @@ public final class VehicleTrackManager {
     private final long entityTtlNanos;
     private final List<Track> tracks = new ArrayList<>();
     private long nextTrackId = 1L;
+    private long priorityEntityId;
+    private long priorityRecoveryGraceNanos;
     private long tracksCreated;
     private long tracksExpired;
     private long entitiesCreated;
@@ -216,6 +218,8 @@ public final class VehicleTrackManager {
         boolean[] usedTracks = new boolean[tracks.size()];
         boolean[] usedObservations = new boolean[observations.size()];
 
+        assignPriorityTarget(observations, usedTracks, usedObservations, safeNow, false);
+        assignPriorityTarget(observations, usedTracks, usedObservations, safeNow, true);
         assignCoherentOrderedGroup(
                 observations,
                 usedTracks,
@@ -230,9 +234,11 @@ public final class VehicleTrackManager {
         java.util.Arrays.fill(secondByObservation, Float.NEGATIVE_INFINITY);
         for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
             Track track = tracks.get(trackIndex);
+            if (usedTracks[trackIndex] || priorityPending(track, safeNow)) continue;
             NormalizedBounds predicted = track.predicted(safeNow);
             for (int observationIndex = 0;
                     observationIndex < observations.size(); observationIndex++) {
+                if (usedObservations[observationIndex]) continue;
                 float score = associationScore(
                         predicted,
                         track.appearance,
@@ -298,6 +304,9 @@ public final class VehicleTrackManager {
                 continue;
             }
             Observation observation = observations.get(observationIndex);
+            // During bounded recovery, ambiguous evidence for the target must not
+            // immediately create a second identity for that same vehicle.
+            if (reservedForPriorityRecovery(observation, safeNow)) continue;
             VehicleEntity reassociated = findDormantEntity(
                     observation, assignedEntityIds, safeNow, protectedIds
             );
@@ -367,6 +376,7 @@ public final class VehicleTrackManager {
     ) {
         if (transform == null || !transform.valid || !transform.significant()) return;
         long safeNow = Math.max(0L, nowNanos);
+        Set<Long> movedEntities = new HashSet<>();
         for (Track track : tracks) {
             track.applyCameraMotion(transform, safeNow);
             repository.applyCameraMotion(
@@ -374,11 +384,45 @@ public final class VehicleTrackManager {
                     track.predicted(safeNow),
                     track.motion()
             );
+            movedEntities.add(track.entityId);
         }
+        // Technical track expiry does not end domain identity. Dormant entities
+        // must stay in the same coordinate system as the next MP observations.
+        for (VehicleEntity entity : repository.activeEntities()) {
+            if (movedEntities.contains(entity.entityId())) continue;
+            NormalizedBounds bounds = entity.vehicleBounds();
+            if (bounds == null || !bounds.valid()) continue;
+            float left = Float.POSITIVE_INFINITY, top = Float.POSITIVE_INFINITY;
+            float right = Float.NEGATIVE_INFINITY, bottom = Float.NEGATIVE_INFINITY;
+            for (float x : new float[]{bounds.left, bounds.right}) {
+                for (float y : new float[]{bounds.top, bounds.bottom}) {
+                    float mappedX = transform.mapX(x, y);
+                    float mappedY = transform.mapY(x, y);
+                    left = Math.min(left, mappedX);
+                    right = Math.max(right, mappedX);
+                    top = Math.min(top, mappedY);
+                    bottom = Math.max(bottom, mappedY);
+                }
+            }
+            MotionState motion = entity.motion();
+            repository.applyCameraMotion(entity.vehicleTrackId(),
+                    new NormalizedBounds(left, top, right, bottom),
+                    new MotionState(transform.a * motion.velocityX + transform.b * motion.velocityY,
+                            transform.c * motion.velocityX + transform.d * motion.velocityY,
+                            motion.confidence));
+        }
+    }
+
+    /** Grace is measured from real MP evidence, never renewed by prediction or selection. */
+    public synchronized void setPriorityTarget(long entityId, long recoveryGraceNanos) {
+        priorityEntityId = Math.max(0L, entityId);
+        priorityRecoveryGraceNanos = Math.max(0L, Math.min(entityTtlNanos, recoveryGraceNanos));
     }
 
     public synchronized void resetScene() {
         tracks.clear();
+        priorityEntityId = 0L;
+        priorityRecoveryGraceNanos = 0L;
         nextTrackId = 1L;
         repository.resetScene();
     }
@@ -410,9 +454,76 @@ public final class VehicleTrackManager {
         );
     }
 
+    private boolean priorityPending(Track track, long nowNanos) {
+        return track.entityId == priorityEntityId
+                && nowNanos - track.lastSeenNanos <= Math.min(entityTtlNanos,
+                        trackTtlNanos + priorityRecoveryGraceNanos);
+    }
+
+    private boolean reservedForPriorityRecovery(Observation observation, long nowNanos) {
+        for (Track track : tracks) {
+            if (!priorityPending(track, nowNanos) || track.missedUpdates == 0) continue;
+            NormalizedBounds predicted = track.predicted(nowNanos);
+            if (!predicted.valid()) continue;
+            if (associationScore(predicted, track.appearance, observation)
+                    >= MIN_ACTIVE_ASSOCIATION_SCORE
+                    || recoveryAssociationScore(predicted, track.appearance, observation)
+                    >= MIN_ACTIVE_RECOVERY_SCORE) return true;
+        }
+        return false;
+    }
+
+    private void assignPriorityTarget(List<Observation> observations, boolean[] usedTracks,
+            boolean[] usedObservations, long nowNanos, boolean recovery) {
+        for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
+            Track target = tracks.get(trackIndex);
+            if (usedTracks[trackIndex] || !priorityPending(target, nowNanos)) continue;
+            NormalizedBounds predicted = target.predicted(nowNanos);
+            if (!predicted.valid()) return;
+            float threshold = recovery ? MIN_ACTIVE_RECOVERY_SCORE : MIN_ACTIVE_ASSOCIATION_SCORE;
+            float best = Float.NEGATIVE_INFINITY, second = Float.NEGATIVE_INFINITY;
+            int selected = -1;
+            for (int index = 0; index < observations.size(); index++) {
+                if (usedObservations[index]) continue;
+                Observation observation = observations.get(index);
+                float score = recovery
+                        ? recoveryAssociationScore(predicted, target.appearance, observation)
+                        : associationScore(predicted, target.appearance, observation);
+                if (score < threshold) continue;
+                if (score > best) {
+                    second = best;
+                    best = score;
+                    selected = index;
+                } else second = Math.max(second, score);
+            }
+            if (selected < 0 || !hasAssociationMargin(best, best, second)) return;
+            Observation observation = observations.get(selected);
+            // Priority changes processing order, not evidence of identity.
+            for (Track other : tracks) {
+                if (other == target) continue;
+                NormalizedBounds otherBounds = other.predicted(nowNanos);
+                float normalScore = associationScore(otherBounds, other.appearance, observation);
+                if (recovery && normalScore >= MIN_ACTIVE_ASSOCIATION_SCORE) return;
+                float competingScore = recovery
+                        ? recoveryAssociationScore(otherBounds, other.appearance, observation)
+                        : normalScore;
+                if (competingScore >= threshold
+                        && best - competingScore < MIN_ASSOCIATION_MARGIN) return;
+            }
+            target.update(observation, nowNanos);
+            repository.updateFromMp(target.trackId, target.predicted(nowNanos),
+                    target.motion(), target.appearance, nowNanos);
+            usedTracks[trackIndex] = true;
+            usedObservations[selected] = true;
+            if (recovery) entityDuplicatePreventions++;
+            return;
+        }
+    }
+
     private int removeExpiredTracks(long nowNanos) {
         int before = tracks.size();
-        tracks.removeIf(track -> nowNanos - track.lastSeenNanos > trackTtlNanos
+        tracks.removeIf(track -> (nowNanos - track.lastSeenNanos > trackTtlNanos
+                && !priorityPending(track, nowNanos))
                 || repository.get(track.entityId) == null);
         return before - tracks.size();
     }
@@ -430,7 +541,7 @@ public final class VehicleTrackManager {
                     || entity.acquisitionState() == EntityAcquisitionState.EXPIRED
                     || (!protectedReassociationEntityIds.contains(entity.entityId())
                     && nowNanos - entity.lastSeenNanos() > entityTtlNanos)
-                    || entity.vehicleBounds() == null) continue;
+                    || entity.vehicleBounds() == null || !entity.vehicleBounds().valid()) continue;
             NormalizedBounds predicted = predictEntity(entity, nowNanos);
             float score = associationScore(
                     predicted,
@@ -504,6 +615,7 @@ public final class VehicleTrackManager {
             AppearanceDescriptor stableAppearance,
             Observation observation
     ) {
+        if (predicted == null || !predicted.valid()) return -1f;
         float overlap = predicted.iou(observation.bounds);
         float distance = (float) Math.hypot(
                 predicted.centerX() - observation.bounds.centerX(),
@@ -552,6 +664,7 @@ public final class VehicleTrackManager {
         for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
             if (usedTracks[trackIndex]) continue;
             Track track = tracks.get(trackIndex);
+            if (priorityPending(track, nowNanos)) continue;
             NormalizedBounds predicted = track.predicted(nowNanos);
             for (int observationIndex = 0;
                     observationIndex < observations.size(); observationIndex++) {
@@ -610,6 +723,11 @@ public final class VehicleTrackManager {
             boolean[] usedObservations,
             long nowNanos
     ) {
+        // A group-order fallback cannot override an explicit target assignment
+        // or resolve ambiguous target identity merely by left-to-right order.
+        for (Track track : tracks) {
+            if (priorityPending(track, nowNanos)) return;
+        }
         if (tracks.size() != observations.size() || tracks.size() < 2) return;
         List<Integer> trackOrder = new ArrayList<>(tracks.size());
         List<Integer> observationOrder = new ArrayList<>(observations.size());
@@ -685,6 +803,7 @@ public final class VehicleTrackManager {
             AppearanceDescriptor stableAppearance,
             Observation observation
     ) {
+        if (predicted == null || !predicted.valid()) return -1f;
         float appearance = stableAppearance == null
                 ? 0f : stableAppearance.cosineSimilarity(observation.appearance);
         if (stableAppearance == null || !stableAppearance.available()

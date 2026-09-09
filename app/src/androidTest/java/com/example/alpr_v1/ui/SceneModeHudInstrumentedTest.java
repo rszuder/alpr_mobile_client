@@ -1,6 +1,7 @@
 package com.example.alpr_v1.ui;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -100,7 +101,8 @@ public final class SceneModeHudInstrumentedTest {
                         SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName(),
                         preferences.getString(SettingsActivity.KEY_SCENE_HANDLING_MODE, "")
                 );
-                assertEquals(View.INVISIBLE, activity.findViewById(R.id.search_plate_button).getVisibility());
+                assertEquals(View.VISIBLE, activity.findViewById(R.id.search_plate_button).getVisibility());
+                assertFalse(activity.findViewById(R.id.search_plate_button).isEnabled());
                 assertEquals(activity.getString(R.string.scene_control_static), toggle.getText().toString());
                 assertEquals(
                         activity.getString(R.string.scene_mode_static_action),

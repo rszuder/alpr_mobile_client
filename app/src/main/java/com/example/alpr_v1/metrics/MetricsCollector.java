@@ -208,6 +208,7 @@ public final class MetricsCollector {
 
     public synchronized void startMeasurementSession(long wallMillis,long elapsedNanos,long monotonicNanos) {
         traces.clear();
+        liveStageTimings.reset();
         frameFlowBuckets.clear();
         thermalSamples.clear();
         eventRecords.clear();
@@ -332,6 +333,7 @@ public final class MetricsCollector {
         }
 
         traces.addLast(trace);
+        liveStageTimings.observe(trace.continuityStamp(), trace.durationsNanos());
         if (researchCollector != null) {
             try {
                 String csv = csvForTraces(java.util.Collections.singletonList(trace));
@@ -430,6 +432,10 @@ public final class MetricsCollector {
 
     public synchronized int size() { return traces.size(); }
 
+    private final LiveStageTimings liveStageTimings = new LiveStageTimings();
+
+    public synchronized void resetLiveStageTimings() { liveStageTimings.reset(); }
+
     public synchronized LiveSnapshot liveSnapshot() {
 
         InferenceTrace trace =
@@ -461,20 +467,11 @@ public final class MetricsCollector {
                 actualSourceHeight,
                 droppedFrames,
 
-                stageMilliseconds(
-                        trace,
-                        "vehicle_inference"
-                ),
+                liveStageTimings.milliseconds("vehicle_inference"),
 
-                stageMilliseconds(
-                        trace,
-                        "plate_inference"
-                ),
+                liveStageTimings.milliseconds("plate_inference"),
 
-                stageMilliseconds(
-                        trace,
-                        "character_inference"
-                ),
+                liveStageTimings.milliseconds("character_inference"),
 
                 stageMilliseconds(
                         trace,

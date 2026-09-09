@@ -10,6 +10,7 @@ import org.json.JSONObject;
 
 /** Niezmienny snapshot efektywnej konfiguracji całego przebiegu badawczego. */
 public final class ResearchExecutionConfig {
+    public final com.example.alpr_v1.acquisition.DynamicMtConfig dynamicMtConfig;
     public final com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode;
     public final String experimentType;
     public final String variant;
@@ -129,6 +130,23 @@ public final class ResearchExecutionConfig {
             long packageSizeBytes,
             com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode
     ) {
+        this(experimentType, variant, roiBudgetPolicy, recognitionProfile, cameraRequestedResolution,
+                lockEnabled, autoZoomEnabled, vehicleTrackingEnabled, plateTrackingEnabled, temporalMzEnabled,
+                adaptiveFrameGateEnabled, vehicle, plate, character, basePackage, compositionModified,
+                packageSizeBytes, sceneHandlingMode, com.example.alpr_v1.acquisition.DynamicMtConfig.INITIAL);
+    }
+
+    public ResearchExecutionConfig(
+            String experimentType, String variant, RoiBudgetPolicy roiBudgetPolicy,
+            RecognitionProfile recognitionProfile, String cameraRequestedResolution,
+            boolean lockEnabled, boolean autoZoomEnabled, boolean vehicleTrackingEnabled,
+            boolean plateTrackingEnabled, boolean temporalMzEnabled, boolean adaptiveFrameGateEnabled,
+            ResearchStageExecutionConfig vehicle, ResearchStageExecutionConfig plate, ResearchStageExecutionConfig character,
+            InstalledAlprPackage basePackage, boolean compositionModified, long packageSizeBytes,
+            com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode,
+            com.example.alpr_v1.acquisition.DynamicMtConfig dynamicMtConfig
+    ) {
+        this.dynamicMtConfig = java.util.Objects.requireNonNull(dynamicMtConfig);
         this.sceneHandlingMode = java.util.Objects.requireNonNull(sceneHandlingMode);
         this.experimentType = required(experimentType, "experimentType");
         this.variant = required(variant, "variant");
@@ -183,6 +201,19 @@ public final class ResearchExecutionConfig {
         json.put("scene_handling_mode", sceneHandlingMode.wireName());
         json.put("variant", variant);
         json.put("roi_budget_policy", roiBudgetPolicy.wireName());
+        JSONObject dynamicMt = new JSONObject();
+        dynamicMt.put("policy", com.example.alpr_v1.acquisition.DynamicMtConfig.POLICY);
+        dynamicMt.put("local_margin_x", com.example.alpr_v1.acquisition.DynamicMtConfig.LOCAL_MARGIN_X);
+        dynamicMt.put("local_margin_y", com.example.alpr_v1.acquisition.DynamicMtConfig.LOCAL_MARGIN_Y);
+        dynamicMt.put("local_max_age_ms", com.example.alpr_v1.acquisition.DynamicMtConfig.LOCAL_MAX_AGE_NANOS / 1_000_000L);
+        dynamicMt.put("primary_margin_x", com.example.alpr_v1.acquisition.DynamicMtConfig.PRIMARY_MARGIN_X);
+        dynamicMt.put("primary_margin_bottom", com.example.alpr_v1.acquisition.DynamicMtConfig.PRIMARY_MARGIN_BOTTOM);
+        dynamicMt.put("enter_width_px", dynamicMtConfig.size.enterWidth);
+        dynamicMt.put("enter_height_px", dynamicMtConfig.size.enterHeight);
+        dynamicMt.put("keep_width_px", dynamicMtConfig.size.keepWidth);
+        dynamicMt.put("keep_height_px", dynamicMtConfig.size.keepHeight);
+        dynamicMt.put("primary_plate_region_top_fraction", dynamicMtConfig.primaryTopFraction);
+        json.put("dynamic_mt", dynamicMt);
         json.put("recognition_profile", recognitionProfile.wireName());
         json.put("camera_requested_resolution", cameraRequestedResolution);
         JSONObject flags = new JSONObject();

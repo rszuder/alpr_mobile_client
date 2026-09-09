@@ -143,7 +143,8 @@ public final class GlobalLumaMotionTracker {
                 width,
                 height,
                 points,
-                combinedForegroundMasks
+                combinedForegroundMasks,
+                cameraMotionConfirmedBySensor
         );
         if (coarse.valid) return coarse;
         return cameraMotionConfirmedBySensor
@@ -291,14 +292,15 @@ public final class GlobalLumaMotionTracker {
             int width,
             int height,
             List<SparsePyramidalFlow.Point> points,
-            List<NormalizedBounds> foregroundMasks
+            List<NormalizedBounds> foregroundMasks,
+            boolean cameraMotionConfirmedBySensor
     ) {
         Translation forward = searchTranslation(
-                previous, current, width, height, foregroundMasks
+                previous, current, width, height, foregroundMasks, cameraMotionConfirmedBySensor
         );
         if (!forward.valid) return FrameMotionTransform.invalid();
         Translation backward = searchTranslation(
-                current, previous, width, height, foregroundMasks
+                current, previous, width, height, foregroundMasks, cameraMotionConfirmedBySensor
         );
         if (!backward.valid
                 || Math.abs(forward.dx + backward.dx) > 2
@@ -339,10 +341,14 @@ public final class GlobalLumaMotionTracker {
             byte[] target,
             int width,
             int height,
-            List<NormalizedBounds> foregroundMasks
+            List<NormalizedBounds> foregroundMasks,
+            boolean cameraMotionConfirmedBySensor
     ) {
         int maximumDx = Math.max(4, Math.round(width * 0.18f));
-        int maximumDy = Math.max(3, Math.round(height * 0.055f));
+        // Vertical reframing is as legitimate as horizontal panning. Keep the
+        // wider recovery search tied to independent sensor evidence; spatial
+        // support, image residual and forward/backward validation still apply.
+        int maximumDy = Math.max(3, Math.round(height * (cameraMotionConfirmedBySensor ? 0.18f : 0.055f)));
         int startX = maximumDx + 4;
         int endX = width - maximumDx - 4;
         int startY = maximumDy + 4;

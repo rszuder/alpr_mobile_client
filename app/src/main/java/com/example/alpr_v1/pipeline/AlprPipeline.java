@@ -182,6 +182,13 @@ public final class AlprPipeline {
     private final AtomicLong lastTracedPreviewTrackingUpdates = new AtomicLong();
     private volatile MobileAlprEngine engine;
     private volatile boolean reloadRequested;
+    private volatile java.util.List<ModelRuntimeSummary> activeModelRuntimeSummaries =
+            java.util.Collections.emptyList();
+
+    /** UI reads immutable published metadata without waiting for model inference. */
+    public java.util.List<ModelRuntimeSummary> activeModelRuntimeSummaries() {
+        return reloadRequested ? java.util.Collections.emptyList() : activeModelRuntimeSummaries;
+    }
     private volatile com.example.alpr_v1.experiment.ResearchSessionStore researchCollector;
     public void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore collector) {
         researchCollector = collector;
@@ -229,6 +236,8 @@ public final class AlprPipeline {
 
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraMoving;
+    private final com.example.alpr_v1.continuity.RecentMotionEvidence recentPreviewMotion =
+            new com.example.alpr_v1.continuity.RecentMotionEvidence();
     private volatile boolean motionSensorAvailable;
     private volatile float angularMotionMagnitude;
     private volatile VehicleContinuityEvidence lastReacquireVehicleEvidence =
@@ -959,7 +968,7 @@ public final class AlprPipeline {
         }
     }
 
-    private static void appendTimingAudit(
+    private void appendTimingAudit(
             InferenceTrace trace
     ) {
 
@@ -972,6 +981,7 @@ public final class AlprPipeline {
                 trace.durationNanos(
                         "total"
                 );
+        sceneTransitionCoordinator.recordProcessingDuration(total);
 
 
         /*
@@ -1232,6 +1242,7 @@ public final class AlprPipeline {
         if (engine != null) {
             engine.close();
             engine = null;
+            activeModelRuntimeSummaries = java.util.Collections.emptyList();
         }
         finishRuntimeContractFailureTrace(trace);
         if (!firstFailure) return null;
@@ -1324,18 +1335,7 @@ public final class AlprPipeline {
                         0f,
                         targetEvidence,
                         vehicleEvidence,
-                        new MotionExplanationEvidence(
-                                motionSensorAvailable,
-                                cameraMoving,
-                                rapidCameraMotion,
-                                angularMotionMagnitude,
-                                cameraTransformInProgress,
-                                false,
-                                0f,
-                                0f,
-                                0f,
-                                0f
-                        ),
+                        currentMotionEvidence(),
                         false,
                         false,
                         false,
@@ -1571,7 +1571,8 @@ public final class AlprPipeline {
                 decision,
                 nowNanos
         );
-        if (previousFocusEntity > 0L && scanAcquisitionController.targetFocus().entityId == 0L) {
+        if (previousFocusEntity > 0L && scanAcquisitionController.targetFocus().entityId == 0L
+                && report.result == SoftReacquireResult.ACTIVE_TARGET_LOST) {
             vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
         }
         AcquisitionDirective scanDirective =
@@ -1660,6 +1661,7 @@ public final class AlprPipeline {
             activeEngine.requestVehicleRefreshAfterZoom();
         }
         activeEngine.setStaticSceneMode(staticMode());
+        scanAcquisitionController.setVehicleSizeGate(vehicleTrackingCoordinator.vehicleSizeGate());
         activeEngine.setResearchCollector(researchCollector,currentCameraZoomRatio);
         activeEngine.setStaticRefinement(staticMode() && staticCycle.refining());
         activeEngine.setRefinementEntity(staticMode() ? staticCycle.zoomEntity() : dynamicZoomEntity);
@@ -1747,6 +1749,8 @@ public final class AlprPipeline {
                     .append(candidate.mtAttempts)
                     .append("/mz")
                     .append(candidate.freshMzAttempts)
+                    .append("/area=")
+                    .append(String.format(java.util.Locale.ROOT, "%.4f", candidate.visibleAreaRatio()))
                     .append(candidate.predicted ? "/P" : "/M");
         }
         android.util.Log.d(
@@ -2050,6 +2054,8 @@ public final class AlprPipeline {
                     scan.queue.find(entityId);
             if (candidate != null) {
                 details.put("vehicle_track_id", candidate.vehicleTrackId);
+                details.put("vehicle_area_ratio", candidate.visibleAreaRatio());
+                details.put("queue_order_policy", "largest_first_per_round");
                 details.put("readability", candidate.readabilityScore);
                 details.put("waiting_age", candidate.waitingAgeScore);
                 details.put("exit_urgency", candidate.exitUrgency);
@@ -2140,7 +2146,6 @@ public final class AlprPipeline {
     }
 
     private synchronized void applySceneTransition(SceneTransitionDecision decision) {
-        long previousFocusEntity = scanAcquisitionController.targetFocus().entityId;
         if (decision == null) return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         ReacquireTelemetry recovery = sceneTransitionCoordinator.reacquireTelemetry();
@@ -2164,6 +2169,7 @@ public final class AlprPipeline {
         }
 
         if (decision.action == SceneTransitionAction.HARD_RESET) {
+            recentPreviewMotion.reset();
             dynamicZoomEntity = 0L;
             staticCycle.reset(snapshot.sceneGeneration);
             staticWatcher.reset();
@@ -2211,10 +2217,8 @@ public final class AlprPipeline {
                 decision,
                 SystemClock.elapsedRealtimeNanos()
         );
-        if (decision.action == SceneTransitionAction.RELEASE_ACTIVE_TARGET && previousFocusEntity > 0L
-                && scanAcquisitionController.targetFocus().entityId == 0L) {
-            vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
-        }
+        // Releasing attention is not proof that the vehicle identity ended.
+        // Explicit ACTIVE_TARGET_LOST is handled by the terminal recovery report.
         recordContinuityEvents(decision, snapshot, lastSceneEvidence);
     }
 
@@ -2224,6 +2228,7 @@ public final class AlprPipeline {
             SceneEvidence evidence
     ) {
         if (trace == null || decision == null) return;
+        trace.putCount("scene_reacquire_timeout_ms", sceneTransitionCoordinator.reacquireTimeoutNanos() / 1_000_000L);
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         trace.putAttribute("scene_handling_mode", decision.mode.wireName());
         trace.putAttribute("analysis_mode", decision.mode.analysisMode());
@@ -2613,6 +2618,7 @@ public final class AlprPipeline {
         if (reloadRequested) {
             if (engine != null) engine.close();
             engine = null;
+            activeModelRuntimeSummaries = java.util.Collections.emptyList();
             reloadRequested = false;
         }
         if (engine != null) return;
@@ -2622,6 +2628,12 @@ public final class AlprPipeline {
                 effectiveMtFallbackPolicy(), effectiveVehicleTrackingPolicy(),
                 frozenResearchExecutionConfig, vehicleTrackingCoordinator);
         logEngineModelDiagnostics(engine);
+        engine.setDynamicMtConfig(frozenResearchExecutionConfig == null
+                ? com.example.alpr_v1.acquisition.DynamicMtSettings.read(context.getSharedPreferences(
+                        com.example.alpr_v1.SettingsActivity.PREFERENCES, android.content.Context.MODE_PRIVATE))
+                : frozenResearchExecutionConfig.dynamicMtConfig);
+        metrics.resetLiveStageTimings();
+        activeModelRuntimeSummaries = engine.modelRuntimeSummaries();
         engine.setRecognitionProfile(effectiveRecognitionProfile());
         engine.setRapidCameraMotion(rapidCameraMotion);
         engine.setCameraTransformInProgress(cameraTransformInProgress);
@@ -2850,6 +2862,23 @@ public final class AlprPipeline {
                 ? Math.max(0f, angularMagnitude) : 0f;
         MobileAlprEngine activeEngine = engine;
         if (activeEngine != null) activeEngine.setRapidCameraMotion(rapid);
+    }
+
+    public void setPreviewMotionEvidence(MotionExplanationEvidence evidence) {
+        if (evidence == null) return;
+        setCameraMotionEvidence(evidence.gyroAvailable, evidence.cameraMoving,
+                evidence.rapidCameraMotion, evidence.angularMotionMagnitude);
+        recentPreviewMotion.publish(evidence, SystemClock.elapsedRealtimeNanos());
+    }
+
+    private MotionExplanationEvidence currentMotionEvidence() {
+        MotionExplanationEvidence recent = recentPreviewMotion.current(SystemClock.elapsedRealtimeNanos());
+        return recent == null
+                ? new MotionExplanationEvidence(motionSensorAvailable, cameraMoving, rapidCameraMotion,
+                        angularMotionMagnitude, cameraTransformInProgress, false, 0f, 1f, 0f, 0f)
+                : new MotionExplanationEvidence(recent.gyroAvailable, recent.cameraMoving, recent.rapidCameraMotion,
+                        recent.angularMotionMagnitude, cameraTransformInProgress, recent.dominantMotionEstimated,
+                        recent.globalMotionCoherence, recent.compensatedFrameResidual, 0f, 0f, recent.motionSettling);
     }
 
     public void recordStationarySceneEvidence(ContinuityStamp stamp, boolean stable, long now) {
@@ -3236,6 +3265,7 @@ public final class AlprPipeline {
     public synchronized void close() {
         if (engine != null) engine.close();
         engine = null;
+        activeModelRuntimeSummaries = java.util.Collections.emptyList();
         reloadRequested = false;
         sourceSceneDetector.reset();
         rotatedSceneDetector.reset();
@@ -3430,18 +3460,7 @@ public final class AlprPipeline {
                 ? SourceFrameStamp.unknown(0L, 0L, 0L)
                 : sourceFrameStamp;
         MotionExplanationEvidence motionEvidence = motionOverride == null
-                ? new MotionExplanationEvidence(
-                motionSensorAvailable,
-                cameraMoving,
-                rapidCameraMotion,
-                angularMotionMagnitude,
-                cameraTransformInProgress,
-                false,
-                0f,
-                0f,
-                0f,
-                0f
-        )
+                ? currentMotionEvidence()
                 : motionOverride;
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
                 safeSourceFrame.sourceTimestampNanos

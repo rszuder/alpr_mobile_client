@@ -8,7 +8,7 @@ import org.junit.Test;
 
 public final class ContinuityGenerationsTest {
     @Test
-    public void softTransitionsAdvanceVisualEpochWithoutChangingScene() {
+    public void motionHoldPreservesEpochAndOnlyReacquireInvalidatesGeometry() {
         SceneTransitionCoordinator coordinator = new SceneTransitionCoordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY,
                 SceneContinuityProfile.INITIAL
@@ -27,11 +27,11 @@ public final class ContinuityGenerationsTest {
 
         assertEquals(SceneTransitionAction.SOFT_HOLD, hold.action);
         assertEquals(0L, afterHold.sceneGeneration);
-        assertEquals(1L, afterHold.visualEpoch);
-        assertEquals(hold.revision, afterHold.visualEpochRevision);
+        assertEquals(0L, afterHold.visualEpoch);
+        assertEquals(0L, afterHold.visualEpochRevision);
         assertEquals(SceneTransitionAction.SOFT_REACQUIRE, reacquire.action);
         assertEquals(0L, afterReacquire.sceneGeneration);
-        assertEquals(2L, afterReacquire.visualEpoch);
+        assertEquals(1L, afterReacquire.visualEpoch);
         assertEquals(reacquire.revision, afterReacquire.visualEpochRevision);
     }
 

@@ -1,49 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="32dp" android:gravity="center_vertical" android:orientation="horizontal">
-        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="@string/hud_live" android:textColor="@color/alpr_accent" android:textSize="10sp"
-            android:letterSpacing="0.10" android:textStyle="bold" />
-        <ImageButton android:id="@+id/hud_close" android:layout_width="32dp" android:layout_height="32dp"
-            android:background="?attr/selectableItemBackgroundBorderless" android:padding="7dp"
-            android:src="@drawable/ic_close_24" android:tint="@color/alpr_text_secondary" android:contentDescription="@string/hud_close" />
-    </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:orientation="horizontal">
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-            android:background="@drawable/bg_hud_metric" android:padding="12dp" android:orientation="vertical">
-            <TextView style="@style/HudCaption" android:text="@string/hud_camera_fps" />
-            <TextView android:id="@+id/hud_camera_fps" style="@style/HudValue" android:text="—" android:textColor="@color/alpr_success" />
-            <TextView style="@style/HudCaption" android:layout_marginTop="4dp" android:text="@string/hud_frame_rate_unit" android:letterSpacing="0" />
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="end">
+        <LinearLayout style="@style/HudPill">
+            <TextView style="@style/HudPillCaption" android:text="FPS" android:drawableStart="@drawable/ic_hud_fps" />
+            <TextView android:id="@+id/hud_camera_fps" style="@style/HudPillValue" android:textColor="@color/alpr_success" />
         </LinearLayout>
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-            android:layout_marginStart="8dp" android:background="@drawable/bg_hud_metric" android:padding="12dp" android:orientation="vertical">
-            <TextView style="@style/HudCaption" android:text="@string/hud_pipeline" />
-            <TextView android:id="@+id/hud_pipeline_time" style="@style/HudValue" android:text="—" />
-            <TextView style="@style/HudCaption" android:layout_marginTop="4dp" android:text="@string/hud_last_measurement" android:letterSpacing="0" />
+        <LinearLayout style="@style/HudPill" android:layout_marginStart="4dp">
+            <TextView style="@style/HudPillCaption" android:text="TMP" android:drawableStart="@drawable/ic_hud_temperature" />
+            <TextView android:id="@+id/hud_temperature" style="@style/HudPillValue" />
+        </LinearLayout>
+        <LinearLayout style="@style/HudPill" android:layout_marginStart="4dp">
+            <TextView style="@style/HudPillCaption" android:text="RES" android:drawableStart="@drawable/ic_hud_cpu" />
+            <TextView android:id="@+id/hud_resources" style="@style/HudPillValue" />
         </LinearLayout>
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:orientation="horizontal">
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
-            <TextView style="@style/HudCaption" android:text="@string/hud_vehicle_stage" android:letterSpacing="0" />
-            <TextView android:id="@+id/hud_mp_time" style="@style/HudValue" android:text="—" android:textSize="16sp" android:textColor="@color/alpr_accent" />
-        </LinearLayout>
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
-            <TextView style="@style/HudCaption" android:text="@string/hud_plate_stage" android:letterSpacing="0" />
-            <TextView android:id="@+id/hud_mt_time" style="@style/HudValue" android:text="—" android:textSize="16sp" android:textColor="@color/alpr_secondary" />
-        </LinearLayout>
-        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
-            <TextView style="@style/HudCaption" android:text="@string/hud_character_stage" android:letterSpacing="0" />
-            <TextView android:id="@+id/hud_mz_time" style="@style/HudValue" android:text="—" android:textSize="16sp" android:textColor="@color/alpr_success" />
-        </LinearLayout>
+    <LinearLayout style="@style/HudStage" android:layout_marginTop="8dp">
+        <TextView style="@style/HudStageCaption" android:text="MP" android:textColor="@color/alpr_accent" />
+        <TextView android:id="@+id/hud_mp_time" style="@style/HudStageValue" />
     </LinearLayout>
-    <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginVertical="12dp" android:background="@color/alpr_outline" />
-    <TextView style="@style/HudCaption" android:text="@string/hud_resolution" />
-    <TextView android:id="@+id/hud_resolution" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_marginTop="4dp" android:text="—" android:textSize="13sp" android:textColor="@color/alpr_text_primary" />
-    <TextView android:id="@+id/hud_frame_flow" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_marginTop="8dp" android:textSize="11sp" android:textColor="@color/alpr_text_secondary" />
-    <TextView android:id="@+id/hud_overhead" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_marginTop="4dp" android:textSize="11sp" android:textColor="@color/alpr_text_secondary" />
-    <TextView android:id="@+id/live_hud" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:layout_marginTop="8dp" android:textSize="11sp" android:textColor="@color/alpr_text_secondary" />
+    <ImageView style="@style/HudArrow" />
+    <LinearLayout style="@style/HudStage">
+        <TextView style="@style/HudStageCaption" android:text="MT" android:textColor="@color/alpr_secondary" />
+        <TextView android:id="@+id/hud_mt_time" style="@style/HudStageValue" />
+    </LinearLayout>
+    <ImageView style="@style/HudArrow" />
+    <LinearLayout style="@style/HudStage">
+        <TextView style="@style/HudStageCaption" android:text="MZ" android:textColor="@color/alpr_success" />
+        <TextView android:id="@+id/hud_mz_time" style="@style/HudStageValue" />
+    </LinearLayout>
+    <!-- Retained for the presentation controller; detailed diagnostics do not cover the camera. -->
+    <TextView android:id="@+id/live_hud" android:layout_width="0dp" android:layout_height="0dp"
+        android:visibility="gone" android:importantForAccessibility="no" />
 </merge>

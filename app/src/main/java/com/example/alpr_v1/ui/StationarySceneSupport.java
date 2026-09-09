@@ -6,24 +6,31 @@ public final class StationarySceneSupport {
     private static final long EVIDENCE_MAX_AGE_NANOS = 1_500_000_000L;
     private long stableSince = -1L;
     private long lastEvidence = -1L;
+    private long evidenceMaxAgeNanos = EVIDENCE_MAX_AGE_NANOS;
+
+    /** Preview callbacks can be delayed by inference; absence is not measured motion. */
+    public synchronized void setObservationInterval(long intervalNanos) {
+        long interval = Math.max(0L, Math.min(5_000_000_000L, intervalNanos));
+        evidenceMaxAgeNanos = Math.max(EVIDENCE_MAX_AGE_NANOS, interval * 2L);
+    }
 
     public synchronized void observe(long nowNanos, boolean stationary) {
         if (!stationary) { reset(); return; }
         if (lastEvidence < 0L || nowNanos < lastEvidence
-                || nowNanos - lastEvidence > EVIDENCE_MAX_AGE_NANOS) stableSince = nowNanos;
+                || nowNanos - lastEvidence > evidenceMaxAgeNanos) stableSince = nowNanos;
         lastEvidence = nowNanos;
     }
 
     public synchronized boolean supported(long nowNanos) {
         return stableSince >= 0L && nowNanos >= lastEvidence
-                && nowNanos - lastEvidence <= EVIDENCE_MAX_AGE_NANOS
+                && nowNanos - lastEvidence <= evidenceMaxAgeNanos
                 && nowNanos - stableSince >= SETTLE_NANOS;
     }
 
     /** Unknown/low-quality flow does not mean measured motion; let evidence age out. */
     public synchronized void observeUncertain(long nowNanos) {
         if (lastEvidence >= 0L && (nowNanos < lastEvidence
-                || nowNanos - lastEvidence > EVIDENCE_MAX_AGE_NANOS)) reset();
+                || nowNanos - lastEvidence > evidenceMaxAgeNanos)) reset();
     }
 
     public synchronized void reset() { stableSince = -1L; lastEvidence = -1L; }

@@ -17,6 +17,48 @@ public final class RecognitionHistoryStore {
     private final int capacity;
     private final LinkedHashMap<String, RecognitionHistoryItem> items = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> plateOwners = new LinkedHashMap<>();
+    private final LinkedHashMap<String, String> readingGroups = new LinkedHashMap<>();
+    private long nextReadingGroup = 1L;
+
+    /**
+     * One exact MZ text owns one gallery image. Scene mode and tracking identity
+     * never relax equality or merge vehicle-domain identities.
+     */
+    public synchronized boolean upsertObservation(com.example.alpr_v1.pipeline.PlateObservation observation,
+            ObservationTelemetry telemetry, boolean dynamic, String captureSource) {
+        if (observation == null || !observation.hasFreshMzRead()) return false;
+        RecognitionHistoryObservation record = new RecognitionHistoryObservation(observation, captureSource, telemetry);
+        String key = numberKey(record.text);
+        RecognitionHistoryItem existing = items.get(readingGroups.get(key));
+        boolean changed = false;
+        if (existing == null) {
+            Bitmap source = observation.previewBitmap;
+            if (source == null || source.isRecycled()) return false;
+            Bitmap preview = copy(source);
+            if (preview == null) return false;
+            existing = new RecognitionHistoryItem("reading:" + nextReadingGroup++, observation.sceneGeneration,
+                    observation.entityId, observation.vehicleTrackId, observation.plateTrackId, observation.trackId,
+                    record.text, record.confidence, observation.plateConfidence, observation.capturedAtMillis,
+                    preview, observation.characters, observation.timing, observation.confirmed, 1,
+                    observation.sharpness, captureSource);
+            readingGroups.put(key, existing.historyId);
+            changed = true;
+        }
+        // Keep the original image, text and its confidence/provenance together.
+        // Later exact matches need metadata only, even from a different scene/entity.
+        changed |= existing.record(record);
+        existing.observations = existing.observationRecords().size();
+        existing.lastObservationAtMillis = Math.max(existing.lastObservationAtMillis, observation.capturedAtMillis);
+        items.remove(existing.historyId);
+        items.put(existing.historyId, existing);
+        trimToCapacity();
+        return changed;
+    }
+
+    /** Literal MZ output: no case folding, separator removal, fuzzy match or length shortcut. */
+    public static String numberKey(String text) {
+        return text == null || text.trim().isEmpty() ? "" : text;
+    }
 
     public RecognitionHistoryStore() {
         this(DEFAULT_CAPACITY);
@@ -206,6 +248,7 @@ public final class RecognitionHistoryStore {
         if (removed == null) return false;
         removed.recycle();
         plateOwners.values().removeIf(historyId::equals);
+        readingGroups.values().removeIf(historyId::equals);
         return true;
     }
 
@@ -213,6 +256,7 @@ public final class RecognitionHistoryStore {
         for (RecognitionHistoryItem item : items.values()) item.recycle();
         items.clear();
         plateOwners.clear();
+        readingGroups.clear();
     }
 
     static String historyId(
@@ -249,6 +293,7 @@ public final class RecognitionHistoryStore {
             oldest.getValue().recycle();
         }
         plateOwners.values().removeIf(id -> !items.containsKey(id));
+        readingGroups.values().removeIf(id -> !items.containsKey(id));
         while (plateOwners.size() > capacity * 4) {
             plateOwners.remove(plateOwners.keySet().iterator().next());
         }

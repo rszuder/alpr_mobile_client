@@ -12,6 +12,35 @@ import java.util.Collections;
 
 public final class GlobalLumaMotionTrackerTest {
     @Test
+    public void fastVerticalReversalKeepsCorrectMotionDirection() {
+        int width = 180, height = 240;
+        byte[] origin = textured(width, height);
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+        tracker.update(origin, width, height, Collections.emptyList(), true);
+        FrameMotionTransform outward = tracker.update(translated(origin, width, height, 0, 28),
+                width, height, Collections.emptyList(), true);
+        FrameMotionTransform returned = tracker.update(translated(origin, width, height, 0, 8),
+                width, height, Collections.emptyList(), true);
+        assertTrue(outward.valid);
+        assertTrue(returned.valid);
+        assertEquals(28f / height, outward.mapY(.5f, .5f) - .5f, .012f);
+        assertEquals(-20f / height, returned.mapY(.5f, .5f) - .5f, .012f);
+    }
+
+    @Test
+    public void fastVerticalCameraReframingCanRecoverBeyondOldSearchBand() {
+        int width = 180, height = 240;
+        byte[] first = textured(width, height);
+        GlobalLumaMotionTracker tracker = new GlobalLumaMotionTracker();
+        tracker.update(first, width, height, Collections.emptyList(), true);
+        FrameMotionTransform motion = tracker.update(
+                translated(first, width, height, 0, 28), width, height, Collections.emptyList(), true);
+        assertTrue("Sensor-confirmed vertical camera motion must remain trackable", motion.valid);
+        assertEquals(0f, motion.mapX(.5f, .5f) - .5f, .012f);
+        assertEquals(28f / height, motion.mapY(.5f, .5f) - .5f, .012f);
+    }
+
+    @Test
     public void estimatesFrameToFrameTranslationInNormalizedCoordinates() {
         int width = 180;
         int height = 240;

@@ -41,7 +41,14 @@ public final class DynamicContinuityPolicy implements ScenePolicy {
         boolean targetPreserved = targetScore >= profile.minimumTargetContinuityToPreserve
                 && !stationaryLocalContradiction
                 && !stationaryStaleTargetEvidence;
-        boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve;
+        boolean coherentPoolMotion = evidence.vehicles.entitiesBefore > 0
+                && evidence.vehicles.entitiesAfter > 0
+                && evidence.vehicles.newlyCreatedEntities == 0
+                && evidence.motion.dominantMotionEstimated
+                && evidence.motion.globalMotionCoherence >= 0.70f
+                && evidence.motion.compensatedFrameResidual < 1f;
+        boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve
+                || coherentPoolMotion;
         boolean motionExplained = motionScore >= profile.minimumMotionExplanation
                 && !stationaryLocalContradiction
                 && !stationaryStaleTargetEvidence;

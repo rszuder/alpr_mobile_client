@@ -24,6 +24,54 @@ public final class EntityOverlayMotionProjectorInstrumentedTest {
     private final EntityOverlayMotionProjector projector =
             new EntityOverlayMotionProjector();
 
+    @Test public void cameraMotionBridgesLocalMissBetweenSlowMpResults() {
+        List<OverlayItem> base = Arrays.asList(item(OverlayItem.Kind.VEHICLE, 1, .1f, .3f),
+                item(OverlayItem.Kind.VEHICLE, 2, .4f, .6f), item(OverlayItem.Kind.VEHICLE, 3, .7f, .9f));
+        VehicleTrackingFrame oldMp = slowMpFrame();
+        FrameMotionTransform movement = FrameMotionTransform.translation(.03f, -.02f);
+        List<OverlayItem> global = projector.compensateInferenceLatency(base, movement);
+        List<OverlayItem> supported = projector.mergeVehicleGeometry(Collections.emptyList(), global);
+        List<OverlayItem> result = projector.project(base, Collections.emptyList(), supported,
+                1, 0, oldMp, 1_500_000_000L, movement, movement);
+        assertEquals(3, result.size());
+        assertEquals(.13f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(.43f, result.get(1).normalizedBounds.left, EPSILON);
+        assertEquals(.73f, result.get(2).normalizedBounds.left, EPSILON);
+        assertEquals(1, result.get(0).trackId);
+    }
+
+    @Test public void oneLocalMissKeepsNeighborWithoutOverwritingOtherLocalMeasurements() {
+        List<OverlayItem> base = Arrays.asList(item(OverlayItem.Kind.VEHICLE, 1, .1f, .3f),
+                item(OverlayItem.Kind.VEHICLE, 2, .4f, .6f), item(OverlayItem.Kind.VEHICLE, 3, .7f, .9f));
+        FrameMotionTransform movement = FrameMotionTransform.translation(-.02f, 0);
+        List<OverlayItem> local = Arrays.asList(item(OverlayItem.Kind.VEHICLE, 1, .07f, .32f),
+                item(OverlayItem.Kind.VEHICLE, 3, .65f, .87f));
+        List<OverlayItem> supported = projector.mergeVehicleGeometry(local,
+                projector.compensateInferenceLatency(base, movement));
+        List<OverlayItem> result = projector.project(base, Collections.emptyList(), supported,
+                1, 0, slowMpFrame(), 1_500_000_000L, movement, movement);
+        assertEquals(3, result.size());
+        assertEquals(.07f, result.get(0).normalizedBounds.left, EPSILON);
+        assertEquals(.25f, result.get(0).normalizedBounds.width(), EPSILON);
+        assertEquals(.38f, result.get(1).normalizedBounds.left, EPSILON);
+        assertEquals(.65f, result.get(2).normalizedBounds.left, EPSILON);
+    }
+
+    @Test public void missingLocalAndExpiredGlobalEvidenceDoNotKeepOldVehicle() {
+        List<OverlayItem> supported = projector.mergeVehicleGeometry(Collections.emptyList(), Collections.emptyList());
+        assertEquals(0, projector.project(Collections.singletonList(item(OverlayItem.Kind.VEHICLE, 1, .1f, .3f)),
+                Collections.emptyList(), supported, 1, 0, slowMpFrame(), 1_500_000_000L,
+                FrameMotionTransform.invalid(), FrameMotionTransform.invalid()).size());
+    }
+
+    private static VehicleTrackingFrame slowMpFrame() {
+        VehicleCandidate[] cars = new VehicleCandidate[3];
+        for (int index = 0; index < cars.length; index++) cars[index] = new VehicleCandidate(index + 1,
+                index + 101, new NormalizedBounds(.1f + index * .3f, .1f, .3f + index * .3f, .5f),
+                .9f, .1f, 0, true, 3, 1, 4_000_000_001L);
+        return frame(cars);
+    }
+
     @Test
     public void eachVehicleUsesOnlyItsOwnMotionEvidence() {
         OverlayItem vehicleA = item(OverlayItem.Kind.VEHICLE, 1L, 0.10f, 0.30f);

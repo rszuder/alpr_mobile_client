@@ -58,6 +58,12 @@ public final class ScanAcquisitionController {
     private long targetFocusRevision;
     private boolean awaitingFreshScanAnchor;
     private long scanAnchorAfterFrameId;
+    private DynamicVehicleSizeGate vehicleSizeGate;
+    private boolean waitingForVehicleSize;
+    public synchronized void setVehicleSizeGate(DynamicVehicleSizeGate gate) {
+        vehicleSizeGate = gate;
+        queue.setMtEligibility(gate == null ? null : gate::canSchedule);
+    }
 
     public synchronized TargetFocusSnapshot targetFocus() {
         boolean exclusive = activeSession != null && activeSession.persistent() && activeSession.cameraAttentionOwned();
@@ -337,6 +343,17 @@ public final class ScanAcquisitionController {
         for (AcquisitionCandidate candidate : updatedQueue.candidates) {
             vehiclesQueued.add(candidate.entityId);
         }
+        if (activeSession != null && vehicleSizeGate != null
+                && vehicleSizeGate.isTooSmall(activeSession.entityId())) {
+            waitingForVehicleSize = true;
+            pauseSessionBudgets(nowRuntimeNanos);
+            return setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                    activeSession.sessionId(), activeSession.entityId(), "vehicle_size_waiting_for_fresh_mp");
+        }
+        if (waitingForVehicleSize) {
+            waitingForVehicleSize = false;
+            resumeSessionBudgets(nowRuntimeNanos);
+        }
         AcquisitionDirective timeout = enforceSessionBudgets(nowRuntimeNanos);
         if (timeout != null) return timeout;
         if (activeSession != null) {
@@ -429,6 +446,16 @@ public final class ScanAcquisitionController {
         if ("scan_queue_updated".equals(result.status)) {
             return ignored("vehicle_measurement_is_not_an_mt_attempt");
         }
+        if ("vehicle_too_small".equals(result.status)
+                || "vehicle_measurement_required".equals(result.status)) {
+            waitingForVehicleSize = "vehicle_too_small".equals(result.status);
+            if (waitingForVehicleSize) pauseSessionBudgets(nowRuntimeNanos);
+            else resumeSessionBudgets(nowRuntimeNanos);
+            AcquisitionDirective refresh = setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
+                    activeSession.sessionId(), activeSession.entityId(), "vehicle_size_waiting_for_fresh_mp");
+            return decision(true, AcquisitionSessionOutcome.PROGRESS, AcquisitionDeferReason.NONE,
+                    EntityAcquisitionState.ACQUIRING, refresh, result.status);
+        }
         if ("candidate_missing".equals(result.status)) {
             if (activeSession.persistent() || activeSession.purpose() == TargetPurpose.SEARCH_VERIFICATION) {
                 foregroundRefreshAfterFrameId = lastVehicleFrameId;
@@ -492,7 +519,7 @@ public final class ScanAcquisitionController {
             return ignored("no_scan_entity_observation");
         }
         if (matching.acquisitionDirectiveRevision > 0L
-                && (!directive.requestsMt()
+                && (!(directive.requestsMt() || directive.action == AcquisitionDirectiveAction.CONTINUE_ACTIVE_SESSION)
                 || matching.acquisitionDirectiveRevision != directive.revision)) {
             return ignored("stale_scan_mt_directive_revision");
         }
@@ -505,6 +532,7 @@ public final class ScanAcquisitionController {
                     nowRuntimeNanos
             );
         }
+        boolean firstPlateGeometry = plateAnchor == null;
         plateAnchor = new PlateAnchor(
                 matching.entityId,
                 matching.vehicleTrackId,
@@ -514,7 +542,7 @@ public final class ScanAcquisitionController {
                 matching.continuityStamp(),
                 matching.acquisitionDirectiveRevision
         );
-        resetNoProgressBudget(nowRuntimeNanos);
+        if (firstPlateGeometry || matching.hasFreshMzRead()) resetNoProgressBudget(nowRuntimeNanos);
         if (matching.freshMzAttempted) {
             freshMzAttempts++;
             totalFreshMzAttempts++;
@@ -1037,6 +1065,7 @@ public final class ScanAcquisitionController {
     }
 
     private void resetSessionBudgets() {
+        waitingForVehicleSize = false;
         zoomBudgetSessionId = 0L;
         activeSessionBudget = null;
         noProgressBudget = null;

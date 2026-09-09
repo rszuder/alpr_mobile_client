@@ -58,11 +58,16 @@ public final class AcquisitionQueue {
     private final ScanAcquisitionProfile profile;
     private final Map<Long, QueueEntry> entries = new LinkedHashMap<>();
     private final Set<Long> terminalEntityIds = new HashSet<>();
+    private final Set<Long> servedThisRound = new HashSet<>();
     private long revision;
     private long sceneGeneration;
     private boolean sceneInitialized;
     private long activeEntityId;
     private long exclusiveDispatchOwner;
+    private java.util.function.LongPredicate mtEligibility = entityId -> true;
+    public synchronized void setMtEligibility(java.util.function.LongPredicate eligibility) {
+        mtEligibility = eligibility == null ? entityId -> true : eligibility;
+    }
 
     public synchronized void holdForTarget(long entityId) {
         exclusiveDispatchOwner = Math.max(0L, entityId);
@@ -89,6 +94,7 @@ public final class AcquisitionQueue {
         long now = nonNegative(nowRuntimeNanos);
         if (!sceneInitialized || sceneGeneration != frame.sceneGeneration) {
             entries.clear();
+            servedThisRound.clear();
             this.activeEntityId = 0L;
             sceneGeneration = frame.sceneGeneration;
             sceneInitialized = true;
@@ -204,25 +210,21 @@ public final class AcquisitionQueue {
         long now = nonNegative(nowRuntimeNanos);
         List<Ranked> ranked = ranked(now, true);
         if (ranked.isEmpty()) return null;
-        Ranked selected = ranked.get(0);
-        /*
-         * Najpierw wyrównujemy liczbę prób MT pomiędzy kwalifikującymi się
-         * encjami, a dopiero w tej grupie stosujemy ranking jakości. Sam scoring
-         * nie może pozwolić dużemu, czytelnemu pojazdowi zagłodzić sąsiadów.
-         */
-        int minimumMtAttempts = Integer.MAX_VALUE;
+        servedThisRound.retainAll(entries.keySet());
+        Ranked selected = null;
+        // Every eligible vehicle gets one bounded turn, largest first. Historical
+        // MT attempt counts must not permanently demote a large, readable vehicle.
         for (Ranked candidate : ranked) {
-            minimumMtAttempts = Math.min(
-                    minimumMtAttempts,
-                    candidate.candidate.mtAttempts
-            );
-        }
-        for (Ranked candidate : ranked) {
-            if (candidate.candidate.mtAttempts == minimumMtAttempts) {
+            if (!servedThisRound.contains(candidate.candidate.entityId)) {
                 selected = candidate;
                 break;
             }
         }
+        if (selected == null) {
+            servedThisRound.clear();
+            selected = ranked.get(0);
+        }
+        servedThisRound.add(selected.candidate.entityId);
         activeEntityId = selected.candidate.entityId;
         revision++;
         return new Selection(selected.candidate, selected.priority, revision);
@@ -303,6 +305,7 @@ public final class AcquisitionQueue {
     public synchronized void hardReset(long nextSceneGeneration) {
         exclusiveDispatchOwner = 0L;
         entries.clear();
+        servedThisRound.clear();
         activeEntityId = 0L;
         sceneGeneration = Math.max(0L, nextSceneGeneration);
         sceneInitialized = true;
@@ -467,6 +470,7 @@ public final class AcquisitionQueue {
 
     private boolean eligibleForSelection(AcquisitionCandidate candidate, long now) {
         return candidate.entityId != activeEntityId
+                && mtEligibility.test(candidate.entityId)
                 && !terminalEntityIds.contains(candidate.entityId)
                 && (candidate.state == EntityAcquisitionState.NEW
                 || candidate.state == EntityAcquisitionState.QUEUED)
@@ -573,6 +577,8 @@ public final class AcquisitionQueue {
     }
 
     private static final Comparator<Ranked> RANKING = (left, right) -> {
+        int byArea = Float.compare(right.candidate.visibleAreaRatio(), left.candidate.visibleAreaRatio());
+        if (byArea != 0) return byArea;
         int byTotal = Float.compare(right.priority.total, left.priority.total);
         if (byTotal != 0) return byTotal;
         int byQueued = Long.compare(

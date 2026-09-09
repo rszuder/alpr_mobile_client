@@ -11,6 +11,10 @@ import java.util.List;
 
 /** Migawka tracku przekazywana do trwałej galerii wyników w UI. */
 public final class PlateObservation {
+    /** A carried consensus or an empty MZ attempt is not a new gallery reading. */
+    public boolean hasFreshMzRead() {
+        return freshMzAttempted && freshPrediction != null && !freshPrediction.trim().isEmpty();
+    }
     public com.example.alpr_v1.experiment.ResearchSampleIdentity researchIdentity;
     public final long entityId;
     public final long vehicleTrackId;

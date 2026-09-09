@@ -7,6 +7,91 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public final class SceneTransitionCoordinatorTest {
+    @Test
+    public void visibleVehicleKeepsIdentityAndSceneDuringCoherentCameraPanWithoutPlate() {
+        SceneTransitionCoordinator coordinator = coordinator(SceneHandlingMode.DYNAMIC_CONTINUITY);
+        com.example.alpr_v1.domain.VehicleEntityRepository repository =
+                new com.example.alpr_v1.domain.VehicleEntityRepository();
+        com.example.alpr_v1.tracking.VehicleTrackManager tracker =
+                new com.example.alpr_v1.tracking.VehicleTrackManager(repository);
+        com.example.alpr_v1.domain.AppearanceDescriptor appearance =
+                new com.example.alpr_v1.domain.AppearanceDescriptor(new float[]{1f, 0f});
+        long entityId = tracker.update(java.util.Collections.singletonList(
+                new com.example.alpr_v1.tracking.VehicleTrackManager.Observation(
+                        new com.example.alpr_v1.domain.NormalizedBounds(.1f, .2f, .3f, .5f), .9f, appearance, 0)),
+                1_000_000_000L).get(0).entityId;
+        for (int step = 1; step <= 5; step++) {
+            long now = 1_000_000_000L + step * 100_000_000L;
+            tracker.applyCameraMotion(com.example.alpr_v1.tracking.FrameMotionTransform.translation(.06f, 0f), now);
+            SceneEvidence evidence = new SceneEvidence(step, now, true,
+                    .9f, .8f, 0f, 0f, 0f, TargetContinuityEvidence.noTarget(),
+                    new VehicleContinuityEvidence(1, 1, 0, 1, 0, 0f, 0f, 0f,
+                            step * 100_000_000L, false, false, 0),
+                    new MotionExplanationEvidence(true, true, true, 1f, false, true,
+                            .98f, .05f, 0f, 0f), false, false, false, false);
+            SceneTransitionDecision decision = coordinator.observe(evidence, now);
+            assertEquals(SceneTransitionAction.NONE, decision.action);
+            assertTrue(decision.assessment.vehiclePoolPreserved);
+            assertFalse(decision.incrementSceneGeneration);
+            assertFalse(decision.incrementVisualEpoch);
+            assertFalse(decision.suspendHeavyInference);
+        }
+        long recovered = tracker.update(java.util.Collections.singletonList(
+                new com.example.alpr_v1.tracking.VehicleTrackManager.Observation(
+                        new com.example.alpr_v1.domain.NormalizedBounds(.4f, .2f, .6f, .5f), .9f, appearance, 0)),
+                1_600_000_000L).get(0).entityId;
+        assertEquals(entityId, recovered);
+        assertEquals(1, repository.size());
+        assertEquals(0L, coordinator.snapshot().sceneGeneration);
+        assertEquals(0L, coordinator.snapshot().visualEpoch);
+    }
+
+    @Test
+    public void freshRecoveryEvidenceWinsOverElapsedDeadline() {
+        SceneTransitionCoordinator coordinator = coordinator(SceneHandlingMode.DYNAMIC_CONTINUITY);
+        coordinator.observe(unexplainedScene(1L), 1000L);
+        long scene = coordinator.snapshot().sceneGeneration;
+        SceneTransitionDecision recovered = coordinator.observe(explainedTargetScene(2L, false, false),
+                1000L + PROFILE.reacquireTimeoutNanos + 1L);
+        assertEquals(SceneTransitionAction.NONE, recovered.action);
+        assertEquals(SceneContinuityState.STABLE, recovered.nextState);
+        assertEquals(scene, coordinator.snapshot().sceneGeneration);
+    }
+
+    @Test
+    public void recoveryTimeoutAllowsSlowModelPassButRemainsBounded() {
+        SceneTransitionCoordinator coordinator = coordinator(SceneHandlingMode.DYNAMIC_CONTINUITY);
+        coordinator.recordProcessingDuration(2_000_000_000L);
+        assertEquals(PROFILE.reacquireTimeoutNanos + 4_000_000_000L, coordinator.reacquireTimeoutNanos());
+        coordinator.observe(unexplainedScene(1L), 1000L);
+        SceneTransitionDecision waiting = coordinator.observe(stableNoTargetScene(2L),
+                1000L + PROFILE.reacquireTimeoutNanos + 1L);
+        assertEquals(SceneContinuityState.REACQUIRING, waiting.nextState);
+        assertFalse(waiting.incrementSceneGeneration);
+        SceneTransitionDecision expired = coordinator.observe(stableNoTargetScene(3L),
+                1000L + coordinator.reacquireTimeoutNanos());
+        assertEquals(SceneTransitionAction.HARD_RESET, expired.action);
+        coordinator.recordProcessingDuration(Long.MAX_VALUE);
+        assertEquals(15_000_000_000L, coordinator.reacquireTimeoutNanos());
+    }
+
+    @Test
+    public void preservedPoolDuringRapidMotionDoesNotAuthorizeFinalization() {
+        SceneTransitionCoordinator coordinator = coordinator(SceneHandlingMode.DYNAMIC_CONTINUITY);
+        SceneEvidence evidence = new SceneEvidence(1L, 10L, false,
+                0f, 0f, 0f, 0f, 0f, TargetContinuityEvidence.noTarget(),
+                new VehicleContinuityEvidence(1, 1, 0, 1, 0, 0f, 0f, 0f,
+                        100L, false, false, 0),
+                new MotionExplanationEvidence(true, true, true, 1f, false, true,
+                        .98f, .05f, 0f, 0f), false, false, false, false);
+        SceneTransitionDecision decision = coordinator.observe(evidence, 1000L);
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertTrue(decision.preserveVehicleEntities);
+        assertFalse(decision.incrementVisualEpoch);
+        assertFalse(decision.suspendHeavyInference);
+        assertTrue(decision.suspendFinalization);
+    }
+
     private static final SceneContinuityProfile PROFILE = SceneContinuityProfile.INITIAL;
 
     @Test public void userReleaseEndsRecoveryWithoutSceneResetAndCannotRecoverOldTargetLater() {
@@ -276,6 +361,9 @@ public final class SceneTransitionCoordinatorTest {
         assertEquals(VisualChangeClassification.MOTION_EXPLAINED_CHANGE,
                 decision.assessment.classification);
         assertTrue(decision.assessment.vehiclePoolPreserved);
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertFalse(decision.incrementVisualEpoch);
+        assertFalse(decision.suspendHeavyInference);
         assertFalse(decision.incrementSceneGeneration);
     }
 
@@ -290,7 +378,8 @@ public final class SceneTransitionCoordinatorTest {
         SceneTransitionDecision duplicate = coordinator.observe(evidence, 1_010L);
 
         assertEquals(SceneTransitionAction.SOFT_HOLD, first.action);
-        assertTrue(first.incrementVisualEpoch);
+        assertFalse(first.incrementVisualEpoch);
+        assertFalse(first.cancelInFlightInference);
         assertTrue(first.preserveVehicleEntities);
         assertEquals(SceneTransitionAction.NONE, duplicate.action);
         assertEquals(first.revision, duplicate.revision);
@@ -391,7 +480,7 @@ public final class SceneTransitionCoordinatorTest {
     }
 
     @Test
-    public void localTrackingLossWithoutGlobalChangeDoesNotBecomeRawVisualChange() {
+    public void localTrackingLossWithPreservedVehiclePoolDoesNotInvalidateScene() {
         SceneTransitionCoordinator coordinator = coordinator(
                 SceneHandlingMode.DYNAMIC_CONTINUITY
         );
@@ -419,7 +508,9 @@ public final class SceneTransitionCoordinatorTest {
         assertFalse(localLoss.rawVisualChange);
         assertEquals(VisualChangeClassification.NONE,
                 decision.assessment.classification);
-        assertEquals(SceneTransitionAction.SOFT_REACQUIRE, decision.action);
+        assertEquals(SceneTransitionAction.NONE, decision.action);
+        assertFalse(decision.incrementVisualEpoch);
+        assertTrue(decision.preserveVehicleEntities);
         assertEquals(0L, coordinator.snapshot().sceneGeneration);
     }
 

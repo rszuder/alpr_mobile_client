@@ -10,6 +10,7 @@ import java.util.Collections;
 
 /** Mutable only on its inference frame; ownership passes to the store on submit. */
 public final class AcquisitionAttemptRecord {
+    public String mtInvocationId() { return data.optString("mt_invocation_id"); }
     public enum MtStatus { NOT_RUN, NO_DETECTION, DETECTION_INVALID_QUAD, VALID_QUAD }
     public enum RectificationStatus { NOT_RUN, FAILED, OK }
     public enum MzStatus { NOT_RUN, NO_CHARACTERS, READ }
