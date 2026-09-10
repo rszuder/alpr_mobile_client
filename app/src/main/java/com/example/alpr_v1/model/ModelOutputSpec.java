@@ -66,6 +66,13 @@ public final class ModelOutputSpec {
             throw new JSONException("keypoint_dimensions musi wynosić co najmniej 2");
         }
         if (keypointCount == 0) keypointDimensions = 0;
+        if (output.has("keypoint_order")) {
+            org.json.JSONArray order = output.getJSONArray("keypoint_order");
+            String[] expected = {"top_left","top_right","bottom_right","bottom_left"};
+            if (keypointCount != 4 || order.length() != 4) throw new JSONException("Nieobsługiwany keypoint_order");
+            for (int index=0;index<4;index++) if (!expected[index].equals(order.getString(index)))
+                throw new JSONException("Wymagana kolejność narożników TL, TR, BR, BL");
+        }
 
         String tensorLayout = output.optString("tensor_layout", "channels_first");
         boolean channelsFirst;

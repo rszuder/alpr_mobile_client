@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ALPR crop session v1 - canonical-key producer profile 2026-09-10",
+  "description": "Selective acquisition, not a research benchmark. Historical sessions are outside this producer profile.",
+  "type": "object",
+  "required": ["schema", "session_id", "normalization_policy", "app_build", "capabilities", "started_at_ms", "crops"],
+  "properties": {
+    "schema": {"const": "alpr_crop_session_v1"},
+    "session_id": {"type": "string", "minLength": 1},
+    "normalization_policy": {"const": "uppercase_alphanumeric.v1"},
+    "app_build": {"type": "object", "required": ["version_name", "version_code", "git_commit", "git_state"]},
+    "capabilities": {
+      "type": "object",
+      "required": ["raw_prediction", "registration_key", "full_mt_attempts", "full_pipeline_quality"],
+      "properties": {
+        "raw_prediction": {"const": true},
+        "registration_key": {"const": true},
+        "full_mt_attempts": {"const": false},
+        "full_pipeline_quality": {"const": false}
+      }
+    },
+    "started_at_ms": {"type": "integer", "minimum": 0},
+    "crops": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/crop"}}
+  },
+  "$defs": {
+    "crop": {
+      "type": "object",
+      "required": ["text", "raw_prediction", "registration_key", "image", "image_width", "image_height", "characters", "observations"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "raw_prediction": {"type": "string", "minLength": 1},
+        "registration_key": {"type": "string", "minLength": 1},
+        "image": {"type": "string", "pattern": "^crop-[0-9]+\\.jpg$"},
+        "image_width": {"type": "integer", "minimum": 1},
+        "image_height": {"type": "integer", "minimum": 1},
+        "characters": {"type": "array", "items": {"type": "object", "required": ["label", "confidence", "left", "top", "right", "bottom"]}},
+        "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observation"}}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "required": ["observation_id", "text", "raw_prediction", "registration_key", "entity_id", "vehicle_track_id", "plate_track_id", "captured_at_ms", "captured_elapsed_ns", "frame_id", "source", "scene_generation", "visual_epoch", "camera_transform_generation"],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "raw_prediction": {"type": "string", "minLength": 1},
+        "registration_key": {"type": "string", "minLength": 1},
+        "entity_id": {"type": "integer", "minimum": 0},
+        "vehicle_track_id": {"type": "integer", "minimum": 0},
+        "plate_track_id": {"type": "integer", "minimum": 0},
+        "captured_at_ms": {"type": "integer", "minimum": 0},
+        "captured_elapsed_ns": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -23,7 +23,7 @@ public final class RecognitionStabilizer {
     }
 
     public synchronized StableResult accept(String text, double confidence) {
-        String normalized = text == null ? "" : text.trim().toUpperCase(java.util.Locale.ROOT);
+        String normalized = com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
         if (normalized.isEmpty()) return null;
         if (!normalized.equals(candidate)) {
             candidate = normalized;

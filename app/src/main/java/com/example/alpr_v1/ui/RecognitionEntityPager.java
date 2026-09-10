@@ -150,6 +150,7 @@ public final class RecognitionEntityPager extends LinearLayout {
                     + new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date(observation.capturedAtMillis)), 12, blue, true));
             TextView reading = text(observation.text.isEmpty() ? "—" : observation.text, 21, foreground, true);
             reading.setTypeface(Typeface.MONOSPACE, Typeface.BOLD); reading.setPadding(0, dp(8), 0, dp(6)); card.addView(reading);
+            if (!observation.text.equals(observation.registrationKey)) field(card, "Numer do porównań", observation.registrationKey);
             card.addView(text(observation.confirmed ? "●  Potwierdzony odczyt" : "●  Odczyt wstępny", 12,
                     observation.confirmed ? green : color(R.color.alpr_warning), true));
             pair(card, "Pewność odczytu", value(observation.confidence * 100, "%"),

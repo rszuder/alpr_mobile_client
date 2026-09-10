@@ -2123,9 +2123,7 @@ public final class MetricsCollector {
     }
 
     private static String normalizeSequence(String value) {
-        return value == null
-                ? ""
-                : value.toUpperCase(Locale.ROOT).replaceAll("\\s+", "");
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(value);
     }
 
     static int levenshtein(String left, String right) {

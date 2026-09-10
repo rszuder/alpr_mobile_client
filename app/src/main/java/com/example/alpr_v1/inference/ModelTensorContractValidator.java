@@ -35,6 +35,16 @@ public final class ModelTensorContractValidator {
                             + ", a artefakt udostępnia " + tensor.dataType
             );
         }
+        if (spec.quantizationScale() != null &&
+                (Math.abs(spec.quantizationScale() - tensor.quantizationScale)
+                        > Math.max(1e-8f, Math.abs(spec.quantizationScale()) * 1e-5f)
+                || spec.quantizationZeroPoint() != tensor.quantizationZeroPoint)) {
+            throw new IllegalArgumentException("Kwantyzacja tensora nie odpowiada manifestowi");
+        }
+        if (("INT8".equals(tensor.dataType) || "UINT8".equals(tensor.dataType))
+                && (!Float.isFinite(tensor.quantizationScale) || tensor.quantizationScale <= 0)) {
+            throw new IllegalArgumentException("Brak poprawnej skali kwantyzacji tensora");
+        }
     }
 
     public static void validateOutput(ModelOutputSpec spec, TensorInfo tensor) {

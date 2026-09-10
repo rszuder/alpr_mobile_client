@@ -84,7 +84,6 @@ final class ScanAcquisitionFinalizer {
     }
 
     static String normalize(String text) {
-        return text == null ? "" : text.trim().toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9]", "");
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
     }
 }

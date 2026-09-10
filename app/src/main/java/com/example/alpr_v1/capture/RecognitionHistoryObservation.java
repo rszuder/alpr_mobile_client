@@ -8,6 +8,7 @@ public final class RecognitionHistoryObservation {
     public final long sceneGeneration, visualEpoch, cameraTransformGeneration, frameId,
             entityId, vehicleTrackId, plateTrackId, capturedAtMillis, capturedElapsedNanos;
     public final String text, associationReason, captureSource;
+    public final String rawPrediction, registrationKey;
     public final double confidence, plateConfidence;
     public final boolean confirmed;
     public final int sourceWidth, sourceHeight;
@@ -22,6 +23,8 @@ public final class RecognitionHistoryObservation {
         plateTrackId = observation.plateTrackId; capturedAtMillis = observation.capturedAtMillis;
         capturedElapsedNanos = observation.capturedElapsedNanos;
         text = observation.freshMzAttempted ? observation.freshPrediction : observation.text;
+        rawPrediction = text;
+        registrationKey = com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
         confidence = observation.freshRecognitionConfidence(); plateConfidence = observation.plateConfidence;
         confirmed = observation.confirmed;
         associationReason = observation.associationReason; this.captureSource = captureSource;

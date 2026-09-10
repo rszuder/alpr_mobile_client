@@ -1,5 +1,9 @@
 # Architektura klienta mobilnego ALPR
 
+Aktualizacja kontraktów z 10.09.2026: [interoperacyjność Android–Desktop](android_full_interop_2026-09-10.md).
+Nowe zapisy galerii i paczek grupują po kanonicznym `registration_key`, zachowując
+surowy tekst każdej obserwacji. Starsze opisy ścisłego klucza raw są historyczne.
+
 Układ nakładki telemetrycznej i wskaźnika orientacji:
 [lekki HUD kamery](compact_live_hud.md).
 

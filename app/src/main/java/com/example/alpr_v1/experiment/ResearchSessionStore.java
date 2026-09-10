@@ -31,7 +31,7 @@ public final class ResearchSessionStore {
             + "stale_or_cancelled,cancel_reason,write_state,missing_evidence_reason,mz_executed,mt_invocation_id,"
             + "mt_detection_index,mt_detection_count,mt_executed,roi_left,roi_top,roi_right,roi_bottom,input_width,input_height,"
             + "plate_left,plate_top,plate_right,plate_bottom,input_scale,input_pad_x,input_pad_y,"
-            + "mt_input_evidence_entry,mt_input_missing_evidence_reason,execution_error").split(",");
+            + "mt_input_evidence_entry,mt_input_missing_evidence_reason,execution_error,raw_prediction,registration_key,normalization_policy,source_timestamp_domain,mt_backend,mz_backend,mz_execution_error,processing_error").split(",");
     private final File directory;
     private final JSONObject metadata;
     private final ThreadPoolExecutor writer;
@@ -242,6 +242,9 @@ public final class ResearchSessionStore {
                     String csv = ResearchArchive.cropIndexCsv(Collections.singletonList(item),false);
                     crop.put("_index_row",csv.substring(csv.indexOf('\n')+1).trim());
                     crop.put("evidence_entry",entry).put("consensus_confidence",record.data.opt("consensus_confidence"));
+                    crop.put("raw_prediction",record.data.optString("raw_prediction"))
+                            .put("registration_key",record.data.optString("registration_key"))
+                            .put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY);
                     append(new File(directory,"samples/crops.jsonl"),crop.toString()+"\n");
                 }
             } else if (record.data.optString("missing_evidence_reason").isEmpty()) {
@@ -492,6 +495,10 @@ public final class ResearchSessionStore {
             });
         }
         atomicText(new File(directory,"samples/schema.json"),new JSONObject().put("schema",SAMPLE_SCHEMA)
+                .put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY)
+                .put("capabilities",new JSONObject().put("attempt_registry",true).put("mt_invocation_identity",true)
+                        .put("raw_prediction",true).put("registration_key",true).put("mt_input_evidence_references",true)
+                        .put("source_timestamp_domain",true).put("actual_backend_fields",true))
                 .put("subject_identity","scene_generation+entity_id").put("human_review","desktop")
                 .put("mt_invocation_identity","one_backend_execution_one_input")
                 .put("mt_detection_index_base",0).put("mt_detection_order","decoder_output")

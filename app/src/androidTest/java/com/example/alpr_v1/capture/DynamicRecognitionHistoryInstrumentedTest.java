@@ -142,16 +142,20 @@ public class DynamicRecognitionHistoryInstrumentedTest {
         } finally { store.clear(); first.recycle(); other.recycle(); }
     }
 
-    @Test public void allCharactersMustAgreeWithoutCaseOrSeparatorNormalization() {
+    @Test public void canonicalMatchesKeepEachRawAndOriginalImage() {
         Bitmap bitmap = Bitmap.createBitmap(32,16,Bitmap.Config.ARGB_8888);
         RecognitionHistoryStore store = new RecognitionHistoryStore();
         try {
             String[] readings = {"WI1234A", "WI1234B", "WI1234", "wi1234a", "WI 1234A", "WI-1234A", "WI1234A ", "W11234A"};
             for (int index=0; index<readings.length; index++) {
                 store.upsertObservation(observation(bitmap,1,4,7,10+index,readings[index]),telemetry(),true,"normal");
-                assertEquals(index+1,store.size());
+                assertEquals(new int[]{1,2,3,3,3,3,3,4}[index],store.size());
             }
             assertExactReadings(store);
+            RecognitionHistoryItem first = store.newestFirst().stream().filter(item -> item.text.equals("WI1234A")).findFirst().get();
+            assertEquals(5,first.observationRecords().size());
+            assertEquals("wi1234a",first.observationRecords().get(1).rawPrediction);
+            assertEquals("WI 1234A",first.observationRecords().get(2).rawPrediction);
         } finally { store.clear(); bitmap.recycle(); }
     }
 
@@ -168,7 +172,8 @@ public class DynamicRecognitionHistoryInstrumentedTest {
 
     private static void assertExactReadings(RecognitionHistoryStore store) {
         for(RecognitionHistoryItem item : store.newestFirst())
-            for(RecognitionHistoryObservation record : item.observationRecords()) assertEquals(item.text,record.text);
+            for(RecognitionHistoryObservation record : item.observationRecords())
+                assertEquals(RecognitionHistoryStore.numberKey(item.text),record.registrationKey);
     }
 
     @Test public void deletionAndCapacityDoNotLeaveNumberAliasesPointingAtRecycledImages() {

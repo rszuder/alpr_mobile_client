@@ -1,5 +1,7 @@
 # Eksport badawczy klienta mobilnego ALPR
 
+Uzupełnienie z 10.09.2026: [addytywne pola raw/key/backend oraz test artefaktów na Desktopie](android_full_interop_2026-09-10.md).
+
 ## Artefakty
 
 Ekran Diagnostyka zwraca sterowanie do `MainActivity`, która udostępnia trzy

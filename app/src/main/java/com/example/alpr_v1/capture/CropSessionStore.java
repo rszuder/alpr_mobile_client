@@ -43,7 +43,8 @@ public final class CropSessionStore implements AutoCloseable {
             return CompletableFuture.completedFuture(null);
         if (!validId(sessionId)) return failed(new IllegalArgumentException("Invalid crop session id"));
         RecognitionHistoryObservation record = new RecognitionHistoryObservation(observation, source, telemetry);
-        String reservation = sessionId + "\n" + record.text;
+        if (record.registrationKey.isEmpty()) return CompletableFuture.completedFuture(null);
+        String reservation = sessionId + "\n" + record.registrationKey;
         Bitmap image = null;
         if (!imageQueued.contains(reservation) && observation.previewBitmap != null && !observation.previewBitmap.isRecycled()) {
             image = observation.previewBitmap.copy(Bitmap.Config.ARGB_8888, false);
@@ -112,7 +113,7 @@ public final class CropSessionStore implements AutoCloseable {
         JSONObject crop = null;
         for (int i=0;i<crops.length();i++) {
             JSONObject candidate = crops.getJSONObject(i);
-            if (candidate.getString("text").equals(observation.text)) { crop = candidate; break; }
+            if (candidate.getString("registration_key").equals(observation.registrationKey)) { crop = candidate; break; }
         }
         if (crop == null) {
             if (image == null) return; // Metadata alone cannot create a crop; it can extend an existing one.
@@ -127,7 +128,8 @@ public final class CropSessionStore implements AutoCloseable {
             for (com.example.alpr_v1.pipeline.PlateCharacter character : characters)
                 boxes.put(new JSONObject().put("label",character.label).put("confidence",finite(character.confidence))
                         .put("left",character.left).put("top",character.top).put("right",character.right).put("bottom",character.bottom));
-            crop = new JSONObject().put("text",observation.text).put("image",name).put("characters",boxes)
+            crop = new JSONObject().put("text",observation.text).put("raw_prediction",observation.rawPrediction)
+                    .put("registration_key",observation.registrationKey).put("image",name).put("characters",boxes)
                     .put("image_width",image.getWidth()).put("image_height",image.getHeight())
                     .put("observations",new JSONArray());
             crops.put(crop);
@@ -156,10 +158,16 @@ public final class CropSessionStore implements AutoCloseable {
         if (manifest.isFile()) return new JSONObject(new String(Files.readAllBytes(manifest.toPath()),StandardCharsets.UTF_8));
         if (first == null) throw new FileNotFoundException("Nie znaleziono sesji cropów");
         return new JSONObject().put("schema","alpr_crop_session_v1").put("session_id",directory.getName())
+                .put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY)
+                .put("app_build",com.example.alpr_v1.metrics.BuildProvenance.snapshot())
+                .put("capabilities",new JSONObject().put("raw_prediction",true).put("registration_key",true)
+                        .put("entity_observations",true).put("full_mt_attempts",false)
+                        .put("full_pipeline_quality",false))
                 .put("started_at_ms",first.capturedAtMillis).put("crops",new JSONArray());
     }
     private static JSONObject metadata(RecognitionHistoryObservation o) throws Exception {
         JSONObject result = new JSONObject().put("observation_id",o.key()).put("text",o.text)
+                .put("raw_prediction",o.rawPrediction).put("registration_key",o.registrationKey)
                 .put("entity_id",o.entityId).put("vehicle_track_id",o.vehicleTrackId).put("plate_track_id",o.plateTrackId)
                 .put("scene_generation",o.sceneGeneration).put("visual_epoch",o.visualEpoch)
                 .put("camera_transform_generation",o.cameraTransformGeneration).put("frame_id",o.frameId)

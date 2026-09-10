@@ -27,7 +27,6 @@ public final class PlateTextConsensus {
     }
 
     private static String normalize(String value) {
-        return value == null ? "" : value.trim().toUpperCase(java.util.Locale.ROOT)
-                .replaceAll("[^A-Z0-9]", "");
+        return RegistrationTextNormalizer.registrationKey(value);
     }
 }

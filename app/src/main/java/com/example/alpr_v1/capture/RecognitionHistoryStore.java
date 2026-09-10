@@ -21,7 +21,7 @@ public final class RecognitionHistoryStore {
     private long nextReadingGroup = 1L;
 
     /**
-     * One exact MZ text owns one gallery image. Scene mode and tracking identity
+     * One canonical registration key owns one gallery image. Scene mode and tracking identity
      * never relax equality or merge vehicle-domain identities.
      */
     public synchronized boolean upsertObservation(com.example.alpr_v1.pipeline.PlateObservation observation,
@@ -29,6 +29,7 @@ public final class RecognitionHistoryStore {
         if (observation == null || !observation.hasFreshMzRead()) return false;
         RecognitionHistoryObservation record = new RecognitionHistoryObservation(observation, captureSource, telemetry);
         String key = numberKey(record.text);
+        if (key.isEmpty()) return false;
         RecognitionHistoryItem existing = items.get(readingGroups.get(key));
         boolean changed = false;
         if (existing == null) {
@@ -45,7 +46,7 @@ public final class RecognitionHistoryStore {
             changed = true;
         }
         // Keep the original image, text and its confidence/provenance together.
-        // Later exact matches need metadata only, even from a different scene/entity.
+        // Later canonical matches keep their own raw text and need metadata only.
         changed |= existing.record(record);
         existing.observations = existing.observationRecords().size();
         existing.lastObservationAtMillis = Math.max(existing.lastObservationAtMillis, observation.capturedAtMillis);
@@ -55,9 +56,9 @@ public final class RecognitionHistoryStore {
         return changed;
     }
 
-    /** Literal MZ output: no case folding, separator removal, fuzzy match or length shortcut. */
+    /** Shared canonical key. Raw MZ text stays with the representative image and each observation. */
     public static String numberKey(String text) {
-        return text == null || text.trim().isEmpty() ? "" : text;
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
     }
 
     public RecognitionHistoryStore() {

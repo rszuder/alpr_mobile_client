@@ -40,7 +40,7 @@ public final class ResearchAttemptBatch {
             for (String key : new String[]{"mt_invocation_id","mt_executed","attempt_started_elapsed_nanos",
                     "roi_left","roi_top","roi_right","roi_bottom","input_width","input_height",
                     "input_scale","input_pad_x","input_pad_y","mt_roi_policy",
-                    "primary_plate_region_top_fraction"}) record.put(key,call.data.opt(key));
+                    "primary_plate_region_top_fraction","mt_backend"}) record.put(key,call.data.opt(key));
             record.copyEvidence(call.plateCrop ? call.mtInputImage : call.image);
             if (!record.plateCrop) record.put("evidence_kind",call.data.optString("mt_input_evidence_kind",
                     call.data.optString("evidence_kind")));
@@ -63,7 +63,8 @@ public final class ResearchAttemptBatch {
             if (record.data.optBoolean("mt_executed"))
                 record.put("mt_detection_count",detectionCounts.get(invocations.get(record)));
             if (!cancellation.isEmpty()) record.cancel(cancellation);
-            if (!failure.isEmpty()) record.put("execution_error",failure);
+            // A later MZ/postprocessing failure must not turn earlier valid MT calls into backend failures.
+            if (!failure.isEmpty()) record.put("processing_error",failure);
             store.submit(record);
         }
         records.clear(); detections.clear(); detectionCounts.clear(); invocations.clear();

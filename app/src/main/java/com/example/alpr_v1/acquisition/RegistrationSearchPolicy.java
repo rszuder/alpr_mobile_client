@@ -5,7 +5,7 @@ import java.util.Locale;
 public final class RegistrationSearchPolicy {
     private RegistrationSearchPolicy() {}
     public static String normalize(String value) {
-        return value == null ? "" : value.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(value);
     }
     public static boolean possible(String target, String reading) {
         String a = normalize(target), b = normalize(reading);

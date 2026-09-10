@@ -42,6 +42,8 @@ public final class AcquisitionAttemptRecord {
         put("mt_detection_index",JSONObject.NULL); put("mt_detection_count",JSONObject.NULL);
         put("mt_input_evidence_entry",""); put("mt_input_missing_evidence_reason","");
         put("mz_status",MzStatus.NOT_RUN.name()); put("prediction",""); put("consensus_prediction","");
+        put("raw_prediction",""); put("registration_key","");
+        put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY);
         put("plate_confidence",0); put("recognition_confidence",0);
         put("evidence_kind",""); put("evidence_entry",""); put("missing_evidence_reason","");
         put("stale_or_cancelled",false); put("cancel_reason",""); put("write_state","QUEUED");
@@ -49,7 +51,14 @@ public final class AcquisitionAttemptRecord {
     }
     public void put(String key,Object value) {
         if (value instanceof Number && !Double.isFinite(((Number)value).doubleValue())) value=JSONObject.NULL;
-        try { data.put(key,value); }
+        try {
+            data.put(key,value);
+            if ("prediction".equals(key)) {
+                String raw = value == null || value == JSONObject.NULL ? "" : value.toString();
+                data.put("raw_prediction",raw);
+                data.put("registration_key",com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(raw));
+            }
+        }
         catch (org.json.JSONException error) { store.recordMetadataFailure("attempt_metadata:"+key); }
     }
     public void associate(long entity,long vehicle,long track) {
@@ -76,6 +85,8 @@ public final class AcquisitionAttemptRecord {
         observation = value;
         associate(value.entityId,value.vehicleTrackId,value.plateTrackId);
         put("prediction",value.freshPrediction); put("consensus_prediction",value.text);
+        put("raw_prediction",value.freshPrediction);
+        put("registration_key",com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(value.freshPrediction));
         put("plate_confidence",value.plateConfidence); put("consensus_confidence",value.recognitionConfidence);
         double confidence=0.0;
         for (com.example.alpr_v1.pipeline.PlateCharacter character:value.characters) confidence+=character.confidence;

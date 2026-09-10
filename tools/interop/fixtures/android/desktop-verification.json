@@ -1,0 +1,32 @@
+{
+  "research-complete": {
+    "desktop_reader": "passed",
+    "review_open": "passed",
+    "complete": true,
+    "attempts": 8,
+    "archive_sha256": "614d5d069104bbf48b46087b6baaa6fb61fc79ee41e583597bf26e9363ba85f5"
+  },
+  "research-partial": {
+    "desktop_reader": "passed",
+    "review_open": "passed",
+    "complete": false,
+    "attempts": 1,
+    "archive_sha256": "c6ff6e331ab7ec70dd881f66e2fc391a1650e8c81b944193844d941ba3d28044"
+  },
+  "processing-error": {
+    "desktop_reader": "passed",
+    "review_open": "passed",
+    "complete": true,
+    "attempts": 1,
+    "archive_sha256": "f86aed5443b24c836494fbfdea35ca1b45f288821e6b3191e665a0ea5ec143c6"
+  },
+  "crop-session": {
+    "reference_contract": "passed",
+    "desktop_report_adapter": "correctly_rejected",
+    "desktop_crop_adapter": "not_present_in_inspected_desktop"
+  },
+  "negative_fixtures": {
+    "bad_hash": "rejected",
+    "contradictory_count": "rejected"
+  }
+}

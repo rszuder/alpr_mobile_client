@@ -1,5 +1,7 @@
 # Pakiet modelu ALPR v1
 
+Uzupełnienie z 10.09.2026: [walidacja preprocessingu, kwantyzacji i fixture Desktop–Android](android_full_interop_2026-09-10.md).
+
 Klient Android nie importuje surowych checkpointów `.pt`. Program Python eksportuje jeden lub kilka wariantów tego samego checkpointu do archiwum ZIP z rozszerzeniem `.alprmodel`.
 
 ## Struktura

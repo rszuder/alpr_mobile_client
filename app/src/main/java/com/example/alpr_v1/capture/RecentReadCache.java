@@ -14,6 +14,7 @@ public final class RecentReadCache {
 
     public void remember(PlateObservation observation, ObservationTelemetry telemetry, String source) {
         if (observation == null || !observation.hasFreshMzRead()) return;
+        if (RecognitionHistoryStore.numberKey(observation.freshPrediction).isEmpty()) return;
         String key = new RecognitionHistoryObservation(observation, source, telemetry).key();
         Entry previous = entries.get(key);
         if (previous != null && !(previous.observation.entityId == 0 && observation.entityId > 0)) return;

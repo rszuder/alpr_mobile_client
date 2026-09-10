@@ -292,6 +292,7 @@ public final class ResearchArchive {
     private static JSONObject softwareJson(JSONObject report) throws JSONException {
         JSONObject software = new JSONObject();
         software.put("app_version", report.optString("app_version", "unknown"));
+        software.put("app_build", report.optJSONObject("app_build"));
         software.put("package_id", report.optString("package_id", ""));
         software.put("variant_id", report.optString("variant_id", ""));
         software.put("execution", report.optJSONObject("execution"));

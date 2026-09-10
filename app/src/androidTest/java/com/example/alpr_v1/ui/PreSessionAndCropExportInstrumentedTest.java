@@ -37,7 +37,7 @@ public class PreSessionAndCropExportInstrumentedTest {
                     collect.setAccessible(true);
                     collect.invoke(activity,java.util.Arrays.asList(
                             DynamicRecognitionHistoryInstrumentedTest.observation(bitmap,1,4,7,10,"AAA"),
-                            DynamicRecognitionHistoryInstrumentedTest.observation(bitmap,2,9,8,11,"AAA"),
+                            DynamicRecognitionHistoryInstrumentedTest.observation(bitmap,2,9,8,11,"aaa"),
                             DynamicRecognitionHistoryInstrumentedTest.observation(bitmap,2,9,8,12,"AAB"),
                             DynamicRecognitionHistoryInstrumentedTest.observation(bitmap,2,9,8,13,"AAB",true,"")));
                     assertEquals(0,state.recognitionHistory().size());
@@ -54,6 +54,8 @@ public class PreSessionAndCropExportInstrumentedTest {
                     assertEquals(2,aaa.observationRecords().size());
                     assertEquals(4,aaa.observationRecords().get(0).entityId);
                     assertEquals(9,aaa.observationRecords().get(1).entityId);
+                    assertEquals("AAA",aaa.text);
+                    assertEquals("aaa",aaa.observationRecords().get(1).rawPrediction);
                     assertEquals(10,aaa.observationRecords().get(0).capturedAtMillis);
                     assertSame(originalTelemetry,aaa.observationRecords().get(0).telemetry);
                     invoke(activity,"toggleCollection");

@@ -1898,8 +1898,16 @@ final class MobileAlprEngine implements AutoCloseable {
                     characterPreprocessNanos += cropCharacterPreprocessNanos;
 
                     started = SystemClock.elapsedRealtimeNanos();
-                    if (audit != null) audit.put("mz_executed",true);
-                    InferenceRunResult characterRun = characterBackend.run(characterInput.buffer);
+                    if (audit != null) {
+                        audit.put("mz_executed",true);
+                        audit.put("mz_backend",characterBackend.runtimeName());
+                    }
+                    InferenceRunResult characterRun;
+                    try { characterRun = characterBackend.run(characterInput.buffer); }
+                    catch (RuntimeException error) {
+                        if (audit != null) audit.put("mz_execution_error",error.toString());
+                        throw error;
+                    }
                     cancelIfRequested(cancellationRequested);
                     cropCharacterInferenceNanos = SystemClock.elapsedRealtimeNanos() - started;
                     characterInferenceNanos += cropCharacterInferenceNanos;
@@ -3677,9 +3685,17 @@ final class MobileAlprEngine implements AutoCloseable {
 
             started = SystemClock.elapsedRealtimeNanos();
             requireVehicleSize(frame, sizeEntity, "before_mt");
-            if (audit != null) audit.mtStarted();
+            if (audit != null) {
+                audit.mtStarted();
+                audit.put("mt_backend",plateBackend.runtimeName());
+            }
             actualMtRuns++;
-            InferenceRunResult run = plateBackend.run(input.buffer);
+            InferenceRunResult run;
+            try { run = plateBackend.run(input.buffer); }
+            catch (RuntimeException error) {
+                if (audit != null) audit.put("execution_error",error.toString());
+                throw error;
+            }
             durations[1] += SystemClock.elapsedRealtimeNanos() - started;
 
             started = SystemClock.elapsedRealtimeNanos();

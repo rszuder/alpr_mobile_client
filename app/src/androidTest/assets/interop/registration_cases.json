@@ -1,0 +1,77 @@
+{
+  "policy": "uppercase_alphanumeric.v1",
+  "cases": [
+    {
+      "raw": null,
+      "key": ""
+    },
+    {
+      "raw": "",
+      "key": ""
+    },
+    {
+      "raw": "AAA123",
+      "key": "AAA123"
+    },
+    {
+      "raw": "aaa123",
+      "key": "AAA123"
+    },
+    {
+      "raw": "AaA123",
+      "key": "AAA123"
+    },
+    {
+      "raw": "WX 123AB",
+      "key": "WX123AB"
+    },
+    {
+      "raw": "WX-123AB",
+      "key": "WX123AB"
+    },
+    {
+      "raw": "o0i1",
+      "key": "O0I1"
+    },
+    {
+      "raw": " - ",
+      "key": ""
+    },
+    {
+      "raw": "a\u0301",
+      "key": "A"
+    },
+    {
+      "raw": "\u00df\u00b2\u2173",
+      "key": "SS\u00b2\u2163"
+    },
+    {
+      "raw": "\ud801\udc28",
+      "key": "\ud801\udc00"
+    },
+    {
+      "raw": "\u0131i\u0130",
+      "key": "II\u0130"
+    },
+    {
+      "raw": "\uff41\uff11",
+      "key": "\uff21\uff11"
+    },
+    {
+      "raw": "\u00bd",
+      "key": "\u00bd"
+    },
+    {
+      "raw": "\u0661",
+      "key": "\u0661"
+    },
+    {
+      "raw": "\ud83d\ude00abc",
+      "key": "ABC"
+    },
+    {
+      "raw": "\u0142\u00f3d\u017a",
+      "key": "\u0141\u00d3D\u0179"
+    }
+  ]
+}

@@ -8834,6 +8834,7 @@ public final class MainActivity extends AppCompatActivity {
             if (!experimentModeEnabled) {
                 String numberKey = RecognitionHistoryStore.numberKey(observation.freshMzAttempted
                         ? observation.freshPrediction : observation.text);
+                if (numberKey.isEmpty()) continue;
                 boolean alreadyStored = !numberKey.isEmpty() && capturedCrops.stream()
                         .anyMatch(crop -> numberKey.equals(RecognitionHistoryStore.numberKey(
                                 crop.freshPrediction.isEmpty() ? crop.text : crop.freshPrediction)));

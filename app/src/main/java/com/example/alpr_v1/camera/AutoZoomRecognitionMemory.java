@@ -88,8 +88,6 @@ public final class AutoZoomRecognitionMemory {
     }
 
     private static String normalizeText(String value) {
-        if (value == null) return "";
-        return value.replaceAll("[^A-Za-z0-9]", "")
-                .toUpperCase(Locale.ROOT);
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(value);
     }
 }

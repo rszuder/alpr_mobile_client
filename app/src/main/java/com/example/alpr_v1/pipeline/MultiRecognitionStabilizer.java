@@ -82,6 +82,6 @@ public final class MultiRecognitionStabilizer {
     }
 
     private static String normalize(String text) {
-        return text == null ? "" : text.trim().toUpperCase(Locale.ROOT);
+        return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
     }
 }

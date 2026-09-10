@@ -33,6 +33,17 @@
         "width": { "type": "integer", "minimum": 1 },
         "height": { "type": "integer", "minimum": 1 },
         "channels": { "const": 3 },
+        "batch": { "const": 1 },
+        "resize_mode": { "const": "letterbox" },
+        "padding_value": { "const": 114 },
+        "interpolation": { "const": "bilinear" },
+        "quantization": {
+          "type": "object", "required": ["scale", "zero_point"],
+          "properties": {
+            "scale": { "type": "number", "exclusiveMinimum": 0 },
+            "zero_point": { "type": "integer", "minimum": -128, "maximum": 255 }
+          }
+        },
         "layout": { "enum": ["NHWC", "NCHW"] },
         "color": { "enum": ["RGB", "BGR"] },
         "data_type": { "enum": ["FLOAT32", "UINT8", "INT8"] },
@@ -57,6 +68,7 @@
         "class_count": { "type": "integer", "minimum": 1 },
         "keypoint_count": { "type": "integer", "minimum": 0 },
         "keypoint_dimensions": { "type": "integer", "minimum": 0 },
+        "keypoint_order": { "const": ["top_left", "top_right", "bottom_right", "bottom_left"] },
         "has_objectness": { "type": "boolean" },
         "score_index": { "type": "integer", "minimum": 0 },
         "class_index": { "type": "integer", "minimum": 0 },

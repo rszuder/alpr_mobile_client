@@ -7,6 +7,8 @@
     "schema": {"const": "alpr.mobile_research_samples.v2"},
     "subject_identity": {"const": "scene_generation+entity_id"},
     "human_review": {"const": "desktop"},
+    "normalization_policy": {"const": "uppercase_alphanumeric.v1"},
+    "capabilities": {"type": "object", "additionalProperties": {"type": "boolean"}},
     "attempts_file": {"const": "samples/attempts.csv"},
     "crops_file": {"const": "samples/index.csv"},
     "mt_invocation_identity": {

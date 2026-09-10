@@ -35,7 +35,8 @@ public final class RecognitionHistoryItem implements AutoCloseable {
         return Collections.unmodifiableList(new ArrayList<>(observationRecords.values()));
     }
     boolean record(RecognitionHistoryObservation observation) {
-        if (!text.equals(observation.text)) return false;
+        String key = RecognitionHistoryStore.numberKey(text);
+        if (key.isEmpty() || !key.equals(observation.registrationKey)) return false;
         RecognitionHistoryObservation old = observationRecords.get(observation.key());
         if (old != null && !(old.entityId == 0L && observation.entityId > 0L)) return false;
         observationRecords.put(observation.key(), observation);

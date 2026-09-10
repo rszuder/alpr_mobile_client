@@ -1,4 +1,13 @@
-# Galeria: ścisła zgodność odczytów MZ
+# Galeria: zgodność kanonicznego numeru i zachowanie surowego MZ
+
+**Aktualizacja 10.09.2026:** decyzja z handoffu interoperacyjności zastępuje
+wcześniejszą równość raw kluczem `uppercase_alphanumeric.v1`. `aaa123`, `AAA123`
+i `AA A-123` tworzą jedną grupę, lecz każda obserwacja zachowuje własny raw.
+Encje nie są scalane, a opis bazowego cropa pozostaje niezmieniony. Nie migrujemy
+wcześniejszych sesji. [Aktualny kontrakt i testy](android_full_interop_2026-09-10.md).
+
+Poniżej zapis historycznej decyzji z 9.09, wyjaśniającej źródło wcześniejszego
+mieszania różnych rejestracji. Jej wymóg równości raw nie jest już aktualny.
 
 Wpis galerii reprezentuje jeden konkretny tekst odczytany przez MZ, a nie encję
 pojazdu. Przykład: `AAA` z P4 oraz `AAA` z późniejszej P9 to jeden crop i dwie
