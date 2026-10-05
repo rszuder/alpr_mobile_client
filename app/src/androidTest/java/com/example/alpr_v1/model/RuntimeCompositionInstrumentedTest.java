@@ -197,6 +197,46 @@ public final class RuntimeCompositionInstrumentedTest {
     }
 
     @Test
+    public void mtMzPackageAndManualDisableDoNotResurrectInstalledVehicle() throws Exception {
+        String vehicleStorage = "vehicle-stale-" + suffix;
+        writeModel(ModelRole.VEHICLE, vehicleStorage, "vehicle-stale-" + suffix);
+
+        ModelRegistry registry = new ModelRegistry(context);
+        InstalledModel vehicle = findStorage(
+                registry.getInstalled(ModelRole.VEHICLE),
+                vehicleStorage
+        );
+        assertNotNull(vehicle);
+        registry.activate(vehicle);
+        assertNotNull(registry.getActive(ModelRole.VEHICLE));
+
+        registry.deactivateVehicle();
+        assertNull(registry.getActive(ModelRole.VEHICLE));
+
+        // Simulate importing an MT+MZ package while the old MP remains installed.
+        registry.activate(vehicle);
+        String plateStorage = "plate-mtmz-" + suffix;
+        String characterStorage = "character-mtmz-" + suffix;
+        writeModel(ModelRole.PLATE, plateStorage, "plate-mtmz-" + suffix);
+        writeModel(ModelRole.CHARACTER, characterStorage, "character-mtmz-" + suffix);
+        String packageStorage = writePackage(plateStorage, characterStorage);
+        registry.reload();
+
+        InstalledAlprPackage completePackage = registry.findPackage(packageStorage);
+        assertNotNull(completePackage);
+        registry.activate(completePackage);
+
+        assertNull(registry.getActive(ModelRole.VEHICLE));
+        assertNotNull(registry.getActivePackage());
+        assertNotNull(registry.getBasePackage());
+        assertFalse(registry.isCompositionModified());
+        assertTrue(ModelStatusFormatter.presentation(
+                registry,
+                new AutoTuneManager(context)
+        ).summary.contains("Źródło: kompletny pakiet ALPR"));
+    }
+
+    @Test
     public void replacementPreservesBasePackageAndCanBeRestored() throws Exception {
         String basePlateStorage = "plate-base-" + suffix;
         String replacementPlateStorage = "plate-replacement-" + suffix;

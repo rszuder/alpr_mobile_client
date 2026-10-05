@@ -76,7 +76,12 @@ public final class ModelRegistry {
                 }
             }
             if (selected != null && !isExecutable(selected)) selected = null;
-            if (selected == null && !roleModels.isEmpty()) {
+            // MT and MZ may use a legacy fallback when no explicit active
+            // preference exists. MP is optional and must never become active
+            // merely because an old executable vehicle model is installed.
+            // Otherwise importing an MT+MZ package (or deactivating MP) removes
+            // active.vehicle and reload() immediately resurrects the old MP.
+            if (selected == null && !roleModels.isEmpty() && role != ModelRole.VEHICLE) {
                 for (int index = roleModels.size() - 1; index >= 0; index--) {
                     if (isExecutable(roleModels.get(index))) {
                         selected = roleModels.get(index);
