@@ -49,10 +49,26 @@ public final class ResearchSessionStore {
 
     public static File sessionsRoot(Context context) { return new File(context.getFilesDir(),"research/sessions"); }
     public static ResearchSessionStore prepare(Context context,ExperimentSession.Prepared prepared) throws Exception {
-        return prepare(sessionsRoot(context),prepared,256,64,128L*1024*1024,ResearchSessionStore::encodeJpeg);
+        ResearchSessionStore store = prepare(sessionsRoot(context),prepared,256,64,128L*1024*1024,ResearchSessionStore::encodeJpeg);
+        try {
+            JSONObject identity = com.example.alpr_v1.metrics.ApkIdentity.capture(context);
+            synchronized (store) {
+                store.metadata.getJSONObject("app_build").put("apk_identity", identity)
+                        .put("apk_sha256", identity.getString("base_apk_sha256"));
+                atomicText(new File(store.directory,"session.json"), store.metadata.toString(2));
+            }
+            return store;
+        } catch (Exception error) {
+            store.abortPreparation("APK_IDENTITY_NOT_VERIFIED: " + error);
+            throw error;
+        }
     }
     static ResearchSessionStore prepare(File root,ExperimentSession.Prepared prepared,int capacity,int attemptCapacity,
                                         long minimumFreeBytes,ImageEncoder encoder) throws Exception {
+        return prepare(root,prepared,capacity,attemptCapacity,minimumFreeBytes,encoder,SystemClock::elapsedRealtimeNanos);
+    }
+    static ResearchSessionStore prepare(File root,ExperimentSession.Prepared prepared,int capacity,int attemptCapacity,
+                                        long minimumFreeBytes,ImageEncoder encoder,java.util.function.LongSupplier clock) throws Exception {
         Files.createDirectories(root.toPath());
         if (!root.isDirectory() || root.getUsableSpace() < minimumFreeBytes)
             throw new IOException("Brak miejsca na trwałą sesję badawczą");
@@ -89,21 +105,22 @@ public final class ResearchSessionStore {
             }
         }
         for (String path : new String[]{"samples/attempts.jsonl","samples/crops.jsonl","samples/write_states.jsonl",
-                "telemetry/events.jsonl","telemetry/traces.jsonl","telemetry/thermal.jsonl"})
+                "telemetry/events.jsonl","telemetry/traces.jsonl","telemetry/thermal.jsonl",RuntimeEvidenceJournal.FILE})
             atomicText(new File(directory,path),"");
         atomicText(new File(directory,"session.json"),json.toString(2));
-        ResearchSessionStore store = new ResearchSessionStore(directory,json,capacity,attemptCapacity,encoder);
+        ResearchSessionStore store = new ResearchSessionStore(directory,json,capacity,attemptCapacity,encoder,clock);
         try { store.writer.submit(() -> {}).get(10,TimeUnit.SECONDS); }
         catch (Exception error) { store.writer.shutdownNow(); throw error; }
         return store;
     }
-    private ResearchSessionStore(File directory,JSONObject metadata,int capacity,int attemptCapacity,ImageEncoder encoder) {
+    private ResearchSessionStore(File directory,JSONObject metadata,int capacity,int attemptCapacity,ImageEncoder encoder,
+                                 java.util.function.LongSupplier clock) {
         this.directory = directory; this.metadata = metadata; this.encoder = encoder;
         this.attemptCapacity = attemptCapacity; attempts = new Semaphore(attemptCapacity);
         writer = new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(capacity),r -> {
             Thread thread = new Thread(r,"research-session-writer"); thread.setDaemon(true); return thread;
         },new ThreadPoolExecutor.AbortPolicy());
-        preparedElapsedNanos = SystemClock.elapsedRealtimeNanos();
+        preparedElapsedNanos = clock.getAsLong();
     }
     public String sessionId() { return metadata.optString("session_id"); }
     public File directory() { return directory; }
@@ -206,6 +223,36 @@ public final class ResearchSessionStore {
         try { writer.execute(() -> { try { append(new File(directory,"telemetry/"+file),line+"\n"); }
             catch (Exception error) { droppedTelemetry.incrementAndGet(); lastFailure="telemetry_write_failed"; } }); }
         catch (RejectedExecutionException error) { droppedTelemetry.incrementAndGet(); lastFailure="telemetry_queue_full"; }
+    }
+    /** Backend observations also belong to the final in-flight work after STOP. */
+    public synchronized void recordRuntimeEvidence(JSONObject evidence) {
+        if (state != State.PREPARED && state != State.RUNNING && state != State.FINALIZING)
+            throw new IllegalStateException("RESEARCH_RUNTIME_EVIDENCE_SESSION_CLOSED");
+        final String line;
+        try {
+            JSONObject row = new JSONObject(evidence.toString());
+            row.put("session_id", sessionId());
+            JSONObject frozen = metadata.optJSONObject("execution");
+            row.put("frozen_execution_config", frozen == null ? JSONObject.NULL : new JSONObject(frozen.toString()));
+            line = row.toString();
+        } catch (Exception error) { recordMetadataFailure("runtime_evidence_serialization_failed"); throw new IllegalStateException(error); }
+        try {
+            writer.execute(() -> {
+                try { append(new File(directory,RuntimeEvidenceJournal.FILE),line+"\n"); }
+                catch (Exception error) { recordMetadataFailure("runtime_evidence_write_failed:"+error); }
+            });
+        } catch (RejectedExecutionException error) {
+            recordMetadataFailure("runtime_evidence_queue_rejected");
+            throw new IllegalStateException("Nie można zapisać dowodu wykonania", error);
+        }
+    }
+    public void recordRuntimeInitializationFailure(Throwable error) {
+        try {
+            recordRuntimeEvidence(new JSONObject().put("schema",com.example.alpr_v1.inference.RuntimeExecutionEvidence.SCHEMA)
+                    .put("phase","ENGINE_INITIALIZATION_ERROR").put("error_type",error.getClass().getName())
+                    .put("error_reason",error.toString()).put("fallback_performed",false)
+                    .put("kernel_execution_status","UNVERIFIED").put("int8_execution_proven",false));
+        } catch (Exception failure) { recordMetadataFailure("runtime_initialization_evidence_failed:"+failure); }
     }
     private void fail(String reason) { dropped.incrementAndGet(); lastFailure = reason; }
     public void recordMetadataFailure(String reason) { droppedTelemetry.incrementAndGet(); lastFailure=reason; }
@@ -387,6 +434,12 @@ public final class ResearchSessionStore {
         // Recovery may run under a different APK: use provenance frozen before this session's START.
         if (session.has("app_build")) report.put("app_build",session.getJSONObject("app_build"));
         if (session.has("app_version")) report.put("app_version",session.getString("app_version"));
+        JSONObject runtimeEvidence = RuntimeEvidenceJournal.summarize(directory);
+        report.put("runtime_execution_evidence", runtimeEvidence);
+        if (runtimeEvidence.optInt("malformed_records") > 0) {
+            session.put("state","PARTIAL").put("collection_complete",false)
+                    .put("runtime_evidence_error","MALFORMED_RUNTIME_EVIDENCE");
+        }
         report.put("research_collection",session);
         // Automatic runs never inherit manual gallery ground truth or sampling counts.
         JSONObject crops = report.optJSONObject("crop_session");

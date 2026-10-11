@@ -183,7 +183,7 @@ public final class ResearchArchive {
                         archive.writeFile(entry,file.toFile());
                     }
                 }
-                for (String name : new String[]{"traces.jsonl","thermal.jsonl","frame_flow.jsonl"}) {
+                for (String name : new String[]{"traces.jsonl","thermal.jsonl","frame_flow.jsonl","runtime_execution.jsonl"}) {
                     java.io.File file = new java.io.File(persistentDirectory,"telemetry/"+name);
                     if (file.isFile()) archive.writeFile("telemetry/"+name,file);
                 }

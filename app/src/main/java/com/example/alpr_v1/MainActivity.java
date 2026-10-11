@@ -3518,17 +3518,14 @@ public final class MainActivity extends AppCompatActivity {
                     "Brak aktywnego modelu etapu " + role.wireName()
             );
         }
-        ModelVariant variant = autoTuneManager.chosenVariant(model);
+        ModelVariant variant = autoTuneManager.requireResearchVariant(model);
         ResearchExecutionChoice choice = ResearchExecutionChoice.fromWireName(
                 uiPreferences.getString(
                         preferenceKey,
                         ResearchExecutionChoice.AUTO.wireName()
                 )
         );
-        ExecutionProfile profile = choice.resolve(
-                variant,
-                autoTuneManager.chosenProfile(model)
-        );
+        ExecutionProfile profile = choice.resolveApproved(variant);
         return ResearchStageExecutionConfig.enabled(
                 role,
                 model,

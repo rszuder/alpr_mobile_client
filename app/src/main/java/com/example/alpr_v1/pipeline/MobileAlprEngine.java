@@ -272,6 +272,16 @@ final class MobileAlprEngine implements AutoCloseable {
             ResearchExecutionConfig researchExecutionConfig,
             VehicleTrackingCoordinator vehicleTrackingCoordinator
     ) {
+        this(registry, autoTuneManager, roiBudgetPolicy, mtExecutionPolicy, mtFallbackPolicy,
+                vehicleTrackingPolicy, researchExecutionConfig, vehicleTrackingCoordinator,
+                com.example.alpr_v1.inference.RuntimeEvidenceSink.NONE);
+    }
+
+    MobileAlprEngine(ModelRegistry registry, AutoTuneManager autoTuneManager, RoiBudgetPolicy roiBudgetPolicy,
+                    MtExecutionPolicy mtExecutionPolicy, MtFallbackPolicy mtFallbackPolicy,
+                    VehicleTrackingPolicy vehicleTrackingPolicy, ResearchExecutionConfig researchExecutionConfig,
+                    VehicleTrackingCoordinator vehicleTrackingCoordinator,
+                    com.example.alpr_v1.inference.RuntimeEvidenceSink evidenceSink) {
         if (vehicleTrackingCoordinator == null) {
             throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
         }
@@ -346,7 +356,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         vehicleVariant,
                         frozenVehicle == null
                                 ? autoTuneManager.chosenProfile(vehicleModel)
-                                : frozenVehicle.executionProfile()
+                                : frozenVehicle.executionProfile(), evidenceSink
                 );
             }
             openedPlate = RuntimeBackendFactory.create(
@@ -354,14 +364,14 @@ final class MobileAlprEngine implements AutoCloseable {
                     plateVariant,
                     frozenPlate == null
                             ? autoTuneManager.chosenProfile(plateModel)
-                            : frozenPlate.executionProfile()
+                            : frozenPlate.executionProfile(), evidenceSink
             );
             openedCharacter = RuntimeBackendFactory.create(
                     characterModel,
                     characterVariant,
                     frozenCharacter == null
                             ? autoTuneManager.chosenProfile(characterModel)
-                            : frozenCharacter.executionProfile()
+                            : frozenCharacter.executionProfile(), evidenceSink
             );
         } catch (RuntimeException error) {
             closeQuietly(openedCharacter);
@@ -409,7 +419,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private static ModelRuntimeSummary modelSummary(String stage, InstalledModel model,
             ModelVariant variant, InferenceBackend backend) {
         return new ModelRuntimeSummary(stage, model.manifest().name(), variant.id(),
-                variant.precision(), backend.runtimeName());
+                variant.precision(), backend.runtimeName(), backend.executionEvidence().optString("kernel_execution_status","UNVERIFIED"));
     }
 
     List<String> modelDiagnostics() {

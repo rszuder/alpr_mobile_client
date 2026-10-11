@@ -36,6 +36,11 @@ public enum ResearchExecutionChoice {
         return resolve(variant.runtime(), variant.id(), automaticProfile);
     }
 
+    public ExecutionProfile resolveApproved(ModelVariant variant) {
+        if (this == AUTO) throw new IllegalArgumentException("RESEARCH_BACKEND_REQUIRED: wybierz CPU 1/2/4 albo GPU; AUTO jest niedozwolone");
+        return resolve(variant, null);
+    }
+
     ExecutionProfile resolve(
             ModelRuntime runtime,
             String variantId,

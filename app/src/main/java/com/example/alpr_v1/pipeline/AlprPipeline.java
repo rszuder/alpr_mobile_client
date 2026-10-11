@@ -2623,10 +2623,19 @@ public final class AlprPipeline {
         }
         if (engine != null) return;
         long started = SystemClock.elapsedRealtimeNanos();
-        engine = new MobileAlprEngine(registry, autoTuneManager,
+        com.example.alpr_v1.experiment.ResearchSessionStore evidenceStore = researchCollector;
+        if (frozenResearchExecutionConfig != null && evidenceStore == null)
+            throw new IllegalStateException("RESEARCH_EVIDENCE_STORE_NOT_READY");
+        try {
+            engine = new MobileAlprEngine(registry, autoTuneManager,
                 effectiveRoiBudgetPolicy(), effectiveMtExecutionPolicy(),
                 effectiveMtFallbackPolicy(), effectiveVehicleTrackingPolicy(),
-                frozenResearchExecutionConfig, vehicleTrackingCoordinator);
+                frozenResearchExecutionConfig, vehicleTrackingCoordinator,
+                evidenceStore == null ? com.example.alpr_v1.inference.RuntimeEvidenceSink.NONE : evidenceStore::recordRuntimeEvidence);
+        } catch (RuntimeException | LinkageError error) {
+            if (evidenceStore != null) evidenceStore.recordRuntimeInitializationFailure(error);
+            throw error;
+        }
         logEngineModelDiagnostics(engine);
         engine.setDynamicMtConfig(frozenResearchExecutionConfig == null
                 ? com.example.alpr_v1.acquisition.DynamicMtSettings.read(context.getSharedPreferences(
@@ -2711,6 +2720,8 @@ public final class AlprPipeline {
             ResearchExecutionConfig config
     ) {
         if (config == frozenResearchExecutionConfig) return;
+        ResearchExecutionConfig.requireUnchangedWhileRunning(frozenResearchExecutionConfig, config,
+                researchCollector != null && researchCollector.state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.RUNNING);
         frozenResearchExecutionConfig = config;
         reloadRequested = true;
     }

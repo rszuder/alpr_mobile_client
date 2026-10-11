@@ -227,6 +227,12 @@ public final class AutoTuneManager {
         return automaticVariant(model);
     }
 
+    public ModelVariant requireResearchVariant(InstalledModel model) {
+        // Read the stored pin itself: pinnedVariantId() intentionally hides stale ordinary-mode pins.
+        return com.example.alpr_v1.experiment.ResearchVariantSelection.require(model,
+                model == null ? "" : preferences.getString(pinKey(model), ""), RuntimeBackendFactory::isRuntimeAvailable);
+    }
+
     /** AutoTune winner or deterministic fallback, without changing the manual pin. */
     public ModelVariant automaticVariant(InstalledModel model) {
         JSONObject parsed = profileObject(model);

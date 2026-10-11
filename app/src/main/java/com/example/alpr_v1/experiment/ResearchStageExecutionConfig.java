@@ -168,6 +168,20 @@ public final class ResearchStageExecutionConfig {
         }
         for (ModelVariant variant : activeModel.manifest().variants()) {
             if (variantId.equals(variant.id()) && runtime == variant.runtime()) {
+                ModelInputSpec input = variant.input(activeModel.manifest().input());
+                if (!precision.equals(variant.precision()) || inputWidth != input.width() || inputHeight != input.height()
+                        || inputChannels != input.channels() || !inputDataType.equals(input.dataType())
+                        || !inputLayout.equals(input.layout()) || !inputColorSpace.equals(input.colorSpace())
+                        || (!modelRef.modelManifestJson().isEmpty()
+                            && !modelRef.modelManifestJson().equals(activeModel.manifest().rawJson())))
+                    throw new IllegalStateException("RESEARCH_FROZEN_VARIANT_CHANGED: " + variantId);
+                try {
+                    for (String file : variant.files()) {
+                        String actual = com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(
+                                com.example.alpr_v1.inference.RuntimeExecutionEvidence.safeFile(activeModel, file));
+                        if (!actual.equals(variant.sha256().get(file))) throw new IllegalStateException("RESEARCH_MODEL_SHA_CHANGED: " + file);
+                    }
+                } catch (java.io.IOException error) { throw new IllegalStateException("RESEARCH_MODEL_FILE_UNAVAILABLE", error); }
                 return variant;
             }
         }
@@ -198,6 +212,13 @@ public final class ResearchStageExecutionConfig {
         json.put("cpu_threads", cpuThreads);
         json.put("gpu", gpu);
         json.put("delegate", delegate);
+        json.put("requested_execution_choice", gpu ? "gpu" : "cpu_" + cpuThreads);
+        json.put("requested_backend", runtime.wireName() + (gpu ? "/GPU" : "/CPU"));
+        json.put("xnnpack_requested", runtime == ModelRuntime.TFLITE && !gpu);
+        json.put("nnapi_requested", false);
+        json.put("allow_fp16_precision_for_fp32", false);
+        json.put("gpu_precision_loss_allowed", false);
+        json.put("execution_evidence_policy", "alpr.runtime_execution_evidence.v1");
         JSONObject input = new JSONObject();
         input.put("width", inputWidth);
         input.put("height", inputHeight);

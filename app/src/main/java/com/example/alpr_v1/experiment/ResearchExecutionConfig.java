@@ -32,6 +32,8 @@ public final class ResearchExecutionConfig {
     public final String basePackageCreatedAt;
     public final String basePackageSourceSha256;
     public final String basePackageManifestJson;
+    public final String basePackageObservedSha256;
+    public final String basePackageShaEvidence;
     public final boolean compositionModified;
     public final long packageSizeBytes;
 
@@ -173,6 +175,15 @@ public final class ResearchExecutionConfig {
         this.basePackageCreatedAt = basePackage == null ? "" : basePackage.manifest().createdAt();
         this.basePackageSourceSha256 = basePackage == null ? "" : basePackage.sourceSha256();
         this.basePackageManifestJson = basePackage == null ? "" : basePackage.manifest().rawJson();
+        String observedSha = "", shaEvidence = "NO_BASE_PACKAGE";
+        if (basePackage != null) {
+            try {
+                observedSha = com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(basePackage.sourceArchive());
+                shaEvidence = observedSha.equals(basePackageSourceSha256) ? "OBSERVED_MATCH" : "OBSERVED_MISMATCH";
+                if (!observedSha.equals(basePackageSourceSha256)) throw new IllegalArgumentException("RESEARCH_PACKAGE_SHA_CHANGED");
+            } catch (java.io.IOException error) { shaEvidence = "SOURCE_ARCHIVE_UNAVAILABLE: " + error.getMessage(); }
+        }
+        basePackageObservedSha256 = observedSha; basePackageShaEvidence = shaEvidence;
         this.compositionModified = basePackage != null && compositionModified;
         this.packageSizeBytes = Math.max(0L, packageSizeBytes);
         if (this.roiBudgetPolicy.usesVehicleCascade() && !this.vehicle.enabled) {
@@ -192,6 +203,11 @@ public final class ResearchExecutionConfig {
         if (role == ModelRole.PLATE) return plate;
         if (role == ModelRole.CHARACTER) return character;
         throw new IllegalArgumentException("role");
+    }
+
+    public static void requireUnchangedWhileRunning(ResearchExecutionConfig current, ResearchExecutionConfig replacement, boolean running) {
+        if (running && current != null && replacement != current)
+            throw new IllegalStateException("RESEARCH_CONFIG_FROZEN: zakończ sesję przed zmianą konfiguracji");
     }
 
     public JSONObject toJson() throws JSONException {
@@ -247,6 +263,8 @@ public final class ResearchExecutionConfig {
         json.put("base_package_id", basePackageId);
         json.put("base_package_fingerprint", basePackageFingerprint);
         json.put("base_package_sha256", basePackageSourceSha256);
+        json.put("base_package_sha256_observed", basePackageObservedSha256.isEmpty() ? JSONObject.NULL : basePackageObservedSha256);
+        json.put("base_package_sha_evidence", basePackageShaEvidence);
         json.put("modified", compositionModified);
         return json;
     }
