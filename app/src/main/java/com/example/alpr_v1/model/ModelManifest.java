@@ -114,6 +114,30 @@ public final class ModelManifest {
                 throw new JSONException("Wariant " + variant.id() + " nie zwraca czterech narożników tablicy");
             }
             ModelInputSpec resolvedInput = variant.input(defaultInput);
+            // T2-I-6C: experimental split output belongs only to signed-INT8
+            // TFLite CHARACTER/detect. Legacy formats remain unchanged.
+            if ("raw_split_ltrb_scores_v1".equals(resolvedOutput.outputFormat())) {
+                if (role != ModelRole.CHARACTER || !"detect".equals(task)
+                        || variant.runtime() != ModelRuntime.TFLITE
+                        || !"int8".equals(variant.precision())
+                        || resolvedInput.width() != 320 || resolvedInput.height() != 320
+                        || resolvedInput.channels() != 3 || !"NHWC".equals(resolvedInput.layout())
+                        || !"RGB".equals(resolvedInput.colorSpace())
+                        || !"INT8".equals(resolvedInput.dataType())
+                        || resolvedOutput.classCount() != 36
+                        || resolvedOutput.keypointCount() != 0) {
+                    throw new JSONException("MZ_SPLIT_INT8_ROLE_RUNTIME_INPUT_CONTRACT_MISMATCH");
+                }
+                // Preserve the frozen model labels, including Q at index 26.
+                for (int cls = 0; cls < 36; cls++) {
+                    String expectedLabel = cls < 10
+                            ? Integer.toString(cls)
+                            : Character.toString((char) ('A' + cls - 10));
+                    if (!expectedLabel.equals(labels.get(cls))) {
+                        throw new JSONException("MZ_SPLIT_INT8_LABEL_ORDER_MISMATCH");
+                    }
+                }
+            }
             try {
                 ModelVariantContract.validate(
                         variant.runtime(),

@@ -95,18 +95,34 @@ public final class ModelOutputSpec {
         String outputFormat = output.optString(
                 "output_format", endToEnd ? "end2end_detections" : "raw_yolo"
         );
-        if (!"raw_yolo".equals(outputFormat) && !"end2end_detections".equals(outputFormat)) {
+        // T2-I-4A: recognize the research MZ split format, not approval to run it.
+        boolean splitLtrb = "raw_split_ltrb_scores_v1".equals(outputFormat);
+        if (!"raw_yolo".equals(outputFormat) && !"end2end_detections".equals(outputFormat)
+                && !splitLtrb) {
             throw new JSONException("Nieobsługiwany output_format: " + outputFormat);
+        }
+        if (splitLtrb) {
+            // This format is only meaningful for the 36-class MZ Detect head.
+            // The runtime dispatcher remains deliberately disconnected.
+            if (!"ultralytics_detect_split_ltrb_scores_int8_v1".equals(decoder)
+                    || classCount != 36 || keypointCount != 0
+                    || output.optBoolean("has_objectness", false)
+                    || !channelsFirst || output.optBoolean("nms_in_graph", false)
+                    || output.optBoolean("nms_required", true)
+                    || !output.optBoolean("normalized_coordinates", false)
+                    || !"ltrb".equals(output.optString("box_format", ""))) {
+                throw new JSONException("Nieprawidłowy kontrakt MZ RAW SPLIT INT8");
+            }
         }
         if (endToEnd != "end2end_detections".equals(outputFormat)) {
             throw new JSONException("decoder i output_format opisują różne formaty wyjścia");
         }
         String boxFormat = output.optString("box_format", endToEnd ? "xyxy" : "xywh");
-        if ((!endToEnd && !"xywh".equals(boxFormat)) || (endToEnd && !"xyxy".equals(boxFormat))) {
+        if (!splitLtrb && ((!endToEnd && !"xywh".equals(boxFormat)) || (endToEnd && !"xyxy".equals(boxFormat)))) {
             throw new JSONException("Nieobsługiwany box_format dla dekodera: " + boxFormat);
         }
         boolean nmsRequired = output.optBoolean("nms_required", !endToEnd);
-        if (nmsRequired == endToEnd) {
+        if (!splitLtrb && nmsRequired == endToEnd) {
             throw new JSONException("Niespójne nms_required dla output_format " + outputFormat);
         }
         return new ModelOutputSpec(

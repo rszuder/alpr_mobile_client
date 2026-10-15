@@ -57,6 +57,7 @@ import com.example.alpr_v1.vision.PreparedInput;
 import com.example.alpr_v1.vision.YoloOutputSpec;
 import com.example.alpr_v1.vision.YoloEndToEndDecoder;
 import com.example.alpr_v1.vision.YoloRawDecoder;
+import com.example.alpr_v1.vision.Yolo26SplitLtrbScoresInt8Decoder;
 import com.example.alpr_v1.vision.ReadingOrderResolver;
 
 import java.nio.ByteBuffer;
@@ -328,7 +329,7 @@ final class MobileAlprEngine implements AutoCloseable {
         plateOutputSpec = plateVariant.output(plateModel.manifest().output());
         characterOutputSpec = characterVariant.output(characterModel.manifest().output());
         validateDecoder(plateOutputSpec);
-        validateDecoder(characterOutputSpec);
+        validateCharacterDecoder(characterOutputSpec);
 
         ModelVariant vehicleVariant = null;
         ResearchStageExecutionConfig frozenVehicle = researchExecutionConfig == null
@@ -3791,12 +3792,9 @@ final class MobileAlprEngine implements AutoCloseable {
 
 
         List<Detection> candidates =
-                decodeFirstOutput(
-                        run,
-                        characterInputSpec,
-                        characterOutputSpec,
-                        candidateFloor
-                );
+                "raw_split_ltrb_scores_v1".equals(characterOutputSpec.outputFormat())
+                        ? decodeSplitMZ(run, characterInputSpec, characterOutputSpec, candidateFloor)
+                        : decodeFirstOutput(run, characterInputSpec, characterOutputSpec, candidateFloor);
 
 
         List<Detection> normal =
@@ -4002,6 +4000,41 @@ final class MobileAlprEngine implements AutoCloseable {
 
         return distance;
     }
+    // Research split path: validation and routing only. T2-I-3 still blocks
+    // backend initialization/invoke; no new package may run on Android yet.
+    private static List<Detection> decodeSplitMZ(
+            InferenceRunResult run,
+            ModelInputSpec inputSpec,
+            ModelOutputSpec outputSpec,
+            float confidenceThreshold
+    ) {
+        if (!"raw_split_ltrb_scores_v1".equals(outputSpec.outputFormat())
+                || !"ultralytics_detect_split_ltrb_scores_int8_v1".equals(outputSpec.decoder())
+                || inputSpec.width() != 320 || inputSpec.height() != 320
+                || !"INT8".equals(inputSpec.dataType())) {
+            throw new IllegalArgumentException("MZ_SPLIT_INT8_DISPATCH_CONTRACT_MISMATCH");
+        }
+        if (run.outputs().size() != 2 || run.tensorInfo().size() != 2
+                || !run.outputs().containsKey(0) || !run.outputs().containsKey(1)
+                || !run.tensorInfo().containsKey(0) || !run.tensorInfo().containsKey(1)) {
+            throw new IllegalArgumentException("MZ_SPLIT_INT8_TWO_PORTS_REQUIRED");
+        }
+        TensorInfo geometry = run.tensorInfo().get(0);
+        TensorInfo scores = run.tensorInfo().get(1);
+        if (geometry.index != 0 || scores.index != 1
+                || !"INT8".equals(geometry.dataType)
+                || !"INT8".equals(scores.dataType)) {
+            throw new IllegalArgumentException("MZ_SPLIT_INT8_PORT_METADATA_INVALID");
+        }
+        return Yolo26SplitLtrbScoresInt8Decoder.decode(
+                run.outputs().get(0), geometry.shape,
+                geometry.quantizationScale, geometry.quantizationZeroPoint,
+                run.outputs().get(1), scores.shape,
+                scores.quantizationScale, scores.quantizationZeroPoint,
+                confidenceThreshold, true, true, outputSpec.iouThreshold()
+        );
+    }
+
     private static List<Detection> decodeFirstOutput(
             InferenceRunResult run,
             ModelInputSpec inputSpec,
@@ -4089,6 +4122,22 @@ final class MobileAlprEngine implements AutoCloseable {
         InstalledModel model = registry.getActive(role);
         if (model == null) throw new IllegalStateException("Brak aktywnego modelu: " + role.wireName());
         return model;
+    }
+
+    // T2-I-4B: split output is allowed in the CHARACTER role only.
+    // Existing MT/MP and legacy MZ continue through validateDecoder().
+    private static void validateCharacterDecoder(ModelOutputSpec spec) {
+        if (!"raw_split_ltrb_scores_v1".equals(spec.outputFormat())) {
+            validateDecoder(spec);
+            return;
+        }
+        if (!"ultralytics_detect_split_ltrb_scores_int8_v1".equals(spec.decoder())
+                || spec.classCount() != 36 || spec.keypointCount() != 0
+                || spec.hasObjectness() || !spec.channelsFirst()
+                || !spec.normalizedCoordinates() || spec.nmsInGraph()
+                || spec.nmsRequired() || !"ltrb".equals(spec.boxFormat())) {
+            throw new IllegalArgumentException("MZ_SPLIT_INT8_INVALID_CHARACTER_CONTRACT");
+        }
     }
 
     private static void validateDecoder(ModelOutputSpec outputSpec) {

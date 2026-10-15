@@ -57,6 +57,26 @@ public final class TfliteBackend implements InferenceBackend {
         Driver opened = null;
         try {
             modelBytes = evidence.loadModel();
+            ModelInputSpec inputSpec = variant.input(model.manifest().input());
+            ModelOutputSpec outputSpec = variant.output(model.manifest().output());
+            boolean mzRawSplit = "raw_split_ltrb_scores_v1".equals(outputSpec.outputFormat());
+            if (mzRawSplit) {
+                // T2-I-9: diagnostic access through the real backend, *only* for
+                // the pinned CLEAN artifact in a debug CPU build. No release,
+                // model substitution, generic two-output or silent FP32 fallback.
+                if (profile.runtime != variant.runtime()) {
+                    throw new IllegalArgumentException("MZ_SPLIT_INT8_PROFILE_RUNTIME_MISMATCH");
+                }
+                MzDayCleanInt8RuntimeGate.requirePinnedArtifact(
+                        RuntimeExecutionEvidence.sha256(modelBytes), modelBytes.remaining(),
+                        BuildConfig.DEBUG, profile.gpu);
+                MzDayCleanInt8RuntimeGate.requireManifest(model, variant, inputSpec, outputSpec);
+                evidence.put("mz_split_int8_scope", "RESEARCH_DEBUG_CPU_PINNED_SHA_ONLY");
+                evidence.put("mz_split_int8_model_approved", false);
+                evidence.put("mz_split_int8_android_import_approved", false);
+                evidence.put("mz_split_int8_final_test", "NOT_RUN");
+                evidence.put("mz_split_int8_decode_path", "MOBILE_ALPR_ENGINE_DECODE_SPLIT_MZ");
+            }
             opened = factory.open(modelBytes, profile, evidence);
             List<TensorInfo> inputs = opened.inputs();
             Map<Integer, TensorInfo> outputs = opened.outputs();
@@ -64,18 +84,24 @@ public final class TfliteBackend implements InferenceBackend {
             if (inputs.size() != 1 || outputs.isEmpty()) throw new IllegalArgumentException("ALPR wymaga jednego wejścia i co najmniej jednego wyjścia");
             inputInfo = inputs.get(0);
             outputInfo = Collections.unmodifiableMap(new LinkedHashMap<>(outputs));
-            ModelInputSpec inputSpec = variant.input(model.manifest().input());
-            ModelOutputSpec outputSpec = variant.output(model.manifest().output());
             for (TensorInfo input : inputs) PrecisionEvidence.validateStorage(input);
             ModelTensorContractValidator.validateInput(inputSpec, inputInfo);
             for (Map.Entry<Integer, TensorInfo> entry : outputs.entrySet()) {
                 PrecisionEvidence.validateStorage(entry.getValue());
                 outputBuffers.put(entry.getKey(), ByteBuffer.allocateDirect(entry.getValue().byteSize).order(ByteOrder.nativeOrder()));
             }
-            ModelTensorContractValidator.validateOutput(outputSpec, outputs.values().iterator().next());
+            if (mzRawSplit) {
+                // T2-I-9: validate both runtime ports, never first map value.
+                // The pipeline dispatches this InferenceRunResult to decodeSplitMZ.
+                MzSplitLtrbScoresInt8TensorValidator.validate(inputInfo, outputs);
+            } else {
+                ModelTensorContractValidator.validateOutput(outputSpec, outputs.values().iterator().next());
+            }
             evidence.tensorInfo(inputs, outputs.values(), capacities());
             evidence.put("contract_validation", "MATCH");
-            evidence.put("contract_validation_scope", "input_shape_dtype_quantizer_when_declared; all_io_storage; primary_output_decoder_layout");
+            evidence.put("contract_validation_scope", mzRawSplit
+                    ? "MZ_RESEARCH_PINNED_SHA; debug_cpu_only; input_tensor; both_int8_output_ports_and_quantizers"
+                    : "input_shape_dtype_quantizer_when_declared; all_io_storage; primary_output_decoder_layout");
             evidence.put("output_quantizer_manifest_comparison", "NOT_DECLARED_BY_OUTPUT_SPEC");
             evidence.put("manifest_input", new org.json.JSONObject()
                     .put("width", inputSpec.width()).put("height", inputSpec.height())

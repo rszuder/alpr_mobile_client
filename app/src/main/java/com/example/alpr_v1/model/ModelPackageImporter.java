@@ -99,6 +99,7 @@ public final class ModelPackageImporter {
             ensureDirectory(staging);
             extractArchive(raw, staging);
             ModelManifest manifest = readAndValidate(staging);
+            MzCleanResearchPackageValidator.rejectInstallation(manifest);
             byte[] manifestBytes = Files.readAllBytes(new File(staging, "manifest.json").toPath());
 
             String fingerprint = Hashing.sha256(manifestBytes).substring(0, 16);
@@ -138,6 +139,7 @@ public final class ModelPackageImporter {
             throw new ModelPackageException("Nieprawidłowy manifest modelu: " + e.getMessage(), e);
         }
         validateFiles(staging, manifest);
+        MzCleanResearchPackageValidator.validateReadOnly(staging, manifest);
         return manifest;
     }
 
