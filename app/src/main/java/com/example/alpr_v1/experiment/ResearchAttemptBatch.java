@@ -29,7 +29,13 @@ public final class ResearchAttemptBatch {
         }
         return record;
     }
+    /** Historical invocation for isolated callers without frame dimensions. */
     public void detected(AcquisitionAttemptRecord call,Detection detection,boolean validQuad) {
+        detected(call,detection,validQuad,0,0);
+    }
+    /** Source-frame Pose belongs to this MT detection, never to a later crop. */
+    public void detected(AcquisitionAttemptRecord call,Detection detection,boolean validQuad,
+                         int sourceWidth,int sourceHeight) {
         if (call == null) return;
         int index = detectionCounts.get(call);
         detectionCounts.put(call,index+1);
@@ -51,6 +57,14 @@ public final class ResearchAttemptBatch {
         record.put("plate_confidence",detection.confidence);
         record.put("plate_left",detection.left); record.put("plate_top",detection.top);
         record.put("plate_right",detection.right); record.put("plate_bottom",detection.bottom);
+        MtPoseGeometryEncoder.Result pose = MtPoseGeometryEncoder.encode(
+                detection,validQuad,sourceWidth,sourceHeight);
+        record.put("mt_pose_status",pose.status);
+        record.put("mt_pose_corners_norm",pose.cornersNorm);
+        record.put("mt_pose_source_width_px",sourceWidth);
+        record.put("mt_pose_source_height_px",sourceHeight);
+        record.put("mt_pose_coordinate_space",MtPoseGeometryEncoder.COORDINATE_SPACE);
+        record.put("mt_pose_corner_order",MtPoseGeometryEncoder.CORNER_ORDER);
         detections.put(detection,record);
     }
     public AcquisitionAttemptRecord forDetection(Detection detection) { return detections.get(detection); }

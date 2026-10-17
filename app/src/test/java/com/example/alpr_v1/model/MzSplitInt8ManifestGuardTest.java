@@ -78,16 +78,53 @@ public final class MzSplitInt8ManifestGuardTest {
         try { no.invoke(null,spec);fail("Split allowed as MT/MP"); }
         catch(InvocationTargetException x){assertTrue(x.getCause() instanceof IllegalArgumentException);}
     }
-    @Test public void backendGuardStaysInstalledAndBeforeLegacyValidation() throws Exception {
-        // Source-level invariant: until a controlled runtime test, the backend must reject.
+    @Test public void backendPinnedDebugGuardAndTensorValidationRemainEffective() throws Exception {
+        // T2-I-9: debug/CPU/pinned SHA research path replaced the obsolete unconditional rejection.
         Path root=Paths.get(System.getProperty("user.dir"));
         Path file=root.resolve("src/main/java/com/example/alpr_v1/inference/TfliteBackend.java");
         if(!Files.isRegularFile(file)) file=root.resolve("app/src/main/java/com/example/alpr_v1/inference/TfliteBackend.java");
         assertTrue("Backend source unavailable",Files.isRegularFile(file));
         String s=new String(Files.readAllBytes(file),StandardCharsets.UTF_8);
+        // Actual T2-I-9 contract: pinned artifact + manifest before opening LiteRT.
+        int split=s.indexOf("boolean mzRawSplit = \"raw_split_ltrb_scores_v1\".equals(outputSpec.outputFormat());");
+        int pin=s.indexOf("MzDayCleanInt8RuntimeGate.requirePinnedArtifact(");
+        int manifest=s.indexOf("MzDayCleanInt8RuntimeGate.requireManifest(");
+        int open=s.indexOf("opened = factory.open(modelBytes, profile, evidence);");
         int guard=s.indexOf("MzSplitLtrbScoresInt8TensorValidator.validate(inputInfo, outputs);");
-        int fail=s.indexOf("MZ_RAW_SPLIT_INT8_DECODER_NOT_CONNECTED");
-        int old=s.indexOf("ModelTensorContractValidator.validateOutput(outputSpec,");
-        assertTrue(guard>=0 && fail>guard && old>fail);
+        int legacy=s.indexOf("ModelTensorContractValidator.validateOutput(outputSpec,");
+        assertTrue("Missing split-specific branch or pinned artifact guard", split >= 0 && pin > split);
+        assertTrue("Pinned SHA and manifest validation must precede opening LiteRT", manifest > pin && open > manifest);
+        assertTrue("Signed INT8 ports must be validated in split branch, not by legacy output validator", guard > open && legacy > guard);
+        assertTrue("Guard must receive actual build scope and GPU request", s.contains("BuildConfig.DEBUG, profile.gpu);"));
+        assertTrue("Research model must not become approved", s.contains("evidence.put(\"mz_split_int8_model_approved\", false);"));
+        assertTrue("Research model must not become import-approved", s.contains("evidence.put(\"mz_split_int8_android_import_approved\", false);"));
+        // Functional fail-closed checks; do not reintroduce the obsolete always-throw guard.
+        String sha=com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.MODEL_SHA256;
+        int bytes=com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.MODEL_BYTES;
+        com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.requirePinnedArtifact(sha,bytes,true,false);
+        try {
+            com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.requirePinnedArtifact(sha,bytes,false,false);
+            fail("Release accepted research-only split MZ model");
+        } catch (IllegalArgumentException expected) {
+            assertEquals("MZ_SPLIT_INT8_RELEASE_NOT_APPROVED",expected.getMessage());
+        }
+        try {
+            com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.requirePinnedArtifact(sha,bytes,true,true);
+            fail("GPU accepted CPU-only research model");
+        } catch (IllegalArgumentException expected) {
+            assertEquals("MZ_SPLIT_INT8_CPU_ONLY",expected.getMessage());
+        }
+        try {
+            com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.requirePinnedArtifact("not-the-pinned-sha",bytes,true,false);
+            fail("Unpinned model accepted");
+        } catch (IllegalArgumentException expected) {
+            assertEquals("MZ_SPLIT_INT8_FROZEN_ARTIFACT_SHA_MISMATCH",expected.getMessage());
+        }
+        try {
+            com.example.alpr_v1.inference.MzDayCleanInt8RuntimeGate.requirePinnedArtifact(sha,bytes+1,true,false);
+            fail("Different model byte count accepted");
+        } catch (IllegalArgumentException expected) {
+            assertEquals("MZ_SPLIT_INT8_FROZEN_ARTIFACT_SHA_MISMATCH",expected.getMessage());
+        }
     }
 }

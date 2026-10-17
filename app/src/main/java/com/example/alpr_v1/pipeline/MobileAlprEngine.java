@@ -3724,11 +3724,12 @@ final class MobileAlprEngine implements AutoCloseable {
                         List<Point2> corners = source.keypoints.subList(0,4);
                         boolean valid = PlateQualityScorer.compute(source,corners,frame.getWidth(),frame.getHeight()).validQuad
                                 && cornersInsideFrame(corners,frame.getWidth(),frame.getHeight());
-                        researchBatch.detected(audit,source,valid);
+                        researchBatch.detected(audit,source,valid,frame.getWidth(),frame.getHeight());
                     }
                 } else if (researchBatch != null) {
                     researchBatch.detected(audit,DetectionCoordinateMapper.toSource(
-                            detection,input,boundedRegion.left,boundedRegion.top),false);
+                            detection,input,boundedRegion.left,boundedRegion.top),false,
+                            frame.getWidth(),frame.getHeight());
                 }
             }
             durations[2] += SystemClock.elapsedRealtimeNanos() - started;

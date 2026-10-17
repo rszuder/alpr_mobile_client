@@ -752,14 +752,21 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void showVariantSelection(ModelRole role, InstalledModel model) {
+        // AUTO wariantu jest niedozwolone w trybie eksperymentalnym.
+        final boolean researchMode = preferences.getBoolean(
+                KEY_EXPERIMENT_MODE_ENABLED, false);
         List<ModelVariant> variants = model.manifest().variants();
         CharSequence[] labels = new CharSequence[variants.size() + 1];
         labels[0] = getString(R.string.settings_variant_auto,
                 ModelStatusFormatter.variantLabel(autoTuneManager.automaticVariant(model))
                         + " · " + ModelStatusFormatter.hardwareLabel(
                                 autoTuneManager.automaticProfile(model)));
+        if (researchMode) {
+            labels[0] = labels[0] + " · niedostępne w trybie eksperymentalnym";
+        }
         String pinned = autoTuneManager.pinnedVariantId(model);
-        int selected = 0;
+        // Brak przypięcia w EXP oznacza brak wyboru, a nie domyślne AUTO.
+        int selected = researchMode ? -1 : 0;
         for (int index = 0; index < variants.size(); index++) {
             ModelVariant variant = variants.get(index);
             String label = ModelStatusFormatter.variantLabel(variant) + " · " + variant.id();
@@ -779,8 +786,10 @@ public final class SettingsActivity extends AppCompatActivity {
             @Override public boolean areAllItemsEnabled() { return false; }
 
             @Override public boolean isEnabled(int position) {
-                return position == 0 || RuntimeBackendFactory.isRuntimeAvailable(
-                        variants.get(position - 1).runtime());
+                return position == 0
+                        ? !researchMode
+                        : RuntimeBackendFactory.isRuntimeAvailable(
+                                variants.get(position - 1).runtime());
             }
 
             @Override public View getView(int position, View convertView, ViewGroup parent) {
@@ -793,7 +802,14 @@ public final class SettingsActivity extends AppCompatActivity {
                 .setTitle(getString(R.string.settings_select_variant_title, roleLabel(role)))
                 .setSingleChoiceItems(adapter, selected, (dialog, which) -> choice[0] = which)
                 .setPositiveButton(R.string.settings_apply, (dialog, ignored) -> {
-                    if (choice[0] == 0) {
+                    if (choice[0] <= 0) {
+                        if (researchMode) {
+                            Toast.makeText(this,
+                                    "W trybie eksperymentalnym wybierz jawny wariant MT/MZ (np. TFLite FP32).",
+                                    Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        if (choice[0] < 0) return;
                         autoTuneManager.clearPinnedVariant(model);
                     } else {
                         ModelVariant variant = variants.get(choice[0] - 1);
