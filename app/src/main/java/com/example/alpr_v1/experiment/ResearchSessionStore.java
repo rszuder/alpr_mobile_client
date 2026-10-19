@@ -23,6 +23,8 @@ public final class ResearchSessionStore {
     public interface ImageEncoder { void write(Bitmap bitmap,File target) throws IOException; }
     public static final String SAMPLE_SCHEMA = "alpr.mobile_research_samples.v2";
     private static final long MAX_IMAGE_BYTES = 64L*1024*1024;
+    // Separate memory cap: full source frames must not consume MT-input/crop evidence budget.
+    private static final long MAX_SOURCE_FRAME_BYTES = 24L*1024*1024;
     private static final String PROCESS = UUID.randomUUID().toString();
     public static final String[] ATTEMPT_COLUMNS = ("attempt_id,session_id,subject_key,scene_generation,visual_epoch,"
             + "camera_transform_generation,entity_id,vehicle_track_id,plate_track_id,source_sequence,source_timestamp_nanos,"
@@ -32,7 +34,10 @@ public final class ResearchSessionStore {
             + "mt_detection_index,mt_detection_count,mt_executed,roi_left,roi_top,roi_right,roi_bottom,input_width,input_height,"
             + "plate_left,plate_top,plate_right,plate_bottom,input_scale,input_pad_x,input_pad_y,"
             + "mt_input_evidence_entry,mt_input_missing_evidence_reason,execution_error,raw_prediction,registration_key,normalization_policy,source_timestamp_domain,mt_backend,mz_backend,mz_execution_error,processing_error,"
-            + "mt_pose_status,mt_pose_corners_norm,mt_pose_source_width_px,mt_pose_source_height_px,mt_pose_coordinate_space,mt_pose_corner_order").split(",");
+            + "mt_pose_status,mt_pose_corners_norm,mt_pose_source_width_px,mt_pose_source_height_px,mt_pose_coordinate_space,mt_pose_corner_order,"
+            + "source_frame_expected,source_frame_entry,source_frame_status,source_frame_missing_evidence_reason,"
+            + "source_frame_width_px,source_frame_height_px,source_frame_coordinate_space,source_frame_origin,"
+            + "source_frame_capture_elapsed_nanos").split(",");
     private final File directory;
     private final JSONObject metadata;
     private final ThreadPoolExecutor writer;
@@ -41,6 +46,7 @@ public final class ResearchSessionStore {
     private final ImageEncoder encoder;
     private final AtomicLong sequence = new AtomicLong(), dropped = new AtomicLong(), droppedTelemetry = new AtomicLong();
     private final AtomicLong imageBytes = new AtomicLong(), written = new AtomicLong();
+    private final AtomicLong sourceFrameBytes = new AtomicLong();
     private volatile boolean accepting;
     private volatile State state = State.PREPARED;
     private volatile String lastFailure = "";
@@ -75,7 +81,7 @@ public final class ResearchSessionStore {
             throw new IOException("Brak miejsca na trwałą sesję badawczą");
         File directory = new File(root,prepared.sessionId);
         if (!directory.mkdir()) throw new IOException("Nie można utworzyć katalogu sesji: " + directory);
-        for (String child : new String[]{"samples/crops","samples/evidence","telemetry","pipeline","final"})
+        for (String child : new String[]{"samples/crops","samples/evidence","samples/frames","telemetry","pipeline","final"})
             Files.createDirectories(new File(directory,child).toPath());
         JSONObject json = new JSONObject().put("schema","alpr.mobile_research_session.v1")
                 .put("session_id",prepared.sessionId).put("state","PREPARED")
@@ -176,6 +182,47 @@ public final class ResearchSessionStore {
         }
         return record;
     }
+    /** Fail-closed source frame capture. Does not alter inference or primary MT evidence.
+     *  A missing source image disables frame-wide evaluation; it is not a model failure.
+     */
+    void copySourceFrame(AcquisitionAttemptRecord record,Bitmap source) {
+        record.put("source_frame_expected",true);
+        record.put("source_frame_coordinate_space","mt_source_bitmap_xy");
+        record.put("source_frame_origin","pipeline_bitmap_before_roi");
+        if (source == null || source.isRecycled()) {
+            record.put("source_frame_status","MISSING");
+            record.put("source_frame_missing_evidence_reason","source_frame_unavailable");
+            return;
+        }
+        record.put("source_frame_width_px",source.getWidth());
+        record.put("source_frame_height_px",source.getHeight());
+        if (!record.ownsAttemptPermit) {
+            record.put("source_frame_status","MISSING");
+            record.put("source_frame_missing_evidence_reason","attempt_capacity");
+            return;
+        }
+        long bytes = (long)source.getWidth()*source.getHeight()*4L;
+        if (bytes<=0 || sourceFrameBytes.addAndGet(bytes)>MAX_SOURCE_FRAME_BYTES) {
+            if (bytes>0) sourceFrameBytes.addAndGet(-bytes);
+            record.put("source_frame_status","MISSING");
+            record.put("source_frame_missing_evidence_reason","source_frame_memory_budget");
+            return;
+        }
+        Bitmap copy=null;
+        try { copy=source.copy(Bitmap.Config.ARGB_8888,false); }
+        catch (OutOfMemoryError | RuntimeException ignored) { /* explicit missing evidence */ }
+        if (copy == null) {
+            sourceFrameBytes.addAndGet(-bytes);
+            record.put("source_frame_status","MISSING");
+            record.put("source_frame_missing_evidence_reason","source_frame_copy_failed");
+            return;
+        }
+        // Only the invocation owner owns pixels; child detections retain a path reference.
+        record.sourceFrameImage=copy; record.sourceFrameImageBytes=bytes;
+        record.put("source_frame_entry","samples/frames/"+record.attemptId+".jpg");
+        record.put("source_frame_status","CAPTURED");
+        record.put("source_frame_missing_evidence_reason","");
+    }
     void copyImage(AcquisitionAttemptRecord record,Bitmap source,boolean crop) {
         if (!record.ownsAttemptPermit) return;
         if (source == null || source.isRecycled()) { record.put("missing_evidence_reason","image_unavailable"); fail("image_unavailable"); return; }
@@ -206,6 +253,9 @@ public final class ResearchSessionStore {
         releasePrimaryImage(record);
         if (record.mtInputImage != null && !record.mtInputImage.isRecycled()) record.mtInputImage.recycle();
         imageBytes.addAndGet(-record.mtInputImageBytes); record.mtInputImage = null; record.mtInputImageBytes = 0;
+        if (record.sourceFrameImage != null && !record.sourceFrameImage.isRecycled()) record.sourceFrameImage.recycle();
+        sourceFrameBytes.addAndGet(-record.sourceFrameImageBytes);
+        record.sourceFrameImage=null; record.sourceFrameImageBytes=0;
     }
     public void submit(AcquisitionAttemptRecord record) {
         if (record == null) return;
@@ -276,6 +326,32 @@ public final class ResearchSessionStore {
                 encoder.write(record.mtInputImage,temp);
                 Files.move(temp.toPath(),new File(directory,inputEntry).toPath(),StandardCopyOption.REPLACE_EXISTING);
                 record.put("mt_input_evidence_entry",inputEntry);
+            }
+            if (record.sourceFrameImage != null) {
+                String frameEntry=record.data.optString("source_frame_entry");
+                File frameFile=new File(directory,frameEntry);
+                File tempFrame=new File(directory,frameEntry+".tmp");
+                try {
+                    encoder.write(record.sourceFrameImage,tempFrame);
+                    Files.move(tempFrame.toPath(),frameFile.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                    record.put("source_frame_status","WRITTEN");
+                } catch (Exception failure) {
+                    record.put("source_frame_status","MISSING");
+                    record.put("source_frame_missing_evidence_reason","source_frame_write_failed");
+                    try { Files.deleteIfExists(tempFrame.toPath()); } catch (IOException ignored) { }
+                    // Primary MT attempt/evidence remains intact; final archive declares ROI GT not evaluable.
+                }
+            }
+            if (record.data.optBoolean("source_frame_expected") && record.sourceFrameImage == null) {
+                String shared=record.data.optString("source_frame_entry");
+                if (!shared.isEmpty() && new File(directory,shared).isFile()) {
+                    record.put("source_frame_status","WRITTEN");
+                    record.put("source_frame_missing_evidence_reason","");
+                } else {
+                    record.put("source_frame_status","MISSING");
+                    if (record.data.optString("source_frame_missing_evidence_reason").isEmpty())
+                        record.put("source_frame_missing_evidence_reason","missing_source_frame_image");
+                }
             }
             if (record.image != null) {
                 String entry = "samples/"+(record.plateCrop ? "crops/" : "evidence/")+record.attemptId+".jpg";
@@ -503,7 +579,8 @@ public final class ResearchSessionStore {
 
     private static void finalizeSamples(File directory,JSONObject session) throws Exception {
         Map<String,long[]> owners = new HashMap<>();
-        long[] counts = {0L,0L,0L}; // attempts, crops, missing images
+        long[] counts = {0L,0L,0L,0L}; // attempts, crops, missing images, unique MT source frames missing
+        Set<String> missingSourceInvocations = new HashSet<>();
         long malformed = malformedLines(new File(directory,"samples/attempts.jsonl"))
                 + malformedLines(new File(directory,"samples/crops.jsonl"));
         long malformedTelemetry = 0L;
@@ -519,6 +596,14 @@ public final class ResearchSessionStore {
             if (row.optBoolean("mt_executed") && row.has("mt_input_evidence_entry")
                     && (inputEvidence.isEmpty() || !new File(directory,inputEvidence).isFile())
                     && !(missingPrimary && inputEvidence.equals(evidence))) counts[2]++;
+            if (row.optBoolean("mt_executed") && row.optBoolean("source_frame_expected")) {
+                String sourceEntry=row.optString("source_frame_entry");
+                if (sourceEntry.isEmpty() || !new File(directory,sourceEntry).isFile()) {
+                    String invocation=row.optString("mt_invocation_id");
+                    if (invocation.isEmpty()) invocation=row.optString("attempt_id");
+                    if (missingSourceInvocations.add(invocation)) counts[3]++;
+                }
+            }
             if (row.optLong("entity_id")>0 && row.optLong("plate_track_id")>0)
                 owners.put(row.optLong("scene_generation")+"/"+row.optLong("plate_track_id"),
                         new long[]{row.optLong("entity_id"),row.optLong("vehicle_track_id")});
@@ -534,6 +619,17 @@ public final class ResearchSessionStore {
                         && !new File(directory,row.optString("mt_input_evidence_entry")).isFile())
                     row.put("mt_input_missing_evidence_reason",row.optString("mt_input_missing_evidence_reason").isEmpty()
                             ? "missing_mt_input_image" : row.optString("mt_input_missing_evidence_reason"));
+                if (row.optBoolean("source_frame_expected")) {
+                    String sourceEntry=row.optString("source_frame_entry");
+                    if (!sourceEntry.isEmpty() && new File(directory,sourceEntry).isFile()) {
+                        row.put("source_frame_status","WRITTEN");
+                        row.put("source_frame_missing_evidence_reason","");
+                    } else {
+                        row.put("source_frame_status","MISSING");
+                        if (row.optString("source_frame_missing_evidence_reason").isEmpty())
+                            row.put("source_frame_missing_evidence_reason","missing_source_frame_image");
+                    }
+                }
                 attempts.write(csvRow(row,ATTEMPT_COLUMNS));
             });
         }
@@ -553,18 +649,22 @@ public final class ResearchSessionStore {
                 .put("capabilities",new JSONObject().put("attempt_registry",true).put("mt_invocation_identity",true)
                         .put("raw_prediction",true).put("registration_key",true).put("mt_input_evidence_references",true)
                         .put("source_timestamp_domain",true).put("actual_backend_fields",true)
-                        .put("mt_pose_per_detection",true))
+                        .put("mt_pose_per_detection",true)
+                        .put("mt_source_frame_pre_roi_evidence",true))
+                .put("source_frame_provenance","pipeline_bitmap_before_roi_not_raw_camera_sensor")
+                .put("source_frame_reference","one_image_per_mt_invocation")
                 .put("subject_identity","scene_generation+entity_id").put("human_review","desktop")
                 .put("mt_invocation_identity","one_backend_execution_one_input")
                 .put("mt_detection_index_base",0).put("mt_detection_order","decoder_output")
                 .put("attempts_file","samples/attempts.csv").put("crops_file","samples/index.csv").toString(2));
-        long incomplete = malformed+malformedTelemetry+counts[2];
+        long incomplete = malformed+malformedTelemetry+counts[2]+counts[3];
         long previousIncomplete = session.optLong("integrity_loss_count");
         long previousTelemetryIncomplete = session.optLong("integrity_telemetry_loss_count");
         session.put("attempt_count",counts[0]).put("crop_count",counts[1]).put("integrity_loss_count",incomplete)
+                .put("source_frame_integrity_loss_count",counts[3])
                 .put("integrity_telemetry_loss_count",malformedTelemetry)
                 .put("dropped_sample_count",Math.max(0L,session.optLong("dropped_sample_count")
-                        -previousIncomplete+previousTelemetryIncomplete)+malformed+counts[2])
+                        -previousIncomplete+previousTelemetryIncomplete)+malformed+counts[2]+counts[3])
                 .put("dropped_telemetry_count",Math.max(0L,session.optLong("dropped_telemetry_count")
                         -previousTelemetryIncomplete)+malformedTelemetry);
         if (incomplete>0 || session.optLong("dropped_sample_count")>0 || session.optLong("dropped_telemetry_count")>0) {
@@ -574,7 +674,7 @@ public final class ResearchSessionStore {
             session.put("last_write_error","sample_integrity_failure");
             append(new File(directory,"telemetry/events.jsonl"),new JSONObject().put("event_type","research_integrity_loss")
                     .put("malformed_records",malformed).put("malformed_telemetry_records",malformedTelemetry)
-                    .put("missing_images",counts[2]).toString()+"\n");
+                    .put("missing_images",counts[2]).put("missing_mt_source_frames",counts[3]).toString()+"\n");
         }
     }
     private static long malformedLines(File file) throws IOException {

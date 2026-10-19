@@ -21,6 +21,9 @@ public final class AcquisitionAttemptRecord {
     long imageBytes;
     Bitmap mtInputImage;
     long mtInputImageBytes;
+    // Immutable pre-ROI pipeline bitmap, owned by the research session writer.
+    Bitmap sourceFrameImage;
+    long sourceFrameImageBytes;
     boolean ownsAttemptPermit = true;
     boolean plateCrop;
     private PlateObservation observation;
@@ -41,6 +44,12 @@ public final class AcquisitionAttemptRecord {
         put("mt_executed",false); put("mt_invocation_id","");
         put("mt_detection_index",JSONObject.NULL); put("mt_detection_count",JSONObject.NULL);
         put("mt_input_evidence_entry",""); put("mt_input_missing_evidence_reason","");
+        // Old callers stay explicit NOT_REQUESTED, never silently counted as full-frame evidence.
+        put("source_frame_expected",false); put("source_frame_entry","");
+        put("source_frame_status","NOT_REQUESTED"); put("source_frame_missing_evidence_reason","");
+        put("source_frame_width_px",JSONObject.NULL); put("source_frame_height_px",JSONObject.NULL);
+        put("source_frame_coordinate_space",""); put("source_frame_origin","");
+        put("source_frame_capture_elapsed_nanos",JSONObject.NULL);
         put("mz_status",MzStatus.NOT_RUN.name()); put("prediction",""); put("consensus_prediction","");
         put("raw_prediction",""); put("registration_key","");
         put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY);
@@ -73,6 +82,12 @@ public final class AcquisitionAttemptRecord {
     public void mtStarted() {
         put("mt_invocation_id",attemptId); put("mt_executed",true);
         put("mt_status",MtStatus.NO_DETECTION.name()); put("mt_detection_count",0);
+    }
+    /** One source-image copy for the whole MT invocation, not one copy per detected plate.
+     *  The source is the pipeline Bitmap BEFORE ROI cropping, not raw camera sensor pixels.
+     */
+    public void copySourceFrame(Bitmap frame) {
+        store.copySourceFrame(this,frame);
     }
     public void copyEvidence(Bitmap bitmap) {
         store.copyImage(this,bitmap,false);

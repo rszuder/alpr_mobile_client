@@ -3694,6 +3694,14 @@ final class MobileAlprEngine implements AutoCloseable {
             }
             durations[0] += SystemClock.elapsedRealtimeNanos() - started;
 
+            // Snapshot outside the timed MT backend section: keep its overhead explicit.
+            // End-to-end timing can still be affected by evidence collection; compare only like-for-like runs.
+            if (audit != null) {
+                long frameCaptureStarted=SystemClock.elapsedRealtimeNanos();
+                audit.copySourceFrame(frame);
+                audit.put("source_frame_capture_elapsed_nanos",
+                        SystemClock.elapsedRealtimeNanos()-frameCaptureStarted);
+            }
             started = SystemClock.elapsedRealtimeNanos();
             requireVehicleSize(frame, sizeEntity, "before_mt");
             if (audit != null) {
