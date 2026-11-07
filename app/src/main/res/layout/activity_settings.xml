@@ -764,6 +764,41 @@
             </com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.card.MaterialCardView
+                android:id="@+id/settings_tv_tools"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                app:cardBackgroundColor="@color/alpr_surface"
+                app:cardCornerRadius="20dp"
+                app:strokeColor="@color/alpr_outline"
+                app:strokeWidth="1dp">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/tv_settings_tools_title"
+                        android:textColor="@color/alpr_text_primary"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/settings_tv_calibrate"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/tv_setup_calibrate" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/settings_tv_distance"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/tv_setup_distance" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
@@ -1053,6 +1088,29 @@
                                 android:inputType="none" />
                         </com.google.android.material.textfield.TextInputLayout>
 
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/settings_tv_input_container"
+                            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:hint="Wejście modeli F5A">
+                            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                                android:id="@+id/settings_tv_input_mode"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="none" />
+                        </com.google.android.material.textfield.TextInputLayout>
+                        <TextView
+                            android:id="@+id/settings_mz_input_evidence_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:padding="12dp"
+                            android:text="@string/f16_mz_diagnostic_blocked"
+                            android:textColor="@color/alpr_text_muted"
+                            android:textSize="13sp" />
 
                         <LinearLayout
                             android:id="@+id/settings_experiment_timer_options"

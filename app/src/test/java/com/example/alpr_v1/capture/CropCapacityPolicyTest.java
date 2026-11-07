@@ -5,6 +5,9 @@ import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 
 public class CropCapacityPolicyTest {
+    @Test public void auto49IsTheRamPreviewBudgetFor256MiBHeap() {
+        assertEquals(49, CropCapacityPolicy.resolve("auto", 256L * 1024 * 1024, false));
+    }
     @Test
     public void respectsManualLimitAndCapsAutoOnLowRamDevice() {
         assertEquals(50, CropCapacityPolicy.resolve("50", 128L * 1024L * 1024L, true));

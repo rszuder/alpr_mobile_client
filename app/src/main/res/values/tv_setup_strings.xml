@@ -1,0 +1,77 @@
+<resources>
+    <string name="tv_camera_lens">Obiektyw kamery</string>
+    <string name="tv_camera_zoom">Ręczny zoom przed wskazaniem narożników</string>
+    <string name="tv_camera_next">Wskaż rogi</string>
+    <string name="tv_camera_next_description">Przejdź do kroku 2: wskaż cztery narożniki ekranu TV</string>
+    <string name="tv_camera_available_hint">Lista obejmuje obiektywy dostępne dla aplikacji. Moduł głębi lub obiektyw ukryty przez system może być niedostępny.</string>
+    <string name="tv_camera_step">Krok 1 z 2 — Ustaw kadr</string>
+    <string name="tv_camera_step_title">Krok 1 z 2 — Ustaw kadr</string>
+    <string name="tv_camera_step_compact">Krok 1 z 2 — Ustaw kadr</string>
+    <string name="tv_camera_corners_title">Krok 2 z 2 — Narożniki TV</string>
+    <string name="tv_camera_corners_compact">Krok 2 z 2 — Narożniki TV</string>
+    <string name="tv_outline_hide">Ukryj obrys TV</string>
+    <string name="tv_outline_show">Pokaż obrys TV</string>
+    <string name="tv_outline_edit">Popraw</string>
+    <string name="tv_editor_draft">DRAFT · Dopasuj cztery rogi</string>
+    <string name="tv_editor_draft_compact">DRAFT · Dopasuj rogi</string>
+    <string name="tv_input_mode_full">Wejście modeli: pełna klatka kamery</string>
+    <string name="tv_rectification_blocked">Rektyfikacja TV nieaktywna — wymaga zgodnej obsługi w Desktopie.</string>
+    <string name="tv_camera_back">Wróć do obiektywu i zoomu</string>
+    <string name="tv_camera_copy">Kopiuj diagnostykę</string>
+    <string name="tv_editor_title">Kalibracja ekranu TV</string>
+    <string name="tv_editor_title_short">Kalibracja TV</string>
+    <string name="tv_editor_margins">Marginesy</string>
+    <string name="tv_editor_details_title">Ekran TV w kadrze</string>
+    <string name="tv_editor_close_details">Zamknij</string>
+    <string name="tv_editor_clear">Wyczyść</string>
+    <string name="tv_editor_confirm">Zatwierdź</string>
+    <string name="tv_editor_cancel">Anuluj</string>
+    <string name="tv_editor_back">Wróć do podglądu</string>
+    <string name="tv_editor_back_compact">Wróć</string>
+    <string name="tv_editor_waiting">Uruchamiam podgląd…</string>
+    <string name="tv_editor_mapping_wait">Dopasowuję podgląd…</string>
+    <string name="tv_editor_mapping_wait_compact">Dopasowuję kadr</string>
+    <string name="tv_editor_mapping_error_title">Brak danych do edycji</string>
+    <string name="tv_editor_mapping_error_compact">Brak mapowania</string>
+    <string name="tv_editor_details">Szczegóły</string>
+    <string name="tv_editor_frame_error_short">Brak danych klatki.</string>
+    <string name="tv_editor_mapping_error_short">Ponów podgląd.</string>
+    <string name="tv_editor_camera_identity_missing">Nie udało się odczytać tożsamości aktywnej kamery. Ponów podgląd lub anuluj.</string>
+    <string name="tv_editor_frame_geometry_missing">Kamera nie udostępniła geometrii analizowanej klatki. Ponów podgląd lub anuluj.</string>
+    <string name="tv_editor_wait_frame_hint">Czekam na dane klatki kamery.</string>
+    <string name="tv_editor_wait_mapping_hint">Czekam na położenie obrazu. Dane kalkulatora nie są wymagane.</string>
+    <string name="tv_editor_no_analysis_frame">Nie otrzymano danych klatki potrzebnych do wskazywania rogów. Ponów podgląd lub anuluj.</string>
+    <string name="tv_editor_invalid_mapping">Nie można poprawnie przeliczyć współrzędnych obrazu. Rogi pozostają zablokowane. Ponów podgląd lub anuluj.</string>
+    <string name="tv_editor_mapping_not_ready">Przeliczenie podglądu nie jest gotowe. Ponów podgląd lub anuluj.</string>
+    <string name="tv_editor_instruction">Wskaż fizyczne rogi ekranu TV, kolejno LG → PG → PD → LD.</string>
+    <string name="tv_editor_step">Róg %1$d z 4 · %2$s</string>
+    <string name="tv_editor_tap">Dotknij wybranego rogu na obrazie kamery.</string>
+    <string name="tv_editor_adjust">4 z 4 · Sprawdź obrys</string>
+    <string name="tv_editor_adjust_compact">Sprawdź obrys</string>
+    <string name="tv_editor_waiting_compact">Czekam na kamerę</string>
+    <string name="tv_editor_adjust_hint">Przeciągnij uchwyt lub wybierz róg poniżej. Zatwierdź, gdy obrys pasuje do TV.</string>
+    <string name="tv_editor_coverage_empty">Zajętość i marginesy pojawią się po wskazaniu czterech rogów.</string>
+    <string name="tv_editor_retry">Ponów podgląd</string>
+    <string name="tv_editor_restart">Ustaw rogi ponownie</string>
+    <string name="tv_editor_camera_error">Podgląd nie jest gotowy do wskazywania rogów. Ponów próbę lub anuluj.</string>
+    <string name="tv_editor_changed">Zmieniono kadr kamery. Sprawdź ustawienie i wskaż rogi ponownie.</string>
+    <string name="tv_editor_saving">Zapisuję kalibrację…</string>
+    <string name="tv_editor_saved">Kalibracja TV zapisana</string>
+    <string name="tv_editor_invalid_touch">Dotknij widocznego obrazu kamery, poza paskami interfejsu.</string>
+    <string name="tv_editor_missing">Wskaż wszystkie cztery rogi przed zatwierdzeniem.</string>
+    <string name="tv_corner_lg">LG</string><string name="tv_corner_pg">PG</string>
+    <string name="tv_corner_pd">PD</string><string name="tv_corner_ld">LD</string>
+    <string name="tv_corner_lg_description">Lewy górny</string><string name="tv_corner_pg_description">Prawy górny</string>
+    <string name="tv_corner_pd_description">Prawy dolny</string><string name="tv_corner_ld_description">Lewy dolny</string>
+    <string name="tv_units_inches">Cale</string><string name="tv_units_cm">Wymiary w cm</string>
+    <string name="tv_ratio_custom">Własne</string>
+    <string name="tv_input_diagonal">Przekątna TV [cale]</string><string name="tv_input_width">Szerokość TV [cm]</string>
+    <string name="tv_input_height">Wysokość TV [cm]</string><string name="tv_input_aspect_w">Proporcje: szer.</string>
+    <string name="tv_input_aspect_h">Proporcje: wys.</string><string name="tv_input_margin">Margines na każdej krawędzi [%]</string>
+    <string name="tv_input_measured">Opcjonalna zmierzona odległość [m]</string>
+    <string name="tv_distance_title">Kalkulator odległości</string>
+    <string name="tv_distance_title_compact">Odległość TV</string>
+    <string name="tv_distance_description_compact">Cały TV w kadrze</string>
+    <string name="tv_distance_description">Orientacyjna odległość, aby cały ekran zmieścił się w kadrze.</string>
+    <string name="tv_distance_input_error" formatted="false">Wprowadź wymiary TV oraz margines od 0 do mniej niż 50% na każdej krawędzi.</string>
+</resources>

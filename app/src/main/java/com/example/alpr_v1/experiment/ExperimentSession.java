@@ -223,6 +223,7 @@ public final class ExperimentSession {
         if (state == State.RUNNING) {
             return false;
         }
+        if(prepared.execution!=null)prepared.execution.requireSessionInputReady();
         prepared.consumed = true;
         sessionId = prepared.sessionId;
         String experimentType = prepared.experimentType, variant = prepared.variant;
@@ -283,6 +284,13 @@ public final class ExperimentSession {
             return false;
         }
 
+        long deadline = timerDeadlineElapsedNanos();
+        if (deadline >= 0L && elapsedNanos >= deadline) {
+            wallMillis = startedAtMillis + timerDurationMillis;
+            elapsedNanos = deadline;
+            reason = CompletionReason.TIMER;
+        }
+
         finishedAtMillis = wallMillis;
 
         finishedElapsedNanos = elapsedNanos;
@@ -317,6 +325,20 @@ public final class ExperimentSession {
 
         timerEnabled = false;
         timerDurationMillis = 0L;
+    }
+
+    public synchronized long timerDeadlineElapsedNanos() {
+        return timerEnabled && startedElapsedNanos >= 0L
+                ? startedElapsedNanos + timerDurationMillis * 1_000_000L : -1L;
+    }
+
+    public synchronized long timerDeadlineWallMillis() {
+        return timerEnabled && startedAtMillis >= 0L ? startedAtMillis + timerDurationMillis : -1L;
+    }
+
+    public synchronized boolean admitsWork(long nowElapsedNanos) {
+        return state == State.RUNNING
+                && ExperimentDeadline.admits(timerDeadlineElapsedNanos(), nowElapsedNanos);
     }
 
     public synchronized boolean isRunning() {
@@ -414,6 +436,9 @@ public final class ExperimentSession {
         if (endNanos < startedElapsedNanos) {
             return 0L;
         }
+
+        long deadline = timerDeadlineElapsedNanos();
+        if (deadline >= 0L) endNanos = Math.min(endNanos, deadline);
 
         return (endNanos - startedElapsedNanos)
                 / 1_000_000L;

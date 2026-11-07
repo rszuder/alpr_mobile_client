@@ -164,6 +164,17 @@ public final class AutoZoomController {
         }
     }
 
+    /** Disarm immediately, retaining a truthful physical return phase until it settles. */
+    public synchronized void disableForUser() {
+        featureEnabled = false;
+        if (state == State.ZOOM_SETTLING || state == State.ZOOMED_RETRY || state == State.RETURNING) {
+            state = State.RETURNING;
+        } else {
+            state = State.DISABLED;
+            clearTarget();
+        }
+    }
+
     public synchronized boolean enabled() {
         return featureEnabled;
     }

@@ -11,7 +11,7 @@ public final class TimerConfig {
     public static final int DEFAULT_DURATION_SECONDS = 60;
 
     private static final int MIN_DURATION_SECONDS = 5;
-    private static final int MAX_DURATION_SECONDS = 3600;
+    private static final int MAX_DURATION_SECONDS = Integer.MAX_VALUE;
 
     private final boolean enabled;
     private final int durationSeconds;
@@ -40,6 +40,20 @@ public final class TimerConfig {
                 false,
                 DEFAULT_DURATION_SECONDS
         );
+    }
+
+    /** Decimal minutes with a comma or dot; reject invalid values instead of silently clamping. */
+    public static TimerConfig fromMinutes(String minutes) {
+        try {
+            java.math.BigDecimal seconds = new java.math.BigDecimal(minutes.trim().replace(',', '.'))
+                    .multiply(java.math.BigDecimal.valueOf(60))
+                    .setScale(0, java.math.RoundingMode.HALF_UP);
+            int value = seconds.intValueExact();
+            if (value < MIN_DURATION_SECONDS) throw new IllegalArgumentException();
+            return of(true, value);
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("Podaj czas w minutach: co najmniej 5 s, maksymalnie 35791394 min.");
+        }
     }
 
     public boolean enabled() {

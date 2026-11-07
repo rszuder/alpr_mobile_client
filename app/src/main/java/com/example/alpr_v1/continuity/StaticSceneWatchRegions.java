@@ -27,6 +27,12 @@ public final class StaticSceneWatchRegions {
         List<NormalizedBounds> features = new ArrayList<>();
         addFeatures(features, plates);
         addFeatures(features, vehicles);
+        // If no ALPR object was detected, STATIC_IDLE still has to notice a
+        // genuinely new full-frame scene. This adds only change evidence:
+        // it does not create a vehicle/plate ROI, target or model detection.
+        if (features.isEmpty()) {
+            features.add(new NormalizedBounds(0f, 0f, 1f, 1f));
+        }
         featureBounds = Collections.unmodifiableList(features);
     }
 

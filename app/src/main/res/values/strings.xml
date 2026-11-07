@@ -1,4 +1,5 @@
 <resources>
+    <string name="collection_armed">Akwizycja włączona — zbieranie rozpocznie się po START. Wyłącz akwizycję</string>
     <string name="camera_action_crops_on">Akwizycja: WŁ.</string>
     <string name="camera_action_crops_off">Akwizycja: WYŁ.</string>
     <string name="camera_action_crops_automatic">Akwizycja: AUTO</string>
@@ -441,10 +442,10 @@
     <string name="settings_scene_mode_strict">Statyczny</string>
     <string name="scene_mode_dynamic_action">Ruch kamery dozwolony. Dotknij, aby przełączyć na nieruchomy kadr.</string>
     <string name="scene_mode_static_action">Nieruchomy kadr. Dotknij, aby zezwolić na ruch kamery.</string>
-    <string name="scene_mode_experiment_action">Tryb analizy sceny jest zamrożony dla aktywnej sesji.</string>
+    <string name="scene_mode_experiment_action">Tryb eksperymentalny: wybierz static/dynamic w ustawieniach przed START.</string>
     <string name="scene_mode_changed_dynamic">Ruch kamery dozwolony: aplikacja zachowuje śledzony cel</string>
     <string name="scene_mode_changed_static">Nieruchomy kadr: zmiana widoku rozpoczyna nową scenę</string>
-    <string name="scene_mode_experiment_locked_hud">Tryb analizy sceny jest zamrożony do zakończenia sesji</string>
+    <string name="scene_mode_experiment_locked_hud">Tryb eksperymentalny: zmień tryb sceny w ustawieniach przed START</string>
     <string name="scan_status_searching">Szukam pojazdów</string>
     <string name="scan_hint_searching">Utrzymuj pojazdy w kadrze — analiza wybierze je kolejno</string>
     <string name="scan_status_selecting">Wybieram kolejny pojazd</string>
@@ -454,4 +455,6 @@
     <string name="scan_status_recovering">Odzyskuję wybrany pojazd</string>
     <string name="scan_hint_recovering">Nie zmieniaj gwałtownie kadru</string>
     <string name="scan_diagnostics">SCAN · kolejka %1$d · MT %2$d/2 · MZ %3$d/2</string>
+    <string name="tv_setup_calibrate">Kalibruj ekran TV</string>
+    <string name="tv_setup_distance">Kalkulator odległości TV</string>
 </resources>

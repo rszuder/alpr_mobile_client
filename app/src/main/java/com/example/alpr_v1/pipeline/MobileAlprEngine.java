@@ -1,5 +1,9 @@
 package com.example.alpr_v1.pipeline;
 
+import com.example.alpr_v1.experiment.F5aEvidence;
+import org.json.JSONObject;
+import org.json.JSONArray;
+
 import android.graphics.Bitmap;
 import android.graphics.PointF;
 import android.graphics.RectF;
@@ -88,11 +92,19 @@ final class MobileAlprEngine implements AutoCloseable {
     private final InstalledModel vehicleModel;
     private final InstalledModel plateModel;
     private final InstalledModel characterModel;
+    private final String characterVariantId;
 
     private final RoiBudgetPolicy roiBudgetPolicy;
     private final MtExecutionPolicy mtExecutionPolicy;
     private final MtFallbackPolicy mtFallbackPolicy;
     private final VehicleTrackingPolicy vehicleTrackingPolicy;
+    interface BackendOpener {
+        InferenceBackend open(InstalledModel model,ModelVariant variant,com.example.alpr_v1.inference.ExecutionProfile profile,
+                com.example.alpr_v1.inference.RuntimeEvidenceSink sink);
+    }
+    private final com.example.alpr_v1.setup.TvBboxCrop inputCrop;
+    private com.example.alpr_v1.setup.TvBboxCrop.Frame tvInput;
+    private com.example.alpr_v1.experiment.TvBboxEvidence.FrameRecord tvEvidenceFrame;
     private final InferenceBackend vehicleBackend;
     private final InferenceBackend plateBackend;
     private final InferenceBackend characterBackend;
@@ -138,6 +150,7 @@ final class MobileAlprEngine implements AutoCloseable {
     private boolean staticSceneMode;
     private com.example.alpr_v1.experiment.ResearchSessionStore researchStore;
     private com.example.alpr_v1.experiment.ResearchAttemptBatch researchBatch;
+    private JSONObject f5aMpObservation;
     private float researchZoomRatio = 1f;
     void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore store,float zoomRatio) {
         researchStore=store; researchZoomRatio=zoomRatio;
@@ -283,6 +296,14 @@ final class MobileAlprEngine implements AutoCloseable {
                     VehicleTrackingPolicy vehicleTrackingPolicy, ResearchExecutionConfig researchExecutionConfig,
                     VehicleTrackingCoordinator vehicleTrackingCoordinator,
                     com.example.alpr_v1.inference.RuntimeEvidenceSink evidenceSink) {
+        this(registry,autoTuneManager,roiBudgetPolicy,mtExecutionPolicy,mtFallbackPolicy,vehicleTrackingPolicy,
+                researchExecutionConfig,vehicleTrackingCoordinator,evidenceSink,RuntimeBackendFactory::create);
+    }
+    MobileAlprEngine(ModelRegistry registry,AutoTuneManager autoTuneManager,RoiBudgetPolicy roiBudgetPolicy,
+            MtExecutionPolicy mtExecutionPolicy,MtFallbackPolicy mtFallbackPolicy,VehicleTrackingPolicy vehicleTrackingPolicy,
+            ResearchExecutionConfig researchExecutionConfig,VehicleTrackingCoordinator vehicleTrackingCoordinator,
+            com.example.alpr_v1.inference.RuntimeEvidenceSink evidenceSink,BackendOpener opener){
+        inputCrop=researchExecutionConfig==null?null:researchExecutionConfig.tvBboxCrop();
         if (vehicleTrackingCoordinator == null) {
             throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
         }
@@ -326,6 +347,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 : frozenCharacter.requireVariant(characterModel);
         plateInputSpec = plateVariant.input(plateModel.manifest().input());
         characterInputSpec = characterVariant.input(characterModel.manifest().input());
+        characterVariantId = characterVariant.id();
         plateOutputSpec = plateVariant.output(plateModel.manifest().output());
         characterOutputSpec = characterVariant.output(characterModel.manifest().output());
         validateDecoder(plateOutputSpec);
@@ -352,7 +374,7 @@ final class MobileAlprEngine implements AutoCloseable {
         InferenceBackend openedCharacter = null;
         try {
             if (vehicleModel != null) {
-                openedVehicle = RuntimeBackendFactory.create(
+                openedVehicle = opener.open(
                         vehicleModel,
                         vehicleVariant,
                         frozenVehicle == null
@@ -360,14 +382,14 @@ final class MobileAlprEngine implements AutoCloseable {
                                 : frozenVehicle.executionProfile(), evidenceSink
                 );
             }
-            openedPlate = RuntimeBackendFactory.create(
+            openedPlate = opener.open(
                     plateModel,
                     plateVariant,
                     frozenPlate == null
                             ? autoTuneManager.chosenProfile(plateModel)
                             : frozenPlate.executionProfile(), evidenceSink
             );
-            openedCharacter = RuntimeBackendFactory.create(
+            openedCharacter = opener.open(
                     characterModel,
                     characterVariant,
                     frozenCharacter == null
@@ -791,12 +813,37 @@ final class MobileAlprEngine implements AutoCloseable {
             BooleanSupplier cancellationRequested,
             AlprPipeline.PlateObservationCallback plateObservationCallback
     ) {
+        return run(frame,trace,sourceStamp,plateDetectionCallback,cancellationRequested,plateObservationCallback,null);
+    }
+    PipelineResult run(Bitmap frame,InferenceTrace trace,ContinuityStamp sourceStamp,
+            AlprPipeline.PlateDetectionCallback plateDetectionCallback,BooleanSupplier cancellationRequested,
+            AlprPipeline.PlateObservationCallback plateObservationCallback,com.example.alpr_v1.setup.TvBboxCrop.Frame input){
+        if(inputCrop!=null){
+            if(input==null||input.camera!=frame||!inputCrop.digest.equals(input.crop.digest)
+                    ||researchStore==null||researchStore.tvBboxEvidence()==null)
+                throw new IllegalArgumentException("TV_BBOX_FRAME_CONTEXT_REQUIRED");
+            inputCrop.requireCurrent(frame,input.crop.geometry,input.crop.cameraSetup);
+        }else if(input!=null)throw new IllegalArgumentException("TV_BBOX_UNDECLARED_INPUT");
+        tvInput=input;tvEvidenceFrame=input==null?null:researchStore.tvBboxEvidence().capture(input,sourceStamp);
+        if(input!=null)trace.putDurationNanos("tv_bbox_crop",input.cropElapsedNanos);
         researchBatch = researchStore != null && researchStore.accepting()
                 ? new com.example.alpr_v1.experiment.ResearchAttemptBatch(researchStore,sourceStamp,
-                        roiBudgetPolicy.wireName(),researchZoomRatio) : null;
+                        roiBudgetPolicy.wireName(),researchZoomRatio,trace.frameId()) : null;
+        F5aEvidence f5a=researchStore==null ? null : researchStore.f5aEvidence();
+        String f5aScene=f5a==null ? "" : f5a.sceneFor(sourceStamp);
+        f5aMpObservation=null;
+        if(f5a!=null) {
+            f5aMpObservation=new JSONObject();
+            F5aEvidence.put(f5aMpObservation,"trace_frame_id",trace.frameId());
+            F5aEvidence.put(f5aMpObservation,"source_stamp",F5aEvidence.stampJson(sourceStamp));
+            F5aEvidence.put(f5aMpObservation,"execution_status","NOT_RUN");
+            F5aEvidence.put(f5aMpObservation,"not_run_reason","mp_not_requested_or_cached");
+            for(String key:new String[]{"raw_count","rejected_class_count","rejected_class_ids"})F5aEvidence.put(f5aMpObservation,key,null);
+            F5aEvidence.put(f5aMpObservation,"selected_rois",new JSONArray());
+        }
         String cancellation = "", failure = "";
         try { return runAudited(frame,trace,sourceStamp,plateDetectionCallback,cancellationRequested,plateObservationCallback); }
-        catch (ProcessingCancelledException error) { cancellation="scene_superseded"; throw error; }
+        catch (ProcessingCancelledException error) { cancellation=researchStore != null && !researchStore.accepting() ? "session_stopped" : "scene_superseded"; throw error; }
         catch (VehicleSizeDeferred deferred) {
             cancellation = deferred.decision.reason.name();
             String status = deferred.decision.reason == DynamicVehicleSizeGate.Reason.VEHICLE_TOO_SMALL
@@ -811,10 +858,19 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         catch (RuntimeException error) { failure=error.toString(); throw error; }
         finally {
+            if(f5a!=null) {
+                String reason=researchStore.accepting() ? "scan_queue_updated".equals(trace.status())
+                        ? f5aMpObservation.optJSONArray("selected_rois").length()==0 ? "zero_roi" : "queue_before_mt"
+                        : "no_mt_invocation_for_scene" : "session_stopped";
+                f5a.observation(f5aScene,f5aMpObservation,reason);
+                f5aMpObservation=null;
+            }
             if (researchBatch != null) {
-                if (cancellationRequested.getAsBoolean()) cancellation="scene_superseded";
+                if (cancellationRequested.getAsBoolean()) cancellation=researchStore != null && !researchStore.accepting() ? "session_stopped" : "scene_superseded";
                 researchBatch.finish(cancellation,failure); researchBatch=null;
             }
+            if(tvEvidenceFrame!=null)tvEvidenceFrame.complete(trace.status(),cancellation);
+            tvEvidenceFrame=null;tvInput=null;
         }
     }
 
@@ -995,6 +1051,10 @@ final class MobileAlprEngine implements AutoCloseable {
                     || rapidCameraMotion
                     || trace.frameId() - lastVehicleDetectionFrame >= VEHICLE_REFRESH_FRAMES);
             if (refreshVehicles) {
+                if(f5aMpObservation!=null) {
+                    F5aEvidence.put(f5aMpObservation,"execution_status","FAILED");
+                    F5aEvidence.put(f5aMpObservation,"not_run_reason",null);
+                }
                 VehicleDetectionResult vehicleResult =
                         detectVehicleRegions(frame, trace, sourceStamp);
                 forceVehicleRefresh = false;
@@ -1054,6 +1114,15 @@ final class MobileAlprEngine implements AutoCloseable {
                     frame,
                     roiBudgetPolicy
             );
+        }
+        if(f5aMpObservation!=null) {
+            JSONArray selected=new JSONArray();
+            for(VehicleRoi roi:vehicleRois) {
+                JSONObject item=new JSONObject();F5aEvidence.put(item,"left",roi.left);F5aEvidence.put(item,"top",roi.top);
+                F5aEvidence.put(item,"right",roi.right);F5aEvidence.put(item,"bottom",roi.bottom);
+                F5aEvidence.put(item,"entity_id",roi.entityId);F5aEvidence.put(item,"vehicle_track_id",roi.vehicleTrackId);selected.put(item);
+            }
+            F5aEvidence.put(f5aMpObservation,"selected_rois",selected);
         }
         cancelIfRequested(cancellationRequested);
 
@@ -1140,7 +1209,7 @@ final class MobileAlprEngine implements AutoCloseable {
             if (roiBudgetPolicy == RoiBudgetPolicy.FULL_FRAME) {
                 List<Detection> detected = detectPlates(
                         frame,
-                        fullFrameRegion(frame),
+                        modelFrameRegion(frame),
                         plateDurations
                 );
                 plates.addAll(detected);
@@ -1169,7 +1238,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         && mtFallbackPolicy == MtFallbackPolicy.SAME_CYCLE) {
                     List<Detection> detected = detectPlates(
                             frame,
-                            fullFrameRegion(frame),
+                            modelFrameRegion(frame),
                             plateDurations
                     );
                     plates.addAll(detected);
@@ -1385,6 +1454,7 @@ final class MobileAlprEngine implements AutoCloseable {
         int rawPlateDetectionCount =
                 plates.size();
         boolean dynamicEntitySelection = !staticSceneMode && !plateAssociationCandidates.isEmpty();
+        List<Detection> f5aDedupInputs=researchBatch!=null && researchStore.f5aEvidence()!=null ? new ArrayList<>(plates) : null;
 
         if (!dynamicEntitySelection) plates =
                 new ArrayList<>(
@@ -1395,7 +1465,7 @@ final class MobileAlprEngine implements AutoCloseable {
                                 false
                         )
                 );
-
+        if(f5aDedupInputs!=null)researchBatch.postprocessed(f5aDedupInputs,plates,dynamicEntitySelection);
 
         trace.putCount(
                 "plate_detections_after_dedup",
@@ -1897,6 +1967,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 long started = SystemClock.elapsedRealtimeNanos();
                 if (audit != null) audit.put("rectification_status","FAILED");
                 Bitmap rectified = PlateRectifier.rectify(frame, candidate.recognitionCorners);
+                com.example.alpr_v1.experiment.MzInputEvidence.Capture mzInputEvidence = null;
                 cropRectificationNanos = SystemClock.elapsedRealtimeNanos() - started;
                 rectificationNanos += cropRectificationNanos;
                 try {
@@ -1907,15 +1978,24 @@ final class MobileAlprEngine implements AutoCloseable {
                     );
                     cropCharacterPreprocessNanos = SystemClock.elapsedRealtimeNanos() - started;
                     characterPreprocessNanos += cropCharacterPreprocessNanos;
+                    if(audit!=null && audit.mzInputEvidenceEnabled())
+                        mzInputEvidence=audit.prepareMzInput(characterInput,characterInputSpec,characterBackend.inputInfo(),
+                                candidate.recognitionCorners,characterModel.manifest().modelId(),characterVariantId,
+                                characterModel.fingerprint(),characterBackend);
 
                     started = SystemClock.elapsedRealtimeNanos();
+                    requireResearchAdmission();
                     if (audit != null) {
                         audit.put("mz_executed",true);
                         audit.put("mz_backend",characterBackend.runtimeName());
                     }
                     InferenceRunResult characterRun;
-                    try { characterRun = characterBackend.run(characterInput.buffer); }
+                    try {
+                        if(mzInputEvidence!=null)mzInputEvidence.started();
+                        characterRun = characterBackend.run(characterInput.buffer);
+                    }
                     catch (RuntimeException error) {
+                        if(mzInputEvidence!=null)mzInputEvidence.threw(error);
                         if (audit != null) audit.put("mz_execution_error",error.toString());
                         throw error;
                     }
@@ -1923,6 +2003,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     cropCharacterInferenceNanos = SystemClock.elapsedRealtimeNanos() - started;
                     characterInferenceNanos += cropCharacterInferenceNanos;
                     characterRuns++;
+                    if(mzInputEvidence!=null)mzInputEvidence.returned();
 
                     started = SystemClock.elapsedRealtimeNanos();
                     List<Detection> characters =
@@ -1984,6 +2065,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             trace.elapsedSinceStageStart("total")
                     );
                 } finally {
+                    if(mzInputEvidence!=null)mzInputEvidence.discardIfNotStarted();
                     rectified.recycle();
                 }
             }
@@ -2741,6 +2823,10 @@ final class MobileAlprEngine implements AutoCloseable {
         );
     }
 
+    private void requireResearchAdmission() {
+        if (researchStore != null && !researchStore.accepting()) throw new ProcessingCancelledException();
+    }
+
     private static void cancelIfRequested(BooleanSupplier cancellationRequested) {
         if (cancellationRequested != null && cancellationRequested.getAsBoolean()) {
             throw new ProcessingCancelledException();
@@ -2775,9 +2861,9 @@ final class MobileAlprEngine implements AutoCloseable {
     ) {
         long stableRevision = stableSceneVehicles == null ? -1L : stableSceneVehicles.revision();
         long sourceTimestampNanos = sourceStamp.sourceTimestampNanos;
-        VehicleRoiSelector.Region analysisRegion = fullFrameRegion(frame);
-        Bitmap analysisBitmap = frame;
-        trace.putAttribute("mp_frame_policy", "FULL_SENSOR_FRAME");
+        VehicleRoiSelector.Region analysisRegion = modelFrameRegion(frame);
+        Bitmap analysisBitmap = tvInput==null?frame:tvInput.input;
+        trace.putAttribute("mp_frame_policy",tvInput==null?"FULL_SENSOR_FRAME":"TV_BBOX_CROP");
         trace.putAttribute("analysis_viewport_policy", "SCAN_ACQUISITION_ONLY");
         trace.putAttribute(
                 "analysis_viewport_bounds",
@@ -2802,6 +2888,7 @@ final class MobileAlprEngine implements AutoCloseable {
         trace.stop("vehicle_preprocess");
 
         trace.start("vehicle_inference");
+        requireResearchAdmission();
         InferenceRunResult run = vehicleBackend.run(input.buffer);
         Map.Entry<Integer, ByteBuffer> outputEntry =
                 run.outputs().entrySet().iterator().next();
@@ -2892,7 +2979,7 @@ final class MobileAlprEngine implements AutoCloseable {
             vehicles.add(mapped);
         }
         } finally {
-            if (analysisBitmap != frame) analysisBitmap.recycle();
+            if (tvInput==null&&analysisBitmap != frame) analysisBitmap.recycle();
         }
 
         trace.putCount(
@@ -2914,6 +3001,14 @@ final class MobileAlprEngine implements AutoCloseable {
                 "vehicle_detections_rejected_class",
                 Math.max(0, decodedVehicles.size() - classEligibleVehicleCount)
         );
+        if(f5aMpObservation!=null) {
+            JSONArray classes=new JSONArray();
+            for(Detection raw:decodedVehicles)if(!vehicleClassIds.contains(raw.classId))classes.put(raw.classId);
+            F5aEvidence.put(f5aMpObservation,"execution_status","EXECUTED");
+            F5aEvidence.put(f5aMpObservation,"raw_count",decodedVehicles.size());
+            F5aEvidence.put(f5aMpObservation,"rejected_class_count",classes.length());
+            F5aEvidence.put(f5aMpObservation,"rejected_class_ids",classes);
+        }
 
         android.util.Log.d(
                 "ALPR_MP",
@@ -3068,6 +3163,15 @@ final class MobileAlprEngine implements AutoCloseable {
                 rapidCameraMotion ? 0.28f : VEHICLE_REGION_MARGIN,
                 vehicleOutputSpec.iouThreshold()
         ));
+        if(tvInput!=null){
+            List<VehicleRoi> bounded=new ArrayList<>();
+            for(VehicleRoi roi:rois){
+                int l=Math.max(inputCrop.left,roi.left),t=Math.max(inputCrop.top,roi.top);
+                int r=Math.min(inputCrop.right,roi.right),b=Math.min(inputCrop.bottom,roi.bottom);
+                if(r>l&&b>t)bounded.add(new VehicleRoi(roi.candidate,l,t,r,b));
+            }
+            rois=bounded;
+        }
         if (vehicleTrackingCoordinator.vehicleSizeGate().enabled()) {
             rois.removeIf(roi -> !vehicleTrackingCoordinator.vehicleSizeGate().canSchedule(roi.entityId));
             if (rois.size() > roiBudgetPolicy.maximumRegions())
@@ -3648,6 +3752,11 @@ final class MobileAlprEngine implements AutoCloseable {
                 region,
                 frame
         );
+        if(tvInput!=null&&boundedRegion!=null){
+            int l=Math.max(boundedRegion.left,inputCrop.left),t=Math.max(boundedRegion.top,inputCrop.top);
+            int rr=Math.min(boundedRegion.right,inputCrop.right),bb=Math.min(boundedRegion.bottom,inputCrop.bottom);
+            boundedRegion=rr>l&&bb>t?new VehicleRoiSelector.Region(l,t,rr,bb,null):null;
+        }
         if (boundedRegion == null) return Collections.emptyList();
         boolean fullFrame = boundedRegion.left == 0 && boundedRegion.top == 0
                 && boundedRegion.right == frame.getWidth()
@@ -3660,6 +3769,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 : researchBatch.beginMt(auditEntity,evidenceOwner != null ? evidenceOwner.vehicleTrackId
                         : auditOwner == null ? 0L : auditOwner.vehicleTrackId(),boundedRegion.left,boundedRegion.top,
                         boundedRegion.right,boundedRegion.bottom,plateInputSpec.width(),plateInputSpec.height());
+        if(tvEvidenceFrame!=null)tvEvidenceFrame.bind(audit,boundedRegion.left,boundedRegion.top,boundedRegion.right,boundedRegion.bottom);
         String roiPolicy = roiPlan != null ? roiPlan.kind.name()
                 : fullFrame ? "FULL_FRAME" : "EXPANDED_VEHICLE";
         if (!staticSceneMode) {
@@ -3674,15 +3784,11 @@ final class MobileAlprEngine implements AutoCloseable {
                 audit.put("primary_plate_region_top_fraction", dynamicMtConfig.primaryTopFraction);
             }
         }
-        Bitmap inputBitmap = fullFrame
-                ? frame
-                : Bitmap.createBitmap(
-                        frame,
-                        boundedRegion.left,
-                        boundedRegion.top,
-                        boundedRegion.width(),
-                        boundedRegion.height()
-                );
+        int offsetX=tvInput==null?boundedRegion.left:boundedRegion.left-inputCrop.left;
+        int offsetY=tvInput==null?boundedRegion.top:boundedRegion.top-inputCrop.top;
+        Bitmap modelBitmap=tvInput==null?frame:tvInput.input;
+        boolean entireInput=offsetX==0&&offsetY==0&&boundedRegion.width()==modelBitmap.getWidth()&&boundedRegion.height()==modelBitmap.getHeight();
+        Bitmap inputBitmap=entireInput?modelBitmap:Bitmap.createBitmap(modelBitmap,offsetX,offsetY,boundedRegion.width(),boundedRegion.height());
         try {
             long started = SystemClock.elapsedRealtimeNanos();
             PreparedInput input = BitmapTensorPreprocessor.prepare(
@@ -3704,14 +3810,20 @@ final class MobileAlprEngine implements AutoCloseable {
             }
             started = SystemClock.elapsedRealtimeNanos();
             requireVehicleSize(frame, sizeEntity, "before_mt");
+            requireResearchAdmission();
             if (audit != null) {
                 audit.mtStarted();
                 audit.put("mt_backend",plateBackend.runtimeName());
             }
             actualMtRuns++;
             InferenceRunResult run;
+            if (staticSceneMode && com.example.alpr_v1.BuildConfig.DEBUG)
+                android.util.Log.d("ALPR_STATIC", "MT_INVOKE scene=" + mtSizeSourceStamp.sceneGeneration
+                        + " frame=" + mtSizeSourceStamp.sourceSequence + " elapsed_ns=" + started);
             try { run = plateBackend.run(input.buffer); }
             catch (RuntimeException error) {
+                if (staticSceneMode && com.example.alpr_v1.BuildConfig.DEBUG)
+                    android.util.Log.d("ALPR_STATIC", "MT_ERROR scene=" + mtSizeSourceStamp.sceneGeneration);
                 if (audit != null) audit.put("execution_error",error.toString());
                 throw error;
             }
@@ -3720,35 +3832,45 @@ final class MobileAlprEngine implements AutoCloseable {
             started = SystemClock.elapsedRealtimeNanos();
             List<Detection> result = new ArrayList<>();
             List<Detection> decoded = decodeFirstOutput(run, plateInputSpec, plateOutputSpec);
+            if (staticSceneMode && com.example.alpr_v1.BuildConfig.DEBUG)
+                android.util.Log.d("ALPR_STATIC", "MT_RESULT scene=" + mtSizeSourceStamp.sceneGeneration
+                        + " frame=" + mtSizeSourceStamp.sourceSequence + " detections=" + decoded.size()
+                        + " elapsed_ns=" + SystemClock.elapsedRealtimeNanos());
             if (!staticSceneMode) mtSizeTrace.putCount("mt_detection_count_raw",
                     mtSizeTrace.counters().getOrDefault("mt_detection_count_raw", 0L) + decoded.size());
             for (Detection detection : decoded) {
                 if (detection.keypoints.size() >= 4) {
-                    Detection source = DetectionCoordinateMapper.toSource(
-                            detection, input, boundedRegion.left, boundedRegion.top
-                    );
+                    Detection local = DetectionCoordinateMapper.toSource(detection,input,offsetX,offsetY);
+                    Detection source = tvInput==null?local:inputCrop.toCamera(local);
                     result.add(source);
                     if (audit != null) {
                         List<Point2> corners = source.keypoints.subList(0,4);
                         boolean valid = PlateQualityScorer.compute(source,corners,frame.getWidth(),frame.getHeight()).validQuad
                                 && cornersInsideFrame(corners,frame.getWidth(),frame.getHeight());
                         researchBatch.detected(audit,source,valid,frame.getWidth(),frame.getHeight());
+                        if(tvEvidenceFrame!=null)tvEvidenceFrame.localDetection(researchBatch.forDetection(source),local);
                     }
                 } else if (researchBatch != null) {
-                    researchBatch.detected(audit,DetectionCoordinateMapper.toSource(
-                            detection,input,boundedRegion.left,boundedRegion.top),false,
-                            frame.getWidth(),frame.getHeight());
+                    Detection local=DetectionCoordinateMapper.toSource(detection,input,offsetX,offsetY);
+                    Detection rejected=tvInput==null?local:inputCrop.toCamera(local);
+                    researchBatch.detected(audit,rejected,false,frame.getWidth(),frame.getHeight());
+                    if(tvEvidenceFrame!=null)tvEvidenceFrame.localDetection(researchBatch.forDetection(rejected),local);
+                    researchBatch.rejectedBeforeNms(rejected);
                 }
             }
+            if(researchBatch!=null)researchBatch.decoded(audit);
             durations[2] += SystemClock.elapsedRealtimeNanos() - started;
             if (roiPlan != null) adaptiveMtRoi.result(evidenceOwner.entityId, roiPlan.kind,
                     hasOwnedValidPlate(result, evidenceOwner, frame, retainedPlateAssociationCandidates));
             return result;
         } finally {
-            if (!fullFrame) inputBitmap.recycle();
+            if(inputBitmap!=modelBitmap)inputBitmap.recycle();
         }
     }
 
+    private VehicleRoiSelector.Region modelFrameRegion(Bitmap frame){
+        return tvInput==null?fullFrameRegion(frame):new VehicleRoiSelector.Region(inputCrop.left,inputCrop.top,inputCrop.right,inputCrop.bottom,null);
+    }
     static VehicleRoiSelector.Region fullSensorFrameRegion(int width, int height) {
         return new VehicleRoiSelector.Region(0, 0, width, height, null);
     }

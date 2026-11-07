@@ -8,6 +8,19 @@ public final class OverlayViewportTransform {
     private OverlayViewportTransform() {
     }
 
+    public static PointF mapNormalizedToView(float x, float y,
+            com.example.alpr_v1.setup.CameraPreviewGeometry geometry) {
+        double[] p = geometry.normalizedToView(x, y);
+        return new PointF((float) p[0], (float) p[1]);
+    }
+
+    /** Deliberately unclamped: a touch on letterbox/UI is not a source pixel. */
+    public static PointF mapViewToNormalized(PointF point,
+            com.example.alpr_v1.setup.CameraPreviewGeometry geometry) {
+        double[] p = geometry.viewToNormalized(point.x, point.y);
+        return new PointF((float) p[0], (float) p[1]);
+    }
+
     public static RectF mapNormalizedToView(
             RectF normalized,
             int sourceWidth,

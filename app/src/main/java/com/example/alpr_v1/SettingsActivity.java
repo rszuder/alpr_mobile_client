@@ -18,9 +18,6 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
@@ -70,6 +67,7 @@ public final class SettingsActivity extends AppCompatActivity {
 
     public static final String KEY_EXPERIMENT_ROI_POLICY =
             "experiment_roi_budget_policy";
+    public static final String KEY_TV_INPUT_MODE = "tv_research_input_mode_v1";
     public static final String KEY_EXPERIMENT_TYPE = "experiment_type";
     public static final String KEY_EXPERIMENT_VARIANT = "experiment_variant";
     public static final String KEY_RESEARCH_MP_EXECUTION = "research_mp_execution";
@@ -181,6 +179,9 @@ public final class SettingsActivity extends AppCompatActivity {
         configureDynamicMtControls();
         configureRoiBudgetControls();
         configureExperimentIdentity();
+        findViewById(R.id.settings_tv_calibrate).setOnClickListener(v -> requestTvSetup(com.example.alpr_v1.ui.TvSetupController.Mode.CALIBRATION));
+        findViewById(R.id.settings_tv_distance).setOnClickListener(v -> requestTvSetup(com.example.alpr_v1.ui.TvSetupController.Mode.DISTANCE));
+        refreshTvTools();
         configurePipelineControls();
         refreshModelStatus();
         refreshStoragePath();
@@ -291,9 +292,12 @@ public final class SettingsActivity extends AppCompatActivity {
                 );
 
 
+        com.example.alpr_v1.camera.CameraSetupSnapshot savedCamera=preferences.getBoolean(KEY_EXPERIMENT_MODE_ENABLED,false)
+                &&"roi_budget".equals(preferences.getString(KEY_EXPERIMENT_TYPE,"roi_budget"))?
+                com.example.alpr_v1.camera.CameraSetupSnapshot.restore(preferences.getString(com.example.alpr_v1.camera.CameraSetupSnapshot.PREFERENCE,"")):null;
         CameraResolutionCatalog catalog =
                 new CameraResolutionCatalog(
-                        this
+                        this,savedCamera==null?null:savedCamera.selection
                 );
 
 
@@ -628,9 +632,9 @@ public final class SettingsActivity extends AppCompatActivity {
 
         importModelButton.setOnClickListener(view -> launchModelImport(null));
         importPackageButton.setOnClickListener(view -> launchPackageImport());
-        vehicleNode.setOnClickListener(view -> showNodeActions(ModelRole.VEHICLE));
-        plateNode.setOnClickListener(view -> showNodeActions(ModelRole.PLATE));
-        characterNode.setOnClickListener(view -> showNodeActions(ModelRole.CHARACTER));
+        vehicleNode.setOnClickListener(view -> showNodeVariant(ModelRole.VEHICLE));
+        plateNode.setOnClickListener(view -> showNodeVariant(ModelRole.PLATE));
+        characterNode.setOnClickListener(view -> showNodeVariant(ModelRole.CHARACTER));
         restoreBaseButton.setOnClickListener(view -> restoreBaseComposition());
     }
 
@@ -679,6 +683,13 @@ public final class SettingsActivity extends AppCompatActivity {
                 })
                 .setNegativeButton(R.string.menu_close, null)
                 .show();
+    }
+
+    private void showNodeVariant(ModelRole role) {
+        modelRegistry.reload();
+        InstalledModel model = modelRegistry.getActive(role);
+        if (model == null) showNodeActions(role);
+        else showVariantSelection(role, model);
     }
 
     private void showCompositionModel(ModelRole role) {
@@ -769,7 +780,9 @@ public final class SettingsActivity extends AppCompatActivity {
         int selected = researchMode ? -1 : 0;
         for (int index = 0; index < variants.size(); index++) {
             ModelVariant variant = variants.get(index);
-            String label = ModelStatusFormatter.variantLabel(variant) + " · " + variant.id();
+            com.example.alpr_v1.model.ModelInputSpec input = variant.input(model.manifest().input());
+            String label = ModelStatusFormatter.variantLabel(variant) + " · " + input.width() + "×" + input.height()
+                    + "\n" + variant.id();
             if (!RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
                 label += " · " + getString(
                         R.string.settings_variant_unavailable,
@@ -781,7 +794,7 @@ public final class SettingsActivity extends AppCompatActivity {
         }
         final int[] choice = {selected};
         ArrayAdapter<CharSequence> adapter = new ArrayAdapter<CharSequence>(
-                this, android.R.layout.simple_list_item_single_choice, labels
+                this, R.layout.item_model_variant_choice, labels
         ) {
             @Override public boolean areAllItemsEnabled() { return false; }
 
@@ -795,12 +808,17 @@ public final class SettingsActivity extends AppCompatActivity {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
                 View row = super.getView(position, convertView, parent);
                 row.setEnabled(isEnabled(position));
+                row.setAlpha(isEnabled(position) ? 1f : .45f);
                 return row;
             }
         };
-        new MaterialAlertDialogBuilder(this)
+        androidx.appcompat.app.AlertDialog variantDialog = new MaterialAlertDialogBuilder(this)
                 .setTitle(getString(R.string.settings_select_variant_title, roleLabel(role)))
-                .setSingleChoiceItems(adapter, selected, (dialog, which) -> choice[0] = which)
+                .setSingleChoiceItems(adapter, selected, (dialog, which) -> {
+                    choice[0] = which;
+                    ((androidx.appcompat.app.AlertDialog) dialog).getButton(android.content.DialogInterface.BUTTON_POSITIVE)
+                            .setEnabled(adapter.isEnabled(which));
+                })
                 .setPositiveButton(R.string.settings_apply, (dialog, ignored) -> {
                     if (choice[0] <= 0) {
                         if (researchMode) {
@@ -826,8 +844,12 @@ public final class SettingsActivity extends AppCompatActivity {
                     markChanged();
                     refreshModelStatus();
                 })
+                .setNeutralButton("Model / import", (dialog, which) -> showNodeActions(role))
                 .setNegativeButton(R.string.menu_close, null)
-                .show();
+                .create();
+        variantDialog.setOnShowListener(dialog -> variantDialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
+                .setEnabled(choice[0] >= 0 && adapter.isEnabled(choice[0])));
+        variantDialog.show();
     }
 
     private void restoreBaseComposition() {
@@ -926,13 +948,72 @@ public final class SettingsActivity extends AppCompatActivity {
                 });
             } catch (Exception error) {
                 AppLog.error(this, LOG_TAG, "Import odrzucony: " + error.getMessage(), error);
+                boolean pinnedResearchCandidate = BuildConfig.DEBUG
+                        && expectedContent == AlprPackageImporter.ExpectedContent.SINGLE_MODEL
+                        && (expectedRole == null || expectedRole == ModelRole.CHARACTER)
+                        && error.getMessage() != null
+                        && error.getMessage().contains("MZ_CLEAN_INT8_RESEARCH_IMPORT_NOT_APPROVED");
                 runOnUiThread(() -> {
                     setBusy(false);
-                    Toast.makeText(
-                            this,
-                            getString(R.string.settings_import_rejected, error.getMessage()),
-                            Toast.LENGTH_LONG
-                    ).show();
+                    if (pinnedResearchCandidate) {
+                        // Nothing is installed unless the operator explicitly agrees.
+                        new MaterialAlertDialogBuilder(this)
+                                .setTitle("MZ-DAY INT8 — wyłącznie badawczo")
+                                .setMessage("Ten pakiet ma status EXPLORATORY_ONLY. "
+                                        + "Możesz go zainstalować jedynie w wersji DEBUG "
+                                        + "i uruchamiać na CPU dla badań F4. "
+                                        + "Plik musi mieć dokładnie przypięty SHA-256. "
+                                        + "Nie oznacza to zatwierdzenia produkcyjnego, "
+                                        + "potwierdzenia kalibracji ani final_test. "
+                                        + "Czy świadomie zezwalasz na taki import?")
+                                .setNegativeButton("Anuluj", null)
+                                .setPositiveButton("Importuj badawczo", (dialog, which) ->
+                                        importPinnedResearchMz(uri))
+                                .show();
+                    } else {
+                        Toast.makeText(
+                                this,
+                                getString(R.string.settings_import_rejected, error.getMessage()),
+                                Toast.LENGTH_LONG
+                        ).show();
+                    }
+                });
+            }
+        });
+    }
+
+    private void importPinnedResearchMz(Uri uri) {
+        setBusy(true);
+        AppLog.info(this, LOG_TAG, "MZ-DAY INT8: jawny import badawczy DEBUG/CPU");
+        backgroundExecutor.execute(() -> {
+            try {
+                ModelImportResult result = packageImporter.importPinnedResearchMz(uri);
+                InstalledModel model = result.singleModel();
+                if (model == null || model.manifest().role() != ModelRole.CHARACTER
+                        || !ModelRegistry.isExecutable(model)) {
+                    throw new IllegalArgumentException("MZ_PINNED_RESEARCH_MODEL_NOT_EXECUTABLE");
+                }
+                modelRegistry.activate(model);
+                markChanged();
+                AppLog.info(this, LOG_TAG,
+                        "Import badawczy MZ-DAY INT8 (EXPLORATORY_ONLY): "
+                                + model.manifest().modelId());
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    refreshModelStatus();
+                    Toast.makeText(this,
+                            "MZ-DAY INT8 aktywny: DEBUG/CPU, RESEARCH_ONLY. "
+                                    + "Nie używaj do final_test.",
+                            Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception error) {
+                AppLog.error(this, LOG_TAG,
+                        "Import badawczy MZ-DAY INT8 odrzucony: " + error.getMessage(), error);
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    Toast.makeText(this,
+                            "Import badawczy odrzucony: " + error.getMessage(),
+                            Toast.LENGTH_LONG).show();
                 });
             }
         });
@@ -982,6 +1063,11 @@ public final class SettingsActivity extends AppCompatActivity {
         vehicleModelStatus.setText(status.vehicle);
         plateModelStatus.setText(status.plate);
         characterModelStatus.setText(status.character);
+        if (preferences.getBoolean(KEY_EXPERIMENT_MODE_ENABLED, false)) {
+            vehicleModelStatus.setText(researchModelDescription(ModelRole.VEHICLE));
+            plateModelStatus.setText(researchModelDescription(ModelRole.PLATE));
+            characterModelStatus.setText(researchModelDescription(ModelRole.CHARACTER));
+        }
         modelStatusSummary.setTextColor(getColor(
                 modelRegistry.hasCompleteAlprComposition()
                         ? R.color.alpr_success
@@ -1219,11 +1305,7 @@ public final class SettingsActivity extends AppCompatActivity {
     }
 
     private void applySystemInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.settings_root), (view, insets) -> {
-            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return insets;
-        });
+        com.example.alpr_v1.ui.CameraWindowUi.install(getWindow(), findViewById(R.id.settings_root));
     }
 
     @Override
@@ -1242,7 +1324,26 @@ public final class SettingsActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
+    private void requestTvSetup(com.example.alpr_v1.ui.TvSetupController.Mode mode) {
+        if(!com.example.alpr_v1.ui.TvSetupAvailability.available(preferences.getBoolean(KEY_EXPERIMENT_MODE_ENABLED,false),preferences.getString(KEY_EXPERIMENT_TYPE,"roi_budget")))return;
+        com.example.alpr_v1.ui.TvSetupNavigation.request(preferences,mode);
+        requestSettingsClose();
+    }
+    private void refreshTvTools(){
+        findViewById(R.id.settings_tv_input_container).setVisibility(preferences.getBoolean(KEY_EXPERIMENT_MODE_ENABLED,false)
+                &&"roi_budget".equals(preferences.getString(KEY_EXPERIMENT_TYPE,"roi_budget"))?View.VISIBLE:View.GONE);
+        findViewById(R.id.settings_tv_tools).setVisibility(
+            com.example.alpr_v1.ui.TvSetupAvailability.available(preferences.getBoolean(KEY_EXPERIMENT_MODE_ENABLED,false),
+                    preferences.getString(KEY_EXPERIMENT_TYPE,"roi_budget"))?View.VISIBLE:View.GONE);}
+
     private void configureExperimentIdentity() {
+        com.google.android.material.textfield.MaterialAutoCompleteTextView input=findViewById(R.id.settings_tv_input_mode);
+        String[] labels={"Pełna klatka kamery (referencja)","Wycinek TV (BBOX) — próba nieoficjalna"};
+        input.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_dropdown_item_1line,labels));
+        input.setText(labels["TV_BBOX_CROP".equals(preferences.getString(KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME"))?1:0],false);
+        input.setOnItemClickListener((parent,view,position,id)->{
+            preferences.edit().putString(KEY_TV_INPUT_MODE,position==1?"TV_BBOX_CROP":"CAMERA_FULL_FRAME").apply();markChanged();
+        });
         String[] typeWires = {
                 "roi_budget",
                 "runtime",
@@ -1276,6 +1377,7 @@ public final class SettingsActivity extends AppCompatActivity {
                     KEY_EXPERIMENT_TYPE,
                     typeWires[position]
             ).apply();
+            refreshTvTools();
             markChanged();
         });
         experimentVariant.setText(preferences.getString(
@@ -1366,6 +1468,18 @@ public final class SettingsActivity extends AppCompatActivity {
                 R.id.settings_research_mz_execution,
                 KEY_RESEARCH_MZ_EXECUTION
         );
+    }
+
+    private String researchModelDescription(ModelRole role) {
+        if (role == ModelRole.VEHICLE && !RoiBudgetPolicy.fromWireName(preferences.getString(
+                KEY_EXPERIMENT_ROI_POLICY, RoiBudgetPolicy.TWO_ROI.wireName())).usesVehicleCascade())
+            return "EXP · MP wyłączony dla R0";
+        String key = role == ModelRole.VEHICLE ? KEY_RESEARCH_MP_EXECUTION
+                : role == ModelRole.PLATE ? KEY_RESEARCH_MT_EXECUTION : KEY_RESEARCH_MZ_EXECUTION;
+        ResearchExecutionChoice choice;
+        try { choice = ResearchExecutionChoice.fromWireName(preferences.getString(key, "auto")); }
+        catch (IllegalArgumentException invalid) { choice = ResearchExecutionChoice.AUTO; }
+        return ModelStatusFormatter.describeResearch(modelRegistry.getActive(role), autoTuneManager, choice);
     }
 
     private void configureResearchStageControl(
@@ -1464,6 +1578,7 @@ public final class SettingsActivity extends AppCompatActivity {
                     choice.wireName()
             ).apply();
             markChanged();
+            refreshModelStatus();
         });
     }
 
@@ -1557,8 +1672,10 @@ public final class SettingsActivity extends AppCompatActivity {
                                     : View.GONE
                     );
 
+                    refreshTvTools();
+
                     markChanged();
-                    refreshNodeBadges();
+                    refreshModelStatus();
                     refreshSceneHandlingControls();
                 }
         );
@@ -1586,8 +1703,7 @@ public final class SettingsActivity extends AppCompatActivity {
                             .apply();
 
                     markChanged();
-                    refreshNodeBadges();
-                    refreshResearchExecutionControls();
+                    refreshModelStatus();
                 }
         );
     }

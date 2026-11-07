@@ -98,6 +98,26 @@ public final class AlprPackageImporter {
         }
     }
 
+    /** A separate, opt-in debug-research path for exactly one signed MZ archive. */
+    public ModelImportResult importPinnedResearchMz(Uri source) throws ModelPackageException {
+        File work = new File(new File(context.getCacheDir(), "alpr-pinned-mz-research"),
+                UUID.randomUUID().toString());
+        File localPackage = new File(work, "source.alprmodel");
+        try {
+            ModelPackageImporter.ensureDirectory(work);
+            copySource(source, localPackage);
+            return ModelImportResult.single(
+                    singleModelImporter.importPinnedResearchMz(localPackage));
+        } catch (ModelPackageException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ModelPackageException(
+                    "MZ_PINNED_RESEARCH_IMPORT_FAILED: " + e.getMessage(), e);
+        } finally {
+            ModelPackageImporter.safeDelete(work);
+        }
+    }
+
     public enum ExpectedContent {
         ANY,
         SINGLE_MODEL,

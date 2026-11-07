@@ -104,6 +104,37 @@ public final class PreviewPlateTracker {
     }
 
 
+    private final Object controls = new Object();
+    private static final class Control {
+        final List<TrackState> tracks;
+        final int width, height;
+        final long revision;
+        Control(List<TrackState> tracks, int width, int height, long revision) {
+            this.tracks = tracks; this.width = width; this.height = height; this.revision = revision;
+        }
+    }
+    private Control pendingControl;
+    private long controlRevision, appliedControlRevision;
+    private volatile int publishedSourceWidth, publishedSourceHeight;
+
+    /** Called only by the serialized tracking worker, never while holding the controls lock in UI. */
+    private void applyPendingControl() {
+        Control command;
+        synchronized (controls) { command = pendingControl; pendingControl = null; }
+        if (command == null) return;
+        if (command.tracks == null) resetImageState();
+        else {
+            tracks = command.tracks;
+            sourceWidth = command.width; sourceHeight = command.height;
+            previousGray = null;
+        }
+        appliedControlRevision = command.revision;
+    }
+
+    private boolean controlStillCurrent() {
+        synchronized (controls) { return appliedControlRevision == controlRevision; }
+    }
+
     private List<TrackState> tracks =
             Collections.emptyList();
 
@@ -125,7 +156,7 @@ public final class PreviewPlateTracker {
      * Nowy wynik MT ponownie kotwiczy wszystkie
      * aktualnie wykryte tablice.
      */
-    public synchronized boolean anchor(
+    public boolean anchor(
             List<OverlayItem> items,
             int sourceWidth,
             int sourceHeight
@@ -189,24 +220,10 @@ public final class PreviewPlateTracker {
         }
 
 
-        this.tracks =
-                newTracks;
-
-
-        this.sourceWidth =
-                sourceWidth;
-
-        this.sourceHeight =
-                sourceHeight;
-
-
-        /*
-         * Pierwsza następna klatka Preview ustawi
-         * pozycje punktów względem aktualnego obrazu.
-         */
-        previousGray =
-                null;
-
+        synchronized (controls) {
+            pendingControl = new Control(newTracks, sourceWidth, sourceHeight, ++controlRevision);
+            publishedSourceWidth = sourceWidth; publishedSourceHeight = sourceHeight;
+        }
 
         return true;
     }
@@ -228,9 +245,13 @@ public final class PreviewPlateTracker {
      * Techniczna aktualizacja trackera. Oprócz geometrii overlay zwraca jakość,
      * błędy i wiek kotwicy potrzebne schedulerowi MT.
      */
-    public synchronized PreviewTrackingFrame updateTracking(
-            Bitmap preview
-    ) {
+    public synchronized PreviewTrackingFrame updateTracking(Bitmap preview) {
+        applyPendingControl();
+        PreviewTrackingFrame result = updateTrackingImage(preview);
+        return controlStillCurrent() ? result : null;
+    }
+
+    private PreviewTrackingFrame updateTrackingImage(Bitmap preview) {
 
         if (preview == null
                 || preview.isRecycled()
@@ -659,11 +680,13 @@ public final class PreviewPlateTracker {
      * Aktualizacja bez odczytu GPU/PreviewView. Wejściem jest mała płaszczyzna
      * luminancji skopiowana bezpośrednio z ImageAnalysis CameraX.
      */
-    public synchronized PreviewTrackingFrame updateLuma(
-            byte[] gray,
-            int width,
-            int height
-    ) {
+    public synchronized PreviewTrackingFrame updateLuma(byte[] gray, int width, int height) {
+        applyPendingControl();
+        PreviewTrackingFrame result = updateLumaImage(gray, width, height);
+        return controlStillCurrent() ? result : null;
+    }
+
+    private PreviewTrackingFrame updateLumaImage(byte[] gray, int width, int height) {
         if (gray == null || width <= 0 || height <= 0
                 || gray.length < width * height
                 || tracks.isEmpty()) return null;
@@ -1421,19 +1444,17 @@ public final class PreviewPlateTracker {
     }
 
 
-    public synchronized int sourceWidth() {
+    public int sourceWidth() { return publishedSourceWidth; }
+    public int sourceHeight() { return publishedSourceHeight; }
 
-        return sourceWidth;
+    public void reset() {
+        synchronized (controls) {
+            pendingControl = new Control(null, 0, 0, ++controlRevision);
+            publishedSourceWidth = 0; publishedSourceHeight = 0;
+        }
     }
 
-
-    public synchronized int sourceHeight() {
-
-        return sourceHeight;
-    }
-
-
-    public synchronized void reset() {
+    private void resetImageState() {
 
         tracks =
                 Collections.emptyList();

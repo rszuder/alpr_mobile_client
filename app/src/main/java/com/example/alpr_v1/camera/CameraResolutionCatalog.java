@@ -26,9 +26,12 @@ public final class CameraResolutionCatalog {
     public CameraResolutionCatalog(
             Context context
     ) {
+        this(context,null);
+    }
+    public CameraResolutionCatalog(Context context,CameraSelection selection){
         Result result =
                 readCapabilities(
-                        context.getApplicationContext()
+                        context.getApplicationContext(),selection
                 );
 
         cameraId = result.cameraId;
@@ -281,7 +284,7 @@ public final class CameraResolutionCatalog {
 
 
     private static Result readCapabilities(
-            Context context
+            Context context,CameraSelection selection
     ) {
         CameraManager manager =
                 (CameraManager)
@@ -294,10 +297,8 @@ public final class CameraResolutionCatalog {
         }
 
         try {
-            String backCameraId =
-                    findBackCameraId(
-                            manager
-                    );
+            String backCameraId=selection==null||selection.isDefault()?findBackCameraId(manager):
+                    selection.physicalCameraId==null?selection.logicalCameraId:selection.physicalCameraId;
 
             if (backCameraId == null) {
                 return Result.empty();

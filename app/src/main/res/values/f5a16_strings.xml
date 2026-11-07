@@ -1,0 +1,7 @@
+<resources>
+    <string name="f16_gallery_session">Sesja galerii: %1$s</string>
+    <string name="f16_gallery_choose_session">Wybierz sesję podglądów</string>
+    <string name="f16_gallery_empty_scope">Brak podglądów tej sesji w RAM. Zapisane obrazy pozostają w sesji; nie są automatycznie wczytywane do RAM.</string>
+    <string name="f16_gallery_open_count">Zapisane obrazy wybranej sesji: %1$s</string>
+    <string name="f16_mz_diagnostic_blocked">Dowód wejścia MZ: OFF\nBLOCKED_DESKTOP_PURPOSE — adapter Desktop obsługuje obecnie tylko diagnostykę syntetyczną. Sesja diagnostyczna na urządzeniu wymaga rozszerzenia i odbioru kontraktu.</string>
+</resources>

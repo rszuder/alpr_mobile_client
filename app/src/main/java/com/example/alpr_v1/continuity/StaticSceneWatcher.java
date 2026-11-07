@@ -22,6 +22,10 @@ public final class StaticSceneWatcher {
         public final String reason;
         public final int featurePoints;
         public final float featureLostFraction, featureMovedFraction;
+        public int sceneFeaturePoints, featureConfirmations, sceneFeatureConfirmations;
+        public float sceneFeatureLostFraction, sceneFeatureMovedFraction;
+        public int addedFeaturePoints, addedFeatureConfirmations;
+        public float addedFeatureUnmatchedFraction, addedFeaturePersistence;
         Result(boolean changed, float local, float global, String reason) {
             this(changed, local, global, reason, null);
         }
@@ -33,12 +37,30 @@ public final class StaticSceneWatcher {
         }
     }
     private final Profile profile;
+    // UI/control commands never wait for optical flow. Only observe owns image state.
+    private final Object commands = new Object();
+    private long resetRevision, observedResetRevision;
+    private StaticSceneWatchRegions pendingRegions;
+    private boolean pendingPrepareForZoom;
     private StaticSceneWatchRegions regions = new StaticSceneWatchRegions(null, null, 0f);
     private byte[] reference;
     private byte[] latestBase;
     private StaticSceneWatcher zoomWatcher;
     private float watchedZoom = 1f;
     private final RegionFeatureChangeDetector features = new RegionFeatureChangeDetector();
+    // Independent background evidence: does not add ALPR detections or modify ROI bounds.
+    private final RegionFeatureChangeDetector sceneFeatures = new RegionFeatureChangeDetector();
+    // Reverse appearance evidence finds structure absent from the original scene.
+    private final RegionFeatureChangeDetector addedFeatures = new RegionFeatureChangeDetector();
+    private RegionFeatureChangeDetector.AppearanceResult latestAddedFeatures;
+    private byte[] additionCandidate;
+    private int addedFeatureConsecutive;
+    private long addedFeatureSince = -1L, addedFeatureLastCheck = -1L;
+    private float addedFeaturePersistence;
+    private boolean sceneAnchorDirty = true;
+    private int sceneFeatureConsecutive;
+    private long sceneFeatureSince = -1L;
+    private RegionFeatureChangeDetector.Result latestSceneFeatures;
     private boolean featureAnchorDirty = true;
     private int featureConsecutive;
     private long featureSince = -1L;
@@ -48,7 +70,10 @@ public final class StaticSceneWatcher {
     private long since = -1L;
     public StaticSceneWatcher() { this(DEFAULT); }
     public StaticSceneWatcher(Profile profile) { this.profile = profile; }
-    public synchronized void arm(StaticSceneWatchRegions regions) {
+    public void arm(StaticSceneWatchRegions regions) {
+        if (regions != null) synchronized (commands) { pendingRegions = regions; }
+    }
+    private void applyRegions(StaticSceneWatchRegions regions) {
         if (regions == null) return;
         if (!this.regions.featureBounds.equals(regions.featureBounds)) {
             featureAnchorDirty = true; featureConsecutive = 0; featureSince = -1L;
@@ -57,23 +82,49 @@ public final class StaticSceneWatcher {
         // Region discovery must not replace the scene captured before a slow inference.
         if (reference == null && latestBase != null) reference = latestBase.clone();
     }
-    public synchronized void prepareForZoom() {
-        if (reference == null && latestBase != null) reference = latestBase.clone();
+    public void prepareForZoom() {
+        synchronized (commands) { pendingPrepareForZoom = true; }
     }
-    public synchronized void reset() {
-        regions = new StaticSceneWatchRegions(Collections.emptyList(), Collections.emptyList(), 0f);
-        latestBase = null; zoomWatcher = null;
-        resetReference();
+    public void reset() {
+        synchronized (commands) {
+            resetRevision++;
+            pendingRegions = new StaticSceneWatchRegions(null, null, 0f);
+            pendingPrepareForZoom = false;
+        }
     }
     private void resetReference() {
         reference = null; consecutive = 0; since = -1L;
         features.reset(); featureAnchorDirty = true; featureConsecutive = 0; featureSince = -1L;
         featureLastCheck = -1L; latestFeatures = null;
+        sceneFeatures.reset(); sceneAnchorDirty = true;
+        sceneFeatureConsecutive = 0; sceneFeatureSince = -1L; latestSceneFeatures = null;
+        addedFeatures.reset(); latestAddedFeatures = null; addedFeatureLastCheck = -1L; clearAdditionCandidate();
     }
     public synchronized Result observe(byte[] gray, int width, int height, long now, boolean transform) {
         return observe(gray, width, height, now, transform, 1f);
     }
     public synchronized Result observe(byte[] gray, int width, int height, long now, boolean transform, float zoomRatio) {
+        long revision;
+        StaticSceneWatchRegions requested;
+        boolean prepare;
+        synchronized (commands) {
+            revision = resetRevision;
+            requested = pendingRegions; pendingRegions = null;
+            prepare = pendingPrepareForZoom; pendingPrepareForZoom = false;
+        }
+        if (observedResetRevision != revision) {
+            latestBase = null; zoomWatcher = null;
+            resetReference();
+            observedResetRevision = revision;
+        }
+        if (requested != null) applyRegions(requested);
+        if (prepare && reference == null && latestBase != null) reference = latestBase.clone();
+        Result result = observeFrame(gray, width, height, now, transform, zoomRatio);
+        synchronized (commands) {
+            return revision == resetRevision ? result : new Result(false, 0f, 0f, "observation_invalidated");
+        }
+    }
+    private Result observeFrame(byte[] gray, int width, int height, long now, boolean transform, float zoomRatio) {
         if (transform) {
             if (zoomWatcher == null || Math.abs(watchedZoom - zoomRatio) > .01f) {
                 zoomWatcher = new StaticSceneWatcher(profile); watchedZoom = zoomRatio;
@@ -106,17 +157,36 @@ public final class StaticSceneWatcher {
             features.anchor(reference, width, height, regions.featureBounds);
             featureAnchorDirty = false;
         }
+        boolean inspectScene = !"global".equals(regions.source);
+        if (inspectScene && sceneAnchorDirty) {
+            sceneFeatures.anchor(reference, width, height, Collections.singletonList(
+                    new NormalizedBounds(0f, 0f, 1f, 1f)));
+            sceneAnchorDirty = false;
+        }
         if (inspectFeatures) {
             latestFeatures = features.observe(gray, exposure);
-            if (featureLastCheck >= 0L && now - featureLastCheck > 500_000_000L) {
-                featureConsecutive = 0; featureSince = -1L;
-            }
+            // Each sample is compared to the fixed scene anchor. A scheduling gap
+            // is not contrary evidence; resetting after 500 ms starved slow devices.
+            observeAddedFeatures(gray, now, featureLastCheck >= 0L && now < featureLastCheck);
             featureLastCheck = now;
             if (!latestFeatures.significant || now < featureSince) { featureConsecutive = 0; featureSince = -1L; }
             else { if (featureSince < 0L) featureSince = now; featureConsecutive++; }
+            if (inspectScene) {
+                latestSceneFeatures = sceneFeatures.observe(gray, exposure);
+                if (!latestSceneFeatures.significant || now < sceneFeatureSince) {
+                    sceneFeatureConsecutive = 0; sceneFeatureSince = -1L;
+                } else {
+                    if (sceneFeatureSince < 0L) sceneFeatureSince = now;
+                    sceneFeatureConsecutive++;
+                }
+            }
         }
         RegionFeatureChangeDetector.Result featureResult = latestFeatures;
         boolean featureCut = featureConsecutive >= 3 && now - featureSince >= 120_000_000L;
+        boolean sceneFeatureCut = inspectScene && sceneFeatureConsecutive >= 3
+                && now - sceneFeatureSince >= 120_000_000L;
+        boolean addedFeatureCut = addedFeatureConsecutive >= 3
+                && now - addedFeatureSince >= 120_000_000L;
         boolean significant = local >= profile.localFraction || global >= profile.globalFraction;
         if (!significant || now < since) { consecutive = 0; since = -1L; }
         else { if (since < 0L) since = now; consecutive++; }
@@ -124,14 +194,62 @@ public final class StaticSceneWatcher {
                 || local >= Math.max(0.65f, profile.localFraction);
         boolean lumaCut = abrupt || significant && consecutive >= profile.confirmations
                 && now - since >= profile.confirmationNanos;
-        boolean cut = lumaCut || featureCut;
+        boolean cut = lumaCut || featureCut || sceneFeatureCut || addedFeatureCut;
         Result result = new Result(cut, local, global,
-                !lumaCut && featureCut ? "static_alpr_features_changed"
-                        : local >= profile.localFraction ? "static_alpr_region_changed" : "static_global_changed",
+                lumaCut ? (local >= profile.localFraction ? "static_alpr_region_changed" : "static_global_changed")
+                        : featureCut ? "static_alpr_features_changed"
+                        : sceneFeatureCut ? "static_scene_features_changed"
+                        : addedFeatureCut ? "static_scene_features_added"
+                        : "awaiting_change_confirmation",
                 featureResult);
+        result.featureConfirmations = featureConsecutive;
+        result.sceneFeatureConfirmations = sceneFeatureConsecutive;
+        if (latestSceneFeatures != null) {
+            result.sceneFeaturePoints = latestSceneFeatures.points;
+            result.sceneFeatureLostFraction = latestSceneFeatures.lostFraction;
+            result.sceneFeatureMovedFraction = latestSceneFeatures.movedFraction;
+        }
+        result.addedFeatureConfirmations = addedFeatureConsecutive;
+        result.addedFeaturePersistence = addedFeaturePersistence;
+        if (latestAddedFeatures != null) {
+            result.addedFeaturePoints = latestAddedFeatures.points;
+            result.addedFeatureUnmatchedFraction = latestAddedFeatures.unsupportedFraction;
+        }
         if (cut) resetReference();
         return result;
     }
+    private void clearAdditionCandidate() {
+        additionCandidate = null; addedFeatureConsecutive = 0;
+        addedFeatureSince = -1L; addedFeaturePersistence = 0f;
+    }
+
+    private void observeAddedFeatures(byte[] gray, long now, boolean timeReversed) {
+        timeReversed |= addedFeatureLastCheck >= 0L && now < addedFeatureLastCheck;
+        // Late ROI discovery may re-anchor local flow sooner; it cannot accelerate this channel.
+        if (!timeReversed && addedFeatureLastCheck >= 0L
+                && now - addedFeatureLastCheck < 100_000_000L) return;
+        addedFeatureLastCheck = now;
+        // A separate 4x4 full-frame selector supplies at most 16 reliable points.
+        addedFeatures.anchor(gray, width, height, Collections.singletonList(
+                new NormalizedBounds(0f, 0f, 1f, 1f)));
+        latestAddedFeatures = addedFeatures.compareAppearance(reference);
+        if (!latestAddedFeatures.novel) {
+            clearAdditionCandidate();
+        } else {
+            RegionFeatureChangeDetector.AppearanceResult persistence = additionCandidate == null
+                    ? null : addedFeatures.compareAppearance(additionCandidate);
+            if (timeReversed || persistence == null || !persistence.persistent) {
+                // Retain the ORIGINAL scene reference; camera buffers may be reused by the caller.
+                additionCandidate = gray.clone(); addedFeatureSince = now;
+                addedFeatureConsecutive = 1; addedFeaturePersistence = 0f;
+            } else {
+                addedFeatureConsecutive++;
+                addedFeaturePersistence = persistence.supportedFraction;
+            }
+        }
+        addedFeatures.reset(); // Do not retain the borrowed current camera buffer.
+    }
+
     private float fraction(byte[] gray, NormalizedBounds b, int step, float exposure) {
         int count = 0, changed = 0;
         for (int y = (int)(b.top * height); y < Math.min(height, Math.ceil(b.bottom * height)); y += step)

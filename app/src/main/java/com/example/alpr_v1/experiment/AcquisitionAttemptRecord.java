@@ -17,6 +17,7 @@ public final class AcquisitionAttemptRecord {
     public final String attemptId, sessionId;
     final ResearchSessionStore store;
     final JSONObject data = new JSONObject();
+    TvBboxEvidence.FrameRecord tvBboxFrame;
     Bitmap image;
     long imageBytes;
     Bitmap mtInputImage;
@@ -24,9 +25,23 @@ public final class AcquisitionAttemptRecord {
     // Immutable pre-ROI pipeline bitmap, owned by the research session writer.
     Bitmap sourceFrameImage;
     long sourceFrameImageBytes;
+    // Portable owned image payloads exercise the real writer without an Android graphics runtime.
+    // Production CameraX continues to use the Bitmap fields above.
+    F5aEvidence.Frame inputPayload, sourcePayload;
+    java.util.function.Supplier<F5aEvidence.Frame> inputPayloadFactory;
     boolean ownsAttemptPermit = true;
     boolean plateCrop;
     private PlateObservation observation;
+    java.util.List<MzInputEvidence.Capture> mzInputs;
+    int mzInputCallCount;
+    public boolean mzInputEvidenceEnabled(){return store.mzInputEvidence()!=null;}
+    public MzInputEvidence.Capture prepareMzInput(com.example.alpr_v1.vision.PreparedInput input,
+            com.example.alpr_v1.model.ModelInputSpec spec,com.example.alpr_v1.inference.TensorInfo actual,
+            java.util.List<com.example.alpr_v1.vision.Point2> recognitionCorners,
+            String modelId,String variantId,String fingerprint,com.example.alpr_v1.inference.InferenceBackend backend){
+        MzInputEvidence collector=store.mzInputEvidence();
+        return collector==null?null:collector.prepare(this,input,spec,actual,recognitionCorners,modelId,variantId,fingerprint,backend);
+    }
 
     AcquisitionAttemptRecord(ResearchSessionStore store,String id,ContinuityStamp stamp,
                              String roiPolicy,float zoom,long entity,long vehicle) {
@@ -37,7 +52,7 @@ public final class AcquisitionAttemptRecord {
         put("entity_id",entity); put("vehicle_track_id",vehicle); put("plate_track_id",0L);
         put("source_sequence",stamp.sourceSequence); put("source_timestamp_nanos",stamp.sourceTimestampNanos);
         put("source_timestamp_domain",stamp.sourceTimestampDomain.name());
-        put("attempt_started_elapsed_nanos",android.os.SystemClock.elapsedRealtimeNanos());
+        put("attempt_started_elapsed_nanos",store.elapsedNow());
         put("captured_at_ms",System.currentTimeMillis()); put("roi_policy",roiPolicy);
         put("capture_source",zoom > 1.01f ? "auto_zoom" : "normal"); put("camera_zoom_ratio",zoom);
         put("mt_status",MtStatus.NOT_RUN.name()); put("rectification_status",RectificationStatus.NOT_RUN.name());
@@ -82,6 +97,7 @@ public final class AcquisitionAttemptRecord {
     public void mtStarted() {
         put("mt_invocation_id",attemptId); put("mt_executed",true);
         put("mt_status",MtStatus.NO_DETECTION.name()); put("mt_detection_count",0);
+        if(store.f5aEvidence()!=null)store.f5aEvidence().invocation(data.optString("f5a_scene_event_id"),attemptId);
     }
     /** One source-image copy for the whole MT invocation, not one copy per detected plate.
      *  The source is the pipeline Bitmap BEFORE ROI cropping, not raw camera sensor pixels.

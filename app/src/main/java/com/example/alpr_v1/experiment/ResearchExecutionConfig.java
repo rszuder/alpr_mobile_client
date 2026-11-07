@@ -10,6 +10,38 @@ import org.json.JSONObject;
 
 /** Niezmienny snapshot efektywnej konfiguracji całego przebiegu badawczego. */
 public final class ResearchExecutionConfig {
+    public boolean mzInputEvidenceEnabled(){return false;}
+    public ResearchExecutionConfig withMzInputEvidence(boolean enabled){
+        if(enabled)MzInputEvidence.requireDiagnosticStartAllowed();return this;
+    }
+    /** TV crop uses the accepted F21 contract; TV rectification remains a test-only prototype. */
+    private final com.example.alpr_v1.setup.ResearchInputMode researchInputMode;
+    private final com.example.alpr_v1.setup.TvBboxCrop tvBboxCrop;
+    public com.example.alpr_v1.setup.ResearchInputMode inputMode(){return researchInputMode;}
+    public com.example.alpr_v1.setup.TvBboxCrop tvBboxCrop(){return tvBboxCrop;}
+    public ResearchExecutionConfig withTvBboxCrop(com.example.alpr_v1.setup.TvBboxCrop snapshot){
+        if(!"roi_budget".equals(experimentType))throw new IllegalStateException("TV_BBOX_F5A_ONLY");
+        if(autoZoomEnabled)throw new IllegalStateException("TV_BBOX_REQUIRES_FIXED_ZOOM");
+        if(snapshot==null||!snapshot.cameraSetup.same(cameraSetup))throw new IllegalArgumentException("TV_BBOX_CAMERA_SETUP_MISMATCH");
+        return new ResearchExecutionConfig(this,cameraSetup,com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP,snapshot);
+    }
+    public ResearchExecutionConfig withInputMode(com.example.alpr_v1.setup.ResearchInputMode mode){
+        java.util.Objects.requireNonNull(mode).requireSessionSupported();
+        if(mode==com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP){
+            if(tvBboxCrop==null)throw new IllegalStateException("TV_BBOX_SNAPSHOT_REQUIRED");
+            requireSessionInputReady();return this;
+        }
+        return researchInputMode==mode?this:new ResearchExecutionConfig(this,cameraSetup,mode,null);
+    }
+    /** Frozen input admission; live CameraX geometry is checked separately before START and per frame. */
+    public void requireSessionInputReady(){
+        researchInputMode.requireSessionSupported();
+        if(researchInputMode!=com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP)return;
+        if(tvBboxCrop==null)throw new IllegalStateException("TV_BBOX_SNAPSHOT_REQUIRED");
+        if(!"roi_budget".equals(experimentType)||autoZoomEnabled)throw new IllegalStateException("TV_BBOX_REQUIRES_F5A_FIXED_ZOOM");
+        if(!tvBboxCrop.cameraSetup.same(cameraSetup))throw new IllegalStateException("TV_BBOX_CAMERA_SETUP_MISMATCH");
+        com.example.alpr_v1.setup.TvBboxCrop.fromJson(tvBboxCrop.toJson());
+    }
     public final com.example.alpr_v1.acquisition.DynamicMtConfig dynamicMtConfig;
     public final com.example.alpr_v1.continuity.SceneHandlingMode sceneHandlingMode;
     public final String experimentType;
@@ -17,6 +49,7 @@ public final class ResearchExecutionConfig {
     public final RoiBudgetPolicy roiBudgetPolicy;
     public final RecognitionProfile recognitionProfile;
     public final String cameraRequestedResolution;
+    public final com.example.alpr_v1.camera.CameraSetupSnapshot cameraSetup;
     public final boolean lockEnabled;
     public final boolean autoZoomEnabled;
     public final boolean vehicleTrackingEnabled;
@@ -149,6 +182,7 @@ public final class ResearchExecutionConfig {
             com.example.alpr_v1.acquisition.DynamicMtConfig dynamicMtConfig
     ) {
         this.dynamicMtConfig = java.util.Objects.requireNonNull(dynamicMtConfig);
+        this.cameraSetup=null;
         this.sceneHandlingMode = java.util.Objects.requireNonNull(sceneHandlingMode);
         this.experimentType = required(experimentType, "experimentType");
         this.variant = required(variant, "variant");
@@ -160,6 +194,8 @@ public final class ResearchExecutionConfig {
                 cameraRequestedResolution,
                 "cameraRequestedResolution"
         );
+        this.researchInputMode=com.example.alpr_v1.setup.ResearchInputMode.CAMERA_FULL_FRAME;
+        this.tvBboxCrop=null;
         this.lockEnabled = lockEnabled;
         this.autoZoomEnabled = autoZoomEnabled;
         this.vehicleTrackingEnabled = vehicleTrackingEnabled;
@@ -204,6 +240,26 @@ public final class ResearchExecutionConfig {
         if (role == ModelRole.CHARACTER) return character;
         throw new IllegalArgumentException("role");
     }
+    private ResearchExecutionConfig(ResearchExecutionConfig source,com.example.alpr_v1.camera.CameraSetupSnapshot setup){
+        this(source,setup,source.researchInputMode,source.tvBboxCrop);
+    }
+    private ResearchExecutionConfig(ResearchExecutionConfig source,com.example.alpr_v1.camera.CameraSetupSnapshot setup,
+            com.example.alpr_v1.setup.ResearchInputMode mode,com.example.alpr_v1.setup.TvBboxCrop crop){
+        researchInputMode=mode;tvBboxCrop=crop;
+        dynamicMtConfig=source.dynamicMtConfig;sceneHandlingMode=source.sceneHandlingMode;experimentType=source.experimentType;variant=source.variant;
+        roiBudgetPolicy=source.roiBudgetPolicy;recognitionProfile=source.recognitionProfile;cameraRequestedResolution=source.cameraRequestedResolution;cameraSetup=setup;
+        lockEnabled=source.lockEnabled;autoZoomEnabled=source.autoZoomEnabled;vehicleTrackingEnabled=source.vehicleTrackingEnabled;
+        plateTrackingEnabled=source.plateTrackingEnabled;temporalMzEnabled=source.temporalMzEnabled;adaptiveFrameGateEnabled=source.adaptiveFrameGateEnabled;
+        vehicle=source.vehicle;plate=source.plate;character=source.character;basePackageId=source.basePackageId;basePackageFingerprint=source.basePackageFingerprint;
+        basePackageVersion=source.basePackageVersion;basePackageCreatedAt=source.basePackageCreatedAt;basePackageSourceSha256=source.basePackageSourceSha256;
+        basePackageManifestJson=source.basePackageManifestJson;basePackageObservedSha256=source.basePackageObservedSha256;basePackageShaEvidence=source.basePackageShaEvidence;
+        compositionModified=source.compositionModified;packageSizeBytes=source.packageSizeBytes;
+    }
+    public ResearchExecutionConfig withCameraSetup(com.example.alpr_v1.camera.CameraSetupSnapshot setup){
+        if(!"roi_budget".equals(experimentType))throw new IllegalStateException("Camera setup is F5A-only");
+        if(tvBboxCrop!=null&&!tvBboxCrop.cameraSetup.same(setup))throw new IllegalStateException("TV_BBOX_CAMERA_SETUP_MISMATCH");
+        return new ResearchExecutionConfig(this,java.util.Objects.requireNonNull(setup));
+    }
 
     public static void requireUnchangedWhileRunning(ResearchExecutionConfig current, ResearchExecutionConfig replacement, boolean running) {
         if (running && current != null && replacement != current)
@@ -232,6 +288,8 @@ public final class ResearchExecutionConfig {
         json.put("dynamic_mt", dynamicMt);
         json.put("recognition_profile", recognitionProfile.wireName());
         json.put("camera_requested_resolution", cameraRequestedResolution);
+        if(cameraSetup!=null)json.put("camera_setup",cameraSetup.toJson());
+        if(tvBboxCrop!=null)json.put("input_mode",inputMode().name()).put("tv_bbox_crop",tvBboxCrop.toJson());
         JSONObject flags = new JSONObject();
         flags.put("lock", lockEnabled);
         flags.put("autozoom", autoZoomEnabled);

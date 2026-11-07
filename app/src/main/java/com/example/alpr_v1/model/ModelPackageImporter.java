@@ -29,6 +29,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class ModelPackageImporter {
+    private static final String PINNED_MZ_RESEARCH_ZIP_SHA =
+            "084d37e12727577e4e1c123d4ee0e800a2a00c8642d41818e851869da52870cd";
     private static final int MAX_ENTRIES = 256;
     private static final long MAX_UNCOMPRESSED_BYTES = 512L * 1024L * 1024L;
     private static final int BUFFER_SIZE = 64 * 1024;
@@ -39,6 +41,22 @@ public final class ModelPackageImporter {
     public ModelPackageImporter(Context context, File modelsRoot) {
         this.context = context.getApplicationContext();
         this.modelsRoot = modelsRoot;
+    }
+
+    // Separate opt-in path: normal ModelPackageImporter#importPackage is unchanged.
+    // Only the original SHA-pinned research ZIP in a debug build can enter this path.
+    static void requirePinnedResearchOptIn(
+            boolean debugBuild, boolean operatorConfirmed, String archiveSha256
+    ) throws ModelPackageException {
+        if (!debugBuild) {
+            throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_DEBUG_ONLY");
+        }
+        if (!operatorConfirmed) {
+            throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_CONSENT_REQUIRED");
+        }
+        if (!PINNED_MZ_RESEARCH_ZIP_SHA.equals(archiveSha256)) {
+            throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_ARCHIVE_SHA_MISMATCH");
+        }
     }
 
     public InstalledModel importPackage(Uri source) throws ModelPackageException {
@@ -68,6 +86,29 @@ public final class ModelPackageImporter {
         }
     }
 
+    /** Explicit user-consented research import. Does not approve production or final_test. */
+    public InstalledModel importPinnedResearchMz(File source) throws ModelPackageException {
+        if (source == null || !source.isFile()) {
+            throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_SOURCE_MISSING");
+        }
+        try {
+            requirePinnedResearchOptIn(
+                    com.example.alpr_v1.BuildConfig.DEBUG, true, Hashing.sha256(source));
+            try (InputStream raw = new FileInputStream(source)) {
+                InstalledModel model = importPackage(raw, true);
+                File preserved = model.sourceArchive();
+                if (!preserved.isFile()) {
+                    Files.copy(source.toPath(), preserved.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                return model;
+            }
+        } catch (ModelPackageException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_IO: " + e.getMessage(), e);
+        }
+    }
+
     public ModelManifest validatePackage(File source) throws ModelPackageException {
         File staging = new File(new File(context.getCacheDir(), "model-validation"), UUID.randomUUID().toString());
         try {
@@ -86,6 +127,11 @@ public final class ModelPackageImporter {
     }
 
     private InstalledModel importPackage(InputStream raw) throws ModelPackageException {
+        return importPackage(raw, false);
+    }
+
+    private InstalledModel importPackage(InputStream raw, boolean pinnedResearchMz)
+            throws ModelPackageException {
         // Końcowy staging musi znajdować się na tym samym systemie plików co
         // katalog docelowy. Modele są instalowane w app-specific external
         // storage, natomiast cache jest prywatny; przeniesienie niepustego
@@ -99,7 +145,18 @@ public final class ModelPackageImporter {
             ensureDirectory(staging);
             extractArchive(raw, staging);
             ModelManifest manifest = readAndValidate(staging);
-            MzCleanResearchPackageValidator.rejectInstallation(manifest);
+            if (pinnedResearchMz) {
+                // readAndValidate has already validated all pinned graph, labels,
+                // quantizers, checkpoint and provenance evidence of this exact MZ.
+                if (manifest.role() != ModelRole.CHARACTER
+                        || !"mz-day-clean-int8-research-only".equals(manifest.modelId())
+                        || !MzCleanResearchPackageValidator.isResearchOrSplit(manifest)) {
+                    throw new ModelPackageException("MZ_PINNED_RESEARCH_IMPORT_ROLE_OR_ID_MISMATCH");
+                }
+            } else {
+                // Never relax the standard importer, including in debug builds.
+                MzCleanResearchPackageValidator.rejectInstallation(manifest);
+            }
             byte[] manifestBytes = Files.readAllBytes(new File(staging, "manifest.json").toPath());
 
             String fingerprint = Hashing.sha256(manifestBytes).substring(0, 16);

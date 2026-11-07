@@ -134,6 +134,16 @@ public final class MetricsCollector {
 
     private long sessionFinishedMillis = -1L;
     private boolean measurementSessionActive;
+    private long measurementDeadlineElapsedNanos = -1L;
+
+    public synchronized void setMeasurementDeadlineElapsedNanos(long deadline) {
+        measurementDeadlineElapsedNanos = deadline;
+    }
+
+    private boolean measurementAdmitting() {
+        return measurementSessionActive && com.example.alpr_v1.experiment.ExperimentDeadline.admits(
+                measurementDeadlineElapsedNanos, SystemClock.elapsedRealtimeNanos());
+    }
     private final Deque<InferenceTrace> traces = new ArrayDeque<>();
     private long droppedFrames;
     private long traceTotalSeen;
@@ -273,6 +283,7 @@ public final class MetricsCollector {
 
         sessionFinishedMillis = -1L;
 
+        measurementDeadlineElapsedNanos = -1L;
         measurementSessionActive = true;
     }
 
@@ -286,6 +297,11 @@ public final class MetricsCollector {
             return;
         }
 
+        if (measurementDeadlineElapsedNanos >= 0L
+                && SystemClock.elapsedRealtimeNanos() >= measurementDeadlineElapsedNanos) {
+            wallMillis = Math.min(wallMillis, sessionStartedMillis
+                    + (measurementDeadlineElapsedNanos - sessionStartedElapsedNanos) / 1_000_000L);
+        }
         sessionFinishedMillis = wallMillis;
 
         measurementSessionActive = false;
@@ -293,7 +309,7 @@ public final class MetricsCollector {
 
 
     public synchronized boolean isMeasurementSessionActive() {
-        return measurementSessionActive;
+        return measurementAdmitting();
     }
 
     public synchronized void setCrashMeasurement(
@@ -319,7 +335,7 @@ public final class MetricsCollector {
     }
 
     public synchronized void add(InferenceTrace trace) {
-        if (!measurementSessionActive) {
+        if (!measurementAdmitting()) {
             return;
         }
 
@@ -344,42 +360,42 @@ public final class MetricsCollector {
         }
     }
     public synchronized void frameSkippedByGate() {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         droppedFrames++;
         framesSkippedGate++;
         currentFrameFlowBucket().framesSkippedGate++;
     }
 
     public synchronized void frameSkippedByCameraTransform() {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         droppedFrames++;
         framesSkippedCameraTransform++;
         currentFrameFlowBucket().framesSkippedCameraTransform++;
     }
 
     public synchronized void frameSkippedByHardSceneReset() {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         droppedFrames++;
         framesSkippedHardSceneReset++;
         currentFrameFlowBucket().framesSkippedHardSceneReset++;
     }
 
     public synchronized void frameSkippedByContinuityHold() {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         droppedFrames++;
         framesSkippedContinuityHold++;
         currentFrameFlowBucket().framesSkippedContinuityHold++;
     }
 
     public synchronized void frameSkippedByContinuityReacquire() {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         droppedFrames++;
         framesSkippedContinuityReacquire++;
         currentFrameFlowBucket().framesSkippedContinuityReacquire++;
     }
 
     public synchronized void finalResultDropped(String phase) {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         String safePhase = phase == null ? "" : phase;
         if ("before_ui_present".equals(safePhase)
                 || "present_result_guard".equals(safePhase)) {
@@ -392,14 +408,14 @@ public final class MetricsCollector {
     }
 
     public synchronized void finalResultDispatchAccepted() {
-        if (measurementSessionActive) finalResultDispatchAccepted++;
+        if (measurementAdmitting()) finalResultDispatchAccepted++;
     }
 
     public synchronized void secondaryScenePreflight(
             String action,
             boolean skippedInference
     ) {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         secondaryScenePreflightDetections++;
         String safeAction = action == null ? "NONE" : action;
         if ("SOFT_HOLD".equals(safeAction)) {
@@ -413,7 +429,7 @@ public final class MetricsCollector {
     }
 
     public synchronized void previewDecisionAuthority(String authority) {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         String safeAuthority = authority == null
                 ? "unavailable" : authority.trim();
         if (safeAuthority.isEmpty()) safeAuthority = "unavailable";
@@ -529,7 +545,7 @@ public final class MetricsCollector {
     }
 
     public synchronized void recordRecognitionState(boolean hasResult, boolean hasConfirmedResult) {
-        if (!measurementSessionActive) {
+        if (!measurementAdmitting()) {
             return;
         }
         long now = System.nanoTime();
@@ -625,7 +641,7 @@ public final class MetricsCollector {
     public synchronized void observeSourceFrame(int width, int height, long sourceTimestampNanos) {
         actualSourceWidth = Math.max(0, width);
         actualSourceHeight = Math.max(0, height);
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         framesReceived++;
         FrameFlowBucket bucket = currentFrameFlowBucket();
         bucket.framesReceived++;
@@ -657,7 +673,7 @@ public final class MetricsCollector {
     }
 
     public synchronized void recordThermalSample(ThermalMonitor.Snapshot snapshot) {
-        if (!measurementSessionActive || snapshot == null) return;
+        if (!measurementAdmitting() || snapshot == null) return;
         try {
             JSONObject sample = new JSONObject();
             sample.put("experiment_session_id", experimentSessionId);
@@ -685,7 +701,7 @@ public final class MetricsCollector {
             long trackId,
             JSONObject details
     ) {
-        if (!measurementSessionActive) return;
+        if (!measurementAdmitting()) return;
         try {
             JSONObject event = new JSONObject();
             event.put("experiment_session_id", experimentSessionId);

@@ -204,6 +204,11 @@ public final class ResearchArchive {
                 manifest.put("collection_complete",collection != null && collection.optBoolean("collection_complete"));
                 manifest.put("samples_self_contained",collection != null && collection.optBoolean("collection_complete"));
                 manifest.put("human_review","desktop");
+                if (collection != null && collection.optBoolean("f5a_evidence_extensions")) {
+                    for (String key : new String[]{"scene_evidence_expected","scene_evidence_written","scene_evidence_missing",
+                            "scene_evidence_integrity_loss_count","scene_evidence_complete","mt_detection_roles_complete"})
+                        manifest.put(key,collection.opt(key));
+                }
             }
             manifest.put("entry_sha256", new JSONObject(archive.hashes()));
             archive.writeManifest(manifest.toString(2));

@@ -719,7 +719,7 @@ public final class DetectionOverlayViewInstrumentedTest {
         assertEquals(0L, (long) secondAbsorptionEntity.get());
         assertEquals("P7: WX1234 \u00b7 82%", confirmedLabel.get());
         assertTrue(finalConfirmed.get());
-        assertEquals(0, (int) remainingPlateCount.get());
+        assertEquals(1, (int) remainingPlateCount.get());
     }
 
     @Test
@@ -1305,7 +1305,12 @@ public final class DetectionOverlayViewInstrumentedTest {
         return new OverlayItem(
                 kind,
                 bounds,
-                Collections.emptyList(),
+                // Explicit synthetic Pose for tests that require a visible plate; MP/ROI remain boxes.
+                kind == OverlayItem.Kind.PLATE ? java.util.Arrays.asList(
+                        new PointF(bounds.left + bounds.width()*.05f, bounds.top),
+                        new PointF(bounds.right, bounds.top + bounds.height()*.1f),
+                        new PointF(bounds.right - bounds.width()*.1f, bounds.bottom),
+                        new PointF(bounds.left, bounds.bottom - bounds.height()*.1f)) : Collections.emptyList(),
                 "test",
                 trackId,
                 false

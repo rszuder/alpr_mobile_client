@@ -41,15 +41,67 @@ public final class ResearchSessionStore {
     private final File directory;
     private final JSONObject metadata;
     private final ThreadPoolExecutor writer;
+    private final F5aEvidence f5aEvidence;
+    private MzInputEvidence mzInputEvidence;
+    private TvBboxEvidence tvBboxEvidence;
+    public TvBboxEvidence tvBboxEvidence(){return tvBboxEvidence;}
+    private void requireTvBboxStartAllowed(long wallMillis)throws Exception{
+        JSONObject execution=metadata.optJSONObject("execution");
+        com.example.alpr_v1.setup.ResearchInputMode mode=com.example.alpr_v1.setup.ResearchInputMode.valueOf(
+                execution==null?"CAMERA_FULL_FRAME":execution.optString("input_mode","CAMERA_FULL_FRAME"));
+        mode.requireSessionSupported();
+        if(mode!=com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP)return;
+        if(tvBboxEvidence==null||!"roi_budget".equals(metadata.optString("experiment_type"))
+                ||execution.getJSONObject("feature_flags").getBoolean("autozoom"))
+            throw new IllegalStateException("TV_BBOX_REQUIRES_F5A_FIXED_ZOOM");
+        com.example.alpr_v1.setup.TvBboxCrop frozen=com.example.alpr_v1.setup.TvBboxCrop.fromJson(metadata.getJSONObject("tv_bbox_crop"));
+        if(!frozen.digest.equals(tvBboxEvidence.snapshot.digest)
+                ||!com.example.alpr_v1.setup.SetupJson.canonical(frozen.toJson()).equals(com.example.alpr_v1.setup.SetupJson.canonical(execution.getJSONObject("tv_bbox_crop")))
+                ||!frozen.cameraSetup.same(com.example.alpr_v1.camera.CameraSetupSnapshot.fromJson(execution.getJSONObject("camera_setup"))))
+            throw new IllegalStateException("TV_BBOX_FROZEN_INPUT_CONFLICT");
+        if(Instant.parse(frozen.calibrationJson().getString("confirmed_at_utc")).toEpochMilli()>wallMillis)
+            throw new IllegalStateException("TV_BBOX_CONFIRMATION_AFTER_START");
+    }
+    void recordTvBboxFailure(String reason){recordMetadataFailure(reason);}
+    F5aEvidence.Frame copyTvBboxEvidence(Bitmap source,boolean full){
+        if(source==null||source.isRecycled())return null;
+        long bytes=(long)source.getWidth()*source.getHeight()*4;
+        AtomicLong budget=full?sourceFrameBytes:imageBytes;long limit=full?MAX_SOURCE_FRAME_BYTES:MAX_IMAGE_BYTES;
+        if(bytes<=0||budget.addAndGet(bytes)>limit){if(bytes>0)budget.addAndGet(-bytes);return null;}
+        final Bitmap copy;
+        try{copy=source.copy(Bitmap.Config.ARGB_8888,false);}catch(RuntimeException|OutOfMemoryError error){budget.addAndGet(-bytes);return null;}
+        if(copy==null){budget.addAndGet(-bytes);return null;}
+        return new F5aEvidence.Frame(){
+            private final AtomicBoolean released=new AtomicBoolean();
+            public int width(){return copy.getWidth();}public int height(){return copy.getHeight();}
+            public void write(File target)throws IOException{encoder.write(copy,target);}
+            public void release(){if(released.compareAndSet(false,true)){if(!copy.isRecycled())copy.recycle();budget.addAndGet(-bytes);}}
+        };
+    }
+    MzInputEvidence mzInputEvidence(){return mzInputEvidence;}
+    /** Producer test injection only; no Activity/settings/production factory can arm this. */
+    void enableMzInputEvidenceForSyntheticProducer() throws Exception {
+        if(state!=State.PREPARED || !metadata.optString("series_id").startsWith("SYNTHETIC-"))
+            throw new IllegalStateException("Only synthetic producer fixtures may bypass Desktop acceptance");
+        metadata.put("mz_input_evidence_enabled",true).put("measurement_purpose","SYNTHETIC_DIAGNOSTIC");
+        atomicText(new File(directory,"session.json"),metadata.toString(2));
+        mzInputEvidence=new MzInputEvidence(this,elapsedClock);
+    }
     private final Semaphore attempts;
     private final int attemptCapacity;
     private final ImageEncoder encoder;
     private final AtomicLong sequence = new AtomicLong(), dropped = new AtomicLong(), droppedTelemetry = new AtomicLong();
     private final AtomicLong imageBytes = new AtomicLong(), written = new AtomicLong();
+    private final AtomicLong writtenCrops = new AtomicLong();
     private final AtomicLong sourceFrameBytes = new AtomicLong();
+    private final java.util.function.LongSupplier elapsedClock;
+    private final long timerDurationNanos;
+    private volatile long deadlineElapsedNanos = -1L;
+    private long startedWallMillis;
     private volatile boolean accepting;
     private volatile State state = State.PREPARED;
     private volatile String lastFailure = "";
+    private volatile boolean f5aComplete;
     private final ArrayBlockingQueue<String> rejectedRecords = new ArrayBlockingQueue<>(256);
     private long lastCheckpointNanos, lastReportedDrops;
     public final long preparedElapsedNanos;
@@ -100,6 +152,7 @@ public final class ResearchSessionStore {
                         .put("version_name",BuildConfig.VERSION_NAME).put("version_code",BuildConfig.VERSION_CODE))
                 .put("review_location","desktop").put("operator_intervention_in_sampling",false)
                 .put("process_owner",PROCESS).put("dropped_sample_count",0).put("dropped_telemetry_count",0);
+        if ("roi_budget".equals(prepared.experimentType)) json.put("f5a_evidence_extensions",true);
         if (prepared.execution != null) {
             json.put("execution",prepared.execution.toJson());
             json.put("model_refs",prepared.execution.modelRefsJson());
@@ -115,25 +168,101 @@ public final class ResearchSessionStore {
                 "telemetry/events.jsonl","telemetry/traces.jsonl","telemetry/thermal.jsonl",RuntimeEvidenceJournal.FILE})
             atomicText(new File(directory,path),"");
         atomicText(new File(directory,"session.json"),json.toString(2));
-        ResearchSessionStore store = new ResearchSessionStore(directory,json,capacity,attemptCapacity,encoder,clock);
+        ResearchSessionStore store = new ResearchSessionStore(directory,json,capacity,attemptCapacity,encoder,clock,
+                prepared.timer.enabled() ? prepared.timer.durationMillis() * 1_000_000L : -1L);
         try { store.writer.submit(() -> {}).get(10,TimeUnit.SECONDS); }
         catch (Exception error) { store.writer.shutdownNow(); throw error; }
         return store;
     }
     private ResearchSessionStore(File directory,JSONObject metadata,int capacity,int attemptCapacity,ImageEncoder encoder,
-                                 java.util.function.LongSupplier clock) {
+                                 java.util.function.LongSupplier clock, long timerDurationNanos) {
+        this.elapsedClock = clock; this.timerDurationNanos = timerDurationNanos;
         this.directory = directory; this.metadata = metadata; this.encoder = encoder;
         this.attemptCapacity = attemptCapacity; attempts = new Semaphore(attemptCapacity);
         writer = new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(capacity),r -> {
             Thread thread = new Thread(r,"research-session-writer"); thread.setDaemon(true); return thread;
         },new ThreadPoolExecutor.AbortPolicy());
+        f5aEvidence = metadata.optBoolean("f5a_evidence_extensions") ? new F5aEvidence(this) : null;
+        if("TV_BBOX_CROP".equals(metadata.optJSONObject("execution")==null?"":metadata.optJSONObject("execution").optString("input_mode"))){
+            JSONObject crop=metadata.optJSONObject("execution").optJSONObject("tv_bbox_crop");
+            try{
+                com.example.alpr_v1.setup.TvBboxCrop frozen=com.example.alpr_v1.setup.TvBboxCrop.fromJson(crop);
+                metadata.put("input_mode","TV_BBOX_CROP").put("tv_bbox_crop",frozen.toJson()).put("tv_bbox_inputs_pending",true);
+                tvBboxEvidence=new TvBboxEvidence(this,frozen);
+                atomicText(new File(directory,"session.json"),metadata.toString(2));
+            }catch(Exception error){writer.shutdownNow();throw new IllegalArgumentException("Invalid TV BBOX configuration",error);}
+        }
         preparedElapsedNanos = clock.getAsLong();
     }
     public String sessionId() { return metadata.optString("session_id"); }
     public File directory() { return directory; }
     public State state() { return state; }
-    public boolean accepting() { return accepting; }
+    public synchronized JSONObject tvSetupSnapshot() {
+        JSONObject value=metadata.optJSONObject("tv_setup_calibration");
+        try { return value==null?null:new JSONObject(value.toString()); }
+        catch (org.json.JSONException invalid) { return null; }
+    }
+    public F5aEvidence f5aEvidence() { return f5aEvidence; }
+    public boolean evidenceExtensionsComplete() { return f5aEvidence==null || f5aComplete; }
+    long elapsedNow() { return elapsedClock.getAsLong(); }
+    boolean enqueueF5a(Runnable task) {
+        try { writer.execute(task); return true; }
+        catch (RejectedExecutionException full) { return false; }
+    }
+    /** Evidence-only work uses the existing full-source memory budget and shared writer. */
+    public void captureSceneEvidence(String ticket,ContinuityStamp stamp,Bitmap source) {
+        if (f5aEvidence == null || ticket == null || ticket.isEmpty()) return;
+        if (source == null || source.isRecycled()) {
+            f5aEvidence.captureMissing(ticket,"source_frame_unavailable"); return;
+        }
+        captureSceneEvidence(ticket,stamp,source.getWidth(),source.getHeight(),() -> {
+            Bitmap copy=source.copy(Bitmap.Config.ARGB_8888,false);
+            if (copy == null) return null;
+            return new F5aEvidence.Frame() {
+                public int width() { return copy.getWidth(); }
+                public int height() { return copy.getHeight(); }
+                public void write(File file) throws IOException { encoder.write(copy,file); }
+                public void release() { if(!copy.isRecycled())copy.recycle(); }
+            };
+        });
+    }
+    /** Same ownership/budget/error path for Android snapshots and host-generated JPEG fixtures. */
+    void captureSceneEvidence(String ticket,ContinuityStamp stamp,int width,int height,
+                              java.util.function.Supplier<F5aEvidence.Frame> snapshot) {
+        if(f5aEvidence==null || ticket==null || ticket.isEmpty())return;
+        long bytes=(long)width*height*4L;
+        if(width<=0 || height<=0 || bytes<=0 || sourceFrameBytes.addAndGet(bytes)>MAX_SOURCE_FRAME_BYTES) {
+            if(width>0 && height>0 && bytes>0)sourceFrameBytes.addAndGet(-bytes);
+            f5aEvidence.captureMissing(ticket,"source_frame_memory_budget");return;
+        }
+        long started=elapsedClock.getAsLong();
+        F5aEvidence.Frame owned;
+        try { owned=snapshot.get(); }
+        catch(OutOfMemoryError | RuntimeException error) { owned=null; }
+        if(owned==null) {
+            sourceFrameBytes.addAndGet(-bytes);f5aEvidence.captureMissing(ticket,"source_frame_copy_failed");return;
+        }
+        final F5aEvidence.Frame frame=owned;
+        F5aEvidence.Frame lease=new F5aEvidence.Frame() {
+            public int width() { return frame.width(); }
+            public int height() { return frame.height(); }
+            public void write(File file) throws IOException { frame.write(file); }
+            public void release() { try { frame.release(); } finally { sourceFrameBytes.addAndGet(-bytes); } }
+        };
+        if(!f5aEvidence.capture(ticket,stamp,lease,started,elapsedClock.getAsLong()-started))lease.release();
+    }
+    public boolean accepting() {
+        return accepting && ExperimentDeadline.admits(deadlineElapsedNanos, elapsedClock.getAsLong());
+    }
+    public long deadlineElapsedNanos() { return deadlineElapsedNanos; }
+    private void setStartDeadline(long wallMillis, long elapsedNanos) throws org.json.JSONException {
+        startedWallMillis = wallMillis;
+        deadlineElapsedNanos = timerDurationNanos < 0L ? -1L : elapsedNanos + timerDurationNanos;
+        if (deadlineElapsedNanos >= 0L) metadata.put("timer_deadline_elapsed_nanos", deadlineElapsedNanos);
+    }
     public long droppedSampleCount() { return dropped.get(); }
+    /** Successfully written crop records for this run, independent of the RAM gallery capacity. */
+    public long writtenCropCount() { return writtenCrops.get(); }
     public synchronized void abortPreparation(String reason) {
         accepting=false; state=State.ERROR; writer.shutdown();
         try {
@@ -147,23 +276,93 @@ public final class ResearchSessionStore {
     public synchronized void startAt(long wallMillis,long elapsedNanos) throws Exception {
         if (state != State.PREPARED || elapsedNanos < preparedElapsedNanos)
             throw new IllegalStateException("Magazyn sesji nie został przygotowany przed t0");
+        requireTvBboxStartAllowed(wallMillis);
+        if(tvBboxEvidence!=null)metadata.put("tv_bbox_crop_frozen_at_utc",Instant.ofEpochMilli(wallMillis).toString())
+                .put("tv_setup_calibration",tvBboxEvidence.snapshot.calibrationJson());
+        setStartDeadline(wallMillis, elapsedNanos);
         metadata.put("started_at",Instant.ofEpochMilli(wallMillis).toString());
         metadata.put("started_elapsed_nanos",elapsedNanos).put("storage_prepared_elapsed_nanos",preparedElapsedNanos);
         state = State.RUNNING; metadata.put("state",state.name());
         // Durable state transition before admission; directory/images setup happened before t0.
         atomicText(new File(directory,"session.json"),metadata.toString(2));
+        if(f5aEvidence!=null)f5aEvidence.started(wallMillis,elapsedNanos);
         accepting = true;
     }
     public synchronized void closeAdmission(String reason,long wallMillis,long elapsedNanos) {
         if (state != State.RUNNING) return;
         accepting = false; state = State.FINALIZING;
+        long observed = elapsedClock.getAsLong();
+        if (deadlineElapsedNanos >= 0L && elapsedNanos >= deadlineElapsedNanos) {
+            elapsedNanos = deadlineElapsedNanos;
+            wallMillis = startedWallMillis + timerDurationNanos / 1_000_000L;
+            reason = "timer";
+        }
+        if(f5aEvidence!=null)f5aEvidence.close(reason);
         try {
+            metadata.put("stop_observed_elapsed_nanos", observed);
+            if ("timer".equals(reason) && deadlineElapsedNanos >= 0L)
+                metadata.put("timer_stop_lateness_ms", Math.max(0L, observed - deadlineElapsedNanos) / 1_000_000.0);
             metadata.put("state",state.name()).put("finished_at",Instant.ofEpochMilli(wallMillis).toString())
                     .put("finished_elapsed_nanos",elapsedNanos).put("completion_reason",reason);
         } catch (Exception error) { fail("session_stop_metadata"); }
     }
+
+    /** Finish all preparation evidence writes before enabling START. Never called from UI. */
+    public void awaitPreparationWrites() throws Exception {
+        writer.submit(() -> {}).get(10, TimeUnit.SECONDS);
+        if (state != State.PREPARED || !lastFailure.isEmpty())
+            throw new IllegalStateException("RESEARCH_PREPARATION_NOT_READY: " + lastFailure);
+    }
+
+    /** The start record is queued before admission, ahead of every subsequent sample write. */
+    public synchronized CompletableFuture<Void> startAtQueued(long wallMillis, long elapsedNanos,
+            java.util.function.Consumer<Exception> failure) throws Exception {
+        return startAtQueued(wallMillis, elapsedNanos, null, failure);
+    }
+    /** Optional setup metadata is frozen in the same existing START write; never a model configuration. */
+    public synchronized CompletableFuture<Void> startAtQueued(long wallMillis, long elapsedNanos,
+            JSONObject tvSetup, java.util.function.Consumer<Exception> failure) throws Exception {
+        if (state != State.PREPARED || elapsedNanos < preparedElapsedNanos)
+            throw new IllegalStateException("Magazyn sesji nie został przygotowany przed t0");
+        requireTvBboxStartAllowed(wallMillis);
+        if(tvBboxEvidence!=null){
+            metadata.put("tv_bbox_crop_frozen_at_utc",Instant.ofEpochMilli(wallMillis).toString());
+            tvSetup=tvBboxEvidence.snapshot.calibrationJson();
+        }
+        setStartDeadline(wallMillis, elapsedNanos);
+        metadata.put("started_at", Instant.ofEpochMilli(wallMillis).toString());
+        metadata.put("started_elapsed_nanos", elapsedNanos).put("storage_prepared_elapsed_nanos", preparedElapsedNanos);
+        metadata.put("state", State.RUNNING.name());
+        if ("roi_budget".equals(metadata.optString("experiment_type")) && tvSetup != null) {
+            if (com.example.alpr_v1.setup.TvSetupCalibration.SCHEMA.equals(tvSetup.optString("schema"))
+                    && com.example.alpr_v1.setup.SetupJson.verified(tvSetup))
+                metadata.put("tv_setup_calibration", new JSONObject(tvSetup.toString()));
+            // Invalid optional data is ignored; it must not change samples-v2 error semantics.
+        }
+        String startRecord = metadata.toString(2);
+        CompletableFuture<Void> committed = new CompletableFuture<>();
+        writer.execute(() -> {
+            try {
+                atomicText(new File(directory, "session.json"), startRecord);
+                synchronized (this) { if (state == State.RUNNING) accepting = true; }
+                committed.complete(null);
+            }
+            catch (Exception error) {
+                synchronized (this) {
+                    accepting = false;
+                    recordMetadataFailure("session_start_write_failed");
+                }
+                committed.completeExceptionally(error);
+                failure.accept(error);
+            }
+        });
+        state = State.RUNNING;
+        accepting = false;
+        if(f5aEvidence!=null)f5aEvidence.started(wallMillis,elapsedNanos);
+        return committed;
+    }
     public synchronized AcquisitionAttemptRecord beginAttempt(ContinuityStamp stamp,String roiPolicy,float zoom,long entity,long vehicle) {
-        if (!accepting) return null;
+        if (!accepting()) return null;
         String id = sessionId()+"-a"+String.format(Locale.ROOT,"%08d",sequence.incrementAndGet());
         if (!attempts.tryAcquire()) {
             AcquisitionAttemptRecord rejected = new AcquisitionAttemptRecord(this,id,stamp,roiPolicy,zoom,entity,vehicle);
@@ -186,6 +385,7 @@ public final class ResearchSessionStore {
      *  A missing source image disables frame-wide evaluation; it is not a model failure.
      */
     void copySourceFrame(AcquisitionAttemptRecord record,Bitmap source) {
+        if(record.tvBboxFrame!=null){record.tvBboxFrame.attachSource(record);return;}
         record.put("source_frame_expected",true);
         record.put("source_frame_coordinate_space","mt_source_bitmap_xy");
         record.put("source_frame_origin","pipeline_bitmap_before_roi");
@@ -250,6 +450,9 @@ public final class ResearchSessionStore {
         imageBytes.addAndGet(-record.imageBytes); record.image = null; record.imageBytes = 0;
     }
     private void releaseImage(AcquisitionAttemptRecord record) {
+        if(mzInputEvidence!=null)mzInputEvidence.release(record,"WRITE_NOT_RECORDED");
+        if(record.inputPayload!=null) { record.inputPayload.release();record.inputPayload=null; }
+        if(record.sourcePayload!=null) { record.sourcePayload.release();record.sourcePayload=null; }
         releasePrimaryImage(record);
         if (record.mtInputImage != null && !record.mtInputImage.isRecycled()) record.mtInputImage.recycle();
         imageBytes.addAndGet(-record.mtInputImageBytes); record.mtInputImage = null; record.mtInputImageBytes = 0;
@@ -259,7 +462,8 @@ public final class ResearchSessionStore {
     }
     public void submit(AcquisitionAttemptRecord record) {
         if (record == null) return;
-        if (!accepting && state != State.PREPARED && !record.data.optBoolean("stale_or_cancelled")) record.cancel("session_stopped");
+        if(mzInputEvidence!=null)mzInputEvidence.submitted(record);
+        if (!accepting() && state != State.PREPARED && !record.data.optBoolean("stale_or_cancelled")) record.cancel("session_stopped");
         try { writer.execute(() -> writeAttempt(record)); }
         catch (RejectedExecutionException error) {
             if (record.data.optBoolean("mt_executed")) record.put("mt_input_missing_evidence_reason","writer_queue_full");
@@ -268,7 +472,7 @@ public final class ResearchSessionStore {
         }
     }
     public void appendTelemetry(String file,String line) {
-        if (!accepting || line == null) return;
+        if (!accepting() || line == null) return;
         if (!Arrays.asList("traces.jsonl","events.jsonl","thermal.jsonl","frame_flow.jsonl").contains(file))
             throw new IllegalArgumentException("Unknown research telemetry stream");
         try { writer.execute(() -> { try { append(new File(directory,"telemetry/"+file),line+"\n"); }
@@ -327,12 +531,14 @@ public final class ResearchSessionStore {
                 Files.move(temp.toPath(),new File(directory,inputEntry).toPath(),StandardCopyOption.REPLACE_EXISTING);
                 record.put("mt_input_evidence_entry",inputEntry);
             }
-            if (record.sourceFrameImage != null) {
+            if(record.tvBboxFrame!=null)record.tvBboxFrame.attachSource(record);
+            if (record.sourceFrameImage != null || record.sourcePayload != null) {
                 String frameEntry=record.data.optString("source_frame_entry");
                 File frameFile=new File(directory,frameEntry);
                 File tempFrame=new File(directory,frameEntry+".tmp");
                 try {
-                    encoder.write(record.sourceFrameImage,tempFrame);
+                    if(record.sourcePayload!=null)record.sourcePayload.write(tempFrame);
+                    else encoder.write(record.sourceFrameImage,tempFrame);
                     Files.move(tempFrame.toPath(),frameFile.toPath(),StandardCopyOption.REPLACE_EXISTING);
                     record.put("source_frame_status","WRITTEN");
                 } catch (Exception failure) {
@@ -342,7 +548,7 @@ public final class ResearchSessionStore {
                     // Primary MT attempt/evidence remains intact; final archive declares ROI GT not evaluable.
                 }
             }
-            if (record.data.optBoolean("source_frame_expected") && record.sourceFrameImage == null) {
+            if (record.data.optBoolean("source_frame_expected") && record.sourceFrameImage == null && record.sourcePayload == null) {
                 String shared=record.data.optString("source_frame_entry");
                 if (!shared.isEmpty() && new File(directory,shared).isFile()) {
                     record.put("source_frame_status","WRITTEN");
@@ -353,10 +559,11 @@ public final class ResearchSessionStore {
                         record.put("source_frame_missing_evidence_reason","missing_source_frame_image");
                 }
             }
-            if (record.image != null) {
+            if (record.image != null || record.inputPayload != null) {
                 String entry = "samples/"+(record.plateCrop ? "crops/" : "evidence/")+record.attemptId+".jpg";
                 File target = new File(directory,entry), temp = new File(directory,entry+".tmp");
-                encoder.write(record.image,temp);
+                if(record.inputPayload!=null)record.inputPayload.write(temp);
+                else encoder.write(record.image,temp);
                 Files.move(temp.toPath(),target.toPath(),StandardCopyOption.REPLACE_EXISTING);
                 record.put("evidence_entry",entry);
                 if (!record.plateCrop) record.put("mt_input_evidence_entry",entry);
@@ -370,18 +577,21 @@ public final class ResearchSessionStore {
                             .put("registration_key",record.data.optString("registration_key"))
                             .put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY);
                     append(new File(directory,"samples/crops.jsonl"),crop.toString()+"\n");
+                    writtenCrops.incrementAndGet();
                 }
             } else if (record.data.optString("missing_evidence_reason").isEmpty()) {
                 record.put("missing_evidence_reason","no_image_captured"); fail("no_image_captured:"+record.attemptId);
             }
-            record.put("write_state",record.image == null ? "FAILED" : "WRITTEN");
+            record.put("write_state",record.image == null && record.inputPayload == null ? "FAILED" : "WRITTEN");
             ensureMtInputReason(record);
+            if(mzInputEvidence!=null)mzInputEvidence.writeAttempt(record);
             append(new File(directory,"samples/attempts.jsonl"),record.data.toString()+"\n");
             written.incrementAndGet();
         } catch (Exception error) {
             fail("sample_write_failed:"+record.attemptId+":"+error.getClass().getSimpleName());
             record.put("write_state","FAILED"); record.put("missing_evidence_reason","sample_write_failed");
             ensureMtInputReason(record);
+            if(mzInputEvidence!=null)mzInputEvidence.writeAttempt(record);
             try { append(new File(directory,"samples/attempts.jsonl"),record.data.toString()+"\n"); } catch (Exception ignored) { }
         } finally {
             try { append(new File(directory,"samples/write_states.jsonl"),new JSONObject().put("attempt_id",record.attemptId)
@@ -401,7 +611,7 @@ public final class ResearchSessionStore {
         }
     }
     private void checkpoint() {
-        long now=SystemClock.elapsedRealtimeNanos();
+        long now=elapsedClock.getAsLong();
         if (now-lastCheckpointNanos<1_000_000_000L) return;
         lastCheckpointNanos=now;
         try {
@@ -434,8 +644,11 @@ public final class ResearchSessionStore {
             if (!attemptsDrained) fail("inflight_attempt_timeout");
             writer.shutdown();
             if (!writer.awaitTermination(60,TimeUnit.SECONDS)) { fail("writer_drain_timeout"); throw new IOException("Nie zakończono kolejki zapisu"); }
+            if(f5aEvidence!=null)f5aEvidence.flushFinal();
+            if(tvBboxEvidence!=null){tvBboxEvidence.flushFinal();metadata.put("tv_bbox_inputs_pending",false);}
             flushRejected();
             saveTelemetry(telemetry);
+            if(mzInputEvidence!=null)metadata.put("mz_input_diagnostic_costs",mzInputEvidence.costs());
             State completed = dropped.get()+droppedTelemetry.get() == 0 ? State.COMPLETED : State.PARTIAL;
             synchronized (this) {
                 metadata.put("state","FINALIZING").put("collection_complete",false)
@@ -445,7 +658,9 @@ public final class ResearchSessionStore {
                 atomicText(new File(directory,"session.json"),metadata.toString(2));
             }
             File archive = buildArchive(directory,frozen,completed);
-            state = State.valueOf(new JSONObject(read(new File(directory,"session.json"))).getString("state"));
+            JSONObject finalized=new JSONObject(read(new File(directory,"session.json")));
+            state = State.valueOf(finalized.getString("state"));
+            f5aComplete=finalized.optBoolean("scene_evidence_complete") && finalized.optBoolean("mt_detection_roles_complete");
             return archive;
         } catch (Exception error) {
             state = State.ERROR;
@@ -549,6 +764,8 @@ public final class ResearchSessionStore {
                     readOr(new File(directory,"telemetry/application.log"),""),directory,frozen);
         }
         ResearchArchive.verifyEntryHashes(temporary);
+        if(session.optBoolean("mz_input_evidence_enabled"))MzInputEvidenceValidator.validate(temporary);
+        if("TV_BBOX_CROP".equals(session.optString("input_mode")))TvBboxInputValidator.validate(temporary);
         Files.move(temporary.toPath(),destination.toPath(),StandardCopyOption.REPLACE_EXISTING);
         atomicText(new File(directory,"session.json"),session.toString(2));
         return destination;
@@ -644,7 +861,7 @@ public final class ResearchSessionStore {
                 row.remove("_index_row"); annotations.write(row.toString()); annotations.newLine();
             });
         }
-        atomicText(new File(directory,"samples/schema.json"),new JSONObject().put("schema",SAMPLE_SCHEMA)
+        JSONObject sampleSchema=new JSONObject().put("schema",SAMPLE_SCHEMA)
                 .put("normalization_policy",com.example.alpr_v1.domain.RegistrationTextNormalizer.POLICY)
                 .put("capabilities",new JSONObject().put("attempt_registry",true).put("mt_invocation_identity",true)
                         .put("raw_prediction",true).put("registration_key",true).put("mt_input_evidence_references",true)
@@ -656,7 +873,11 @@ public final class ResearchSessionStore {
                 .put("subject_identity","scene_generation+entity_id").put("human_review","desktop")
                 .put("mt_invocation_identity","one_backend_execution_one_input")
                 .put("mt_detection_index_base",0).put("mt_detection_order","decoder_output")
-                .put("attempts_file","samples/attempts.csv").put("crops_file","samples/index.csv").toString(2));
+                .put("attempts_file","samples/attempts.csv").put("crops_file","samples/index.csv");
+        F5aEvidence.finalizeStored(directory,session,sampleSchema);
+        MzInputEvidence.finalizeStored(directory,session,sampleSchema);
+        TvBboxEvidence.finalizeStored(directory,session,sampleSchema);
+        atomicText(new File(directory,"samples/schema.json"),sampleSchema.toString(2));
         long incomplete = malformed+malformedTelemetry+counts[2]+counts[3];
         long previousIncomplete = session.optLong("integrity_loss_count");
         long previousTelemetryIncomplete = session.optLong("integrity_telemetry_loss_count");

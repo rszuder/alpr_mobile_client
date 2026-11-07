@@ -24,7 +24,7 @@ public final class CameraMotionOverlayTracker {
      * Zapamiętujemy wyłącznie poprzednie elementy typu PLATE.
      * Są potrzebne do odtworzenia keypointów podczas krótkiej predykcji trackera.
      */
-    private List<OverlayItem> previousPlateItems = Collections.emptyList();
+    private java.util.Map<Long, OverlayItem> previousPlateItems = Collections.emptyMap();
 
     public synchronized List<OverlayItem> update(
             List<OverlayItem> items,
@@ -111,8 +111,9 @@ public final class CameraMotionOverlayTracker {
                     sourcePlateItem(
                             plateItems,
                             result.sourceIndex,
-                            result.label
+                            result.trackId
                     );
+            if (source == null) continue;
 
             RectF target =
                     new RectF(
@@ -168,43 +169,23 @@ public final class CameraMotionOverlayTracker {
          * Do następnego przebiegu zachowujemy tylko rzeczywiste
          * elementy tablic z bieżącej klatki.
          */
-        List<OverlayItem> freshPlateItems = new ArrayList<>();
-        for (OverlayItem item : plateItems) {
-            if (!item.carriedPrediction) freshPlateItems.add(item);
+        java.util.Map<Long, OverlayItem> byTrackerId = new java.util.HashMap<>();
+        for (MotionBoxTracker.Result result : trackedResults) {
+            OverlayItem source = sourcePlateItem(plateItems, result.sourceIndex, result.trackId);
+            if (source != null) byTrackerId.put(result.trackId, source);
         }
-        previousPlateItems = Collections.unmodifiableList(freshPlateItems);
+        previousPlateItems = Collections.unmodifiableMap(byTrackerId);
 
         return Collections.unmodifiableList(visible);
     }
 
     public synchronized void reset() {
         tracker.reset();
-        previousPlateItems = Collections.emptyList();
+        previousPlateItems = Collections.emptyMap();
     }
 
-    private OverlayItem sourcePlateItem(
-            List<OverlayItem> items,
-            int index,
-            String label
-    ) {
-        if (index >= 0 && index < items.size()) {
-            return items.get(index);
-        }
-
-        for (OverlayItem item : previousPlateItems) {
-            if (item.label.equals(label)) {
-                return item;
-            }
-        }
-
-        return new OverlayItem(
-                OverlayItem.Kind.PLATE,
-                new RectF(),
-                Collections.emptyList(),
-                label,
-                0L,
-                false
-        );
+    private OverlayItem sourcePlateItem(List<OverlayItem> items, int index, long trackerId) {
+        return index >= 0 && index < items.size() ? items.get(index) : previousPlateItems.get(trackerId);
     }
 
     private static List<PointF> remapPoints(

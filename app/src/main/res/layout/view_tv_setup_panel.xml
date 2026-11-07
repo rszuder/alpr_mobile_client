@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:background="@color/alpr_surface"
+    android:paddingHorizontal="16dp" android:paddingTop="12dp" android:paddingBottom="12dp">
+
+    <ScrollView android:id="@+id/tv_setup_body_scroll" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:fillViewport="false">
+    <LinearLayout android:id="@+id/tv_setup_body_content" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+
+    <LinearLayout android:id="@+id/tv_corner_nudge_controls" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+        <LinearLayout android:id="@+id/tv_corner_nudge_row" android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal">
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_left" style="@style/TvCornerNudgeButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" app:icon="@drawable/ic_arrow_back_24" android:contentDescription="@string/tv_corner_left_pixel" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_up" style="@style/TvCornerNudgeButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:layout_marginStart="8dp" app:icon="@drawable/ic_tv_corner_up" android:contentDescription="@string/tv_corner_up_pixel" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_down" style="@style/TvCornerNudgeButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:layout_marginStart="8dp" app:icon="@drawable/ic_tv_corner_down" android:contentDescription="@string/tv_corner_down_pixel" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_right" style="@style/TvCornerNudgeButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:layout_marginStart="8dp" app:icon="@drawable/ic_arrow_forward_24" android:contentDescription="@string/tv_corner_right_pixel" />
+        </LinearLayout>
+        <TextView android:id="@+id/tv_corner_limit_status" android:layout_width="match_parent" android:layout_height="32dp" android:maxLines="1"
+            android:gravity="center_vertical" android:includeFontPadding="false" android:text="@string/tv_corner_nudge_hint" android:textSize="13sp" android:textColor="@color/tv_ref_secondary" />
+    </LinearLayout>
+
+    <com.google.android.material.card.MaterialCardView android:id="@+id/tv_ref_instruction_card" style="@style/TvRefCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:visibility="gone" android:layout_marginBottom="12dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:padding="12dp">
+            <ImageView android:layout_width="24dp" android:layout_height="24dp" android:layout_marginEnd="12dp" android:src="@drawable/ic_info_24" app:tint="@color/tv_ref_accent" android:importantForAccessibility="no" />
+            <LinearLayout android:id="@+id/tv_ref_instruction_slot" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+                <TextView android:id="@+id/tv_ref_instruction_heading" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tv_ref_instruction_title" android:textColor="@color/tv_ref_text" android:textSize="16sp" android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <LinearLayout android:id="@+id/tv_editor_heading" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:orientation="horizontal">
+        <TextView android:id="@+id/tv_setup_title" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tv_editor_title" android:textSize="18sp"
+            android:textStyle="bold" android:textColor="@color/alpr_text_primary" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_details"
+            style="@style/Widget.Material3.Button.TextButton" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:minHeight="48dp" android:minWidth="0dp"
+            android:paddingHorizontal="6dp" android:textSize="14sp" android:text="@string/tv_editor_margins"
+            android:textColor="@color/alpr_accent" android:visibility="gone" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_clear"
+            style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:minHeight="48dp" android:textSize="14sp"
+            android:text="@string/tv_editor_clear" android:textColor="@color/alpr_accent" />
+    </LinearLayout>
+
+    <TextView android:id="@+id/tv_setup_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/tv_editor_waiting" android:textSize="16sp" android:textStyle="bold"
+        android:textColor="@color/alpr_text_primary" android:accessibilityLiveRegion="polite" />
+    <TextView android:id="@+id/tv_setup_instruction" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" android:text="@string/tv_editor_instruction"
+        android:textSize="14sp" android:minLines="2" android:textColor="@color/alpr_text_secondary" />
+    <ProgressBar android:id="@+id/tv_setup_waiting" style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent" android:layout_height="3dp" android:layout_marginTop="8dp"
+        android:indeterminate="true" android:visibility="invisible" />
+
+    <TextView android:id="@+id/tv_setup_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="@color/alpr_warning" android:textSize="14sp" android:visibility="gone"
+        tools:text="Podgląd nie jest jeszcze gotowy." />
+    <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_retry"
+        style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/tv_editor_retry"
+        android:visibility="gone" android:textColor="@color/alpr_accent" />
+
+    <ScrollView android:id="@+id/tv_camera_controls_scroll" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:fillViewport="false" android:visibility="gone">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView android:id="@+id/tv_camera_caption" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/tv_camera_lens" android:textSize="14sp" android:textColor="@color/alpr_text_secondary" />
+            <androidx.appcompat.widget.AppCompatSpinner android:id="@+id/tv_camera_lens" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="48dp" android:spinnerMode="dropdown"
+                android:contentDescription="@string/tv_camera_lens" app:popupTheme="@style/ThemeOverlay.Alpr.CameraPopup" />
+            <com.google.android.material.chip.ChipGroup android:id="@+id/tv_ref_lens_choices" android:layout_width="match_parent" android:layout_height="wrap_content" android:visibility="gone" app:singleSelection="true" />
+            <TextView android:id="@+id/tv_camera_detail" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="14sp" android:textColor="@color/alpr_text_secondary" />
+            <TextView android:id="@+id/tv_camera_zoom_value" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="16sp" android:textColor="@color/alpr_text_primary" android:layout_marginTop="8dp" />
+            <SeekBar android:id="@+id/tv_camera_zoom" android:layout_width="match_parent" android:layout_height="48dp"
+                android:max="1000" android:thumbTint="@color/alpr_accent" android:progressTint="@color/alpr_primary"
+                android:contentDescription="@string/tv_camera_zoom" />
+            <TextView android:id="@+id/tv_camera_available_hint" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/tv_camera_available_hint" android:textSize="12sp" android:textColor="@color/alpr_text_secondary" />
+            <TextView android:id="@+id/tv_camera_fov" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:textSize="14sp" android:textColor="@color/alpr_text_secondary" />
+            <TextView android:id="@+id/tv_camera_input_mode" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:text="@string/tv_input_mode_full" android:textSize="14sp" android:textColor="@color/alpr_text_primary" />
+            <TextView android:id="@+id/tv_camera_rectification_hint" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/tv_rectification_blocked" android:textSize="12sp" android:textColor="@color/alpr_text_secondary" />
+        </LinearLayout>
+    </ScrollView>
+
+    <com.google.android.material.button.MaterialButton android:id="@+id/tv_ref_precise_toggle" style="@style/TvRefTextButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/tv_ref_precise" android:visibility="gone" />
+    <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/tv_corner_choices"
+        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+        app:singleSelection="true" app:selectionRequired="true">
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_lg"
+            style="@style/TvCornerButton" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/tv_corner_lg" android:contentDescription="@string/tv_corner_lg_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_pg"
+            style="@style/TvCornerButton" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/tv_corner_pg" android:contentDescription="@string/tv_corner_pg_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_pd"
+            style="@style/TvCornerButton" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/tv_corner_pd" android:contentDescription="@string/tv_corner_pd_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_ld"
+            style="@style/TvCornerButton" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/tv_corner_ld" android:contentDescription="@string/tv_corner_ld_description" />
+    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+    <TextView android:id="@+id/tv_setup_coverage" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minLines="2" android:layout_marginTop="8dp" android:text="@string/tv_editor_coverage_empty"
+        android:textColor="@color/alpr_text_secondary" android:textSize="14sp" />
+    <include layout="@layout/view_tv_distance_fields" />
+
+    </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout android:id="@+id/tv_setup_actions" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:orientation="horizontal">
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_cancel"
+            style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="0dp"
+            android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp"
+            android:text="@string/tv_editor_cancel" android:textSize="16sp" android:textColor="@color/alpr_accent" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_confirm"
+            style="@style/Widget.Material3.Button" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:minHeight="48dp" android:layout_marginStart="12dp"
+            android:enabled="false" android:text="@string/tv_editor_confirm" android:textSize="16sp"
+            android:textColor="@color/tv_confirm_text" app:backgroundTint="@color/tv_confirm_background" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_setup_next"
+            style="@style/Widget.Material3.Button" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:minHeight="48dp" android:layout_marginStart="12dp"
+            android:enabled="false" android:visibility="gone" android:text="@string/tv_camera_next" android:textSize="16sp"
+            android:contentDescription="@string/tv_camera_next_description"
+            android:textColor="@color/tv_confirm_text" app:backgroundTint="@color/tv_confirm_background" />
+    </LinearLayout>
+</LinearLayout>

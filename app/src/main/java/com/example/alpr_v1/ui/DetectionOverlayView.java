@@ -20,6 +20,8 @@ import android.graphics.Path;
 import androidx.annotation.Nullable;
 
 import com.example.alpr_v1.domain.ScanAcquisitionViewport;
+import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.vision.Point2;
 import com.example.alpr_v1.acquisition.EntityRecognitionSnapshot;
 
 import java.util.ArrayList;
@@ -580,7 +582,7 @@ public final class DetectionOverlayView extends View {
         );
         if (incomingItems.isEmpty()) pendingPlateReadings.clear();
         incomingItems = stabilizeStationaryVehicles(incomingItems, preview);
-        incomingItems = withoutAbsorbedPlates(incomingItems);
+        incomingItems = withoutAbsorbedPlates(incomingItems, sourceWidth, sourceHeight);
         removeReappearedFadingPlates(incomingItems);
         List<OverlayItem> targetItems = Collections.unmodifiableList(
                 withoutCarriedFadingPlates(incomingItems)
@@ -759,7 +761,6 @@ public final class DetectionOverlayView extends View {
                     && findPlateRenderItem(candidate.plateTrackId) != null) {
                 absorbedPlateTrackIds.add(candidate.plateTrackId);
                 pendingPlateReadings.remove(candidate.plateTrackId);
-                removeAbsorbedPlateLayers(candidate.plateTrackId);
             }
             requested.put(candidate.entityId, BadgeReadingPolicy.retainBest(old, candidate));
         }
@@ -901,14 +902,23 @@ public final class DetectionOverlayView extends View {
     }
 
     private List<OverlayItem> withoutAbsorbedPlates(List<OverlayItem> source) {
+        return withoutAbsorbedPlates(source, sourceWidth, sourceHeight);
+    }
+
+    private List<OverlayItem> withoutAbsorbedPlates(List<OverlayItem> source, int width, int height) {
         if (source != null) {
             for (OverlayItem item : source) {
                 if (item == null || item.kind != OverlayItem.Kind.PLATE
                         || item.carriedPrediction && !zoomPresentationActive) continue;
                 PendingPlateReading waiting = pendingPlateReadings.get(item.trackId);
                 if (waiting != null) {
-                    waiting.bounds.set(item.normalizedBounds);
-                    waiting.seenAtNanos = android.os.SystemClock.elapsedRealtimeNanos();
+                    PlateDisplayGeometry next = displayGeometry(item, width, height);
+                    if (!next.hasQuad()) {
+                        pendingPlateReadings.remove(item.trackId);
+                    } else if (waiting.geometry.mayReplaceWith(next)) {
+                        waiting.geometry = next;
+                        waiting.seenAtNanos = android.os.SystemClock.elapsedRealtimeNanos();
+                    }
                 }
             }
         }
@@ -922,8 +932,7 @@ public final class DetectionOverlayView extends View {
         for (OverlayItem item : source) {
             if (item == null) continue;
             if (item.kind != OverlayItem.Kind.PLATE
-                    || !absorbedPlateTrackIds.contains(item.trackId)
-                    && !pendingPlateReadings.containsKey(item.trackId)) {
+                    || !pendingPlateReadings.containsKey(item.trackId)) {
                 filtered.add(item);
             }
         }
@@ -937,6 +946,7 @@ public final class DetectionOverlayView extends View {
         com.example.alpr_v1.pipeline.PlateGeometry geometry = observation.geometry.forRecognition();
         if (geometry.sourceWidthPx <= 0 || geometry.sourceHeightPx <= 0) return;
         expirePendingPlateReadings();
+        PlateDisplayGeometry display = PlateDisplayGeometry.fromRecognition(geometry);
         PendingPlateReading old = pendingPlateReadings.get(observation.plateTrackId);
         String text = observation.freshPrediction;
         double confidence = observation.recognitionConfidence;
@@ -950,11 +960,7 @@ public final class DetectionOverlayView extends View {
             if (!zoomPresentationActive && absorbedPlateTrackIds.contains(observation.plateTrackId)) return;
             if (transferredVehicleEntityIds.contains(observation.entityId)) return;
             pendingPlateReadings.put(observation.plateTrackId, new PendingPlateReading(
-                    new RectF(geometry.bboxLeftPx / geometry.sourceWidthPx,
-                            geometry.bboxTopPx / geometry.sourceHeightPx,
-                            geometry.bboxRightPx / geometry.sourceWidthPx,
-                            geometry.bboxBottomPx / geometry.sourceHeightPx),
-                    geometry.sourceWidthPx, geometry.sourceHeightPx, text, confidence, confirmed, observations,
+                    display, text, confidence, confirmed, observations,
                     android.os.SystemClock.elapsedRealtimeNanos()));
             while (pendingPlateReadings.size() > 16) {
                 pendingPlateReadings.remove(pendingPlateReadings.keySet().iterator().next());
@@ -969,12 +975,9 @@ public final class DetectionOverlayView extends View {
                 observation.plateTrackId, text, confidence, confirmed, observations);
         recognition = BadgeReadingPolicy.retainBest(previous, recognition);
         RenderItem visiblePlate = findPlateRenderItem(observation.plateTrackId);
-        RectF source = visiblePlate == null ? OverlayViewportTransform.mapNormalizedToView(
-                new RectF(geometry.bboxLeftPx / geometry.sourceWidthPx,
-                        geometry.bboxTopPx / geometry.sourceHeightPx,
-                        geometry.bboxRightPx / geometry.sourceWidthPx,
-                        geometry.bboxBottomPx / geometry.sourceHeightPx),
-                geometry.sourceWidthPx, geometry.sourceHeightPx, getWidth(), getHeight())
+        RectF source = visiblePlate == null ? mapToView(
+                androidBounds(display.bounds),
+                display.sourceWidth, display.sourceHeight, getWidth(), getHeight())
                 : new RectF(visiblePlate.bounds);
         Map<Long, EntityRecognitionSnapshot> requested = new HashMap<>(requestedVehicleRecognitions);
         requested.put(recognition.entityId, recognition);
@@ -983,8 +986,8 @@ public final class DetectionOverlayView extends View {
                 && !hasQueuedTransfer(observation.entityId)) {
             pendingPlateReadings.remove(observation.plateTrackId);
             absorbedPlateTrackIds.add(observation.plateTrackId);
-            removeAbsorbedPlateLayers(observation.plateTrackId);
         }
+        restorePlateOutline(display, observation.plateTrackId, text);
         enqueuePlateTransfer(recognition, source);
         setVehicleEntityStates(identifiedVehicleEntityIds, completedVehicleEntityIds, Collections.emptyMap());
     }
@@ -1015,7 +1018,6 @@ public final class DetectionOverlayView extends View {
         plateAbsorbAnimator = animator;
         pendingPlateReadings.remove(recognition.plateTrackId);
         absorbedPlateTrackIds.add(recognition.plateTrackId);
-        removeAbsorbedPlateLayers(recognition.plateTrackId);
         rebuildRenderItems();
         animator.setDuration(PLATE_ABSORB_MS);
         animator.setInterpolator(new AccelerateDecelerateInterpolator());
@@ -1201,7 +1203,7 @@ public final class DetectionOverlayView extends View {
 
         int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
         int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
-        return OverlayViewportTransform.mapNormalizedToView(
+        return mapToView(
                 normalizedX,
                 normalizedY,
                 imageWidth,
@@ -1225,14 +1227,14 @@ public final class DetectionOverlayView extends View {
 
         int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
         int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
-        PointF topLeft = OverlayViewportTransform.mapViewToNormalized(
+        PointF topLeft = mapFromView(
                 new PointF(0f, 0f),
                 imageWidth,
                 imageHeight,
                 Math.round(viewWidth),
                 Math.round(viewHeight)
         );
-        PointF bottomRight = OverlayViewportTransform.mapViewToNormalized(
+        PointF bottomRight = mapFromView(
                 new PointF(viewWidth, viewHeight),
                 imageWidth,
                 imageHeight,
@@ -1247,7 +1249,7 @@ public final class DetectionOverlayView extends View {
         );
     }
 
-    private static List<OverlayItem> interpolateItems(
+    private List<OverlayItem> interpolateItems(
             List<OverlayItem> previousItems,
             List<OverlayItem> targetItems,
             float progress
@@ -1453,7 +1455,7 @@ public final class DetectionOverlayView extends View {
 
         return bestIndex;
     }
-    private static OverlayItem interpolateItem(
+    private OverlayItem interpolateItem(
             OverlayItem previous,
             OverlayItem target,
             float amount
@@ -1497,9 +1499,10 @@ public final class DetectionOverlayView extends View {
                         target.normalizedKeypoints,
                         amount
                 );
-        if (target.kind == OverlayItem.Kind.PLATE && amount < 1f
-                && (previous.normalizedKeypoints.size() == 4 || target.normalizedKeypoints.size() == 4)) {
-            points = interpolatePoints(animationCorners(previous), animationCorners(target), amount);
+        if (target.kind == OverlayItem.Kind.PLATE) {
+            PlateDisplayGeometry a = displayGeometry(previous, sourceWidth, sourceHeight);
+            PlateDisplayGeometry b = displayGeometry(target, sourceWidth, sourceHeight);
+            points = androidPoints(PlateDisplayGeometry.interpolate(a, b, amount));
         }
 
 
@@ -1517,13 +1520,6 @@ public final class DetectionOverlayView extends View {
                 target.trackId,
                 target.carriedPrediction
         );
-    }
-
-    private static List<PointF> animationCorners(OverlayItem item) {
-        if (item.normalizedKeypoints.size() == 4) return item.normalizedKeypoints;
-        RectF b = item.normalizedBounds;
-        return java.util.Arrays.asList(new PointF(b.left,b.top), new PointF(b.right,b.top),
-                new PointF(b.right,b.bottom), new PointF(b.left,b.bottom));
     }
 
     private static List<PointF> interpolatePoints(
@@ -1716,6 +1712,8 @@ public final class DetectionOverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        if (cameraMappingRequired && (cameraGeometry == null || cameraGeometry.sourceWidth != sourceWidth
+                || cameraGeometry.sourceHeight != sourceHeight)) return;
         drawAnalysisViewport(canvas);
         // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
         // przykrywały żadnej z ramek detekcyjnych.
@@ -1798,7 +1796,7 @@ public final class DetectionOverlayView extends View {
     private RectF analysisViewportViewBounds() {
         if (getWidth() <= 0 || getHeight() <= 0
                 || previewSourceWidth <= 0 || previewSourceHeight <= 0) return null;
-        return OverlayViewportTransform.mapNormalizedToView(
+        return mapToView(
                 new RectF(
                         ScanAcquisitionViewport.BOUNDS.left,
                         ScanAcquisitionViewport.BOUNDS.top,
@@ -1850,13 +1848,26 @@ public final class DetectionOverlayView extends View {
     private void drawPendingPlateReadings(Canvas canvas) {
         expirePendingPlateReadings();
         for (PendingPlateReading reading : pendingPlateReadings.values()) {
-            RectF bounds = OverlayViewportTransform.mapNormalizedToView(reading.bounds,
-                    reading.sourceWidth, reading.sourceHeight, getWidth(), getHeight());
-            canvas.drawRoundRect(bounds, dp(5), dp(5), boxPaint);
-            String text = getResources().getString(reading.text.isEmpty()
+            PlateDisplayGeometry geometry = reading.geometry;
+            if (!geometry.available() || !geometry.hasQuad() && !diagnosticMode) continue;
+            if (cameraMappingRequired && (cameraGeometry == null || geometry.sourceWidth != cameraGeometry.sourceWidth
+                    || geometry.sourceHeight != cameraGeometry.sourceHeight)) continue;
+            RectF bounds = mapToView(androidBounds(geometry.bounds),
+                    geometry.sourceWidth, geometry.sourceHeight, getWidth(), getHeight());
+            if (geometry.hasQuad()) {
+                List<PointF> points = new ArrayList<>(4);
+                for (Point2 point : geometry.cornersNorm) {
+                    points.add(mapToView(point.x, point.y,
+                            geometry.sourceWidth, geometry.sourceHeight, getWidth(), getHeight()));
+                }
+                drawQuad(canvas, points, boxPaint);
+            } else {
+                canvas.drawRoundRect(bounds, dp(5), dp(5), boxPaint);
+            }
+            String text = geometry.hasQuad() ? getResources().getString(reading.text.isEmpty()
                             ? com.example.alpr_v1.R.string.overlay_plate_pending
                             : com.example.alpr_v1.R.string.overlay_plate_unassigned,
-                    reading.text.isEmpty() ? "…" : reading.text);
+                    reading.text.isEmpty() ? "…" : reading.text) : "MT BBOX — brak Pose";
             float height = fontHeight(detectionTextPaint) + dp(7f);
             float width = Math.min(getWidth(), detectionTextPaint.measureText(text) + dp(12f));
             float left = clamp(bounds.left, 0f, Math.max(0f, getWidth() - width));
@@ -1878,7 +1889,6 @@ public final class DetectionOverlayView extends View {
         float progress = Math.max(0f, Math.min(1f, plateAbsorbProgress));
         RectF moving = interpolateRect(absorbingPlate.sourceBounds, target, progress);
         int saveCount = canvas.save();
-        canvas.drawRoundRect(moving, dp(5), dp(5), boxPaint);
         if (progress < 0.9f) {
             String text = absorbingPlate.recognition.text + " · "
                     + Math.round(absorbingPlate.recognition.confidence * 100.0) + "%";
@@ -1948,7 +1958,7 @@ public final class DetectionOverlayView extends View {
         }
         int imageWidth = sourceWidth > 0 ? sourceWidth : getWidth();
         int imageHeight = sourceHeight > 0 ? sourceHeight : getHeight();
-        RectF bounds = OverlayViewportTransform.mapNormalizedToView(
+        RectF bounds = mapToView(
                 activeVehicleNormalizedBounds,
                 imageWidth,
                 imageHeight,
@@ -2007,6 +2017,76 @@ public final class DetectionOverlayView extends View {
         }
     }
 
+    private com.example.alpr_v1.setup.CameraPreviewGeometry cameraGeometry;
+    private boolean cameraMappingRequired;
+
+    public void setCameraGeometry(com.example.alpr_v1.setup.CameraPreviewGeometry geometry) {
+        cameraMappingRequired = true;
+        if (cameraGeometry != null && !cameraGeometry.sameGeometry(geometry)) {
+            if (overlayAnimator != null) { overlayAnimator.cancel(); overlayAnimator = null; }
+            cancelPlateFade(); resetVehicleEntityStates();
+            items = Collections.emptyList(); renderItems = Collections.emptyList();
+        }
+        cameraGeometry = geometry;
+        rebuildRenderItems(); invalidate();
+    }
+
+    private PointF mapToView(float x, float y, int w, int h, int vw, int vh) {
+        if (cameraGeometry != null && cameraGeometry.sourceWidth == w && cameraGeometry.sourceHeight == h)
+            return OverlayViewportTransform.mapNormalizedToView(x, y, cameraGeometry);
+        return OverlayViewportTransform.mapNormalizedToView(x, y, w, h, vw, vh);
+    }
+    private PointF mapToView(PointF p, int w, int h, int vw, int vh) {
+        return mapToView(p.x, p.y, w, h, vw, vh);
+    }
+    private RectF mapToView(RectF r, int w, int h, int vw, int vh) {
+        PointF a=mapToView(r.left,r.top,w,h,vw,vh),b=mapToView(r.right,r.top,w,h,vw,vh);
+        PointF c=mapToView(r.right,r.bottom,w,h,vw,vh),d=mapToView(r.left,r.bottom,w,h,vw,vh);
+        return new RectF(Math.min(Math.min(a.x,b.x),Math.min(c.x,d.x)),Math.min(Math.min(a.y,b.y),Math.min(c.y,d.y)),
+                Math.max(Math.max(a.x,b.x),Math.max(c.x,d.x)),Math.max(Math.max(a.y,b.y),Math.max(c.y,d.y)));
+    }
+    private PointF mapFromView(PointF p, int w, int h, int vw, int vh) {
+        if (cameraGeometry != null && cameraGeometry.sourceWidth == w && cameraGeometry.sourceHeight == h)
+            return OverlayViewportTransform.mapViewToNormalized(p, cameraGeometry);
+        return OverlayViewportTransform.mapViewToNormalized(p,w,h,vw,vh);
+    }
+    private static List<PointF> androidPoints(List<Point2> source) {
+        List<PointF> result=new ArrayList<>();for(Point2 p:source)result.add(new PointF(p.x,p.y));return result;
+    }
+    private void restorePlateOutline(PlateDisplayGeometry geometry, long trackId, String text) {
+        if (!geometry.hasQuad() || findPlateRenderItem(trackId) != null) return;
+        if (sourceWidth != geometry.sourceWidth || sourceHeight != geometry.sourceHeight) return;
+        List<OverlayItem> restored = new ArrayList<>(items);
+        restored.add(new OverlayItem(OverlayItem.Kind.PLATE,androidBounds(geometry.bounds),
+                androidPoints(geometry.cornersNorm),text,trackId,false));
+        items=Collections.unmodifiableList(restored);
+    }
+
+    private static PlateDisplayGeometry displayGeometry(OverlayItem item, int width, int height) {
+        List<Point2> points = new ArrayList<>(4);
+        if (item.normalizedKeypoints.size() == 4) {
+            for (int index = 0; index < 4; index++) {
+                PointF point = item.normalizedKeypoints.get(index);
+                points.add(point == null ? null : new Point2(point.x, point.y));
+            }
+        }
+        RectF box = item.normalizedBounds;
+        return PlateDisplayGeometry.fromNormalized(points,
+                new NormalizedBounds(box.left, box.top, box.right, box.bottom), width, height);
+    }
+
+    private static RectF androidBounds(NormalizedBounds bounds) {
+        return new RectF(bounds.left, bounds.top, bounds.right, bounds.bottom);
+    }
+
+    private static void drawQuad(Canvas canvas, List<PointF> points, Paint paint) {
+        Path path = new Path();
+        path.moveTo(points.get(0).x, points.get(0).y);
+        for (int index = 1; index < 4; index++) path.lineTo(points.get(index).x, points.get(index).y);
+        path.close();
+        canvas.drawPath(path, paint);
+    }
+
     private void drawPlateQuad(
             Canvas canvas,
             RenderItem renderItem
@@ -2019,51 +2099,7 @@ public final class DetectionOverlayView extends View {
                 renderItem.points;
 
 
-        PointF first =
-                points.get(0);
-
-        PointF second =
-                points.get(1);
-
-        PointF third =
-                points.get(2);
-
-        PointF fourth =
-                points.get(3);
-
-
-        Path quad =
-                new Path();
-
-
-        quad.moveTo(
-                first.x,
-                first.y
-        );
-
-        quad.lineTo(
-                second.x,
-                second.y
-        );
-
-        quad.lineTo(
-                third.x,
-                third.y
-        );
-
-        quad.lineTo(
-                fourth.x,
-                fourth.y
-        );
-
-        quad.close();
-
-
-        canvas.drawPath(
-                quad,
-                paintFor(item)
-        );
-
+        drawQuad(canvas, points, paintFor(item));
 
         /*
          * Punkty narożników pokazujemy tylko
@@ -2162,8 +2198,10 @@ public final class DetectionOverlayView extends View {
         }
         int imageWidth = sourceWidth > 0 ? sourceWidth : Math.round(viewWidth);
         int imageHeight = sourceHeight > 0 ? sourceHeight : Math.round(viewHeight);
+        if (cameraMappingRequired && (cameraGeometry == null || cameraGeometry.sourceWidth != imageWidth
+                || cameraGeometry.sourceHeight != imageHeight)) { renderItems = Collections.emptyList(); return; }
         if (geometryCalibrationEnabled) {
-            PointF center = OverlayViewportTransform.mapNormalizedToView(
+            PointF center = mapToView(
                     0.5f,
                     0.5f,
                     imageWidth,
@@ -2193,16 +2231,22 @@ public final class DetectionOverlayView extends View {
 
         for (OverlayItem item : orderedForRendering(items)) {
             if (!diagnosticMode && item.kind == OverlayItem.Kind.VEHICLE_ROI) continue;
-            RectF bounds = OverlayViewportTransform.mapNormalizedToView(
+            RectF bounds = mapToView(
                     item.normalizedBounds,
                     imageWidth,
                     imageHeight,
                     Math.round(viewWidth),
                     Math.round(viewHeight)
             );
-            List<PointF> points = new ArrayList<>(item.normalizedKeypoints.size());
-            for (PointF point : item.normalizedKeypoints) {
-                points.add(OverlayViewportTransform.mapNormalizedToView(
+            List<PointF> sourcePoints = item.normalizedKeypoints;
+            if (item.kind == OverlayItem.Kind.PLATE) {
+                PlateDisplayGeometry pose = displayGeometry(item, imageWidth, imageHeight);
+                if (!pose.hasQuad() && !diagnosticMode) continue;
+                sourcePoints = androidPoints(pose.cornersNorm);
+            }
+            List<PointF> points = new ArrayList<>(sourcePoints.size());
+            for (PointF point : sourcePoints) {
+                points.add(mapToView(
                         point,
                         imageWidth,
                         imageHeight,
@@ -2230,7 +2274,8 @@ public final class DetectionOverlayView extends View {
             boolean vehicleLabel = renderItem.item.kind == OverlayItem.Kind.VEHICLE
                     && renderItem.item.trackId > 0L;
             boolean plateLabel = renderItem.item.kind == OverlayItem.Kind.PLATE
-                    && !renderItem.item.carriedPrediction;
+                    && !renderItem.item.carriedPrediction
+                    && !absorbedPlateTrackIds.contains(renderItem.item.trackId);
             if (!vehicleLabel && !plateLabel) continue;
             if (plateLabel && renderItem.item.label.isEmpty()) continue;
             if (plateLabel && !diagnosticMode && focusedTrackId > 0L
@@ -2576,7 +2621,8 @@ public final class DetectionOverlayView extends View {
                                 : ""
                 );
             } else {
-                this.parts = LabelParts.parse(item.kind == OverlayItem.Kind.PLATE
+                this.parts = LabelParts.parse(item.kind == OverlayItem.Kind.PLATE && points.size() != 4
+                        ? "MT BBOX — brak Pose" : item.kind == OverlayItem.Kind.PLATE
                         ? item.label.replaceFirst("(?i)^tablica\\b", "T") : item.label);
             }
             this.detectionWidth = detectionTextPaint.measureText(parts.detection);
@@ -2584,20 +2630,16 @@ public final class DetectionOverlayView extends View {
     }
 
     private static final class PendingPlateReading {
-        final RectF bounds;
-        final int sourceWidth;
-        final int sourceHeight;
+        PlateDisplayGeometry geometry;
         final String text;
         final double confidence;
         final boolean confirmed;
         final int observations;
         long seenAtNanos;
 
-        PendingPlateReading(RectF bounds, int sourceWidth, int sourceHeight, String text,
+        PendingPlateReading(PlateDisplayGeometry geometry, String text,
                             double confidence, boolean confirmed, int observations, long seenAtNanos) {
-            this.bounds = bounds;
-            this.sourceWidth = sourceWidth;
-            this.sourceHeight = sourceHeight;
+            this.geometry = geometry;
             this.text = text;
             this.confidence = confidence;
             this.confirmed = confirmed;

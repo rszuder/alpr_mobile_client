@@ -72,11 +72,31 @@ public final class ResearchAutoCollectionInstrumentedTest {
         File created=null;
         try (ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
             scenario.onActivity(activity -> retained.set((ResearchSessionViewModel)get(activity,"researchSessions")));
-            await(()->retained.get().ready(),10000);
             scenario.onActivity(activity -> {
                 set(activity,"experimentTimerConfig",TimerConfig.of(true,15));
+                invoke(activity,"invalidatePreparedExperiment",new Class<?>[0]);
+                invoke(activity,"ensureExperimentPrepared",new Class<?>[0]);
+            });
+            await(() -> {
+                java.util.concurrent.atomic.AtomicBoolean ready = new java.util.concurrent.atomic.AtomicBoolean();
+                scenario.onActivity(activity -> {
+                    try {
+                        Method method=MainActivity.class.getDeclaredMethod("isExperimentStartReady");
+                        method.setAccessible(true); ready.set((Boolean)method.invoke(activity));
+                    } catch(Exception error) { throw new AssertionError(error); }
+                });
+                return ready.get();
+            },30000);
+            assertFalse(retained.get().experiment.isRunning());
+            assertEquals(ResearchSessionStore.State.PREPARED,retained.get().store().state());
+            scenario.onActivity(activity -> {
                 invoke(activity,"startCamera",new Class<?>[]{boolean.class},true);
                 assertTrue(retained.get().experiment.isRunning());
+                assertTrue((Boolean)get(activity,"cameraStarted"));
+            });
+            await(()->retained.get().store().accepting(),5000);
+            scenario.onActivity(activity -> {
+                assertTrue((Boolean)get(activity,"cameraStarted"));
                 assertTrue(retained.get().store().accepting());
                 assertTrue((Boolean)get(activity,"collectionActive"));
                 invoke(activity,"toggleCollection",new Class<?>[0]);

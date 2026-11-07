@@ -26,6 +26,20 @@ public final class ModelStatusFormatter {
         return profile.gpu ? "GPU" : "CPU ×" + profile.cpuThreads;
     }
 
+    public static String describeResearch(InstalledModel model, AutoTuneManager manager,
+            com.example.alpr_v1.experiment.ResearchExecutionChoice choice) {
+        if (model == null) return "Brak aktywnego modelu";
+        ModelVariant variant = manager.chosenVariant(model);
+        ModelInputSpec input = variant.input(model.manifest().input());
+        String hardware;
+        try { hardware = hardwareLabel(choice.resolveApproved(variant)); }
+        catch (IllegalArgumentException invalid) { hardware = "Wybierz CPU/GPU — brak zatwierdzonego profilu"; }
+        return displayName(model.manifest().name()) + "\n" + variantLabel(variant) + " · " + hardware
+                + " • " + input.width() + '×' + input.height() + "\n"
+                + (manager.isVariantPinned(model) ? "EXP · przypięty: " + variant.id()
+                        : "EXP · wybierz jawny wariant (AUTO niedozwolone)");
+    }
+
     public static String format(ModelRegistry registry, AutoTuneManager autoTuneManager) {
         Presentation value = presentation(registry, autoTuneManager);
         return value.summary

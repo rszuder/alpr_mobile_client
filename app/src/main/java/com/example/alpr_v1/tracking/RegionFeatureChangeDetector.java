@@ -14,6 +14,19 @@ public final class RegionFeatureChangeDetector {
             this.points = points; lostFraction = lost; movedFraction = moved; this.significant = significant;
         }
     }
+    /** Appearance support at the selected anchor points; does not estimate motion. */
+    public static final class AppearanceResult {
+        public final int points, supportedPoints;
+        public final float unsupportedFraction, supportedFraction;
+        public final boolean novel, persistent;
+        AppearanceResult(int points, int supported) {
+            this.points = points; supportedPoints = supported;
+            supportedFraction = points == 0 ? 0f : supported / (float) points;
+            unsupportedFraction = points == 0 ? 0f : (points - supported) / (float) points;
+            novel = points >= 4 && points - supported >= 3 && unsupportedFraction >= .65f;
+            persistent = points >= 4 && supported >= 3 && supportedFraction >= .65f;
+        }
+    }
     private byte[] reference;
     private int width, height;
     private final List<SparsePyramidalFlow.Point> points = new ArrayList<>();
@@ -87,6 +100,50 @@ public final class RegionFeatureChangeDetector {
             significant |= lost >= 3 && missing >= .65f || shifted >= 3 && displacement >= .60f;
         }
         return new Result(points.size(), lostMaximum, movedMaximum, significant);
+    }
+
+    /**
+     * Matches current-anchor patches to an older image. Zero-mean normalized correlation
+     * tolerates exposure/contrast changes that reverse optical flow alone would mistake
+     * for new structure. The caller owns the anchor image for this comparison.
+     */
+    public AppearanceResult compareAppearance(byte[] other) {
+        if (reference == null || other == null || other.length < (long) width * height)
+            return new AppearanceResult(0, 0);
+        int supported = 0;
+        for (SparsePyramidalFlow.Point point : points)
+            if (patchSupported(other, Math.round(point.x), Math.round(point.y))) supported++;
+        return new AppearanceResult(points.size(), supported);
+    }
+
+    private boolean patchSupported(byte[] other, int x, int y) {
+        // Anchor selection leaves a 13 px border; radius 4 plus search radius 2 is safe.
+        double sum = 0, squares = 0;
+        for (int dy = -4; dy <= 4; dy++) for (int dx = -4; dx <= 4; dx++) {
+            int value = reference[(y + dy) * width + x + dx] & 255;
+            sum += value; squares += value * value;
+        }
+        double variance = squares - sum * sum / 81.0;
+        if (variance < 81.0) return false; // Standard deviation below 1 in 8-bit luma.
+        if (correlationSupported(other, x, y, 0, 0, sum, variance)) return true;
+        for (int sy = -2; sy <= 2; sy++) for (int sx = -2; sx <= 2; sx++) {
+            if (sx == 0 && sy == 0) continue;
+            if (correlationSupported(other, x, y, sx, sy, sum, variance)) return true;
+        }
+        return false;
+    }
+
+    private boolean correlationSupported(byte[] other, int x, int y, int sx, int sy,
+                                         double sum, double variance) {
+        double otherSum = 0, otherSquares = 0, product = 0;
+        for (int dy = -4; dy <= 4; dy++) for (int dx = -4; dx <= 4; dx++) {
+            int a = reference[(y + dy) * width + x + dx] & 255;
+            int b = other[(y + dy + sy) * width + x + dx + sx] & 255;
+            otherSum += b; otherSquares += b * b; product += a * b;
+        }
+        double otherVariance = otherSquares - otherSum * otherSum / 81.0;
+        return otherVariance >= 81.0
+                && (product - sum * otherSum / 81.0) / Math.sqrt(variance * otherVariance) >= .85;
     }
 
     private boolean separated(int start, int x, int y) {

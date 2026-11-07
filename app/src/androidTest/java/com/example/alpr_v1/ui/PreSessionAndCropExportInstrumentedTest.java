@@ -33,6 +33,7 @@ public class PreSessionAndCropExportInstrumentedTest {
                     CaptureGalleryViewModel state = new ViewModelProvider(activity).get(CaptureGalleryViewModel.class);
                     state.recognitionHistory().clear(); state.recentReads.clear();
                     set(activity,"collectionActive",false);
+                    ((android.content.SharedPreferences)field(activity,"uiPreferences")).edit().putBoolean("collection_armed",false).commit();
                     java.lang.reflect.Method collect = MainActivity.class.getDeclaredMethod("collectRecognitionHistory",java.util.List.class);
                     collect.setAccessible(true);
                     collect.invoke(activity,java.util.Arrays.asList(
@@ -46,6 +47,7 @@ public class PreSessionAndCropExportInstrumentedTest {
                     assertEquals("",field(activity,"collectionSessionId"));
                     Object originalTelemetry = state.recentReads.entries().get(0).telemetry;
                     set(activity,"cameraStarted",true);
+                    set(activity,"normalCollectionReady",true);
                     invoke(activity,"toggleCollection");
                     assertEquals(2,state.recognitionHistory().size());
                     assertEquals(2,state.capturedCrops().size());
@@ -81,7 +83,9 @@ public class PreSessionAndCropExportInstrumentedTest {
                         assertTrue(activity.findViewById(id).isShown());
                     View level = activity.findViewById(R.id.phone_orientation_panel);
                     assertTrue(level.isShown());
-                    assertFalse(activity.findViewById(R.id.collection_toggle).isEnabled());
+                    assertTrue(activity.findViewById(R.id.collection_toggle).isEnabled());
+                    assertFalse((boolean)field(activity,"collectionActive"));
+                    assertEquals("",field(activity,"collectionSessionId"));
                     Object monitor = field(activity,"cameraMotionMonitor");
                     PhoneOrientationEstimator orientation = (PhoneOrientationEstimator)field(monitor,"orientation");
                     orientation.reset();

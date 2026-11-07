@@ -1,0 +1,20 @@
+<resources>
+    <string name="tv_corner_coordinates_empty">X —\nY —</string>
+    <string name="tv_corner_coordinates">X %1$.1f\nY %2$.1f</string>
+    <string name="tv_corner_active_pixels">%1$s\npx</string>
+    <string name="tv_corner_coordinate_description">%1$s. X %2$.1f, Y %3$.1f piksela obrazu kamery %4$d × %5$d.</string>
+    <string name="tv_corner_limit">Granica obrazu</string>
+    <string name="tv_corner_on_edge">Na krawędzi</string>
+    <string name="tv_corner_nudge_hint">Korekta: 1 px</string>
+    <string name="tv_corner_left_pixel">Przesuń wybrany róg w lewo o 1 piksel</string>
+    <string name="tv_corner_up_pixel">Przesuń wybrany róg w górę o 1 piksel</string>
+    <string name="tv_corner_down_pixel">Przesuń wybrany róg w dół o 1 piksel</string>
+    <string name="tv_corner_right_pixel">Przesuń wybrany róg w prawo o 1 piksel</string>
+    <style name="TvCornerNudgeButton" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:minWidth">48dp</item><item name="android:minHeight">48dp</item>
+        <item name="android:padding">8dp</item><item name="android:insetTop">0dp</item><item name="android:insetBottom">0dp</item>
+        <item name="iconSize">24dp</item><item name="iconPadding">0dp</item><item name="iconGravity">textStart</item>
+        <item name="iconTint">@color/tv_ref_accent</item><item name="backgroundTint">@color/tv_ref_surface</item>
+        <item name="strokeColor">@color/tv_ref_border</item><item name="cornerRadius">12dp</item>
+    </style>
+</resources>

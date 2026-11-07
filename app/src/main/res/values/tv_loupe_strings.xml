@@ -1,0 +1,4 @@
+<resources>
+    <string name="tv_loupe_updating">Odświeżanie…</string>
+    <string name="tv_loupe_unavailable">Podgląd N/A</string>
+</resources>

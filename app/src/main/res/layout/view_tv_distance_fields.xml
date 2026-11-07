@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/tv_distance_scroll" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:paddingTop="8dp" android:visibility="gone">
+        <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/tv_distance_units"
+            android:layout_width="match_parent" android:layout_height="wrap_content" app:singleSelection="true" app:selectionRequired="true">
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_units_diagonal" style="@style/TvCornerButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/tv_units_inches" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_units_size" style="@style/TvCornerButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/tv_units_cm" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/tv_diagonal_container" style="@style/TvSetupInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/tv_input_diagonal">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_diagonal" style="@style/TvSetupEditText"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/tv_width_container" style="@style/TvSetupInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/tv_input_width" android:visibility="gone">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_width" style="@style/TvSetupEditText"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout android:id="@+id/tv_height_container" style="@style/TvSetupInput"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/tv_input_height" android:visibility="gone">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_height" style="@style/TvSetupEditText"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/tv_distance_ratios"
+            android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            app:singleSelection="true" app:selectionRequired="true">
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_ratio_wide" style="@style/TvCornerButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="16:9" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_ratio_classic" style="@style/TvCornerButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="4:3" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_ratio_custom" style="@style/TvCornerButton"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/tv_ratio_custom" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+        <LinearLayout android:id="@+id/tv_custom_ratio_fields" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:visibility="gone">
+            <com.google.android.material.textfield.TextInputLayout style="@style/TvSetupInput" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:hint="@string/tv_input_aspect_w">
+                <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_aspect_w" style="@style/TvSetupEditText" android:layout_width="match_parent" android:layout_height="wrap_content" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout style="@style/TvSetupInput" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:layout_marginStart="8dp" android:hint="@string/tv_input_aspect_h">
+                <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_aspect_h" style="@style/TvSetupEditText" android:layout_width="match_parent" android:layout_height="wrap_content" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+        <com.google.android.material.textfield.TextInputLayout style="@style/TvSetupInput" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="@string/tv_input_margin">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_margin" style="@style/TvSetupEditText" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.textfield.TextInputLayout style="@style/TvSetupInput" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="@string/tv_input_measured">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/tv_input_measured" style="@style/TvSetupEditText" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </com.google.android.material.textfield.TextInputLayout>
+        <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" app:cardBackgroundColor="@color/alpr_card_blue" app:cardCornerRadius="12dp" app:strokeColor="@color/alpr_outline">
+            <TextView android:id="@+id/tv_distance_result" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:padding="16dp" android:textSize="16sp" android:textColor="@color/alpr_text_primary" />
+        </com.google.android.material.card.MaterialCardView>
+</LinearLayout>

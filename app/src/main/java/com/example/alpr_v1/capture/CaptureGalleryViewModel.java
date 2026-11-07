@@ -28,6 +28,93 @@ public final class CaptureGalleryViewModel extends ViewModel {
         return cropSessions;
     }
 
+    private final java.util.concurrent.ExecutorService cropPreparer =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> new Thread(r, "crop-preview-preparer"));
+    private final java.util.ArrayDeque<CapturedPlateItem> preparedCrops = new java.util.ArrayDeque<>();
+    private final Map<String, Integer> pendingNumberKeys = new HashMap<>();
+    private final Map<CapturedPlateItem, String> preparedNumberKeys = new java.util.IdentityHashMap<>();
+    private int previewGeneration, pendingPreviews;
+    private boolean cleared;
+    public final androidx.lifecycle.MutableLiveData<Integer> cropPreparationReady = new androidx.lifecycle.MutableLiveData<>();
+
+    /** Only RAM gallery previews use this bounded queue; research evidence has its own durable writer. */
+    public boolean prepareCrop(java.util.concurrent.Callable<CapturedPlateItem> prepare,
+            Runnable discardOwnedBitmap, int capacity) {
+        return prepareCrop(prepare, discardOwnedBitmap, capacity, "");
+    }
+
+    public synchronized boolean previewNumberPending(String key) { return pendingNumberKeys.containsKey(key); }
+
+    public synchronized boolean prepareCrop(java.util.concurrent.Callable<CapturedPlateItem> prepare,
+            Runnable discardOwnedBitmap, int capacity, String numberKey) {
+        if (cleared || pendingPreviews >= Math.max(1, capacity)
+                || !numberKey.isEmpty() && pendingNumberKeys.containsKey(numberKey)) {
+            discardOwnedBitmap.run();
+            return false;
+        }
+        int generation = previewGeneration;
+        pendingPreviews++;
+        if (!numberKey.isEmpty()) pendingNumberKeys.put(numberKey, generation);
+        cropPreparer.execute(() -> {
+            CapturedPlateItem result = null;
+            boolean delivered = false;
+            try {
+                synchronized (this) {
+                    if (cleared || generation != previewGeneration) return;
+                }
+                result = prepare.call();
+                synchronized (this) {
+                    if (!cleared && generation == previewGeneration) {
+                        metricsCollector.recordCapturedCrop(result);
+                        preparedCrops.add(result);
+                        if (!numberKey.isEmpty()) preparedNumberKeys.put(result, numberKey);
+                        result = null; // Ownership moves to the retained delivery queue.
+                        delivered = true;
+                        cropPreparationReady.postValue(generation);
+                    }
+                }
+            } catch (Exception error) {
+                cropSessionMessages.postValue("Nie uda?o si? przygotowa? podgl?du cropu: " + error.getMessage());
+            } finally {
+                if (result != null) result.recycle();
+                // A delivered result owns its bitmap; all other exits must release the owned copy.
+                synchronized (this) {
+                    if (!delivered) {
+                        pendingPreviews--;
+                        pendingNumberKeys.remove(numberKey, generation);
+                        discardOwnedBitmap.run();
+                    }
+                }
+            }
+        });
+        return true;
+    }
+
+    public synchronized List<CapturedPlateItem> takePreparedCrops() {
+        List<CapturedPlateItem> result = new ArrayList<>(preparedCrops);
+        pendingPreviews -= result.size();
+        for (CapturedPlateItem item : result) {
+            String key = preparedNumberKeys.remove(item);
+            if (key != null) pendingNumberKeys.remove(key);
+        }
+        preparedCrops.clear();
+        return result;
+    }
+
+    public synchronized void invalidatePendingCropPreviews() {
+        previewGeneration++;
+        pendingPreviews -= preparedCrops.size();
+        pendingNumberKeys.clear(); preparedNumberKeys.clear();
+        for (CapturedPlateItem item : preparedCrops) item.recycle();
+        preparedCrops.clear();
+    }
+
+    public java.util.concurrent.CompletableFuture<Void> cropPreparationBarrier() {
+        java.util.concurrent.CompletableFuture<Void> done = new java.util.concurrent.CompletableFuture<>();
+        cropPreparer.execute(() -> done.complete(null));
+        return done;
+    }
+
     private boolean collectionActive;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
@@ -71,6 +158,8 @@ public final class CaptureGalleryViewModel extends ViewModel {
 
     @Override
     protected void onCleared() {
+        synchronized (this) { cleared = true; invalidatePendingCropPreviews(); }
+        cropPreparer.shutdown(); // Queued owners still run their release path.
         recentReads.clear();
         if (cropSessions != null) cropSessions.close();
         for (CapturedPlateItem item : capturedCrops) item.recycle();

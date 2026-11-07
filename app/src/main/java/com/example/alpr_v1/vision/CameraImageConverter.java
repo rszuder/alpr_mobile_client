@@ -34,6 +34,8 @@ public final class CameraImageConverter {
         public final long rotationNanos;
 
         public final int rotationDegrees;
+        public final int bufferWidth,bufferHeight;
+        public final Rect cameraCropRect;
 
 
         Result(
@@ -41,8 +43,10 @@ public final class CameraImageConverter {
                 long toBitmapNanos,
                 long rotationNanos,
                 int rotationDegrees
-        ) {
-
+        ) {this(bitmap,toBitmapNanos,rotationNanos,rotationDegrees,null);}
+        Result(Bitmap bitmap,long toBitmapNanos,long rotationNanos,int rotationDegrees,ImageProxy source){
+            bufferWidth=source==null?0:source.getWidth();bufferHeight=source==null?0:source.getHeight();
+            cameraCropRect=source==null?null:source.getCropRect()==null?new Rect(0,0,source.getWidth(),source.getHeight()):new Rect(source.getCropRect());
             this.bitmap =
                     bitmap;
 
@@ -112,7 +116,7 @@ public final class CameraImageConverter {
                     bitmap,
                     toBitmapNanos,
                     0L,
-                    0
+                    0,image
             );
         }
 
@@ -156,7 +160,7 @@ public final class CameraImageConverter {
                 rotated,
                 toBitmapNanos,
                 rotationNanos,
-                rotation
+                rotation,image
         );
     }
 

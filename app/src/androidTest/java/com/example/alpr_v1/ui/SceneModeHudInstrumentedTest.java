@@ -23,6 +23,26 @@ import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
 public final class SceneModeHudInstrumentedTest {
+    @Test public void preparedExperimentLocksHudBeforeStartAndPreservesStaticMode() {
+        Context context=ApplicationProvider.getApplicationContext();
+        SharedPreferences prefs=context.getSharedPreferences("alpr_ui",Context.MODE_PRIVATE);
+        boolean experiment=prefs.getBoolean(SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,false);
+        String mode=prefs.getString(SettingsActivity.KEY_SCENE_HANDLING_MODE,"dynamic_continuity");
+        prefs.edit().putBoolean(SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,true)
+                .putString(SettingsActivity.KEY_SCENE_HANDLING_MODE,SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName()).commit();
+        try (ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                MaterialButton toggle=activity.findViewById(R.id.live_scene_mode_toggle);
+                assertFalse(toggle.isEnabled());
+                assertEquals(activity.getString(R.string.scene_control_static),toggle.getText().toString());
+                assertEquals(SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName(),
+                        prefs.getString(SettingsActivity.KEY_SCENE_HANDLING_MODE,""));
+            });
+        } finally {
+            prefs.edit().putBoolean(SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,experiment)
+                    .putString(SettingsActivity.KEY_SCENE_HANDLING_MODE,mode).commit();
+        }
+    }
     @Test public void releasingTargetBeforeOpticalAnimationCancelsPendingZoomAndUnblocksPipeline() {
         java.util.concurrent.atomic.AtomicBoolean animated = new java.util.concurrent.atomic.AtomicBoolean();
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {

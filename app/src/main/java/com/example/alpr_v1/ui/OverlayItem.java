@@ -74,9 +74,9 @@ public final class OverlayItem {
     ) {
         this.kind = kind == null ? Kind.PLATE : kind;
         this.normalizedBounds = new RectF(normalizedBounds);
-        this.normalizedKeypoints = Collections.unmodifiableList(
-                new ArrayList<>(normalizedKeypoints)
-        );
+        List<PointF> owned = new ArrayList<>();
+        for (PointF point : normalizedKeypoints) owned.add(point == null ? null : new PointF(point.x, point.y));
+        this.normalizedKeypoints = Collections.unmodifiableList(owned);
         this.label = label == null ? "" : label;
         this.trackId = trackId;
         this.carriedPrediction = carriedPrediction;

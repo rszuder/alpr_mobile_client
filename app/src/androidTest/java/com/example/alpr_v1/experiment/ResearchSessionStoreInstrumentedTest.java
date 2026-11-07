@@ -88,6 +88,49 @@ public final class ResearchSessionStoreInstrumentedTest {
         domain.finish(ExperimentSession.CompletionReason.TIMER); finish(store);
         assertFalse(store.accepting()); assertEquals(ResearchSessionStore.State.COMPLETED,store.state());
     }
+    @Test public void startClickNeverWaitsForWriterButInferenceAdmissionWaitsForDurableT0() throws Exception {
+        ExperimentSession domain=new ExperimentSession();
+        ExperimentSession.Prepared prepared=prepared(domain);
+        ResearchSessionStore store=store(prepared);
+        store.awaitPreparationWrites();
+        java.lang.reflect.Field field=ResearchSessionStore.class.getDeclaredField("writer"); field.setAccessible(true);
+        ExecutorService writer=(ExecutorService)field.get(store);
+        CountDownLatch occupied=new CountDownLatch(1), release=new CountDownLatch(1);
+        writer.execute(() -> { occupied.countDown(); try { release.await(); }
+            catch(InterruptedException error) { Thread.currentThread().interrupt(); } });
+        assertTrue(occupied.await(2,TimeUnit.SECONDS));
+        ExecutorService click=Executors.newSingleThreadExecutor();
+        try {
+            long elapsed=SystemClock.elapsedRealtimeNanos(), wall=System.currentTimeMillis();
+            CompletableFuture<Void> commit=click.submit(() -> store.startAtQueued(wall,elapsed,error -> fail(error.toString())))
+                    .get(2,TimeUnit.SECONDS);
+            assertTrue(domain.startPrepared(prepared,wall,elapsed));
+            assertTrue(domain.isRunning());
+            assertFalse(store.accepting());
+            assertFalse(commit.isDone());
+            release.countDown();
+            commit.get(2,TimeUnit.SECONDS);
+            assertTrue(store.accepting());
+            assertEquals(elapsed,new JSONObject(ResearchSessionStore.read(new File(store.directory(),"session.json")))
+                    .getLong("started_elapsed_nanos"));
+            store.submit(sample(store,1,1,1,true));
+            finish(store);
+            assertEquals(1L,store.writtenCropCount());
+        } finally { release.countDown(); click.shutdownNow(); }
+    }
+    @Test public void failedQueuedStartDoesNotOpenInferenceAdmission() throws Exception {
+        ExperimentSession domain=new ExperimentSession();
+        ResearchSessionStore store=store(prepared(domain)); store.awaitPreparationWrites();
+        File metadata=new File(store.directory(),"session.json");
+        Files.delete(metadata.toPath()); Files.createDirectory(metadata.toPath());
+        Files.write(new File(metadata,"blocker").toPath(),new byte[]{1});
+        CountDownLatch failed=new CountDownLatch(1);
+        CompletableFuture<Void> commit=store.startAtQueued(System.currentTimeMillis(),SystemClock.elapsedRealtimeNanos(),
+                error -> failed.countDown());
+        assertTrue(failed.await(2,TimeUnit.SECONDS));
+        assertTrue(commit.isCompletedExceptionally());
+        assertFalse(store.accepting());
+    }
     @Test public void unwritableRootAndLowSpaceBlockPreparationWithoutStartingDomain() throws Exception {
         ExperimentSession domain=new ExperimentSession(); ExperimentSession.Prepared prepared=prepared(domain);
         File blocker=new File(files,"not-a-directory"); Files.write(blocker.toPath(),new byte[]{1});
@@ -100,6 +143,7 @@ public final class ResearchSessionStoreInstrumentedTest {
         ResearchSessionStore store=running();
         for (int i=0;i<3;i++) store.submit(sample(store,12L,104L,7L,true));
         File archive=finish(store); ResearchArchive.verifyEntryHashes(archive);
+        assertEquals(3L,store.writtenCropCount());
         try (java.util.zip.ZipFile zip=new java.util.zip.ZipFile(archive)) {
             String attempts=entry(zip,"samples/attempts.csv"), crops=entry(zip,"samples/index.csv");
             assertEquals(4,attempts.split("\n").length); assertEquals(4,crops.split("\n").length);
@@ -114,6 +158,25 @@ public final class ResearchSessionStoreInstrumentedTest {
             JSONObject hashes=new JSONObject(entry(zip,"manifest.json")).getJSONObject("entry_sha256");
             assertTrue(hashes.has("samples/attempts.csv")); assertTrue(hashes.has("samples/schema.json"));
         }
+    }
+    @Test public void durableCropCounterExceeds49AndNewReplicateStartsAtZero() throws Exception {
+        ResearchSessionStore first=running();
+        for (int i=0;i<60;i++) {
+            AcquisitionAttemptRecord record=sample(first,1,1,1,true);
+            assertNotNull(record);
+            first.submit(record);
+            long until=SystemClock.elapsedRealtime()+5000;
+            while (first.writtenCropCount()<i+1 && SystemClock.elapsedRealtime()<until) Thread.sleep(10);
+            assertEquals(i+1,first.writtenCropCount());
+        }
+        finish(first);
+        assertEquals(60,new JSONObject(ResearchSessionStore.read(new File(first.directory(),"session.json"))).getLong("crop_count"));
+        ResearchSessionStore second=running();
+        assertEquals(0L,second.writtenCropCount());
+        second.submit(sample(second,1,1,1,true));
+        finish(second);
+        assertEquals(1L,second.writtenCropCount());
+        assertEquals(60L,first.writtenCropCount());
     }
     @Test public void mtMissHasEvidenceAndCancelledWorkKeepsItsOwnReason() throws Exception {
         ResearchSessionStore store=running(); AcquisitionAttemptRecord miss=sample(store,1,42,0,false);

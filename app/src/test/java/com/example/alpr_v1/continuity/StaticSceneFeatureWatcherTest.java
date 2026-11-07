@@ -61,17 +61,51 @@ public class StaticSceneFeatureWatcherTest {
         assertFalse(w.observe(sparseCorners(0,0),SIZE,SIZE,200_000_000L,false).changed);
         assertFalse(w.observe(blank,SIZE,SIZE,300_000_000L,false).changed);
     }
-    @Test public void featurelessAndUnobservedRegionsCannotInventChange() {
-        for(boolean empty:Arrays.asList(true,false)) {
-            StaticSceneWatcher w=new StaticSceneWatcher();
-            w.arm(new StaticSceneWatchRegions(empty?null:Collections.singletonList(new NormalizedBounds(0,0,.1f,.1f)),null,0f));
-            w.observe(sparseCorners(0,0),SIZE,SIZE,0,false);
-            byte[] blank=new byte[SIZE*SIZE];Arrays.fill(blank,(byte)100);
-            for(int i=1;i<=5;i++) {
-                StaticSceneWatcher.Result r=w.observe(blank,SIZE,SIZE,i*100_000_000L,false);
-                assertFalse(r.changed);assertEquals(0,r.featurePoints);
-            }
+    @Test public void featurelessObservedRegionCannotInventChange() {
+        StaticSceneWatcher w=new StaticSceneWatcher();
+        w.arm(new StaticSceneWatchRegions(
+                Collections.singletonList(new NormalizedBounds(0,0,.1f,.1f)),null,0f));
+        byte[] blank=new byte[SIZE*SIZE];Arrays.fill(blank,(byte)100);
+        w.observe(blank,SIZE,SIZE,0,false);
+        for(int i=1;i<=5;i++) {
+            StaticSceneWatcher.Result r=w.observe(blank,SIZE,SIZE,i*100_000_000L,false);
+            assertFalse(r.changed);assertEquals(0,r.featurePoints);
         }
+    }
+
+    @Test public void globalFallbackUsesFullFrameFeaturesAndWakesOnStructuralReplacement() {
+        StaticSceneWatchRegions regions=new StaticSceneWatchRegions(null,null,0f);
+        assertEquals("global",regions.source);
+        assertEquals(1,regions.featureBounds.size());
+        assertEquals(0f,regions.featureBounds.get(0).left,0f);
+        assertEquals(0f,regions.featureBounds.get(0).top,0f);
+        assertEquals(1f,regions.featureBounds.get(0).right,0f);
+        assertEquals(1f,regions.featureBounds.get(0).bottom,0f);
+
+        StaticSceneWatcher w=new StaticSceneWatcher();
+        w.arm(regions);
+        w.observe(sparseCorners(0,0),SIZE,SIZE,0,false);
+        byte[] blank=new byte[SIZE*SIZE];Arrays.fill(blank,(byte)100);
+
+        assertFalse(w.observe(blank,SIZE,SIZE,100_000_000L,false).changed);
+        assertFalse(w.observe(blank,SIZE,SIZE,200_000_000L,false).changed);
+        StaticSceneWatcher.Result r=w.observe(blank,SIZE,SIZE,300_000_000L,false);
+
+        assertTrue("points="+r.featurePoints+" lost="+r.featureLostFraction,r.changed);
+        assertTrue(r.featurePoints>=4);
+        assertEquals("static_alpr_features_changed",r.reason);
+        assertTrue(r.globalFraction<StaticSceneWatcher.DEFAULT.globalFraction);
+    }
+
+    @Test public void globalFallbackIgnoresUniformExposureShift() {
+        StaticSceneWatcher w=new StaticSceneWatcher();
+        w.arm(new StaticSceneWatchRegions(null,null,0f));
+        byte[] base=sparseCorners(0,0);
+        w.observe(base,SIZE,SIZE,0,false);
+        byte[] light=base.clone();
+        for(int i=0;i<light.length;i++) light[i]=(byte)Math.min(255,(light[i]&255)+30);
+        for(int i=1;i<=8;i++)
+            assertFalse(w.observe(light,SIZE,SIZE,i*100_000_000L,false).changed);
     }
     @Test public void delayedBoxDiscoveryUsesOriginalLumaReference() {
         StaticSceneWatcher w=new StaticSceneWatcher();

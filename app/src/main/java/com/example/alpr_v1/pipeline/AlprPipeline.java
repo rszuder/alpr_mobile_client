@@ -165,6 +165,7 @@ public final class AlprPipeline {
     private final com.example.alpr_v1.acquisition.StaticSceneCycle staticCycle = new com.example.alpr_v1.acquisition.StaticSceneCycle();
     private final com.example.alpr_v1.continuity.StaticSceneWatcher staticWatcher = new com.example.alpr_v1.continuity.StaticSceneWatcher();
     private volatile boolean staticWatcherArmed;
+    private long staticLumaCallbacks, staticLumaLastNanos, staticLumaLogNanos;
     private volatile long dynamicZoomEntity;
     private long lastScanTelemetryRunId;
     private ScanRunState lastScanTelemetryRunState = ScanRunState.IDLE;
@@ -190,9 +191,70 @@ public final class AlprPipeline {
         return reloadRequested ? java.util.Collections.emptyList() : activeModelRuntimeSummaries;
     }
     private volatile com.example.alpr_v1.experiment.ResearchSessionStore researchCollector;
+    private final String f5aTransitionOwner=java.util.UUID.randomUUID().toString();
     public void setResearchCollector(com.example.alpr_v1.experiment.ResearchSessionStore collector) {
         researchCollector = collector;
     }
+    public boolean researchWorkAdmitted() {
+        com.example.alpr_v1.experiment.ResearchSessionStore store = researchCollector;
+        return store == null || store.accepting();
+    }
+    /** Authoritative generations at camera observation, independent of delayed UI publication. */
+    public SourceFrameStamp sceneEvidenceSourceStamp(SourceFrameStamp source) {
+        SceneContinuitySnapshot current=sceneTransitionCoordinator.snapshot();
+        return source.withGenerations(current.sceneGeneration,current.visualEpoch,current.cameraTransformGeneration);
+    }
+    private void recordF5aSceneBoundary(SceneTransitionDecision decision,SourceFrameStamp source) {
+        com.example.alpr_v1.experiment.ResearchSessionStore store=researchCollector;
+        if(store==null || store.f5aEvidence()==null || source==null || decision==null
+                || decision.action!=SceneTransitionAction.HARD_RESET
+                || decision.assessment.classification!=com.example.alpr_v1.continuity.VisualChangeClassification.CONTINUITY_BREAK)return;
+        // Structural lifecycle/configuration resets are not new physical scene evidence.
+        if(java.util.Arrays.asList("camera_restarted","physical_camera_changed","source_dimensions_changed",
+                "unsupported_orientation_change","structural_change","analysis_mode_changed","camera_activity_recreated",
+                "analysis_start","camera_restart").contains(decision.reason))return;
+        store.f5aEvidence().boundary(f5aTransitionOwner,decision.revision,decision.reason,source.continuityStamp(),
+                System.currentTimeMillis(),SystemClock.elapsedRealtimeNanos());
+    }
+    private SceneTransitionDecision observeSceneEvidence(SceneEvidence evidence,SourceFrameStamp source) {
+        long now=SystemClock.elapsedRealtimeNanos();
+        com.example.alpr_v1.experiment.ResearchSessionStore store=researchCollector;
+        if(store==null || store.f5aEvidence()==null)return sceneTransitionCoordinator.observe(evidence,now);
+        synchronized(sceneTransitionCoordinator) {
+            SceneTransitionDecision decision=sceneTransitionCoordinator.observe(evidence,now);
+            recordF5aSceneBoundary(decision,sceneEvidenceSourceStamp(source));
+            return decision;
+        }
+    }
+    private final java.util.concurrent.ConcurrentLinkedQueue<SceneTransitionDecision> pendingUiTransitions =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Publish freshness immediately; engine cleanup stays on the inference thread. */
+    private void publishUiTransition(SceneTransitionDecision decision) {
+        SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
+        sceneGeneration.accumulateAndGet(snapshot.sceneGeneration, Math::max);
+        visualEpoch.accumulateAndGet(snapshot.visualEpoch, Math::max);
+        if (decision.incrementSceneGeneration) hardResetRevision.accumulateAndGet(decision.revision, Math::max);
+        if (decision.incrementVisualEpoch) visualEpochRevision.accumulateAndGet(decision.revision, Math::max);
+        if (decision.action == SceneTransitionAction.HARD_RESET) {
+            // Reset admission and the lightweight scene cycle even if a later decision supersedes cleanup.
+            trackingResetRequested = true;
+            staticCycle.reset(snapshot.sceneGeneration);
+            staticWatcher.reset(); staticWatcherArmed = false;
+            stableSceneVehicles.invalidate();
+        }
+        pendingUiTransitions.add(decision);
+        frameGate.requestImmediateFrame();
+    }
+
+    private void applyPendingUiTransitions() {
+        SceneTransitionDecision decision;
+        while ((decision = pendingUiTransitions.poll()) != null) {
+            if (decision.revision == sceneTransitionCoordinator.snapshot().decisionRevision)
+                applySceneTransition(decision);
+        }
+    }
+
     public synchronized void resumeResearchAfterRecreation(long previousScene) {
         applySceneTransition(sceneTransitionCoordinator.resumeAfterCameraRecreation(
                 previousScene,SystemClock.elapsedRealtimeNanos()));
@@ -357,6 +419,8 @@ public final class AlprPipeline {
             frameGate.requestImmediateFrame();
             return null;
         }
+        if (!researchWorkAdmitted()) return null;
+        applyPendingUiTransitions();
         long frameId = frameIds.incrementAndGet();
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.updateSamples(
                 sampleLuminance(image),
@@ -747,12 +811,30 @@ public final class AlprPipeline {
             SceneChangeCallback sceneChangeCallback,
             PlateObservationCallback plateObservationCallback
     ) {
+        return processBitmap(frame,sourceFrameStamp,cameraToBitmapNanos,cameraRotationNanos,cameraRotationDegrees,
+                plateDetectionCallback,sceneChangeCallback,plateObservationCallback,null);
+    }
+    public synchronized PipelineResult processBitmap(Bitmap frame,SourceFrameStamp sourceFrameStamp,
+            long cameraToBitmapNanos,long cameraRotationNanos,int cameraRotationDegrees,
+            PlateDetectionCallback plateDetectionCallback,SceneChangeCallback sceneChangeCallback,
+            PlateObservationCallback plateObservationCallback,com.example.alpr_v1.setup.TvBboxCrop.Frame tvInput){
         if (frame == null || frame.isRecycled()) return null;
+        ResearchExecutionConfig inputConfig=researchExecutionConfig();
+        if(inputConfig!=null&&inputConfig.tvBboxCrop()!=null&&(tvInput==null||tvInput.camera!=frame
+                ||!inputConfig.tvBboxCrop().digest.equals(tvInput.crop.digest)))throw new IllegalArgumentException("TV_BBOX_FRAME_CONTEXT_REQUIRED");
+        if (!researchWorkAdmitted()) return null;
+        applyPendingUiTransitions();
         SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
                 ? SourceFrameStamp.unknown(0L, 0L, 0L)
                 : sourceFrameStamp;
         long sourceTimestampNanos = safeSourceFrame.sourceTimestampNanos;
         metrics.observeSourceFrame(frame.getWidth(), frame.getHeight(), sourceTimestampNanos);
+        com.example.alpr_v1.experiment.ResearchSessionStore sceneStore=researchCollector;
+        if(sceneStore!=null && sceneStore.f5aEvidence()!=null && sceneStore.f5aEvidence().pending()) {
+            ContinuityStamp evidenceStamp=sceneEvidenceSourceStamp(safeSourceFrame).continuityStamp();
+            String ticket=sceneStore.f5aEvidence().ticket(evidenceStamp);
+            if(!ticket.isEmpty())sceneStore.captureSceneEvidence(ticket,evidenceStamp,frame);
+        }
         if (cameraTransformInProgress) {
             metrics.frameSkippedByCameraTransform();
             return null;
@@ -762,6 +844,8 @@ public final class AlprPipeline {
             frameGate.requestImmediateFrame();
             return null;
         }
+        if (!researchWorkAdmitted()) return null;
+        applyPendingUiTransitions();
         long frameId = frameIds.incrementAndGet();
         SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
         SceneTransitionDecision sceneDecision = observeSourceScene(
@@ -883,11 +967,12 @@ public final class AlprPipeline {
                         trace,
                         processingStamp,
                         plateDetectionCallback,
-                        () -> hardResetRevision.get() != processingHardResetRevision
+                        () -> !researchWorkAdmitted()
+                                || hardResetRevision.get() != processingHardResetRevision
                                 || visualEpochRevision.get()
                                 != processingVisualEpochRevision
                                 || scanAcquisitionController.targetFocus().revision != processingFocusRevision,
-                        plateObservationCallback
+                        plateObservationCallback,tvInput
                 );
             } finally {
                 trace.stop("engine_total");
@@ -1343,10 +1428,7 @@ public final class AlprPipeline {
                         false,
                         false
                 );
-        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
-                evidence,
-                SystemClock.elapsedRealtimeNanos()
-        );
+        SceneTransitionDecision decision = observeSceneEvidence(evidence,safeSourceFrame);
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
         return decision;
@@ -1559,11 +1641,14 @@ public final class AlprPipeline {
         lastReacquireVehicleEvidence = report.vehicles;
         long previousFocusEntity = scanAcquisitionController.targetFocus().entityId;
         long nowNanos = SystemClock.elapsedRealtimeNanos();
-        SceneTransitionDecision decision =
-                sceneTransitionCoordinator.completeSoftReacquire(
+        SceneTransitionDecision decision;
+        synchronized(sceneTransitionCoordinator) {
+            decision=sceneTransitionCoordinator.completeSoftReacquire(
                         report.result,
                         nowNanos
                 );
+            recordF5aSceneBoundary(decision,sceneEvidenceSourceStamp(latestContinuitySourceFrame()));
+        }
         lastSceneDecision = decision;
         applySceneTransition(decision);
         scanAcquisitionController.onTerminalRecovery(
@@ -2607,9 +2692,10 @@ public final class AlprPipeline {
         metrics.add(trace);
     }
 
-    /** Called on the same executor as inference, while CameraX opens its stream. */
+    /** Called on the inference executor, before a new measured camera stream starts. */
     public synchronized void prepareModels() {
-        if (!registry.hasCompleteAlprComposition() || runtimeContractFailureGate.isBlocked()) return;
+        if (!registry.hasCompleteAlprComposition()) throw new IllegalStateException("REQUIRED_MODELS_MISSING");
+        if (runtimeContractFailureGate.isBlocked()) throw new IllegalStateException("RUNTIME_CONTRACT_BLOCKED");
         ensureEngineLoaded();
         frameGate.requestImmediateFrame();
     }
@@ -2737,6 +2823,7 @@ public final class AlprPipeline {
     }
 
     public synchronized void resetTracking() {
+        pendingUiTransitions.clear();
         applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
                 "explicit_pipeline_reset",
                 SystemClock.elapsedRealtimeNanos()
@@ -3065,9 +3152,37 @@ public final class AlprPipeline {
     /** Runs on the lightweight luma thread; generation advances before old inference can dispatch. */
     public SceneTransitionDecision observeStaticLuma(ContinuityStamp stamp, byte[] gray, int width, int height,
             long now, boolean transformed) {
-        if (!staticMode() || !isCurrentContinuityStamp(stamp)) return null;
+        if (!staticMode()) return null;
+        long gap = staticLumaLastNanos == 0L ? 0L : now - staticLumaLastNanos;
+        staticLumaLastNanos = now;
+        staticLumaCallbacks++;
+        if (!isCurrentContinuityStamp(stamp)) {
+            if (com.example.alpr_v1.BuildConfig.DEBUG && now - staticLumaLogNanos >= 1_000_000_000L) {
+                staticLumaLogNanos = now;
+                android.util.Log.d("ALPR_STATIC", "luma_rejected=stale_stamp callbacks=" + staticLumaCallbacks);
+            }
+            return null;
+        }
         com.example.alpr_v1.continuity.StaticSceneWatcher.Result result = staticWatcher.observe(
                 gray, width, height, now, transformed, currentCameraZoomRatio);
+        if (com.example.alpr_v1.BuildConfig.DEBUG && (result.changed || now - staticLumaLogNanos >= 1_000_000_000L)) {
+            staticLumaLogNanos = now;
+            com.example.alpr_v1.continuity.StaticSceneWatchRegions watched = staticCycle.watchRegions();
+            android.util.Log.d("ALPR_STATIC", "observe scene=" + stamp.sceneGeneration
+                    + " phase=" + staticCycle.phase() + " watch=" + watched.source
+                    + " regions=" + watched.bounds.size() + " feature_regions=" + watched.featureBounds.size()
+                    + " callbacks=" + staticLumaCallbacks + " gap_ms=" + gap / 1_000_000L
+                    + " reason=" + result.reason + " local=" + result.localFraction + " global=" + result.globalFraction
+                    + " points=" + result.featurePoints + " lost=" + result.featureLostFraction
+                    + " moved=" + result.featureMovedFraction + " confirmations=" + result.featureConfirmations
+                    + " scene_points=" + result.sceneFeaturePoints + " scene_lost=" + result.sceneFeatureLostFraction
+                    + " scene_moved=" + result.sceneFeatureMovedFraction
+                    + " scene_confirmations=" + result.sceneFeatureConfirmations
+                    + " added_points=" + result.addedFeaturePoints
+                    + " added_unmatched=" + result.addedFeatureUnmatchedFraction
+                    + " added_persistence=" + result.addedFeaturePersistence
+                    + " added_confirmations=" + result.addedFeatureConfirmations);
+        }
         if (!result.changed) return null;
         SceneTransitionDecision decision;
         SceneContinuitySnapshot snapshot;
@@ -3091,6 +3206,8 @@ public final class AlprPipeline {
         staticWatcher.reset();
         staticWatcherArmed = false;
         scanAcquisitionController.onContinuityDecision(decision, now);
+        recordF5aSceneBoundary(decision,stamp.sourceFrameStamp().withGenerations(
+                snapshot.sceneGeneration,snapshot.visualEpoch,snapshot.cameraTransformGeneration));
         }
         frameGate.requestImmediateFrame();
         JSONObject details = new JSONObject();
@@ -3104,12 +3221,23 @@ public final class AlprPipeline {
             details.put("feature_points", result.featurePoints);
             details.put("feature_lost_fraction", result.featureLostFraction);
             details.put("feature_moved_fraction", result.featureMovedFraction);
+            details.put("scene_feature_points", result.sceneFeaturePoints);
+            details.put("scene_feature_lost_fraction", result.sceneFeatureLostFraction);
+            details.put("scene_feature_moved_fraction", result.sceneFeatureMovedFraction);
+            details.put("added_feature_points", result.addedFeaturePoints);
+            details.put("added_feature_unmatched_fraction", result.addedFeatureUnmatchedFraction);
+            details.put("added_feature_persistence", result.addedFeaturePersistence);
+            details.put("added_feature_confirmations", result.addedFeatureConfirmations);
         } catch (JSONException ignored) { }
         metrics.recordEvent("static_scene_boundary", 0L, 0L, details);
         android.util.Log.i("ALPR_STATIC", "boundary=" + result.reason + " scene=" + stamp.sceneGeneration
                 + "->" + snapshot.sceneGeneration + " local=" + result.localFraction + " global=" + result.globalFraction
                 + " features=" + result.featurePoints + " lost=" + result.featureLostFraction
-                + " moved=" + result.featureMovedFraction);
+                + " moved=" + result.featureMovedFraction
+                + " added_points=" + result.addedFeaturePoints
+                + " added_unmatched=" + result.addedFeatureUnmatchedFraction
+                + " added_persistence=" + result.addedFeaturePersistence
+                + " added_confirmations=" + result.addedFeatureConfirmations);
         return decision;
     }
 
@@ -3152,7 +3280,8 @@ public final class AlprPipeline {
         currentCameraZoomRatio = Math.max(1f, zoomRatio);
     }
 
-    public synchronized void setTargetSnapshot(TargetSnapshot snapshot) {
+    public void setTargetSnapshot(TargetSnapshot snapshot) {
+        synchronized (sceneTransitionCoordinator) {
         TargetSnapshot safeSnapshot = snapshot == null
                 ? TargetSnapshot.searching() : snapshot;
         targetSnapshot = safeSnapshot.withContinuityStamp(
@@ -3169,19 +3298,22 @@ public final class AlprPipeline {
                     : 0.82 * overlayUpdateFps + 0.18 * instantFps;
         }
         previewTrackingUpdates.incrementAndGet();
+        }
     }
 
-    public synchronized boolean setTargetSnapshotIfCurrent(
+    public boolean setTargetSnapshotIfCurrent(
             TargetSnapshot snapshot,
             ContinuityStamp sourceStamp
     ) {
+        synchronized (sceneTransitionCoordinator) {
         if (!isCurrentContinuityStamp(sourceStamp)) return false;
         setTargetSnapshot(snapshot == null
                 ? null : snapshot.withContinuityStamp(sourceStamp));
         return true;
+        }
     }
 
-    public synchronized void requestImmediateTargetRecovery() {
+    public void requestImmediateTargetRecovery() {
         SourceFrameStamp triggerSourceFrame = latestContinuitySourceFrame();
         SceneTransitionDecision decision = sceneTransitionCoordinator.requestSoftReacquire(
                 "immediate_target_recovery",
@@ -3190,7 +3322,7 @@ public final class AlprPipeline {
         );
         lastSceneDecision = decision;
         lastSceneEvidence = null;
-        applySceneTransition(decision);
+        publishUiTransition(decision);
     }
 
     public void setAutoZoomTargetLock(
@@ -3274,6 +3406,7 @@ public final class AlprPipeline {
     }
 
     public synchronized void close() {
+        pendingUiTransitions.clear();
         if (engine != null) engine.close();
         engine = null;
         activeModelRuntimeSummaries = java.util.Collections.emptyList();
@@ -3467,6 +3600,25 @@ public final class AlprPipeline {
             boolean focusedTrackingDegraded,
             MotionExplanationEvidence motionOverride
     ) {
+        return evaluatePreviewSceneEvidence(sourceFrameStamp, rawVisualChange, rawVisualChangeScore,
+                changedFraction, brightnessDelta, anchorDriftScore, anchorChangedFraction,
+                focusedTrackingLost, focusedTrackingDegraded, motionOverride, false);
+    }
+
+    public SceneTransitionDecision onPreviewSceneEvidenceFromUi(
+            SourceFrameStamp sourceFrameStamp, boolean rawVisualChange, float rawVisualChangeScore,
+            float changedFraction, float brightnessDelta, float anchorDriftScore,
+            float anchorChangedFraction, boolean focusedTrackingLost, boolean focusedTrackingDegraded) {
+        return evaluatePreviewSceneEvidence(sourceFrameStamp, rawVisualChange, rawVisualChangeScore,
+                changedFraction, brightnessDelta, anchorDriftScore, anchorChangedFraction,
+                focusedTrackingLost, focusedTrackingDegraded, null, true);
+    }
+
+    private SceneTransitionDecision evaluatePreviewSceneEvidence(
+            SourceFrameStamp sourceFrameStamp, boolean rawVisualChange, float rawVisualChangeScore,
+            float changedFraction, float brightnessDelta, float anchorDriftScore,
+            float anchorChangedFraction, boolean focusedTrackingLost, boolean focusedTrackingDegraded,
+            MotionExplanationEvidence motionOverride, boolean fromUi) {
         SourceFrameStamp safeSourceFrame = sourceFrameStamp == null
                 ? SourceFrameStamp.unknown(0L, 0L, 0L)
                 : sourceFrameStamp;
@@ -3497,10 +3649,7 @@ public final class AlprPipeline {
                         false,
                         false
                 );
-        SceneTransitionDecision decision = sceneTransitionCoordinator.observe(
-                evidence,
-                SystemClock.elapsedRealtimeNanos()
-        );
+        SceneTransitionDecision decision = observeSceneEvidence(evidence,safeSourceFrame);
         if (rawVisualChange || decision.action != SceneTransitionAction.NONE) {
             android.util.Log.d(
                     "ALPR_SCENE_EVIDENCE",
@@ -3536,7 +3685,8 @@ public final class AlprPipeline {
         }
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
-        applySceneTransition(decision);
+        if (fromUi) publishUiTransition(decision);
+        else applySceneTransition(decision);
         return decision;
     }
 

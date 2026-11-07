@@ -9,6 +9,10 @@ import json
 import sys
 import zipfile
 from collections import Counter, defaultdict
+try:
+    from .f5a_evidence_validation import validate_extension
+except ImportError:
+    from f5a_evidence_validation import validate_extension
 
 
 def validate(path):
@@ -109,13 +113,14 @@ def validate(path):
                 assert key in build
             assert build["source_state"] == (("dirty" if build["git_dirty"] else "clean")
                                              if build["git_dirty_available"] else "unknown")
+        extension = validate_extension(archive, descriptor, session, attempts)
         return {"file": str(path), "state": session["state"], "attempts": len(attempts),
                 "crops": len(crops), "hashes_verified": len(hashes),
                 "mt_invocation_contract": invocation_contract, "mt_invocations": len(invocations),
                 "mt_status": dict(Counter(row["mt_status"] for row in attempts)),
                 "mz_status": dict(Counter(row["mz_status"] for row in attempts)),
                 "cancelled": sum(row["stale_or_cancelled"] == "true" for row in attempts),
-                "warnings": warnings}
+                "warnings": warnings, "f5a_evidence": extension}
 
 
 if __name__ == "__main__":
