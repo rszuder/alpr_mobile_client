@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import android.graphics.Bitmap;
+import com.example.alpr_v1.continuity.ObservationMask;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.os.SystemClock;
@@ -28,6 +29,8 @@ import java.util.List;
  * - na razie śledzona jest translacja całego quada.
  */
 public final class PreviewPlateTracker {
+
+    private ObservationMask observationMask;
 
     private static final int MAX_TRACK_WIDTH =
             240;
@@ -247,6 +250,7 @@ public final class PreviewPlateTracker {
      */
     public synchronized PreviewTrackingFrame updateTracking(Bitmap preview) {
         applyPendingControl();
+        if(observationMask!=null){previousGray=null;anchorGray=null;observationMask=null;}
         PreviewTrackingFrame result = updateTrackingImage(preview);
         return controlStillCurrent() ? result : null;
     }
@@ -681,7 +685,19 @@ public final class PreviewPlateTracker {
      * luminancji skopiowana bezpośrednio z ImageAnalysis CameraX.
      */
     public synchronized PreviewTrackingFrame updateLuma(byte[] gray, int width, int height) {
+        return updateLuma(gray,width,height,null);
+    }
+    public synchronized PreviewTrackingFrame updateLuma(byte[] gray,int width,int height,ObservationMask mask) {
+        if(mask!=null) mask.requireSize(width,height);
         applyPendingControl();
+        if(!ObservationMask.same(observationMask,mask)){previousGray=null;anchorGray=null;}
+        observationMask=mask;
+        // Unsupported local observation is N/A, never evidence of a LOST target.
+        if(mask!=null) for(TrackState track:tracks) {
+            List<PointF> points=previousGray==null?initialTrackerPoints(track.basePlate,width,height,width,height):track.trackedPoints;
+            if(!supportedObservation(points,mask)) return null;
+            if(previousGray!=null&&!supportedObservation(track.anchorPoints,mask)) return null;
+        }
         PreviewTrackingFrame result = updateLumaImage(gray, width, height);
         return controlStillCurrent() ? result : null;
     }
@@ -702,7 +718,17 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static TrackUpdate updateTrack(
+    private boolean supportedObservation(List<PointF> points,ObservationMask mask) {
+        if(points==null||points.size()<4) return false;
+        float l=Float.POSITIVE_INFINITY,t=l,r=Float.NEGATIVE_INFINITY,b=r;
+        for(PointF p:points){
+            if(!mask.supports(p.x,p.y,ANCHOR_SEARCH_RADIUS+PATCH_RADIUS+1)) return false;
+            l=Math.min(l,p.x);t=Math.min(t,p.y);r=Math.max(r,p.x);b=Math.max(b,p.y);
+        }
+        return mask.rectangle((int)Math.floor(l),(int)Math.floor(t),(int)Math.ceil(r),(int)Math.ceil(b));
+    }
+
+    private TrackUpdate updateTrack(
             List<PointF> referencePoints,
             byte[] previous,
             byte[] current,
@@ -822,7 +848,7 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static AffineTrackUpdate updateAffineTrack(
+    private AffineTrackUpdate updateAffineTrack(
             TrackState track,
             byte[] previous,
             byte[] anchor,
@@ -841,7 +867,7 @@ public final class PreviewPlateTracker {
                 width,
                 height,
                 track.flowAnchorPoints,
-                track.ageFrames % 3 == 0
+                track.ageFrames % 3 == 0, observationMask
         );
         RobustAffineTransform.Result anchoredTransform =
                 RobustAffineTransform.estimate(anchoredFlow.matches);
@@ -868,7 +894,7 @@ public final class PreviewPlateTracker {
                 width,
                 height,
                 track.currentFlowPoints,
-                track.ageFrames % 3 == 0
+                track.ageFrames % 3 == 0, observationMask
         );
         RobustAffineTransform.Result incrementalTransform =
                 RobustAffineTransform.estimate(incrementalFlow.matches);
@@ -1139,7 +1165,7 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static TrackedPlate technicalResult(
+    private TrackedPlate technicalResult(
             TrackState track,
             OverlayItem overlay,
             byte[] currentGray,
@@ -1175,7 +1201,7 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static float[] localAppearanceDescriptor(
+    private float[] localAppearanceDescriptor(
             byte[] gray,
             int width,
             int height,
@@ -1200,6 +1226,7 @@ public final class PreviewPlateTracker {
         int cropTop = clamp(Math.round(top), 0, height - 1);
         int cropRight = clamp(Math.round(right), cropLeft + 1, width);
         int cropBottom = clamp(Math.round(bottom), cropTop + 1, height);
+        if(observationMask!=null&&!observationMask.rectangle(cropLeft,cropTop,cropRight-1,cropBottom-1))return null;
         int cropWidth = cropRight - cropLeft;
         int cropHeight = cropBottom - cropTop;
         if (cropWidth < 4 || cropHeight < 2) return null;
@@ -1485,7 +1512,7 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static Match matchPoint(
+    private Match matchPoint(
             byte[] previous,
             byte[] current,
             int width,
@@ -1641,7 +1668,7 @@ public final class PreviewPlateTracker {
     }
 
 
-    private static float patchMeanError(
+    private float patchMeanError(
             byte[] previous,
             byte[] current,
             int width,
@@ -1652,6 +1679,8 @@ public final class PreviewPlateTracker {
             int previousCenter,
             int sampleCount
     ) {
+        if(observationMask!=null&&(!observationMask.supports(sourceX,sourceY,PATCH_RADIUS)
+                ||!observationMask.supports(candidateX,candidateY,PATCH_RADIUS))) return Float.POSITIVE_INFINITY;
         int currentCenter = current[candidateY * width + candidateX] & 0xff;
         int brightnessShift = currentCenter - previousCenter;
         int error = 0;

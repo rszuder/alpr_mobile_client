@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.continuity.ObservationMask;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,6 +29,7 @@ public final class RegionFeatureChangeDetector {
         }
     }
     private byte[] reference;
+    private ObservationMask mask;
     private int width, height;
     private final List<SparsePyramidalFlow.Point> points = new ArrayList<>();
     private final List<int[]> groups = new ArrayList<>();
@@ -35,6 +37,11 @@ public final class RegionFeatureChangeDetector {
     public void reset() { reference = null; points.clear(); groups.clear(); }
 
     public void anchor(byte[] gray, int width, int height, List<NormalizedBounds> regions) {
+        anchor(gray,width,height,regions,null);
+    }
+    public void anchor(byte[] gray,int width,int height,List<NormalizedBounds> regions,ObservationMask mask) {
+        if(mask!=null) mask.requireSize(width,height);
+        this.mask=mask;
         reset();
         if (gray == null || width < 32 || height < 32 || gray.length < (long) width * height) return;
         this.reference = gray; this.width = width; this.height = height;
@@ -52,6 +59,7 @@ public final class RegionFeatureChangeDetector {
                 int x0 = left + (right - left) * cx / 4, x1 = left + (right - left) * (cx + 1) / 4;
                 int y0 = top + (bottom - top) * cy / 4, y1 = top + (bottom - top) * (cy + 1) / 4;
                 for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+                    if(mask!=null&&!mask.supports(x,y,14)) continue;
                     float score = cornerScore(gray, x, y);
                     if (score > best && separated(start, x, y)) { best = score; px = x; py = y; }
                 }
@@ -60,7 +68,7 @@ public final class RegionFeatureChangeDetector {
             if (points.size() > start) groups.add(new int[]{start, points.size()});
         }
         // Exclude corners that the existing pyramidal tracker cannot track even in the anchor itself.
-        SparsePyramidalFlow.Result self = SparsePyramidalFlow.track(reference, reference, width, height, points);
+        SparsePyramidalFlow.Result self = SparsePyramidalFlow.track(reference, reference, width, height, points, true, mask);
         boolean[] reliable = new boolean[points.size()];
         for (SparsePyramidalFlow.Match match : self.matches) reliable[match.sourceIndex] = true;
         List<SparsePyramidalFlow.Point> selected = new ArrayList<>();
@@ -82,7 +90,7 @@ public final class RegionFeatureChangeDetector {
             for (int i = 0; i < compensated.length; i++)
                 compensated[i] = (byte) Math.max(0, Math.min(255, Math.round((gray[i] & 255) - exposure)));
         }
-        SparsePyramidalFlow.Result flow = SparsePyramidalFlow.track(reference, compensated, width, height, points);
+        SparsePyramidalFlow.Result flow = SparsePyramidalFlow.track(reference, compensated, width, height, points, true, mask);
         boolean[] found = new boolean[points.size()], moved = new boolean[points.size()];
         float movement = Math.max(2.5f, Math.min(width, height) * .012f);
         for (SparsePyramidalFlow.Match match : flow.matches) {
@@ -93,8 +101,12 @@ public final class RegionFeatureChangeDetector {
         float lostMaximum = 0f, movedMaximum = 0f;
         boolean significant = false;
         for (int[] g : groups) {
-            int lost = 0, shifted = 0, count = g[1] - g[0];
-            for (int i = g[0]; i < g[1]; i++) { if (!found[i]) lost++; if (moved[i]) shifted++; }
+            int lost = 0, shifted = 0, count = 0;
+            for (int i = g[0]; i < g[1]; i++) {
+                if(flow.unsupported!=null&&flow.unsupported[i]) continue;
+                count++;if (!found[i]) lost++; if (moved[i]) shifted++;
+            }
+            if(count<4) continue;
             float missing = lost / (float) count, displacement = shifted / (float) count;
             lostMaximum = Math.max(lostMaximum, missing); movedMaximum = Math.max(movedMaximum, displacement);
             significant |= lost >= 3 && missing >= .65f || shifted >= 3 && displacement >= .60f;
@@ -135,6 +147,7 @@ public final class RegionFeatureChangeDetector {
 
     private boolean correlationSupported(byte[] other, int x, int y, int sx, int sy,
                                          double sum, double variance) {
+        if(mask!=null&&(!mask.supports(x,y,4)||!mask.supports(x+sx,y+sy,4))) return false;
         double otherSum = 0, otherSquares = 0, product = 0;
         for (int dy = -4; dy <= 4; dy++) for (int dx = -4; dx <= 4; dx++) {
             int a = reference[(y + dy) * width + x + dx] & 255;

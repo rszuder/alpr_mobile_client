@@ -23,7 +23,18 @@ public final class LumaFrame {
             long sourceSequence,
             long timestampNanos,
             SourceTimestampDomain timestampDomain
-    ) {
+    ) { this(gray,width,height,sourceSequence,timestampNanos,timestampDomain,null,0,null); }
+    private LumaFrame(byte[] gray,int width,int height,long sourceSequence,long timestampNanos,
+            SourceTimestampDomain timestampDomain,ImageProxy image,int generation,CameraSetupSnapshot setup) {
+        android.graphics.Rect crop=image==null?new android.graphics.Rect():image.getCropRect();
+        bufferWidth=image==null?0:image.getWidth();bufferHeight=image==null?0:image.getHeight();
+        cropLeft=crop.left;cropTop=crop.top;cropRight=crop.right;cropBottom=crop.bottom;
+        rotationDegrees=image==null?0:image.getImageInfo().getRotationDegrees();bindingGeneration=generation;cameraSetup=setup;
+        ImageProxy.PlaneProxy plane=image==null||image.getPlanes().length==0?null:image.getPlanes()[0];
+        ByteBuffer buffer=plane==null?null:plane.getBuffer();
+        long first=plane==null?-1:(long)buffer.position()+crop.top*(long)plane.getRowStride()+crop.left*(long)plane.getPixelStride();
+        long last=plane==null?-1:(long)buffer.position()+(crop.bottom-1L)*plane.getRowStride()+(crop.right-1L)*plane.getPixelStride();
+        completePlane=plane!=null&&plane.getRowStride()>0&&plane.getPixelStride()>0&&first>=buffer.position()&&last<buffer.limit();
         this.gray = gray;
         this.width = width;
         this.height = height;
@@ -32,6 +43,11 @@ public final class LumaFrame {
         this.timestampDomain = timestampDomain == null
                 ? SourceTimestampDomain.UNKNOWN : timestampDomain;
     }
+
+    // Actual ImageProxy route and geometry, retained with the owned luma samples.
+    public final int bufferWidth, bufferHeight, cropLeft, cropTop, cropRight, cropBottom, rotationDegrees, bindingGeneration;
+    public final CameraSetupSnapshot cameraSetup;
+    public final boolean completePlane;
 
     static LumaFrame copyFrom(ImageProxy image, int maximumWidth) {
         long timestampNanos = image == null
@@ -52,7 +68,10 @@ public final class LumaFrame {
             ImageProxy image,
             int maximumWidth,
             SourceFrameStamp sourceFrameStamp
-    ) {
+    ) { return copyFrom(image,maximumWidth,sourceFrameStamp,0,null); }
+
+    static LumaFrame copyFrom(ImageProxy image,int maximumWidth,SourceFrameStamp sourceFrameStamp,
+            int bindingGeneration,CameraSetupSnapshot setup) {
         if (image == null || image.getPlanes().length == 0) return null;
         ImageProxy.PlaneProxy plane = image.getPlanes()[0];
         android.graphics.Rect crop = image.getCropRect();
@@ -81,7 +100,7 @@ public final class LumaFrame {
                 targetWidth,
                 targetHeight
         );
-        return new LumaFrame(
+        LumaFrame frame = new LumaFrame(
                 gray,
                 targetWidth,
                 targetHeight,
@@ -89,8 +108,9 @@ public final class LumaFrame {
                 sourceFrameStamp == null
                         ? 0L : sourceFrameStamp.sourceTimestampNanos,
                 sourceFrameStamp == null
-                        ? SourceTimestampDomain.UNKNOWN : sourceFrameStamp.domain
+                        ? SourceTimestampDomain.UNKNOWN : sourceFrameStamp.domain, image, bindingGeneration, setup
         );
+        return frame;
     }
 
     static byte[] copyPlane(

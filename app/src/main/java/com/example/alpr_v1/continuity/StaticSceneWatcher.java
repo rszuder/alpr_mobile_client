@@ -37,6 +37,7 @@ public final class StaticSceneWatcher {
         }
     }
     private final Profile profile;
+    private ObservationMask mask;
     // UI/control commands never wait for optical flow. Only observe owns image state.
     private final Object commands = new Object();
     private long resetRevision, observedResetRevision;
@@ -104,6 +105,12 @@ public final class StaticSceneWatcher {
         return observe(gray, width, height, now, transform, 1f);
     }
     public synchronized Result observe(byte[] gray, int width, int height, long now, boolean transform, float zoomRatio) {
+        return observe(gray,width,height,now,transform,zoomRatio,null);
+    }
+    public synchronized Result observe(byte[] gray, int width, int height, long now, boolean transform, float zoomRatio, ObservationMask support) {
+        if(support!=null) support.requireSize(width,height);
+        if(!ObservationMask.same(mask,support)){resetReference();latestBase=null;zoomWatcher=null;}
+        mask=support;
         long revision;
         StaticSceneWatchRegions requested;
         boolean prepare;
@@ -130,7 +137,7 @@ public final class StaticSceneWatcher {
                 zoomWatcher = new StaticSceneWatcher(profile); watchedZoom = zoomRatio;
             }
             zoomWatcher.arm(regions.atZoom(zoomRatio));
-            return zoomWatcher.observe(gray, width, height, now, false);
+            return zoomWatcher.observe(gray, width, height, now, false, 1f, mask);
         }
         zoomWatcher = null;
         if (gray == null || width <= 0 || height <= 0 || gray.length < width * height)
@@ -144,6 +151,7 @@ public final class StaticSceneWatcher {
         int step = Math.max(1, width / 96), count = 0;
         long signed = 0;
         for (int y = 0; y < height; y += step) for (int x = 0; x < width; x += step) {
+            if(mask!=null&&!mask.contains(x,y)) continue;
             int i = y * width + x;
             signed += (gray[i] & 255) - (reference[i] & 255); count++;
         }
@@ -154,13 +162,13 @@ public final class StaticSceneWatcher {
         boolean inspectFeatures = featureAnchorDirty || featureLastCheck < 0L
                 || now < featureLastCheck || now - featureLastCheck >= 100_000_000L;
         if (featureAnchorDirty) {
-            features.anchor(reference, width, height, regions.featureBounds);
+            features.anchor(reference, width, height, regions.featureBounds, mask);
             featureAnchorDirty = false;
         }
         boolean inspectScene = !"global".equals(regions.source);
         if (inspectScene && sceneAnchorDirty) {
             sceneFeatures.anchor(reference, width, height, Collections.singletonList(
-                    new NormalizedBounds(0f, 0f, 1f, 1f)));
+                    new NormalizedBounds(0f, 0f, 1f, 1f)), mask);
             sceneAnchorDirty = false;
         }
         if (inspectFeatures) {
@@ -231,7 +239,7 @@ public final class StaticSceneWatcher {
         addedFeatureLastCheck = now;
         // A separate 4x4 full-frame selector supplies at most 16 reliable points.
         addedFeatures.anchor(gray, width, height, Collections.singletonList(
-                new NormalizedBounds(0f, 0f, 1f, 1f)));
+                new NormalizedBounds(0f, 0f, 1f, 1f)), mask);
         latestAddedFeatures = addedFeatures.compareAppearance(reference);
         if (!latestAddedFeatures.novel) {
             clearAdditionCandidate();
@@ -254,7 +262,8 @@ public final class StaticSceneWatcher {
         int count = 0, changed = 0;
         for (int y = (int)(b.top * height); y < Math.min(height, Math.ceil(b.bottom * height)); y += step)
             for (int x = (int)(b.left * width); x < Math.min(width, Math.ceil(b.right * width)); x += step) {
-                int i = y * width + x;
+                if(mask!=null&&!mask.contains(x,y)) continue;
+            int i = y * width + x;
                 if (Math.abs((gray[i] & 255) - (reference[i] & 255) - exposure) >= profile.pixelDelta) changed++;
                 count++;
             }

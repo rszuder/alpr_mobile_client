@@ -1,8 +1,8 @@
 <resources>
     <string name="collection_armed">Akwizycja włączona — zbieranie rozpocznie się po START. Wyłącz akwizycję</string>
-    <string name="camera_action_crops_on">Akwizycja: WŁ.</string>
-    <string name="camera_action_crops_off">Akwizycja: WYŁ.</string>
-    <string name="camera_action_crops_automatic">Akwizycja: AUTO</string>
+    <string name="camera_action_crops_on">Akwizycja\nWŁ.</string>
+    <string name="camera_action_crops_off">Akwizycja\nWYŁ.</string>
+    <string name="camera_action_crops_automatic">Akwizycja\nAUTO</string>
     <string name="phone_orientation_warning">Ustaw telefon pionowo do analizy</string>
     <string name="phone_orientation_angles">Od pionu: %1$d°\nBok: %2$s · Przód/tył: %3$d°</string>
     <string name="phone_orientation_unavailable">Odchylenie telefonu: brak aktualnego pomiaru</string>
@@ -396,7 +396,7 @@
     <string name="auto_zoom_target">Cel autofocusu i zbliżenia</string>
     <string name="auto_zoom_waiting_fresh_mz">Zoom aktywny · MT gotowe · MZ pracuje w tle</string>
     <string name="auto_zoom_symbol_ready">AZ</string>
-    <string name="static_scene_idle">Analiza zakończona · czekam na zmianę</string>
+    <string name="static_scene_idle">Scena gotowa</string>
     <string name="search_vehicle">Szukaj pojazdu</string>
     <string name="search_plate_number">Numer rejestracyjny</string>
     <string name="search_plate_start">Szukaj</string>

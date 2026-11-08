@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="cockpit_control_state" type="id" />
+    <!-- Reserved former view IDs; no explanatory text is placed on the camera. -->
+    <item name="hud_mz_score_legend" type="id" />
+    <item name="hud1_context" type="id" />
+    <item name="hud2_context" type="id" />
+    <color name="cockpit_cyan">#FF32D2E4</color>
+    <string name="cockpit_hud_occluded">HUD 1: czasowo ukryty — pierwszeństwo geometrii ALPR</string>
+    <string name="cockpit_hud_no_space">HUD 1: brak miejsca</string>
+    <string name="cockpit_stage_sum">%1$s, suma inferencji w ostatnim zmierzonym cyklu: %2$s</string>
+    <string name="cockpit_stage_mp">MP, ostatni pomiar odcinka inferencji: %1$s</string>
+    <style name="CockpitMetric">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minWidth">52dp</item>
+        <item name="android:paddingHorizontal">4dp</item>
+        <item name="android:paddingVertical">2dp</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:gravity">center</item>
+        <item name="android:background">@drawable/bg_cockpit_metric</item>
+    </style>
+    <style name="CockpitCaption">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/cockpit_cyan</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:drawablePadding">2dp</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+    <style name="CockpitValue" parent="CockpitCaption">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/white</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:text">—</item>
+        <item name="android:importantForAccessibility">yes</item>
+    </style>
+    <style name="CockpitStage" parent="CockpitMetric">
+        <item name="android:orientation">horizontal</item>
+    </style>
+    <color name="cockpit_available_outline">#FF7B8C9F</color>
+    <style name="InstrumentCell">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:gravity">center</item>
+        <item name="android:padding">3dp</item>
+    </style>
+    <style name="InstrumentCaption" parent="CockpitCaption">
+        <item name="android:textSize">10sp</item>
+    </style>
+    <style name="InstrumentValue" parent="CockpitValue">
+        <item name="android:layout_marginTop">1dp</item>
+    </style>
+</resources>

@@ -458,7 +458,10 @@ public final class CameraController implements AutoCloseable,CameraSetupControl 
                             LumaFrame lumaFrame = LumaFrame.copyFrom(
                                     image,
                                     240,
-                                    sourceFrameStamp
+                                    sourceFrameStamp,
+                                    requestedGeneration,
+                                    camera == null || boundSelection == null || camera.getCameraInfo().getZoomState().getValue() == null
+                                            ? null : new CameraSetupSnapshot(boundSelection,camera.getCameraInfo().getZoomState().getValue().getZoomRatio())
                             );
                             if (lumaFrame != null) {
                                 callbacks.luma.onLumaFrame(lumaFrame);

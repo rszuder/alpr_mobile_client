@@ -85,6 +85,8 @@ public class TvBboxStartUiTest {
         ((android.os.Handler)get(main,"experimentReadinessHandler")).removeCallbacksAndMessages(null);
         ((android.os.Handler)get(main,"experimentTimerHandler")).removeCallbacksAndMessages(null);
         ((ExecutorService)get(main,"pipelineInferenceExecutor")).shutdownNow();
+        ((ExecutorService)get(main,"directLumaTrackingExecutor")).shutdownNow();
+        ((ExecutorService)get(main,"previewTrackingExecutor")).shutdownNow();
         if(store!=null)TvBboxProducerFixture.close(store);
         Method a=ResearchSessionViewModel.class.getDeclaredMethod("onCleared");a.setAccessible(true);a.invoke(sessions);
         Method b=CaptureGalleryViewModel.class.getDeclaredMethod("onCleared");b.setAccessible(true);b.invoke(gallery);
@@ -165,6 +167,102 @@ public class TvBboxStartUiTest {
         try(TvBboxCrop.Frame input=tv.openInput(selected,converted)){assertEquals(selected.width(),input.input.getWidth());}
         converted.bitmap.recycle();hardware.crop=new Rect(5,5,635,395);CameraImageConverter.Result changed=CameraImageConverter.convert(hardware.image());
         try{assertThrows(IllegalArgumentException.class,()->tv.openInput(selected,changed));}finally{changed.bitmap.recycle();hardware.bitmap.recycle();}
+    }
+    @Test public void tvObservationMissingMaskAndLegacyImageEntryAreRejectedBeforeDecisions()throws Exception{
+        prepare(RoiBudgetPolicy.FULL_FRAME);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        assertNotNull(p.sceneObservationDomain());
+        assertThrows(IllegalArgumentException.class,()->p.observeStaticLuma(p.currentContinuityStamp(1),new byte[10000],100,100,1,false));
+        assertThrows(IllegalArgumentException.class,()->p.process(null,null,null));
+        assertEquals(ResearchSessionStore.State.PREPARED,store.state());
+    }
+    @Test public void fullFrameConfigurationHasNoTvObservationDomain()throws Exception{
+        prepare(RoiBudgetPolicy.FULL_FRAME);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        com.example.alpr_v1.continuity.SceneObservationDomain old=p.sceneObservationDomain();
+        p.setResearchExecutionConfig(config.withInputMode(ResearchInputMode.CAMERA_FULL_FRAME));assertNull(p.sceneObservationDomain());
+        p.observeStaticLuma(p.currentContinuityStamp(1),new byte[10000],100,100,1,false);
+        p.setResearchExecutionConfig(config);assertNotSame(old,p.sceneObservationDomain());
+        call(main,"handleObservationFailure",new Class<?>[]{com.example.alpr_v1.continuity.SceneObservationDomain.class,com.example.alpr_v1.continuity.ContinuityStamp.class,RuntimeException.class},
+                old,p.currentContinuityStamp(2),new IllegalArgumentException("stale_worker"));
+        assertEquals(ResearchSessionStore.State.PREPARED,store.state());assertFalse(sessions.finalizing());
+    }
+    @Test public void actualStaticLumaR0CannotWakeForExterior()throws Exception{assertStaticExterior(RoiBudgetPolicy.FULL_FRAME);}
+    @Test public void actualStaticLumaR1CannotWakeForExterior()throws Exception{assertStaticExterior(RoiBudgetPolicy.ONE_ROI);}
+    @Test public void actualStaticLumaR2CannotWakeForExterior()throws Exception{assertStaticExterior(RoiBudgetPolicy.TWO_ROI);}
+    void assertStaticExterior(RoiBudgetPolicy policy)throws Exception{
+        prefs.edit().putString(SettingsActivity.KEY_SCENE_HANDLING_MODE,com.example.alpr_v1.continuity.SceneHandlingMode.STRICT_SCENE_BOUNDARY.wireName()).commit();
+        prepare(policy);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        com.example.alpr_v1.acquisition.StaticSceneCycle cycle=(com.example.alpr_v1.acquisition.StaticSceneCycle)get(p,"staticCycle");
+        cycle.reset(p.sceneContinuitySnapshot().sceneGeneration);cycle.finishBaseline();p.nextStaticRefinement(false);assertTrue(p.isStaticIdle());
+        Object gate=get(p,"frameGate");assertFalse((boolean)get(gate,"immediateFrameRequested"));
+        set(main,"cameraStarted",true);
+        com.example.alpr_v1.continuity.SceneObservationDomain d=p.sceneObservationDomain();
+        com.example.alpr_v1.continuity.ObservationMask mask=d.sourceMask(640,400);
+        byte[] a=new byte[640*400];for(int y=0;y<400;y++)for(int x=0;x<640;x++)a[y*640+x]=(byte)(40+((x/12+y/12)%2)*150);
+        long scene=p.sceneContinuitySnapshot().sceneGeneration;
+        for(int i=0;i<8;i++){
+            byte[] b=a.clone();Random random=new Random(i);
+            if(i>0)for(int y=0;y<400;y++)for(int x=0;x<640;x++)if(!mask.contains(x,y))b[y*640+x]=(byte)random.nextInt(256);
+            LumaFrame frame=TvObservationMappingTest.frame(geometry,b,240,i+1);
+            call(main,"processDirectLumaFrame",new Class<?>[]{LumaFrame.class,com.example.alpr_v1.continuity.SceneObservationDomain.class},frame,d);
+        }
+        assertEquals(scene,p.sceneContinuitySnapshot().sceneGeneration);
+        assertEquals(8L,get(p,"staticLumaCallbacks"));
+        assertTrue(p.isStaticIdle());assertFalse((boolean)get(gate,"immediateFrameRequested"));
+        assertTrue((long)get(main,"lastDirectLumaFrameNanos")>0);
+        assertFalse(((java.util.concurrent.atomic.AtomicBoolean)get(main,"pipelineFrameInFlight")).get());
+        set(main,"cameraStarted",false);
+    }
+    @Test public void interiorStaticChangeWakesIdleAndRequestsExactlyOneNewFrame()throws Exception{
+        prepare(RoiBudgetPolicy.FULL_FRAME);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        com.example.alpr_v1.acquisition.StaticSceneCycle cycle=(com.example.alpr_v1.acquisition.StaticSceneCycle)get(p,"staticCycle");
+        long scene=p.sceneContinuitySnapshot().sceneGeneration;cycle.reset(scene);cycle.finishBaseline();p.nextStaticRefinement(false);assertTrue(p.isStaticIdle());
+        com.example.alpr_v1.continuity.SceneObservationDomain d=p.sceneObservationDomain();
+        byte[] a=new byte[640*400],b=new byte[a.length];for(int y=0;y<400;y++)for(int x=0;x<640;x++){int i=y*640+x;a[i]=(byte)(40+((x/12+y/12)%2)*150);b[i]=(byte)(230-(a[i]&255));}
+        com.example.alpr_v1.continuity.SceneObservationDomain.Frame first=d.luma(TvObservationMappingTest.frame(geometry,a,240,1)),second=d.luma(TvObservationMappingTest.frame(geometry,b,240,2));
+        p.observeStaticLuma(p.currentContinuityStamp(1),first.gray,first.width,first.height,0,false,first.mask);
+        assertNotNull(p.observeStaticLuma(p.currentContinuityStamp(2),second.gray,second.width,second.height,150_000_000L,false,second.mask));
+        assertEquals(scene+1,p.sceneContinuitySnapshot().sceneGeneration);assertFalse(p.isStaticIdle());assertTrue((boolean)get(get(p,"frameGate"),"immediateFrameRequested"));
+        assertNull(p.observeStaticLuma(p.currentContinuityStamp(3),second.gray,second.width,second.height,300_000_000L,false,second.mask));
+        assertEquals(scene+1,p.sceneContinuitySnapshot().sceneGeneration);
+    }
+    @Test public void actualDynamicPreviewFallbackIgnoresExteriorWithoutDirectLuma()throws Exception{
+        prepare(RoiBudgetPolicy.TWO_ROI);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        ResearchExecutionConfig b=TvBboxAdmissionTest.base(RoiBudgetPolicy.TWO_ROI,false);
+        ResearchExecutionConfig dynamic=new ResearchExecutionConfig(b.experimentType,b.variant,b.roiBudgetPolicy,b.recognitionProfile,b.cameraRequestedResolution,
+                b.lockEnabled,b.autoZoomEnabled,b.vehicleTrackingEnabled,b.plateTrackingEnabled,b.temporalMzEnabled,b.adaptiveFrameGateEnabled,
+                b.vehicle,b.plate,b.character,null,false,0,com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY)
+                .withCameraSetup(config.cameraSetup).withTvBboxCrop(config.tvBboxCrop());
+        p.setResearchExecutionConfig(dynamic);p.setSceneHandlingMode(com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY);
+        set(main,"cameraStarted",true);set(main,"previewSceneAnchorPending",true);
+        com.example.alpr_v1.continuity.SceneObservationDomain d=p.sceneObservationDomain();long scene=p.sceneContinuitySnapshot().sceneGeneration;
+        long ui=((java.util.concurrent.atomic.AtomicLong)get(main,"uiSceneGeneration")).get(),transform=((java.util.concurrent.atomic.AtomicLong)get(main,"uiCameraTransformGeneration")).get();
+        com.example.alpr_v1.ui.PreviewPresentationBarrier barrier=(com.example.alpr_v1.ui.PreviewPresentationBarrier)get(main,"previewPresentationBarrier");
+        for(int i=0;i<4;i++){
+            Bitmap image=Bitmap.createBitmap(800,600,Bitmap.Config.ARGB_8888);Random random=new Random(i);
+            com.example.alpr_v1.continuity.ObservationMask mask=d.sourceMask(640,400);
+            for(int y=0;y<600;y++)for(int x=0;x<800;x++){
+                double[] point=geometry.viewToNormalized(x+.5,y+.5);int sx=(int)Math.floor(point[0]*640),sy=(int)Math.floor(point[1]*400);
+                int value=mask.contains(sx,sy)?((x/8+y/8)%2)*150+40:random.nextInt(256);image.setPixel(x,y,android.graphics.Color.rgb(value,value,value));
+            }
+            call(main,"processPreviewTrackingFrame",new Class<?>[]{Bitmap.class,long.class,long.class,long.class,com.example.alpr_v1.continuity.ContinuityStamp.class,
+                    com.example.alpr_v1.continuity.SceneObservationDomain.class,CameraPreviewGeometry.class},image,ui,transform,barrier.capture(),p.currentContinuityStamp(i+1),d,geometry);
+        }
+        assertTrue(((com.example.alpr_v1.vision.SceneAnchorGuard)get(main,"previewSceneAnchorGuard")).hasAnchor());
+        assertEquals(scene,p.sceneContinuitySnapshot().sceneGeneration);assertEquals(0L,get(main,"lastDirectLumaFrameNanos"));assertFalse(barrier.active());
+        set(main,"cameraStarted",false);Shadows.shadowOf(Looper.getMainLooper()).idle();
+    }
+    @Test public void invalidObservationClosesAdmissionBeforeUiStopAndHasNoFakeMt()throws Exception{
+        begin(RoiBudgetPolicy.FULL_FRAME);AlprPipeline p=(AlprPipeline)get(main,"pipeline");
+        com.example.alpr_v1.continuity.SceneObservationDomain d=p.sceneObservationDomain();
+        ((ExecutorService)get(main,"directLumaTrackingExecutor")).submit(()->{
+            try{call(main,"handleObservationFailure",new Class<?>[]{com.example.alpr_v1.continuity.SceneObservationDomain.class,com.example.alpr_v1.continuity.ContinuityStamp.class,RuntimeException.class},
+                    d,p.currentContinuityStamp(1),new IllegalArgumentException("TV_OBSERVATION_STALE_GEOMETRY"));}catch(Exception e){throw new AssertionError(e);}
+        }).get(10,TimeUnit.SECONDS);
+        assertFalse(store.accepting());
+        // The UI runnable remains queued: admission is already closed without waiting for it.
+        TvBboxProducerFixture.drain(store);
+        java.io.File attempts=new java.io.File(store.directory(),"samples/attempts.jsonl");
+        assertTrue(!attempts.exists()||attempts.length()==0);
     }
     @Implements(value=CameraController.class,isInAndroidSdk=false)
     public static class CameraIo {

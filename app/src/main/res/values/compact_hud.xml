@@ -15,7 +15,8 @@
         <item name="android:includeFontPadding">false</item>
         <item name="android:maxLines">1</item>
         <item name="android:ellipsize">end</item>
-        <item name="android:paddingVertical">1dp</item>
+        <item name="android:paddingVertical">0dp</item>
+        <item name="android:paddingHorizontal">3dp</item>
     </style>
     <string name="hud_temperature_description">Temperatura baterii: %1$s</string>
     <string name="hud_resources_description">CPU aplikacji, udział we wszystkich rdzeniach: %1$s</string>

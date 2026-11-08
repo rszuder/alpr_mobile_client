@@ -76,6 +76,15 @@ public final class TvSetupController {
     private final int[] cornerIds={R.id.tv_corner_lg,R.id.tv_corner_pg,R.id.tv_corner_pd,R.id.tv_corner_ld};
     private final int[] cornerNames={R.string.tv_corner_lg_description,R.string.tv_corner_pg_description,R.string.tv_corner_pd_description,R.string.tv_corner_ld_description};
     private Runnable controlsRefresh=()->{},geometryRefresh=()->{};
+    private java.util.function.Supplier<String> inputSummary=this::plannedInputSummary;
+    public void setInputSummaryProvider(java.util.function.Supplier<String> provider){inputSummary=java.util.Objects.requireNonNull(provider);renderOutlineControl();}
+    public void refreshInputSummary(){renderOutlineControl();}
+    private String plannedInputSummary(){
+        boolean tv=preferences.getBoolean(com.example.alpr_v1.SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,false)
+                &&"roi_budget".equals(preferences.getString(com.example.alpr_v1.SettingsActivity.KEY_EXPERIMENT_TYPE,"roi_budget"))
+                &&"TV_BBOX_CROP".equals(preferences.getString(com.example.alpr_v1.SettingsActivity.KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME"));
+        return activity.getString(R.string.main_ui_input_planned,activity.getString(tv?R.string.main_ui_input_tv:R.string.main_ui_input_full));
+    }
     private volatile TvSetupCalibration calibration;
     private TvSetupCalibration entryCalibration;
     private TvEditDraft draft,resumeSource;
@@ -126,6 +135,7 @@ public final class TvSetupController {
         normalPreviewLayout=new ConstraintLayout.LayoutParams(originalPreview);
         normalPreviewTopToTop=originalPreview.topToTop;normalPreviewTopToBottom=originalPreview.topToBottom;
         preferences=activity.getSharedPreferences("alpr_ui",0);root=activity.findViewById(R.id.main);
+        LivePresentationController.configureLayout(root);
         normalPanel=activity.findViewById(R.id.control_panel);normalHud=activity.findViewById(R.id.normal_camera_hud);
         panel=activity.findViewById(R.id.tv_setup_panel);overlay=activity.findViewById(R.id.tv_setup_overlay);
         normalSetupLayout=new ConstraintLayout.LayoutParams((ConstraintLayout.LayoutParams)panel.getLayoutParams());
@@ -274,21 +284,14 @@ public final class TvSetupController {
             if(!activity.getString(title).contentEquals(item.getTitle()))item.setTitle(title);
             int icon=outlineVisible?R.drawable.ic_tv_outline_visible:R.drawable.ic_tv_outline_hidden;
             if(!Integer.valueOf(icon).equals(root.getTag(R.id.menu_tv_outline))){item.setIcon(icon);root.setTag(R.id.menu_tv_outline,icon);}}
-        String state=calibration.status(geometry);String label="READY".equals(state)?"GOTOWY":"STALE".equals(state)?"NIEAKTUALNY":draft!=null?"DRAFT zapisany — wznów narożniki":"NIESKALIBROWANY";
-        TextView summary=find(R.id.tv_frame_status);String inputText="Pełna klatka kamery · rektyfikacja nieaktywna";
-        if(preferences.getBoolean(com.example.alpr_v1.SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,false)
-                &&"roi_budget".equals(preferences.getString(com.example.alpr_v1.SettingsActivity.KEY_EXPERIMENT_TYPE,"roi_budget"))
-                &&"TV_BBOX_CROP".equals(preferences.getString(com.example.alpr_v1.SettingsActivity.KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME"))){
-            inputText="TV BBOX · próba nieoficjalna";
-            if(geometry!=null&&!calibration.corners.isEmpty())try{
-                org.json.JSONArray points=new org.json.JSONArray();for(com.example.alpr_v1.vision.Point2 p:calibration.corners)
-                    points.put(new JSONObject().put("x",p.x).put("y",p.y));
-                int[] b=com.example.alpr_v1.setup.TvBboxCrop.bounds(points,geometry.sourceWidth,geometry.sourceHeight);
-                inputText="TV BBOX "+(b[2]-b[0])+"×"+(b[3]-b[1])+" · próba nieoficjalna";
-            }catch(Exception ignored){}
-        }
-        String text="TV: "+label+" · obrys "+(outlineVisible?"ON":"OFF")+"\n"+inputText;
+        String state=calibration.status(geometry);
+        int label="READY".equals(state)?R.string.main_ui_tv_ready:"STALE".equals(state)?R.string.main_ui_tv_stale
+                :draft!=null?R.string.main_ui_tv_draft:R.string.main_ui_tv_missing;
+        String text=activity.getString(R.string.main_ui_tv_summary,activity.getString(label),
+                activity.getString(outlineVisible?R.string.main_ui_outline_visible:R.string.main_ui_outline_hidden))+"\n"+inputSummary.get();
+        TextView summary=find(R.id.tv_frame_status);
         if(!text.contentEquals(summary.getText()))summary.setText(text);
+        summary.setContentDescription(text+("STALE".equals(state)?". "+calibration.reason(geometry):""));
         find(R.id.tv_frame_edit).setEnabled(editable.getAsBoolean());
     }
     private boolean seedCorners(boolean reset){
@@ -511,6 +514,7 @@ public final class TvSetupController {
     private void applyVisibility(){
         boolean restoring=phase==Phase.COMMITTING||phase==Phase.CANCELLING;
         boolean active=editing();
+        find(R.id.main_hud_storage).setVisibility(active?View.INVISIBLE:View.VISIBLE);
         // The reference composition belongs exclusively to the calibration wizard.
         // Mapping errors retain the existing recovery layout so Retry/Cancel have priority.
         reference.setEnabled(active&&!calculatorMode&&!restoring&&phase!=Phase.CAMERA_ERROR);
@@ -525,7 +529,7 @@ public final class TvSetupController {
         desired.topToTop=active&&!restoring?ConstraintLayout.LayoutParams.UNSET:normalPreviewTopToTop;
         desired.topToBottom=active&&!restoring?R.id.top_app_bar:normalPreviewTopToBottom;
         // In landscape a centered short image can otherwise sit underneath the toolbar.
-        if(landscape()){desired.topToTop=ConstraintLayout.LayoutParams.UNSET;desired.topToBottom=R.id.top_app_bar;}
+        if(landscape()&&active&&!restoring){desired.topToTop=ConstraintLayout.LayoutParams.UNSET;desired.topToBottom=R.id.top_app_bar;}
         boolean keyboard=keyboardForm();
         boolean side=active&&!restoring&&landscape()&&!keyboard;
         ConstraintLayout.LayoutParams setupLayout=new ConstraintLayout.LayoutParams(normalSetupLayout);
@@ -567,7 +571,7 @@ public final class TvSetupController {
         overlay.setVisibility(active?(!calculatorMode&&!cameraStep&&!restoring?View.VISIBLE:View.GONE):
                 outlineVisible&&canShowStoredOutline()?View.VISIBLE:View.GONE);
         android.view.MenuItem eye=((MaterialToolbar)find(R.id.top_app_bar)).getMenu().findItem(R.id.menu_tv_outline);
-        find(R.id.tv_frame_summary).setVisibility((active||eye!=null&&eye.isVisible())&&(!calibration.corners.isEmpty()||pendingSave!=null)?View.VISIBLE:View.GONE);
+        find(R.id.tv_frame_summary).setVisibility(!active||restoring?View.VISIBLE:View.GONE);
         renderOutlineControl();
         // Child renderers can update, but an invisible real parent cannot flash back on screen.
     }
@@ -855,6 +859,8 @@ public final class TvSetupController {
         Double measuredDistance=measured();if(input!=null&&!estimate.available()&&measuredDistance!=null&&"READY".equals(calibration.status(geometry)))estimate=TvDistanceCalculator.fromMeasured(input,measuredDistance,calibration.corners,geometry);
         return calibration.snapshot(geometry,input,measuredDistance,estimate,Instant.ofEpochMilli(wallMillis).toString());
     }
+    /** Immutable live mapper; observation workers must capture it with their buffer. */
+    public CameraPreviewGeometry observationGeometry(){return geometry;}
     public com.example.alpr_v1.setup.TvBboxCrop selectionForInput(){
         CameraPreviewGeometry g=geometry;TvSetupCalibration c=calibration;
         if(!cameraState.ready())throw new IllegalStateException("TV_BBOX_CAMERA_NOT_READY");

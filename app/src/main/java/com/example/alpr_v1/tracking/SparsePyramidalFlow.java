@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import java.util.ArrayList;
+import com.example.alpr_v1.continuity.ObservationMask;
 import java.util.Collections;
 import java.util.List;
 
@@ -40,6 +41,7 @@ final class SparsePyramidalFlow {
 
     static final class Result {
         final List<Match> matches;
+        boolean[] unsupported;
         final float supportRatio;
         final float meanError;
         final float meanForwardBackwardError;
@@ -89,18 +91,24 @@ final class SparsePyramidalFlow {
             List<Point> points,
             boolean validateForwardBackward
     ) {
+        return track(previous,current,width,height,points,validateForwardBackward,null);
+    }
+    static Result track(byte[] previous,byte[] current,int width,int height,List<Point> points,boolean validateForwardBackward,ObservationMask mask) {
+        if(mask!=null) mask.requireSize(width,height);
         if (previous == null || current == null || points == null
                 || width < 16 || height < 16
                 || previous.length < width * height
                 || current.length < width * height) {
             return new Result(Collections.emptyList(), points == null ? 0 : points.size());
         }
-        Pyramid first = Pyramid.build(previous, width, height, PYRAMID_LEVELS);
-        Pyramid second = Pyramid.build(current, width, height, PYRAMID_LEVELS);
+        Pyramid first = Pyramid.build(previous, width, height, PYRAMID_LEVELS, mask);
+        Pyramid second = Pyramid.build(current, width, height, PYRAMID_LEVELS, mask);
         List<Match> matches = new ArrayList<>();
+        boolean[] unsupported = mask==null?null:new boolean[points.size()];
         for (int index = 0; index < points.size(); index++) {
             Point source = points.get(index);
             Track forward = trackPoint(first, second, source, null);
+            if(forward.unsupported) unsupported[index]=true;
             if (!forward.valid || forward.error > MAXIMUM_MEAN_ERROR) continue;
             float fbError = 0f;
             if (validateForwardBackward) {
@@ -110,6 +118,7 @@ final class SparsePyramidalFlow {
                         forward.point,
                         new Point(-forward.dx, -forward.dy)
                 );
+                if(backward.unsupported) unsupported[index]=true;
                 if (!backward.valid) continue;
                 float fbDx = backward.point.x - source.x;
                 float fbDy = backward.point.y - source.y;
@@ -118,7 +127,7 @@ final class SparsePyramidalFlow {
             }
             matches.add(new Match(index, source, forward.point, forward.error, fbError));
         }
-        return new Result(matches, points.size());
+        Result result=new Result(matches, points.size());result.unsupported=unsupported;return result;
     }
 
     private static Track trackPoint(
@@ -138,13 +147,13 @@ final class SparsePyramidalFlow {
             float levelFlowX = flowX / scale;
             float levelFlowY = flowY / scale;
             if (!inside(first, sourceX, sourceY, WINDOW_RADIUS + 1)) {
-                return Track.invalid();
+                return first.mask==null?Track.invalid():Track.unsupported();
             }
             for (int iteration = 0; iteration < ITERATIONS; iteration++) {
                 float targetX = sourceX + levelFlowX;
                 float targetY = sourceY + levelFlowY;
                 if (!inside(second, targetX, targetY, WINDOW_RADIUS + 1)) {
-                    return Track.invalid();
+                    return second.mask==null?Track.invalid():Track.unsupported();
                 }
                 float gxx = 0f;
                 float gxy = 0f;
@@ -197,7 +206,7 @@ final class SparsePyramidalFlow {
         Image second = current.levels.get(0);
         if (!inside(first, source.x, source.y, WINDOW_RADIUS)
                 || !inside(second, target.x, target.y, WINDOW_RADIUS)) {
-            return Track.invalid();
+            return first.mask==null?Track.invalid():Track.unsupported();
         }
         float error = 0f;
         int samples = 0;
@@ -216,7 +225,8 @@ final class SparsePyramidalFlow {
     private static boolean inside(Image image, float x, float y, int margin) {
         return x >= margin && y >= margin
                 && x < image.width - margin - 1
-                && y < image.height - margin - 1;
+                && y < image.height - margin - 1
+                && (image.mask==null||image.mask.supports(x,y,margin));
     }
 
     private static float sample(Image image, float x, float y) {
@@ -241,6 +251,7 @@ final class SparsePyramidalFlow {
 
     private static final class Track {
         final boolean valid;
+        boolean unsupported;
         final Point point;
         final float dx;
         final float dy;
@@ -254,6 +265,8 @@ final class SparsePyramidalFlow {
             this.error = error;
         }
 
+        static Track unsupported(){Track t=invalid();t.unsupported=true;return t;}
+
         static Track invalid() {
             return new Track(false, new Point(0f, 0f), 0f, 0f, Float.POSITIVE_INFINITY);
         }
@@ -261,10 +274,12 @@ final class SparsePyramidalFlow {
 
     private static final class Image {
         final byte[] gray;
+        final ObservationMask mask;
         final int width;
         final int height;
 
-        Image(byte[] gray, int width, int height) {
+        Image(byte[] gray, int width, int height, ObservationMask mask) {
+            this.mask=mask;
             this.gray = gray;
             this.width = width;
             this.height = height;
@@ -278,9 +293,9 @@ final class SparsePyramidalFlow {
             this.levels = levels;
         }
 
-        static Pyramid build(byte[] gray, int width, int height, int requestedLevels) {
+        static Pyramid build(byte[] gray, int width, int height, int requestedLevels, ObservationMask mask) {
             List<Image> levels = new ArrayList<>();
-            levels.add(new Image(gray, width, height));
+            levels.add(new Image(gray, width, height, mask));
             while (levels.size() < requestedLevels) {
                 Image previous = levels.get(levels.size() - 1);
                 if (previous.width < 24 || previous.height < 24) break;
@@ -300,7 +315,7 @@ final class SparsePyramidalFlow {
                         next[y * nextWidth + x] = (byte) Math.round(sum / 4f);
                     }
                 }
-                levels.add(new Image(next, nextWidth, nextHeight));
+                levels.add(new Image(next, nextWidth, nextHeight, previous.mask==null?null:previous.mask.downsample2()));
             }
             return new Pyramid(Collections.unmodifiableList(levels));
         }

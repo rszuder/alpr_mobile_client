@@ -9,6 +9,8 @@ import android.os.SystemClock;
 
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.experiment.ResearchExecutionConfig;
+import com.example.alpr_v1.continuity.SceneObservationDomain;
+import com.example.alpr_v1.continuity.ObservationMask;
 import com.example.alpr_v1.autotune.AdaptiveFrameGate;
 import com.example.alpr_v1.acquisition.AcquisitionDecision;
 import com.example.alpr_v1.acquisition.AcquisitionDirective;
@@ -295,6 +297,8 @@ public final class AlprPipeline {
     private RoiBudgetPolicy experimentRoiBudgetPolicy =
             RoiBudgetPolicy.TWO_ROI;
     private volatile ResearchExecutionConfig frozenResearchExecutionConfig;
+    private volatile SceneObservationDomain sceneObservationDomain;
+    public SceneObservationDomain sceneObservationDomain() { return sceneObservationDomain; }
 
     private volatile boolean rapidCameraMotion;
     private volatile boolean cameraMoving;
@@ -398,6 +402,9 @@ public final class AlprPipeline {
             PlateDetectionCallback plateDetectionCallback,
             SceneChangeCallback sceneChangeCallback
     ) {
+        // TV mode requires the original bitmap plus validated F20 crop context. This legacy
+        // ImageProxy entry cannot provide that contract and must not observe an unmasked plane.
+        if (sceneObservationDomain != null) throw new IllegalArgumentException("TV_BBOX_FRAME_CONTEXT_REQUIRED");
         long sourceTimestampNanos = image.getImageInfo().getTimestamp();
         SourceFrameStamp sourceFrameStamp = new SourceFrameStamp(
                 0L,
@@ -847,7 +854,9 @@ public final class AlprPipeline {
         if (!researchWorkAdmitted()) return null;
         applyPendingUiTransitions();
         long frameId = frameIds.incrementAndGet();
-        SceneChangeDetector.Result sourceScene = sourceSceneDetector.update(frame);
+        SceneObservationDomain observation = sceneObservationDomain;
+        SceneChangeDetector.Result sourceScene = observation == null ? sourceSceneDetector.update(frame)
+                : sourceSceneDetector.update(frame, observation.sourceMask(frame.getWidth(),frame.getHeight()));
         SceneTransitionDecision sceneDecision = observeSourceScene(
                 frameId,
                 safeSourceFrame,
@@ -2808,6 +2817,11 @@ public final class AlprPipeline {
         if (config == frozenResearchExecutionConfig) return;
         ResearchExecutionConfig.requireUnchangedWhileRunning(frozenResearchExecutionConfig, config,
                 researchCollector != null && researchCollector.state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.RUNNING);
+        if(sceneObservationDomain!=null||config!=null&&config.tvBboxCrop()!=null){
+            sourceSceneDetector.reset();rotatedSceneDetector.reset();staticWatcher.reset();
+        }
+        sceneObservationDomain = config == null || config.tvBboxCrop() == null
+                ? null : new SceneObservationDomain(config.tvBboxCrop());
         frozenResearchExecutionConfig = config;
         reloadRequested = true;
     }
@@ -3152,6 +3166,13 @@ public final class AlprPipeline {
     /** Runs on the lightweight luma thread; generation advances before old inference can dispatch. */
     public SceneTransitionDecision observeStaticLuma(ContinuityStamp stamp, byte[] gray, int width, int height,
             long now, boolean transformed) {
+        return observeStaticLuma(stamp,gray,width,height,now,transformed,null);
+    }
+    public SceneTransitionDecision observeStaticLuma(ContinuityStamp stamp,byte[] gray,int width,int height,
+            long now,boolean transformed,ObservationMask mask) {
+        SceneObservationDomain domain=sceneObservationDomain;
+        if(domain!=null&&(mask==null||!mask.key.startsWith(domain.crop.digest+"/")))
+            throw new IllegalArgumentException("TV_OBSERVATION_MASK_REQUIRED");
         if (!staticMode()) return null;
         long gap = staticLumaLastNanos == 0L ? 0L : now - staticLumaLastNanos;
         staticLumaLastNanos = now;
@@ -3164,7 +3185,7 @@ public final class AlprPipeline {
             return null;
         }
         com.example.alpr_v1.continuity.StaticSceneWatcher.Result result = staticWatcher.observe(
-                gray, width, height, now, transformed, currentCameraZoomRatio);
+                gray, width, height, now, transformed, currentCameraZoomRatio, mask);
         if (com.example.alpr_v1.BuildConfig.DEBUG && (result.changed || now - staticLumaLogNanos >= 1_000_000_000L)) {
             staticLumaLogNanos = now;
             com.example.alpr_v1.continuity.StaticSceneWatchRegions watched = staticCycle.watchRegions();

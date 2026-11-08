@@ -19,6 +19,7 @@ import android.graphics.Path;
 
 import androidx.annotation.Nullable;
 
+import com.example.alpr_v1.R;
 import com.example.alpr_v1.domain.ScanAcquisitionViewport;
 import com.example.alpr_v1.domain.NormalizedBounds;
 import com.example.alpr_v1.vision.Point2;
@@ -100,6 +101,34 @@ public final class DetectionOverlayView extends View {
     private final Paint detectionTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint confidenceTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint labelEmphasisPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private List<RectF> labelExclusionRects = Collections.emptyList();
+    private long presentedResultTrackId;
+
+    /** Painting hints only. Neither method changes items, track focus, selection or hit bounds. */
+    public void setPresentedResultTrackId(long id) {
+        long value=Math.max(0L,id);if(value==presentedResultTrackId)return;
+        presentedResultTrackId=value;postInvalidateOnAnimation();
+    }
+    public void setLabelExclusionRects(List<RectF> rectangles) {
+        List<RectF> copy=new ArrayList<>();
+        if(rectangles!=null)for(RectF r:rectangles)if(r!=null&&!r.isEmpty()
+                &&Float.isFinite(r.left)&&Float.isFinite(r.top)&&Float.isFinite(r.right)&&Float.isFinite(r.bottom))copy.add(new RectF(r));
+        if(copy.equals(labelExclusionRects))return;
+        labelExclusionRects=Collections.unmodifiableList(copy);rebuildRenderItems();postInvalidateOnAnimation();
+    }
+    private boolean isPrimaryLabel(RenderItem item) {
+        if(focusedTrackId==0L&&activeVehicleEntityId>0L)
+            return item.item.kind==OverlayItem.Kind.VEHICLE&&item.item.trackId==activeVehicleEntityId;
+        long track=focusedTrackId>0L?focusedTrackId:presentedResultTrackId;
+        if(track<=0L)return false;
+        if(item.item.kind==OverlayItem.Kind.PLATE)return item.item.trackId==track;
+        EntityRecognitionSnapshot reading=requestedVehicleRecognitions.get(item.item.trackId);
+        return item.item.kind==OverlayItem.Kind.VEHICLE&&reading!=null&&reading.plateTrackId==track;
+    }
+    private boolean hasPrimaryLabel(){for(RenderItem item:renderItems)if(isPrimaryLabel(item))return true;return false;}
+    private boolean blockedByControls(RectF rect){return intersectsAny(rect,labelExclusionRects,dp(2));}
+
     private final Paint calibrationPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint activeVehicleMarkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint analysisViewportShadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -283,14 +312,16 @@ public final class DetectionOverlayView extends View {
         );
 
         detectionTextPaint.setColor(Color.rgb(125, 211, 252));
-        detectionTextPaint.setTextSize(dp(11.5f));
+        detectionTextPaint.setTextSize(dp(11.5f)*getResources().getConfiguration().fontScale);
         detectionTextPaint.setFakeBoldText(true);
         confidenceTextPaint.setColor(Color.rgb(94, 230, 168));
-        confidenceTextPaint.setTextSize(dp(10.5f));
+        confidenceTextPaint.setTextSize(dp(10.5f)*getResources().getConfiguration().fontScale);
         confidenceTextPaint.setFakeBoldText(true);
 
         labelPaint.setColor(Color.argb(188, 8, 13, 21));
         labelPaint.setStyle(Paint.Style.FILL);
+        labelEmphasisPaint.setColor(Color.rgb(125,211,252));
+        labelEmphasisPaint.setStyle(Paint.Style.STROKE);labelEmphasisPaint.setStrokeWidth(dp(1.25f));
         calibrationPaint.setColor(Color.rgb(250, 204, 21));
         calibrationPaint.setStyle(Paint.Style.STROKE);
         calibrationPaint.setStrokeWidth(dp(1.5f));
@@ -1714,7 +1745,8 @@ public final class DetectionOverlayView extends View {
         super.onDraw(canvas);
         if (cameraMappingRequired && (cameraGeometry == null || cameraGeometry.sourceWidth != sourceWidth
                 || cameraGeometry.sourceHeight != sourceHeight)) return;
-        drawAnalysisViewport(canvas);
+        // The analysis viewport decoration duplicated the TV outline and dimmed the image.
+        // Keep its state/mapping semantics, but render only actual detection/calibration geometry.
         // Najpierw lekkie ramki i punkty. Badge'e są układane osobno, aby nie
         // przykrywały żadnej z ramek detekcyjnych.
         for (RenderItem renderItem : renderItems) {
@@ -1873,8 +1905,10 @@ public final class DetectionOverlayView extends View {
             float left = clamp(bounds.left, 0f, Math.max(0f, getWidth() - width));
             float top = Math.max(0f, bounds.top - height - dp(4f));
             RectF badge = new RectF(left, top, left + width, top + height);
+            RectF placed=placeFloatingLabel(badge,bounds);
+            badge=placed;
             canvas.drawRoundRect(badge, dp(5), dp(5), labelPaint);
-            canvas.drawText(text, left + dp(6f), badge.centerY()
+            canvas.drawText(text, badge.left + dp(6f), badge.centerY()
                     - (detectionTextPaint.ascent() + detectionTextPaint.descent()) * 0.5f,
                     detectionTextPaint);
         }
@@ -1891,7 +1925,7 @@ public final class DetectionOverlayView extends View {
         int saveCount = canvas.save();
         if (progress < 0.9f) {
             String text = absorbingPlate.recognition.text + " · "
-                    + Math.round(absorbingPlate.recognition.confidence * 100.0) + "%";
+                    + getResources().getString(com.example.alpr_v1.R.string.main_ui_mz_saved,Math.round(absorbingPlate.recognition.confidence * 100.0));
             float labelHeight = fontHeight(detectionTextPaint) + dp(7f);
             float labelWidth = Math.min(
                     getWidth(),
@@ -1905,6 +1939,7 @@ public final class DetectionOverlayView extends View {
             );
             badge.right = badge.left + labelWidth;
             badge.bottom = badge.top + labelHeight;
+            badge=placeFloatingLabel(badge,moving);
             canvas.drawRoundRect(badge, dp(5), dp(5), labelPaint);
             float baseline = badge.centerY()
                     - (detectionTextPaint.ascent() + detectionTextPaint.descent()) * 0.5f;
@@ -2150,41 +2185,36 @@ public final class DetectionOverlayView extends View {
         return boxPaint;
     }
     private void drawLabel(Canvas canvas, RenderItem renderItem) {
-        RectF badge = renderItem.badge;
-        if (renderItem.item.kind == OverlayItem.Kind.VEHICLE) {
-            vehicleLeaderPaint.setColor(paintFor(renderItem.item).getColor());
-            vehicleLeaderPaint.setAlpha(255);
-            vehicleBadgeBarPaint.setColor(paintFor(renderItem.item).getColor());
-            float barY = badge.bottom + dp(2f);
-            float endX = clamp(renderItem.bounds.left, badge.left, badge.right);
-            canvas.drawLine(renderItem.bounds.left, renderItem.bounds.top,
-                    endX, barY, vehicleLeaderContrastPaint);
-            canvas.drawLine(renderItem.bounds.left, renderItem.bounds.top,
-                    endX, barY, vehicleLeaderPaint);
-            canvas.drawLine(badge.left, barY, badge.right, barY, vehicleBadgeBarPaint);
+        RectF badge=renderItem.badge;
+        boolean primary=!diagnosticMode&&isPrimaryLabel(renderItem);
+        boolean secondary=!diagnosticMode&&hasPrimaryLabel()&&!primary;
+        int oldDetection=detectionTextPaint.getColor(),oldConfidence=confidenceTextPaint.getColor(),oldBackground=labelPaint.getColor();
+        if(secondary){detectionTextPaint.setColor(Color.rgb(173,184,200));confidenceTextPaint.setColor(Color.rgb(173,184,200));}
+        if(!diagnosticMode)labelPaint.setColor(Color.argb(primary?236:220,8,13,21));
+        try {
+            if(renderItem.item.kind==OverlayItem.Kind.VEHICLE) {
+                vehicleLeaderPaint.setColor(paintFor(renderItem.item).getColor());
+                vehicleLeaderPaint.setAlpha(secondary?140:255);
+                vehicleBadgeBarPaint.setColor(paintFor(renderItem.item).getColor());
+                float barY=badge.bottom+dp(2),endX=clamp(renderItem.bounds.left,badge.left,badge.right);
+                canvas.drawLine(renderItem.bounds.left,renderItem.bounds.top,endX,barY,vehicleLeaderContrastPaint);
+                canvas.drawLine(renderItem.bounds.left,renderItem.bounds.top,endX,barY,vehicleLeaderPaint);
+                canvas.drawLine(badge.left,barY,badge.right,barY,vehicleBadgeBarPaint);
+            }
+            canvas.drawRoundRect(badge,dp(5),dp(5),labelPaint);
+            if(primary)canvas.drawRoundRect(badge,dp(5),dp(5),labelEmphasisPaint);
+            float baseline=renderItem.stacked?badge.top+dp(3.5f)-detectionTextPaint.ascent():badge.centerY()
+                    -(detectionTextPaint.ascent()+detectionTextPaint.descent())*.5f;
+            float x=badge.left+dp(6);
+            canvas.save();canvas.clipRect(badge);
+            canvas.drawText(renderItem.parts.detection,x,baseline,detectionTextPaint);
+            if(!renderItem.parts.confidence.isEmpty())canvas.drawText(renderItem.parts.confidence,
+                    renderItem.stacked?x:x+renderItem.detectionWidth+dp(5),
+                    renderItem.stacked?baseline+fontHeight(detectionTextPaint)+dp(2):baseline,confidenceTextPaint);
+            canvas.restore();
+        } finally {
+            detectionTextPaint.setColor(oldDetection);confidenceTextPaint.setColor(oldConfidence);labelPaint.setColor(oldBackground);
         }
-        canvas.drawRoundRect(badge, dp(5), dp(5), labelPaint);
-        float baseline = badge.centerY() - (
-                detectionTextPaint.ascent() + detectionTextPaint.descent()
-        ) * 0.5f;
-        float textX = badge.left + dp(6);
-        canvas.save();
-        canvas.clipRect(badge);
-        canvas.drawText(
-                renderItem.parts.detection,
-                textX,
-                baseline,
-                detectionTextPaint
-        );
-        if (!renderItem.parts.confidence.isEmpty()) {
-            canvas.drawText(
-                    renderItem.parts.confidence,
-                    textX + renderItem.detectionWidth + dp(5),
-                    baseline,
-                    confidenceTextPaint
-            );
-        }
-        canvas.restore();
     }
 
     private void rebuildRenderItems() {
@@ -2263,6 +2293,8 @@ public final class DetectionOverlayView extends View {
             if (item.kind == OverlayItem.Kind.VEHICLE) vehicleFrameBounds.add(bounds);
         }
 
+        List<RectF> vehicleLabelFrames=new ArrayList<>(vehicleFrameBounds);
+        vehicleLabelFrames.addAll(plateFrameBounds);
         List<RectF> occupiedLabels = new ArrayList<>();
         float horizontalPadding = dp(6);
         float verticalPadding = dp(3.5f);
@@ -2284,16 +2316,16 @@ public final class DetectionOverlayView extends View {
             float textGap = renderItem.parts.confidence.isEmpty() ? 0f : dp(5);
             float labelWidth = Math.min(
                     viewWidth,
-                    renderItem.detectionWidth + confidenceWidth + textGap + horizontalPadding * 2f
+                    (renderItem.stacked?Math.max(renderItem.detectionWidth,confidenceWidth):renderItem.detectionWidth+confidenceWidth+textGap) + horizontalPadding * 2f
             );
-            float labelHeight = textHeight + verticalPadding * 2f;
+            float labelHeight = (renderItem.stacked?textHeight*2+dp(2):textHeight) + verticalPadding * 2f;
             renderItem.badge = vehicleLabel
                     ? findVehicleBadge(
                             renderItem.bounds,
                             labelWidth,
                             labelHeight,
                             occupiedLabels,
-                            vehicleFrameBounds,
+                            vehicleLabelFrames,
                             viewWidth,
                             viewHeight
                     )
@@ -2310,6 +2342,45 @@ public final class DetectionOverlayView extends View {
         }
         renderItems = Collections.unmodifiableList(prepared);
         startNextPlateTransfer();
+    }
+
+    /** Copy of displayed obstacles for instruments; does not change labels, focus, geometry or hit bounds. */
+    public HudProtectedArea hudProtectedArea() {
+        HudProtectedArea area=new HudProtectedArea();
+        if(cameraMappingRequired&&(cameraGeometry==null||cameraGeometry.sourceWidth!=sourceWidth||cameraGeometry.sourceHeight!=sourceHeight))return area;
+        for(List<RenderItem> layer:java.util.Arrays.asList(renderItems,fadingPlateRenderItems))for(RenderItem item:layer){
+            if(item.item.kind==OverlayItem.Kind.PLATE)area.add(item.bounds);else area.outline(item.bounds);
+            area.add(item.badge);
+        }
+        for(PendingPlateReading reading:pendingPlateReadings.values()){
+            PlateDisplayGeometry geometry=reading.geometry;
+            if(!geometry.available()||!geometry.hasQuad()&&!diagnosticMode)continue;
+            if(cameraMappingRequired&&(cameraGeometry==null||geometry.sourceWidth!=cameraGeometry.sourceWidth||geometry.sourceHeight!=cameraGeometry.sourceHeight))continue;
+            RectF bounds=mapToView(androidBounds(geometry.bounds),geometry.sourceWidth,geometry.sourceHeight,getWidth(),getHeight());
+            area.add(bounds);
+            String text=geometry.hasQuad()?getResources().getString(reading.text.isEmpty()?R.string.overlay_plate_pending:R.string.overlay_plate_unassigned,reading.text.isEmpty()?"…":reading.text):"MT BBOX — brak Pose";
+            float height=fontHeight(detectionTextPaint)+dp(7f),width=Math.min(getWidth(),detectionTextPaint.measureText(text)+dp(12f));
+            float left=clamp(bounds.left,0f,Math.max(0f,getWidth()-width)),top=Math.max(0f,bounds.top-height-dp(4f));
+            area.add(placeFloatingLabel(new RectF(left,top,left+width,top+height),bounds));
+        }
+        PointF marker=activeVehicleMarkerTip(activeVehicleMarkerProgress);
+        if(marker!=null)area.add(new RectF(marker.x-dp(9),marker.y-dp(11),marker.x+dp(9),marker.y+dp(1)));
+        if(geometryCalibrationEnabled)for(float[] m:new float[][]{{.5f,.5f},{.05f,.05f},{.95f,.05f},{.05f,.95f},{.95f,.95f}}){
+            PointF point=normalizedToViewPoint(m[0],m[1]);area.add(new RectF(point.x-dp(11),point.y-dp(11),point.x+dp(11),point.y+dp(11)));
+        }
+        if(absorbingPlate!=null){
+            RectF target=recognitionTargetBounds(absorbingPlate.recognition.entityId);
+            if(target==null)target=absorbingPlate.targetBounds;
+            if(target!=null){
+                RectF moving=interpolateRect(absorbingPlate.sourceBounds,target,Math.max(0f,Math.min(1f,plateAbsorbProgress)));
+                area.add(moving);
+                String text=absorbingPlate.recognition.text+" · "+getResources().getString(R.string.main_ui_mz_saved,Math.round(absorbingPlate.recognition.confidence*100.0));
+                float height=fontHeight(detectionTextPaint)+dp(7f),width=Math.min(getWidth(),detectionTextPaint.measureText(text)+dp(12f));
+                float left=Math.max(0f,Math.min(getWidth()-width,moving.left)),top=Math.max(0f,moving.top-height-dp(3f));
+                area.add(placeFloatingLabel(new RectF(left,top,left+width,top+height),moving));
+            }
+        }
+        return area;
     }
 
     List<RectF> snapshotRenderBoundsForTesting() {
@@ -2497,6 +2568,18 @@ public final class DetectionOverlayView extends View {
         return 0;
     }
 
+    private RectF placeFloatingLabel(RectF preferred,RectF owner){
+        List<RectF> frames=new ArrayList<>(),labels=new ArrayList<>();
+        for(RenderItem item:renderItems){if(item.item.kind==OverlayItem.Kind.PLATE)frames.add(item.bounds);if(item.badge!=null)labels.add(item.badge);}
+        if(!blockedByControls(preferred)&&!intersectsAny(preferred,frames,dp(2)))return preferred;
+        RectF free=findFreeBadge(owner,preferred.width(),preferred.height(),frames,labels,getWidth(),getHeight());
+        return free==null?preferred:free;
+    }
+    List<RectF> snapshotBadgeBoundsForTesting(){
+        List<RectF> result=new ArrayList<>();for(RenderItem item:renderItems)if(item.badge!=null)result.add(new RectF(item.badge));return result;
+    }
+    boolean primaryLabelForTesting(OverlayItem.Kind kind,long id){for(RenderItem item:renderItems)if(item.item.kind==kind&&item.item.trackId==id)return isPrimaryLabel(item);return false;}
+
     private RectF findFreeBadge(
             RectF owner,
             float width,
@@ -2519,10 +2602,14 @@ public final class DetectionOverlayView extends View {
                 new RectF(alignedRight, owner.bottom + gap, alignedRight + width, owner.bottom + gap + height)
         };
         for (RectF candidate : candidates) {
-            if (!inside(candidate, viewWidth, viewHeight)) continue;
+            if (!inside(candidate, viewWidth, viewHeight)||blockedByControls(candidate)) continue;
             if (intersectsAny(candidate, frames, gap * 0.45f)) continue;
             if (intersectsAny(candidate, labels, gap * 0.45f)) continue;
             return candidate;
+        }
+        for(float y=gap;y+height<=viewHeight-gap;y+=height+gap)for(float x=gap;x+width<=viewWidth;x+=Math.max(dp(24),width*.5f)) {
+            RectF candidate=new RectF(x,y,x+width,y+height);
+            if(!blockedByControls(candidate)&&!intersectsAny(candidate,frames,gap*.45f)&&!intersectsAny(candidate,labels,gap*.45f))return candidate;
         }
         return null;
     }
@@ -2541,7 +2628,7 @@ public final class DetectionOverlayView extends View {
         float preferredX = clamp(owner.left + dp(24f), 0f, Math.max(0f, viewWidth - width));
         float preferredY = owner.top - height - dp(32f);
         RectF preferred = new RectF(preferredX, preferredY, preferredX + width, preferredY + height);
-        if (inside(preferred, viewWidth, viewHeight)
+        if (inside(preferred, viewWidth, viewHeight)&&!blockedByControls(preferred)
                 && !intersectsAny(preferred, frames, gap)
                 && !intersectsAny(preferred, labels, gap)) return preferred;
         RectF best = null;
@@ -2551,7 +2638,7 @@ public final class DetectionOverlayView extends View {
             for (float x = 0f; x <= viewWidth - width + stepX; x += stepX) {
                 float left = Math.min(x, viewWidth - width);
                 RectF candidate = new RectF(left, y, left + width, y + height);
-                if (intersectsAny(candidate, frames, gap)
+                if (blockedByControls(candidate)||intersectsAny(candidate, frames, gap)
                         || intersectsAny(candidate, labels, gap)) continue;
                 float dx = clamp(owner.left, candidate.left, candidate.right) - owner.left;
                 float dy = candidate.bottom + dp(2f) - owner.top;
@@ -2597,6 +2684,7 @@ public final class DetectionOverlayView extends View {
         final List<PointF> points;
         final LabelParts parts;
         final float detectionWidth;
+        final boolean stacked;
         RectF badge;
 
         RenderItem(OverlayItem item, RectF bounds, List<PointF> points) {
@@ -2617,7 +2705,7 @@ public final class DetectionOverlayView extends View {
                                 : "P" + item.trackId + ": "
                                 + labelRecognition.text,
                         labelRecognition != null
-                                ? Math.round(labelRecognition.confidence * 100.0) + "%"
+                                ? getResources().getString(com.example.alpr_v1.R.string.main_ui_mz_saved,Math.round(labelRecognition.confidence * 100.0))
                                 : ""
                 );
             } else {
@@ -2625,6 +2713,7 @@ public final class DetectionOverlayView extends View {
                         ? "MT BBOX — brak Pose" : item.kind == OverlayItem.Kind.PLATE
                         ? item.label.replaceFirst("(?i)^tablica\\b", "T") : item.label);
             }
+            this.stacked=item.kind==OverlayItem.Kind.VEHICLE&&!parts.confidence.isEmpty();
             this.detectionWidth = detectionTextPaint.measureText(parts.detection);
         }
     }

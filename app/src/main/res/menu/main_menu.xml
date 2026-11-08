@@ -9,7 +9,7 @@
         android:id="@+id/menu_diagnostics"
         android:icon="@drawable/ic_diagnostics_24"
         android:title="@string/diagnostics_title"
-        app:showAsAction="ifRoom" />
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/menu_settings"

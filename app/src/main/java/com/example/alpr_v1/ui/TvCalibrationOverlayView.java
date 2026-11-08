@@ -77,6 +77,20 @@ public final class TvCalibrationOverlayView extends View {
     public boolean cornerPlaced(int visual){int i=sourceIndex(visual);return points.size()>i&&points.get(i)!=null;}
     private float dp(float n){return n*getResources().getDisplayMetrics().density;}
     private PointF map(Position p){double[] v=geometry.normalizedToView(p.x,p.y);return new PointF((float)v[0],(float)v[1]);}
+    public HudProtectedArea hudProtectedArea(){
+        HudProtectedArea result=new HudProtectedArea();
+        if(geometry==null||points.isEmpty())return result;
+        PointF first=null,previous=null;
+        for(Position p:points){
+            if(p==null)continue;
+            PointF point=map(p);
+            result.add(new RectF(point.x-dp(5),point.y-dp(5),point.x+dp(5),point.y+dp(5)));
+            if(previous!=null)result.edge(previous.x,previous.y,point.x,point.y);
+            if(first==null)first=point;previous=point;
+        }
+        if(points.size()==4&&first!=null&&previous!=null)result.edge(previous.x,previous.y,first.x,first.y);
+        return result;
+    }
     @Override protected void onDraw(Canvas canvas){
         super.onDraw(canvas);if(geometry==null||points.isEmpty())return;
         boolean valid=TvSetupCalibration.validation(corners(),geometry,getResources().getDisplayMetrics().density)==null;

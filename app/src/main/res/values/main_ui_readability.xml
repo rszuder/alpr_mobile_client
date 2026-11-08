@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="main_ui_static_wait">Czekam na zmianę</string>
+    <string name="main_ui_stopped">Analiza zatrzymana</string>
+    <string name="main_ui_input_planned">Planowane wejście: %1$s</string>
+    <string name="main_ui_input_active">Wejście modeli: %1$s</string>
+    <string name="main_ui_input_full">pełna klatka</string>
+    <string name="main_ui_input_tv">wycinek TV (BBOX), nieof.</string>
+    <string name="main_ui_input_unavailable">N/A — brak konfiguracji</string>
+    <string name="main_ui_tv_ready">skalibrowany</string>
+    <string name="main_ui_tv_stale">NIEAKTUALNY</string>
+    <string name="main_ui_tv_draft">szkic (DRAFT)</string>
+    <string name="main_ui_tv_missing">brak kalibracji</string>
+    <string name="main_ui_outline_visible">ON</string>
+    <string name="main_ui_outline_hidden">OFF</string>
+    <string name="main_ui_tv_summary">TV: %1$s · obrys %2$s</string>
+    <string name="main_ui_stop_analysis">Stop</string>
+    <string name="main_ui_stop_session">Stop</string>
+    <string name="main_ui_stop_analysis_description">Zatrzymaj analizę i podgląd kamery</string>
+    <string name="main_ui_stop_session_description">Zatrzymaj analizę i kamerę oraz zakończ bieżącą sesję badawczą</string>
+    <string name="main_ui_mz_saved">zap. MZ %1$d%%</string>
+    <string name="main_ui_mz_legend">MZ: min. średnich pewności znaków.\nzap. MZ: najlepszy wskaźnik zapamiętany dla pojazdu.\nMZ wyniku: pamięć tracku i tekstu.\nStabilność to osobny stan.</string>
+    <string name="main_ui_mz_explanation">MZ oznacza wskaźnik znaków: minimum średnich pewności zwycięskich znaków w konsensusie. Nie jest prawdopodobieństwem poprawności całego odczytu. zap. MZ zachowuje najwyższy wskaźnik dla encji pojazdu. MZ w pasku wyniku zachowuje maksimum dla aktualnego tracku i tekstu. Stan stabilny jest osobnym warunkiem algorytmu, nie decyzją operatora.</string>
+    <string name="main_ui_mz_result_description">%1$s. Wskaźnik MZ: minimum średnich pewności znaków, zapamiętane maksimum dla aktualnego tracku i tekstu. Procent nie oznacza stabilności ani prawdopodobieństwa poprawności całego odczytu.</string>
+</resources>

@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
-    <TextView android:id="@+id/hud_source_resolution" style="@style/HudModelLine"
-        android:text="@string/hud_source_unknown" android:textColor="@color/white" android:textStyle="bold" />
-    <TextView android:id="@+id/hud_mp_variant" style="@style/HudModelLine" android:text="MP · —" />
-    <TextView android:id="@+id/hud_mt_variant" style="@style/HudModelLine" android:text="MT · —" />
-    <TextView android:id="@+id/hud_mz_variant" style="@style/HudModelLine" android:text="MZ · —" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:showDividers="middle" android:divider="@drawable/cockpit_vertical_divider" android:background="@drawable/bg_cockpit_section_bottom">
+        <TextView android:id="@+id/hud_source_resolution" style="@style/HudModelLine" android:layout_width="0dp" android:layout_weight="1" android:text="@string/hud_source_unknown" />
+        <TextView android:id="@+id/hud_mp_variant" style="@style/HudModelLine" android:layout_width="0dp" android:layout_weight="1" android:text="MP · —" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:showDividers="middle" android:divider="@drawable/cockpit_vertical_divider">
+        <TextView android:id="@+id/hud_mt_variant" style="@style/HudModelLine" android:layout_width="0dp" android:layout_weight="1" android:text="MT · —" />
+        <TextView android:id="@+id/hud_mz_variant" style="@style/HudModelLine" android:layout_width="0dp" android:layout_weight="1" android:text="MZ · —" />
+    </LinearLayout>
 </merge>

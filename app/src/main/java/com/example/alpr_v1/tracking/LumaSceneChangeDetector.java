@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.continuity.ObservationMask;
 
 import java.util.Collections;
 import java.util.List;
@@ -50,6 +51,7 @@ public final class LumaSceneChangeDetector {
     }
 
     private byte[] previous;
+    private ObservationMask mask;
     private int previousWidth;
     private int previousHeight;
 
@@ -62,7 +64,12 @@ public final class LumaSceneChangeDetector {
             int width,
             int height,
             List<NormalizedBounds> foregroundMasks
-    ) {
+    ) { return update(gray,width,height,foregroundMasks,null); }
+
+    public synchronized Result update(byte[] gray,int width,int height,List<NormalizedBounds> foregroundMasks,ObservationMask support) {
+        if(support!=null) support.requireSize(width,height);
+        if(!ObservationMask.same(mask,support)) reset();
+        mask=support;
         if (gray == null || width <= 0 || height <= 0
                 || gray.length < width * height) {
             return Result.referenceOnly();
@@ -84,6 +91,7 @@ public final class LumaSceneChangeDetector {
             float normalizedY = y / (float) height;
             for (int x = SAMPLE_STEP / 2; x < width; x += SAMPLE_STEP) {
                 float normalizedX = x / (float) width;
+                if(mask!=null&&!mask.contains(x,y)) continue;
                 int index = y * width + x;
                 int delta = Math.abs(
                         (gray[index] & 0xff) - (previous[index] & 0xff)
@@ -124,6 +132,7 @@ public final class LumaSceneChangeDetector {
 
     public synchronized void reset() {
         previous = null;
+        mask = null;
         previousWidth = 0;
         previousHeight = 0;
     }

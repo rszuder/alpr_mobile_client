@@ -72,17 +72,23 @@ public final class PhoneLevelView extends View {
         canvas.drawCircle(cx, cy, radius, paint);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1f * density);
-        paint.setColor(0x99D3DFEA);
+        paint.setColor(0x9932D2E4);
         canvas.drawLine(cx - radius, cy, cx + radius, cy, paint);
         canvas.drawLine(cx, cy - radius, cx, cy + radius, paint);
+        // Each axis uses the existing +/-30 degree ball range: ticks at 10 and 20 degrees.
+        float travel=Math.max(0f,radius-6f*density),tick=2f*density;
+        for(int step=1;step<=2;step++)for(int sign:new int[]{-1,1}){
+            float offset=sign*travel*step/3f;
+            canvas.drawLine(cx+offset,cy-tick,cx+offset,cy+tick,paint);
+            canvas.drawLine(cx-tick,cy+offset,cx+tick,cy+offset,paint);
+        }
         paint.setStrokeWidth(2f * density);
-        paint.setColor(!available ? 0xFF8C9AAA : warning ? 0xFFFF5252 : 0xFF50E3A4);
+        paint.setColor(!available ? 0xFF8C9AAA : warning ? getContext().getColor(R.color.alpr_warning) : getContext().getColor(R.color.cockpit_cyan));
         canvas.drawCircle(cx, cy, radius, paint);
         if (available) {
             float ballRadius = 4f * density;
-            float travel = Math.max(0f, radius - ballRadius - 2f * density);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFFF5252);
+            paint.setColor(warning ? getContext().getColor(R.color.alpr_warning) : getContext().getColor(R.color.cockpit_cyan));
             canvas.drawCircle(cx + ballX * travel, cy + ballY * travel, ballRadius, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(density);

@@ -1,6 +1,7 @@
 package com.example.alpr_v1.tracking;
 
 import com.example.alpr_v1.domain.NormalizedBounds;
+import com.example.alpr_v1.continuity.ObservationMask;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -13,6 +14,7 @@ public final class GlobalLumaMotionTracker {
     private static final int GRID_Y = 5;
     private static final int MINIMUM_INLIERS = 6;
     private byte[] previous;
+    private ObservationMask mask;
     private int previousWidth;
     private int previousHeight;
     private List<NormalizedBounds> previousForegroundMasks = Collections.emptyList();
@@ -40,7 +42,13 @@ public final class GlobalLumaMotionTracker {
             int height,
             List<NormalizedBounds> foregroundMasks,
             boolean cameraMotionConfirmedBySensor
-    ) {
+    ) { return update(gray,width,height,foregroundMasks,cameraMotionConfirmedBySensor,null); }
+
+    public synchronized FrameMotionTransform update(byte[] gray,int width,int height,List<NormalizedBounds> foregroundMasks,
+            boolean cameraMotionConfirmedBySensor,ObservationMask support) {
+        if(support!=null) support.requireSize(width,height);
+        if(!ObservationMask.same(mask,support)) reset();
+        mask=support;
         if (gray == null || width < 32 || height < 32
                 || gray.length < width * height) {
             reset();
@@ -81,7 +89,7 @@ public final class GlobalLumaMotionTracker {
                 current,
                 width,
                 height,
-                points
+                points, true, mask
         );
         previous = current;
         previousForegroundMasks = currentForegroundMasks;
@@ -173,6 +181,7 @@ public final class GlobalLumaMotionTracker {
 
     public synchronized void reset() {
         previous = null;
+        mask = null;
         previousWidth = 0;
         previousHeight = 0;
         previousForegroundMasks = Collections.emptyList();
@@ -189,7 +198,7 @@ public final class GlobalLumaMotionTracker {
         return Collections.unmodifiableList(valid);
     }
 
-    private static List<SparsePyramidalFlow.Point> grid(
+    private List<SparsePyramidalFlow.Point> grid(
             int width,
             int height,
             List<NormalizedBounds> foregroundMasks
@@ -201,6 +210,7 @@ public final class GlobalLumaMotionTracker {
             float py = marginY + y * (height - 2f * marginY) / (GRID_Y - 1f);
             for (int x = 0; x < GRID_X; x++) {
                 float px = marginX + x * (width - 2f * marginX) / (GRID_X - 1f);
+                if (mask!=null&&!mask.supports(px,py,14)) continue;
                 if (!insideForeground(
                         px / width,
                         py / height,
@@ -286,7 +296,7 @@ public final class GlobalLumaMotionTracker {
                 : sorted.get(middle);
     }
 
-    private static FrameMotionTransform coarseTranslation(
+    private FrameMotionTransform coarseTranslation(
             byte[] previous,
             byte[] current,
             int width,
@@ -336,7 +346,7 @@ public final class GlobalLumaMotionTracker {
                 ? result : FrameMotionTransform.invalid();
     }
 
-    private static Translation searchTranslation(
+    private Translation searchTranslation(
             byte[] source,
             byte[] target,
             int width,
@@ -431,7 +441,7 @@ public final class GlobalLumaMotionTracker {
         return new Translation(true, bestDx, bestDy, bestError);
     }
 
-    private static Translation searchTranslationRange(
+    private Translation searchTranslationRange(
             byte[] source,
             byte[] target,
             int width,
@@ -482,7 +492,7 @@ public final class GlobalLumaMotionTracker {
                 : Translation.invalid();
     }
 
-    private static float translationError(
+    private float translationError(
             byte[] source,
             byte[] target,
             int width,
@@ -508,6 +518,7 @@ public final class GlobalLumaMotionTracker {
                         y / (float) height,
                         foregroundMasks
                 )) continue;
+                if(mask!=null&&(!mask.contains(x,y)||!mask.contains(x+dx,y+dy))) continue;
                 difference += Math.abs(
                         (source[sourceRow + x] & 0xff)
                                 - (target[targetRow + x + dx] & 0xff)
@@ -520,7 +531,7 @@ public final class GlobalLumaMotionTracker {
                 : difference / (float) samples;
     }
 
-    private static List<SparsePyramidalFlow.Match> translationMatches(
+    private List<SparsePyramidalFlow.Match> translationMatches(
             byte[] source,
             byte[] target,
             int width,
@@ -539,6 +550,7 @@ public final class GlobalLumaMotionTracker {
             if (x < 2 || y < 2 || x >= width - 2 || y >= height - 2
                     || targetX < 2 || targetY < 2
                     || targetX >= width - 2 || targetY >= height - 2) continue;
+            if(mask!=null&&(!mask.supports(x,y,2)||!mask.supports(targetX,targetY,2))) continue;
             float error = patchError(
                     source, target, width, x, y, targetX, targetY
             );

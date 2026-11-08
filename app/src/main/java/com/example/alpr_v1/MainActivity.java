@@ -60,6 +60,9 @@ import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
 import com.example.alpr_v1.camera.CameraController;
 import com.example.alpr_v1.camera.LumaFrame;
+import com.example.alpr_v1.continuity.SceneObservationDomain;
+import com.example.alpr_v1.continuity.ObservationMask;
+import com.example.alpr_v1.setup.CameraPreviewGeometry;
 import com.example.alpr_v1.camera.AutoZoomController;
 import com.example.alpr_v1.camera.AutoZoomRecognitionMemory;
 //do usuniecia po migracji
@@ -212,7 +215,11 @@ public final class MainActivity extends AppCompatActivity {
     private final AtomicBoolean previewFrameInFlight = new AtomicBoolean();
     private final AtomicBoolean pipelineFrameInFlight = new AtomicBoolean();
     private final AtomicBoolean directLumaWorkerRunning = new AtomicBoolean();
-    private final AtomicReference<LumaFrame> pendingDirectLumaFrame =
+    private static final class PendingObservation {
+        final LumaFrame frame; final SceneObservationDomain domain;
+        PendingObservation(LumaFrame frame,SceneObservationDomain domain){this.frame=frame;this.domain=domain;}
+    }
+    private final AtomicReference<PendingObservation> pendingDirectLumaFrame =
             new AtomicReference<>();
     private final AtomicBoolean previewCoordinationWorkerRunning = new AtomicBoolean();
     private final AtomicReference<PreviewCoordinationRequest>
@@ -447,6 +454,8 @@ public final class MainActivity extends AppCompatActivity {
                         try {
                             previewBitmap = previewView.getBitmap();
                             if (previewBitmap != null && !previewBitmap.isRecycled()) {
+                                final SceneObservationDomain observationDomain=observationDomain();
+                                final CameraPreviewGeometry observationGeometry=tvSetup==null?null:tvSetup.observationGeometry();
                                 final Bitmap ownedBitmap = previewBitmap;
                                 final long sceneGeneration = uiSceneGeneration.get();
                                 final long transformGeneration =
@@ -463,7 +472,7 @@ public final class MainActivity extends AppCompatActivity {
                                                 sceneGeneration,
                                                 transformGeneration,
                                                 presentationGeneration,
-                                                continuityStamp
+                                                continuityStamp, observationDomain, observationGeometry
                                         )
                                 );
                             } else {
@@ -493,10 +502,12 @@ public final class MainActivity extends AppCompatActivity {
             long sceneGeneration,
             long transformGeneration,
             long presentationGeneration,
-            ContinuityStamp continuityStamp
+            ContinuityStamp continuityStamp,
+            SceneObservationDomain domain, CameraPreviewGeometry geometry
     ) {
         boolean bitmapHandedToUi = false;
         try {
+            if(domain!=observationDomain()) return;
             if (pipeline != null && pipeline.isStaticIdle()) return;
             if (!cameraStarted
                     || sceneGeneration != uiSceneGeneration.get()
@@ -543,17 +554,18 @@ public final class MainActivity extends AppCompatActivity {
 
             // STATIC scene evidence comes from camera luma, never KLT or a delayed Preview bitmap.
             if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY) return;
+            final SceneObservationDomain.Frame observation=domain==null?null:domain.preview(previewBitmap,geometry);
 
             if (autoZoomZoomedAnchorPending
                     && autoZoomController.state()
                     == AutoZoomController.State.ZOOMED_RETRY) {
-                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                anchorPreview(autoZoomZoomedSceneAnchorGuard,previewBitmap,observation);
                 autoZoomZoomedAnchorPending = false;
                 autoZoomZoomedAnchorValid = true;
             }
 
             if (previewSceneAnchorPending) {
-                previewSceneAnchorGuard.anchor(previewBitmap);
+                anchorPreview(previewSceneAnchorGuard,previewBitmap,observation);
                 previewSceneAnchorPending = false;
             }
 
@@ -570,9 +582,9 @@ public final class MainActivity extends AppCompatActivity {
                     )) {
                 resetGlobalPreviewMotionState();
                 previewSceneDetector.reset();
-                previewSceneDetector.update(previewBitmap);
-                previewSceneAnchorGuard.anchor(previewBitmap);
-                autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                updatePreviewScene(previewBitmap,observation);
+                anchorPreview(previewSceneAnchorGuard,previewBitmap,observation);
+                anchorPreview(autoZoomZoomedSceneAnchorGuard,previewBitmap,observation);
                 ReacquireTelemetry recovery = pipeline.reacquireTelemetry();
                 if (PreviewContinuityUiPolicy
                         .shouldClearFocusedTargetAfterRecovery(
@@ -622,14 +634,15 @@ public final class MainActivity extends AppCompatActivity {
             }
 
             SceneAnchorGuard.Result anchorResult =
-                    previewSceneAnchorGuard.evaluate(previewBitmap);
+                    evaluatePreview(previewSceneAnchorGuard,previewBitmap,observation);
             SceneChangeDetector.Result scene =
-                    previewSceneDetector.update(previewBitmap);
+                    updatePreviewScene(previewBitmap,observation);
             SceneAnchorGuard.Result zoomedAnchorResult =
-                    autoZoomZoomedSceneAnchorGuard.evaluate(previewBitmap);
+                    evaluatePreview(autoZoomZoomedSceneAnchorGuard,previewBitmap,observation);
             PreviewTrackingFrame trackingFrame = directLumaTrackingFresh()
                     ? null
-                    : previewPlateTracker.updateTracking(previewBitmap);
+                    : (observation==null?previewPlateTracker.updateTracking(previewBitmap)
+                            :previewPlateTracker.updateLuma(observation.gray,observation.width,observation.height,observation.mask));
             List<OverlayItem> trackedItems = trackingFrame == null
                     ? null : trackingFrame.overlayItems;
 
@@ -813,9 +826,9 @@ public final class MainActivity extends AppCompatActivity {
                         autoZoomDynamicFrameGraceCount = 0;
                         if (uiOutcome.rebaseAcceptedPreviewScene) {
                             previewSceneDetector.reset();
-                            previewSceneDetector.update(previewBitmap);
-                            previewSceneAnchorGuard.anchor(previewBitmap);
-                            autoZoomZoomedSceneAnchorGuard.anchor(previewBitmap);
+                            updatePreviewScene(previewBitmap,observation);
+                            anchorPreview(previewSceneAnchorGuard,previewBitmap,observation);
+                            anchorPreview(autoZoomZoomedSceneAnchorGuard,previewBitmap,observation);
                         }
                         if (uiOutcome.presentTrackedOverlay) {
                             presentTrackedPreviewOverlay(
@@ -846,11 +859,41 @@ public final class MainActivity extends AppCompatActivity {
                 }
             });
         } catch (RuntimeException ignored) {
+            if(domain!=null) handleObservationFailure(domain,continuityStamp,ignored);
             // PreviewView może zmienić powierzchnię podczas restartu kamery.
         } finally {
             previewFrameInFlight.set(false);
             if (!bitmapHandedToUi) recycleBitmap(previewBitmap);
         }
+    }
+
+    private SceneObservationDomain observationDomain(){return pipeline==null?null:pipeline.sceneObservationDomain();}
+    private void anchorPreview(SceneAnchorGuard guard,Bitmap bitmap,SceneObservationDomain.Frame frame){
+        if(frame==null)guard.anchor(bitmap);else guard.anchorLuma(frame.gray,frame.width,frame.height,frame.mask);
+    }
+    private SceneAnchorGuard.Result evaluatePreview(SceneAnchorGuard guard,Bitmap bitmap,SceneObservationDomain.Frame frame){
+        return frame==null?guard.evaluate(bitmap):guard.evaluateLuma(frame.gray,frame.width,frame.height,frame.mask);
+    }
+    private SceneChangeDetector.Result updatePreviewScene(Bitmap bitmap,SceneObservationDomain.Frame frame){
+        return frame==null?previewSceneDetector.update(bitmap):previewSceneDetector.updateLuma(frame.gray,frame.width,frame.height,frame.mask);
+    }
+    /** A stale worker may neither observe a new domain nor stop a newer session. */
+    private void handleObservationFailure(SceneObservationDomain domain,ContinuityStamp stamp,RuntimeException error){
+        if(domain==null||domain!=observationDomain()||!isCurrentPreviewStamp(stamp))return;
+        com.example.alpr_v1.experiment.ResearchSessionStore store=researchSessions.store();
+        if(store!=null){
+            try{if(store.tvBboxEvidence()!=null)store.tvBboxEvidence().rejected(null,stamp,error.getMessage())
+                    .complete("REJECTED_GEOMETRY",error.getMessage()==null?"TV_OBSERVATION_INVALID":error.getMessage());}
+            catch(RuntimeException evidenceError){android.util.Log.e("ALPR_TV_OBSERVATION","Rejection evidence unavailable",evidenceError);}
+            finally{store.closeAdmission("TV_OBSERVATION_INVALID",System.currentTimeMillis(),android.os.SystemClock.elapsedRealtimeNanos());}
+        }
+        runOnUiThread(()->{
+            if(domain!=observationDomain())return;
+            recordError("Obserwacja TV zatrzymana: nieaktualna lub niedostępna geometria polygonu. "+error.getMessage(),error);
+            stopAnalysis(ExperimentSession.CompletionReason.ERROR);
+            livePresentation.showUserStatus(LivePresentationController.State.ERROR,
+                    "Obserwacja TV zatrzymana", "Nieaktualna lub niedostępna maska TV. Sprawdź kadr i potwierdź kalibrację. "+error.getMessage());
+        });
     }
 
     private static void recycleBitmap(Bitmap bitmap) {
@@ -930,7 +973,12 @@ public final class MainActivity extends AppCompatActivity {
             LumaFrame frame,
             ContinuityStamp stamp,
             boolean cameraMotionConfirmedBySensor
-    ) {
+    ) { return updatePreviewFrameMotion(frame,stamp,cameraMotionConfirmedBySensor,null); }
+    private PreviewFrameMotionSample updatePreviewFrameMotion(LumaFrame frame,ContinuityStamp stamp,
+            boolean cameraMotionConfirmedBySensor,SceneObservationDomain.Frame observation) {
+        byte[] gray=observation==null?frame.gray:observation.gray;
+        int width=observation==null?frame.width:observation.width,height=observation==null?frame.height:observation.height;
+        ObservationMask mask=observation==null?null:observation.mask;
         List<com.example.alpr_v1.domain.NormalizedBounds> foregroundMasks =
                 recentVehicleForegroundMasks();
         synchronized (previewMotionStateLock) {
@@ -942,17 +990,13 @@ public final class MainActivity extends AppCompatActivity {
             }
             LumaSceneChangeDetector.Result sceneChange =
                     lumaSceneChangeDetector.update(
-                            frame.gray,
-                            frame.width,
-                            frame.height,
-                            foregroundMasks
+                            gray, width, height,
+                            foregroundMasks, mask
                     );
             FrameMotionTransform motion = globalLumaMotionTracker.update(
-                    frame.gray,
-                    frame.width,
-                    frame.height,
+                    gray, width, height,
                     foregroundMasks,
-                    cameraMotionConfirmedBySensor
+                    cameraMotionConfirmedBySensor, mask
             );
             frameMotionHistory.record(frame.timestampNanos, motion);
             return new PreviewFrameMotionSample(motion, sceneChange);
@@ -1045,6 +1089,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void processDirectLumaFrame(LumaFrame frame) {
+        processDirectLumaFrame(frame,observationDomain());
+    }
+    private void processDirectLumaFrame(LumaFrame frame,SceneObservationDomain domain) {
+        if(domain!=observationDomain()) return;
         /*
          * Direct-luma comes from the camera stream, not from PreviewView. UI
          * overlay holds and post-return validation therefore cannot suppress
@@ -1069,12 +1117,20 @@ public final class MainActivity extends AppCompatActivity {
         );
         final ContinuityStamp continuityStamp = lumaSourceFrame.continuityStamp();
         if (!isCurrentPreviewStamp(continuityStamp)) return;
+        final SceneObservationDomain.Frame observation;
+        try {
+            if(domain!=null) domain.requireGeometry(tvSetup==null?null:tvSetup.observationGeometry());
+            observation=domain==null?null:domain.luma(frame);
+        } catch(RuntimeException invalid){handleObservationFailure(domain,continuityStamp,invalid);return;}
+        byte[] gray=observation==null?frame.gray:observation.gray;
+        int width=observation==null?frame.width:observation.width,height=observation==null?frame.height:observation.height;
+        ObservationMask mask=observation==null?null:observation.mask;
         lastDirectLumaFrameNanos = System.nanoTime();
         lastDirectLumaSourceTimestampNanos = frame.timestampNanos;
         if (staticScene && pipeline != null) {
             SceneTransitionDecision staticDecision = pipeline.observeStaticLuma(continuityStamp,
-                    frame.gray, frame.width, frame.height, android.os.SystemClock.elapsedRealtimeNanos(),
-                    cameraTransformInProgress || currentCameraZoomRatio > 1.01f);
+                    gray, width, height, android.os.SystemClock.elapsedRealtimeNanos(),
+                    cameraTransformInProgress || domain==null && currentCameraZoomRatio > 1.01f, mask);
             if (staticDecision != null) {
                 runOnUiThread(() -> renderPreviewContinuityDecision(staticDecision, 1f, 1f,
                         java.util.Collections.emptyList()));
@@ -1088,7 +1144,7 @@ public final class MainActivity extends AppCompatActivity {
         PreviewFrameMotionSample motionSample = updatePreviewFrameMotion(
                 frame,
                 continuityStamp,
-                earlySensorMotion
+                earlySensorMotion, observation
         );
         FrameMotionTransform frameMotion = motionSample.motion;
         if (!isCurrentPreviewStamp(continuityStamp)
@@ -1266,9 +1322,7 @@ public final class MainActivity extends AppCompatActivity {
         long trackingStartedNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
         PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
-                frame.gray,
-                frame.width,
-                frame.height
+                gray, width, height, mask
         );
         boolean cameraMotionOwnsVehicleGeometry = vehiclePreviewMotionPolicy.update(
                 earlySensorMotion || earlyVisualMotion.motionEstimated || isVisualCameraMotion(frameMotion),
@@ -1308,9 +1362,7 @@ public final class MainActivity extends AppCompatActivity {
                 previewVehicleTrackerAwaitingFreshMpAnchor
                         ? null
                         : previewVehicleTracker.updateLuma(
-                                frame.gray,
-                                frame.width,
-                                frame.height
+                                gray, width, height, mask
                         );
         long trackingElapsedNanos = Math.max(
                 0L,
@@ -1458,7 +1510,7 @@ public final class MainActivity extends AppCompatActivity {
     private void submitDirectLumaFrame(LumaFrame frame) {
         if (frame == null || directLumaTrackingExecutor.isShutdown()) return;
         liveCameraFrameRate.onFrame(android.os.SystemClock.elapsedRealtimeNanos());
-        pendingDirectLumaFrame.set(frame);
+        pendingDirectLumaFrame.set(new PendingObservation(frame,observationDomain()));
         if (directLumaWorkerRunning.compareAndSet(false, true)) {
             scheduleDirectLumaDrain();
         }
@@ -1478,9 +1530,9 @@ public final class MainActivity extends AppCompatActivity {
     private void drainDirectLumaFrames() {
         try {
             while (!Thread.currentThread().isInterrupted()) {
-                LumaFrame frame = pendingDirectLumaFrame.getAndSet(null);
-                if (frame == null) return;
-                processDirectLumaFrame(frame);
+                PendingObservation pending = pendingDirectLumaFrame.getAndSet(null);
+                if (pending == null) return;
+                processDirectLumaFrame(pending.frame,pending.domain);
             }
         } finally {
             directLumaWorkerRunning.set(false);
@@ -1693,6 +1745,9 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean thermalUiMonitorRunning;
 
+    // Presentation context only; editing a next timer never rearms the retained session deadline.
+    private String timerConfiguredAfterFinishedSession = "";
+    private com.example.alpr_v1.ui.LiveModelInfoView liveModelInfo;
     private long experimentTimerDeadlineElapsedMillis = -1L;
     private long lastExperimentUiTickMillis;
 
@@ -1707,7 +1762,8 @@ public final class MainActivity extends AppCompatActivity {
                     if (BuildConfig.DEBUG && lastExperimentUiTickMillis > 0L && now - lastExperimentUiTickMillis > 1500L)
                         android.util.Log.d("ALPR_TIMER", "ui_gap_ms=" + (now - lastExperimentUiTickMillis));
                     lastExperimentUiTickMillis = now;
-                    updateExperimentTimerButton();
+                    tintCameraAction(experimentTimerButton,R.color.alpr_accent);
+            updateExperimentTimerButton();
 
                     experimentTimerHandler.postDelayed(
                             this,
@@ -1956,6 +2012,7 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if(savedInstanceState!=null)timerConfiguredAfterFinishedSession=savedInstanceState.getString("timer_configured_after_finished_session","");
         researchSessions = new ViewModelProvider(this).get(com.example.alpr_v1.experiment.ResearchSessionViewModel.class);
         experimentSession = researchSessions.experiment;
         researchSessions.messages.observe(this,message -> {
@@ -2043,6 +2100,7 @@ public final class MainActivity extends AppCompatActivity {
                         && !experimentStartRequest.pending(),
                 () -> { if (!cameraPreviewActive) { experimentPreviewPaused = false; ensureCameraPermission(true); } },
                 this::onTvSetupEvent);
+        tvSetup.setInputSummaryProvider(this::tvInputSummary);
         tvSetup.setControlsRefresh(this::renderAnalysisControls);
         tvSetup.setGeometryRefresh(cameraController::refreshSetupGeometry);
         cameraController.setSetupGeometryListener(tvSetup::onGeometryState);
@@ -2261,13 +2319,12 @@ public final class MainActivity extends AppCompatActivity {
                             visible ? R.color.alpr_success : R.color.alpr_accent);
                 }
         );
+        previewView.getViewTreeObserver().addOnGlobalLayoutListener(overlayReadabilityLayoutListener);
+        liveModelInfo=findViewById(R.id.live_model_info);
         findViewById(R.id.live_model_info_toggle).setOnClickListener(view -> {
-            View modelInfo = findViewById(R.id.live_model_info);
-            boolean visible = modelInfo.getVisibility() != View.VISIBLE;
-            modelInfo.setVisibility(visible ? View.VISIBLE : View.GONE);
-            tintCameraAction((MaterialButton) view,
-                    visible ? R.color.alpr_success : R.color.alpr_accent);
-            if (visible) renderHudModelInfo();
+            boolean visible=livePresentation.toggleModelInfo();
+            tintCameraAction((MaterialButton)view,visible?R.color.alpr_success:R.color.alpr_accent);
+            if(visible)renderHudModelInfo();
         });
 
         collectionToggle =
@@ -2400,7 +2457,6 @@ public final class MainActivity extends AppCompatActivity {
             releaseTargetButton.setVisibility(View.VISIBLE);
             boolean foreground = pipeline.foregroundEntityId() > 0L;
             releaseTargetButton.setEnabled(dynamic && cameraStarted && foreground);
-            releaseTargetButton.setAlpha(foreground ? 1f : .45f);
             tintCameraAction(releaseTargetButton, foreground ? R.color.alpr_accent : R.color.alpr_text_muted);
         }
         if (!dynamic || !cameraStarted) return false;
@@ -3011,7 +3067,7 @@ public final class MainActivity extends AppCompatActivity {
                     !cameraStarted&&!experimentSession.isRunning()&&!experimentStartRequest.pending(),
                     tvSetup!=null&&tvSetup.editing()?tvSetup.mode():null,tvSetup!=null&&tvSetup.restoring());
         }
-        if (tvSetup != null) tvSetup.openRequested();
+        if (tvSetup != null) {tvSetup.openRequested();tvSetup.refreshInputSummary();}
 
         if (cameraPreviewButton != null) {
             cameraPreviewButton.setText(R.string.camera_action_preview);
@@ -3031,7 +3087,7 @@ public final class MainActivity extends AppCompatActivity {
         analysisStartButton.setText(
                 cameraStarted
 
-                        ? R.string.camera_action_stop
+                        ? (experimentSession.isRunning()?R.string.main_ui_stop_session:R.string.main_ui_stop_analysis)
 
                         : waitingForThermalStart || analysisStartGate.preparing()
 
@@ -3039,7 +3095,7 @@ public final class MainActivity extends AppCompatActivity {
 
                           : R.string.camera_action_start
         );
-        analysisStartButton.setContentDescription(getString(cameraStarted ? R.string.analysis_stop
+        analysisStartButton.setContentDescription(getString(cameraStarted ? (experimentSession.isRunning()?R.string.main_ui_stop_session_description:R.string.main_ui_stop_analysis_description)
                 : waitingForThermalStart || analysisStartGate.preparing() ? R.string.analysis_cancel_waiting : R.string.analysis_start));
         if (experimentModeEnabled && !cameraStarted) {
             boolean pending = experimentStartRequest.pending();
@@ -3048,7 +3104,7 @@ public final class MainActivity extends AppCompatActivity {
             analysisStartButton.setText(pending ? R.string.camera_action_cancel : R.string.camera_action_start);
             analysisStartButton.setContentDescription(pending ? "Anuluj oczekujące uruchomienie eksperymentu"
                     : "START: przygotuj i uruchom eksperyment");
-            renderExperimentStartStatus(blocker);
+
         } else analysisStartButton.setEnabled(true);
 
 
@@ -3112,6 +3168,8 @@ public final class MainActivity extends AppCompatActivity {
                     experimentFinished
                             && !exportInProgress
             );
+            com.example.alpr_v1.ui.CockpitControlStyle.apply(exportReportButton,exportInProgress
+                    ?com.example.alpr_v1.ui.CockpitControlStyle.State.BUSY:com.example.alpr_v1.ui.CockpitControlStyle.State.OFF);
         }
 
         if (recognitionHint != null) {
@@ -3135,6 +3193,8 @@ public final class MainActivity extends AppCompatActivity {
             analysisStartButton.setEnabled(false);
             tvSetup.maintainPreparationUi();
         }
+        // Presentation follows the final enabled state, including the existing TV editor lock.
+        if(experimentModeEnabled&&!cameraStarted)renderExperimentStartStatus(experimentStartBlocker());
     }
     private void pauseCropCollectionForStoppedAnalysis() {
         normalCollectionReady = false;
@@ -4357,10 +4417,17 @@ public final class MainActivity extends AppCompatActivity {
 
     private void renderExperimentStartStatus(StartBlocker blocker) {
         if (!analysisScreenForeground || cameraStarted) return;
+        if(tvSetup!=null&&tvSetup.editing()&&!analysisStartButton.isEnabled()&&blocker!=StartBlocker.ERROR){
+            livePresentation.showUserStatus(LivePresentationController.State.PREVIEW,"Zakończ konfigurację TV","START zablokowany podczas edycji TV");
+            return;
+        }
         String status, hint;
         switch (blocker) {
             case INPUT_MODE: status="TV BBOX · START zablokowany";hint=tvBboxStartReason();break;
-            case READY: status = tvBboxRequested()?"TV BBOX · próba nieoficjalna":"Gotowe do START"; hint = "Timer i analiza ruszą po kliknięciu"; break;
+            case READY:
+                status=!analysisStartButton.isEnabled()?"START zablokowany":experimentStartRequest.pending()?"Uruchamianie eksperymentu":tvBboxRequested()?"TV BBOX · próba nieoficjalna":"Gotowe do START";
+                hint=!analysisStartButton.isEnabled()?"Gotowość zmieniła się · sprawdź bieżący stan": "Timer i analiza ruszą po kliknięciu";
+                break;
             case PERMISSION: status = "Potrzebny dostęp do kamery"; hint = "START otworzy obsługę uprawnienia"; break;
             case PREVIOUS_SESSION: status = "Trwa przygotowanie lub zapis poprzedniej sesji"; hint = "Czekam na zakończenie zapisu"; break;
             case MODELS: status = "Przygotowanie modeli i zapisu…"; hint = ""; break;
@@ -5378,7 +5445,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderHudModelInfo() {
-        com.example.alpr_v1.ui.LiveModelInfoView info = findViewById(R.id.live_model_info);
+        com.example.alpr_v1.ui.LiveModelInfoView info = liveModelInfo!=null?liveModelInfo:findViewById(R.id.live_model_info);
         if (info == null || info.getVisibility() != View.VISIBLE) return;
         MetricsCollector.LiveSnapshot snapshot = metricsCollector.liveSnapshot();
         boolean measured = cameraStarted && snapshot.sourceWidth > 0 && snapshot.sourceHeight > 0;
@@ -5391,8 +5458,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
-        if (pipeline != null && pipeline.isStaticIdle()) {
-            livePresentation.showUserStatus(LivePresentationController.State.SEARCHING, getString(R.string.static_scene_idle), "");
+        if (cameraStarted && pipeline != null && pipeline.isStaticIdle()) {
+            livePresentation.showState(LivePresentationController.State.STATIC_IDLE, "");
             return;
         }
         if (renderSearchControls()) return;
@@ -6048,6 +6115,7 @@ public final class MainActivity extends AppCompatActivity {
                         bestObservation.confirmed,
                         bestObservation.observations
                 );
+                overlayView.setPresentedResultTrackId(livePresentation.presentedTrackId());
             } else if ("stabilizing".equals(result.status)
                     || !result.overlayItems.isEmpty()) {
                 livePresentation.showState(
@@ -6243,21 +6311,17 @@ public final class MainActivity extends AppCompatActivity {
                 break;
         }
         autoZoomButton.setText(symbol);
-        int color = ContextCompat.getColor(
-                this,
-                enabled ? R.color.alpr_success : R.color.alpr_text_muted
-        );
-        autoZoomButton.setIconTint(ColorStateList.valueOf(color));
-        autoZoomButton.setTextColor(color);
-        autoZoomButton.setStrokeColor(ColorStateList.valueOf(enabled ? color
-                : ContextCompat.getColor(this, R.color.alpr_outline)));
         autoZoomButton.setContentDescription(
                 getString(enabled
                         ? R.string.auto_zoom_disable
                         : R.string.auto_zoom_enable)
         );
         autoZoomButton.setEnabled(!autoZoomSettingsLocked());
-        autoZoomButton.setActivated(enabled);
+        tintCameraAction(autoZoomButton,enabled?R.color.alpr_success:R.color.alpr_accent);
+
+        autoZoomButton.setActivated(enabled && autoZoomController.enabled());
+        if(enabled && !autoZoomController.enabled())autoZoomButton.setContentDescription(
+                "AZ: ustawienie ON; funkcja nieaktywna. Kliknij, aby wyłączyć ustawienie.");
         autoZoomButton.setTooltipText(autoZoomButton.getContentDescription());
         if (autoZoomControl != null) {
             autoZoomControl.setVisibility(View.VISIBLE);
@@ -6267,15 +6331,9 @@ public final class MainActivity extends AppCompatActivity {
 
     private void updateAutoZoomGlow(boolean enabled) {
         if (autoZoomGlow == null) return;
-        if (!enabled) {
-            if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
-            autoZoomGlow.setAlpha(0f);
-            autoZoomGlow.setVisibility(View.GONE);
-            return;
-        }
         if (autoZoomGlowAnimator != null) autoZoomGlowAnimator.cancel();
-        autoZoomGlow.setVisibility(View.VISIBLE);
-        autoZoomGlow.setAlpha(0.42f);
+        autoZoomGlow.setAlpha(0f);
+        autoZoomGlow.setVisibility(View.GONE);
     }
 
     private void handleAutoZoomResult(PipelineResult result) {
@@ -6378,11 +6436,63 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    private ColorStateList cameraActionColors(int active,int disabled) {
+        return new ColorStateList(new int[][]{new int[]{-android.R.attr.state_enabled},new int[]{}},
+                new int[]{ContextCompat.getColor(this,disabled),ContextCompat.getColor(this,active)});
+    }
     private void tintCameraAction(MaterialButton button, int colorResource) {
-        ColorStateList color = ColorStateList.valueOf(ContextCompat.getColor(this, colorResource));
-        button.setIconTint(color);
-        button.setTextColor(color);
-        button.setStrokeColor(color);
+        int id=button.getId();
+        if(id==R.id.live_scene_mode_toggle||id==R.id.search_plate_button||id==R.id.release_target_button
+                ||id==R.id.auto_zoom_button||id==R.id.live_diagnostics_toggle||id==R.id.live_model_info_toggle
+                ||id==R.id.analysis_start_button||id==R.id.collection_toggle||id==R.id.camera_preview_button
+                ||id==R.id.gallery_open_button||id==R.id.experiment_timer_button||id==R.id.export_report_button){
+            com.example.alpr_v1.ui.CockpitControlStyle.State state=com.example.alpr_v1.ui.CockpitControlStyle.State.OFF;
+            if(id==R.id.live_scene_mode_toggle || (id==R.id.collection_toggle&&colorResource==R.color.alpr_magenta)
+                    || ((id==R.id.search_plate_button||id==R.id.camera_preview_button||id==R.id.live_diagnostics_toggle||id==R.id.live_model_info_toggle)&&colorResource==R.color.alpr_success)
+                    || (id==R.id.auto_zoom_button&&colorResource==R.color.alpr_success&&autoZoomController.enabled()))
+                state=com.example.alpr_v1.ui.CockpitControlStyle.State.ON;
+            if(id==R.id.analysis_start_button){
+                if(cameraStarted)state=com.example.alpr_v1.ui.CockpitControlStyle.State.STOP;
+                else if(waitingForThermalStart||analysisStartGate.preparing()||experimentStartRequest.pending())state=com.example.alpr_v1.ui.CockpitControlStyle.State.BUSY;
+            }
+            com.example.alpr_v1.ui.CockpitControlStyle.apply(button,state);
+            return;
+        }
+        ColorStateList color=cameraActionColors(colorResource,R.color.alpr_text_muted);
+        button.setIconTint(color);button.setTextColor(color);
+        button.setStrokeColor(cameraActionColors(colorResource,R.color.alpr_outline));
+        button.setAlpha(1f);
+    }
+
+    /** UI labels only: reading the frozen configuration cannot select an input or change admission. */
+    private String tvInputSummary() {
+        boolean research=experimentSession!=null&&experimentSession.isRunning();
+        ResearchExecutionConfig frozen=pipeline==null?null:pipeline.researchExecutionConfig();
+        int value=R.string.main_ui_input_full;
+        if(research) {
+            value=frozen==null?R.string.main_ui_input_unavailable:
+                    frozen.inputMode()==com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP?R.string.main_ui_input_tv:
+                    frozen.inputMode()==com.example.alpr_v1.setup.ResearchInputMode.CAMERA_FULL_FRAME?R.string.main_ui_input_full:R.string.main_ui_input_unavailable;
+        } else if(!cameraStarted&&uiPreferences!=null&&tvBboxRequested()) value=R.string.main_ui_input_tv;
+        return getString(cameraStarted||research?R.string.main_ui_input_active:R.string.main_ui_input_planned,getString(value));
+    }
+
+    private final android.view.ViewTreeObserver.OnGlobalLayoutListener overlayReadabilityLayoutListener=this::updateOverlayLabelExclusions;
+    private void updateOverlayLabelExclusions() {
+        if(overlayView==null||overlayView.getWidth()==0||overlayView.getHeight()==0)return;
+        int[] origin=new int[2];overlayView.getLocationOnScreen(origin);
+        List<RectF> exclusions=new ArrayList<>();
+        for(int id:new int[]{R.id.top_app_bar,R.id.live_status_strip,R.id.live_diagnostics_toggle,R.id.live_model_info_toggle,
+                R.id.live_event,R.id.phone_orientation_panel,
+                R.id.confirmed_result_tray,R.id.auto_zoom_control,R.id.experiment_timer_button,R.id.experiment_thermal_button}) {
+            View view=findViewById(id);android.graphics.Rect visible=new android.graphics.Rect();
+            if(view!=null&&view.isShown()&&view.getGlobalVisibleRect(visible)) {
+                RectF rect=new RectF(visible);rect.offset(-origin[0],-origin[1]);
+                if(rect.intersect(0,0,overlayView.getWidth(),overlayView.getHeight()))exclusions.add(rect);
+            }
+        }
+        overlayView.setLabelExclusionRects(exclusions);
+        overlayView.setPresentedResultTrackId(livePresentation==null?0L:livePresentation.presentedTrackId());
     }
 
     private long renderedStaticIdleScene = -1L;
@@ -6411,8 +6521,7 @@ public final class MainActivity extends AppCompatActivity {
             ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
             overlayView.setVehicleEntityStates(scan.identifiedEntityIds, scan.completedEntityIds, scan.entityRecognitions);
         }
-        livePresentation.showUserStatus(LivePresentationController.State.SEARCHING,
-                getString(R.string.static_scene_idle), "");
+        livePresentation.showState(LivePresentationController.State.STATIC_IDLE, "");
         return true;
     }
 
@@ -9098,7 +9207,6 @@ public final class MainActivity extends AppCompatActivity {
 
     private void styleDashboardAction(MaterialButton button, int color) {
         tintCameraAction(button, color);
-        button.setAlpha(button.isEnabled() ? 1f : .45f);
         button.setTooltipText(button.getContentDescription());
     }
 
@@ -10721,10 +10829,9 @@ public final class MainActivity extends AppCompatActivity {
                 : R.string.scene_mode_static_action;
 
         liveSceneModeToggle.setIconResource(icon);
-        liveSceneModeToggle.setText(dynamic ? R.string.scene_control_dynamic : R.string.scene_control_static);
-        tintCameraAction(liveSceneModeToggle, tint);
+        liveSceneModeToggle.setText(dynamic ? R.string.main_grid_scene_dynamic : R.string.main_grid_scene_static);
         liveSceneModeToggle.setEnabled(enabled);
-        liveSceneModeToggle.setAlpha(enabled ? 1f : 0.62f);
+        tintCameraAction(liveSceneModeToggle, tint);
         liveSceneModeToggle.setContentDescription(getString(description));
         ViewCompat.setTooltipText(liveSceneModeToggle, getString(description));
     }
@@ -11009,6 +11116,7 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override protected void onSaveInstanceState(Bundle state) {
         if (captureGalleryState != null) state.putString("crop_session_export_id", captureGalleryState.pendingCropSessionExport);
+        state.putString("timer_configured_after_finished_session",timerConfiguredAfterFinishedSession);
         super.onSaveInstanceState(state);
     }
 
@@ -11024,6 +11132,9 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if(livePresentation!=null)livePresentation.dispose();
+        if(previewView!=null&&previewView.getViewTreeObserver().isAlive())
+            previewView.getViewTreeObserver().removeOnGlobalLayoutListener(overlayReadabilityLayoutListener);
         experimentStartRequest.cancel();
         experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
         stopPhoneOrientationUi();
@@ -11259,6 +11370,7 @@ public final class MainActivity extends AppCompatActivity {
                         return;
                     }
                     experimentTimerConfig = next;
+                    timerConfiguredAfterFinishedSession=experimentSession.state()==ExperimentSession.State.FINISHED?experimentSession.sessionId():"";
                     invalidatePreparedExperiment();
                     if (next.enabled()) {
                         uiPreferences.edit().putInt(KEY_LAST_EXPERIMENT_TIMER_SECONDS, next.durationSeconds()).apply();
@@ -11272,66 +11384,51 @@ public final class MainActivity extends AppCompatActivity {
         timerDialog.show();
     }
 
+    /** Clock presentation only: no timer admission, scheduling or session transitions here. */
     private void updateExperimentTimerButton() {
-        if (experimentTimerButton == null) {
-            return;
+        if(experimentTimerButton!=null)experimentTimerButton.setText(R.string.experiment_timer_button);
+        View clock=findViewById(R.id.experiment_timer_status);
+        TextView value=findViewById(R.id.experiment_timer_value),caption=findViewById(R.id.experiment_timer_caption);
+        if(clock==null||value==null||caption==null)return;
+        ExperimentSession.Snapshot snapshot=experimentSession.snapshot();
+        long deadline=experimentSession.timerDeadlineElapsedNanos(),seconds=0L;
+        int label=0;
+        boolean completed=false;
+        boolean configuredAfterFinish=snapshot.sessionId.equals(timerConfiguredAfterFinishedSession);
+        if(experimentModeEnabled){
+            if(experimentSession.isRunning()&&deadline>=0L){
+                seconds=com.example.alpr_v1.ui.ExperimentCountdown.remainingSeconds(deadline/1_000_000L,android.os.SystemClock.elapsedRealtime());
+                label=R.string.main_timer_remaining;
+            }else if(experimentSession.state()==ExperimentSession.State.FINISHED&&!configuredAfterFinish){
+                if(experimentSession.completionReason()==ExperimentSession.CompletionReason.TIMER){
+                    label=R.string.main_timer_expired;completed=true;
+                }
+            }else if(experimentTimerConfig.enabled()){
+                seconds=experimentTimerConfig.durationSeconds();label=R.string.main_timer_set;
+            }
         }
-
-        /*
-         * Aktywny przebieg z timerem:
-         * pokazujemy pozostały czas.
-         */
-        long retainedDeadline = experimentSession.timerDeadlineElapsedNanos();
-        boolean timerFinalizing = experimentSession.completionReason() == ExperimentSession.CompletionReason.TIMER
-                && researchSessions.store() != null
-                && researchSessions.store().state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.FINALIZING;
-        if (retainedDeadline >= 0L && (experimentSession.isRunning() || timerFinalizing)) {
-
-            long remainingSeconds = com.example.alpr_v1.ui.ExperimentCountdown.remainingSeconds(
-                    retainedDeadline / 1_000_000L, android.os.SystemClock.elapsedRealtime());
-            String label = formatTimerDuration(remainingSeconds);
-            if (!label.contentEquals(experimentTimerButton.getText())) experimentTimerButton.setText(label);
-
-            return;
-        }
-
-        /*
-         * Timer przygotowany dla następnego START.
-         */
-        if (experimentTimerConfig.enabled()) {
-            experimentTimerButton.setText(
-                    formatTimerDuration(
-                            experimentTimerConfig.durationSeconds()
-                    )
-            );
-            return;
-        }
-
-        experimentTimerButton.setText(
-                R.string.experiment_timer_button
-        );
+        if(livePresentation!=null)livePresentation.setTimerCompleted(completed);
+        clock.setVisibility(label==0?View.GONE:View.VISIBLE);
+        if(label==0){clock.setContentDescription(null);return;}
+        value.setTextColor(getColor(label==R.string.main_timer_remaining?R.color.cockpit_cyan:R.color.white));
+        String text=formatTimerDuration(seconds),description=getString(label);
+        if(!text.contentEquals(value.getText()))value.setText(text);
+        if(!description.contentEquals(caption.getText()))caption.setText(description);
+        long widest=Math.max(seconds,Math.max(experimentTimerConfig.durationSeconds(),(snapshot.timerDurationMillis+999L)/1000L));
+        float density=getResources().getDisplayMetrics().density;
+        float captionWidth=Math.max(caption.getPaint().measureText(getString(R.string.main_timer_remaining)),
+                Math.max(caption.getPaint().measureText(getString(R.string.main_timer_set)),caption.getPaint().measureText(getString(R.string.main_timer_expired))));
+        float numberWidth=value.getPaint().measureText(formatTimerDuration(widest))+30*density;
+        boolean inline=clock instanceof LinearLayout&&((LinearLayout)clock).getOrientation()==LinearLayout.HORIZONTAL;
+        int width=(int)Math.ceil(inline?numberWidth+captionWidth+4*density:Math.max(numberWidth,captionWidth+8*density));
+        if(clock.getLayoutParams().width!=width){clock.getLayoutParams().width=width;clock.requestLayout();}
+        clock.setContentDescription(text+", "+description);
     }
 
-    private static String formatTimerDuration(
-            long seconds
-    ) {
-        if (seconds < 60L) {
-            return seconds + " s";
-        }
-
-        long minutes = seconds / 60L;
-        long remainingSeconds = seconds % 60L;
-
-        if (remainingSeconds == 0L) {
-            return minutes + " min";
-        }
-
-        return String.format(
-                Locale.ROOT,
-                "%d:%02d",
-                minutes,
-                remainingSeconds
-        );
+    private static String formatTimerDuration(long seconds) {
+        long safe=Math.max(0L,seconds);
+        return safe<3600L?String.format(Locale.ROOT,"%d:%02d",safe/60L,safe%60L)
+                :String.format(Locale.ROOT,"%d:%02d:%02d",safe/3600L,safe/60L%60L,safe%60L);
     }
     private static List<android.graphics.PointF> translatedPoints(
             List<android.graphics.PointF> points,
@@ -11691,10 +11788,22 @@ public final class MainActivity extends AppCompatActivity {
 
     private void updateExperimentThermalButton() {
 
+        TextView normalDevice=findViewById(R.id.main_device_status);
+        if(normalDevice!=null){
+            normalDevice.setVisibility(experimentModeEnabled?View.GONE:View.VISIBLE);
+            ThermalMonitor.Snapshot device=latestThermalSnapshot;
+            String caption=device==null||!device.available()?getString(R.string.main_device_na):String.format(Locale.ROOT,
+                    "BAT %.1f°C · TH%d · HEAD %s",device.batteryTemperatureC,device.thermalStatus,
+                    device.headroomAvailable()?String.format(Locale.ROOT,"%.2f",device.thermalHeadroom):"—");
+            if(!caption.contentEquals(normalDevice.getText()))normalDevice.setText(caption);
+            normalDevice.setContentDescription(caption);normalDevice.setTooltipText(caption);
+        }
+
         if (experimentThermalButton == null) {
             return;
         }
 
+        tintCameraAction(experimentThermalButton,R.color.alpr_accent);
         experimentThermalButton.setVisibility(
                 experimentModeEnabled
                         ? View.VISIBLE
@@ -11712,7 +11821,7 @@ public final class MainActivity extends AppCompatActivity {
                 || !snapshot.available()) {
 
             experimentThermalButton.setText(
-                    R.string.experiment_thermal_button
+                    R.string.main_device_na
             );
 
             return;
@@ -11757,9 +11866,10 @@ public final class MainActivity extends AppCompatActivity {
                             headroomText
                     );
         }
-        experimentThermalButton.setText(
-                text
-        );
+        experimentThermalButton.setContentDescription(text);
+        experimentThermalButton.setTooltipText(text);
+        String compact=String.format(Locale.ROOT,"BAT %.1f°C · TH%d · HEAD %s",snapshot.batteryTemperatureC,snapshot.thermalStatus,headroomText);
+        experimentThermalButton.setText(compact);
 
         /*
          * Konfigurację warunku termicznego można zmienić

@@ -1,6 +1,7 @@
 package com.example.alpr_v1.vision;
 
 import android.graphics.Bitmap;
+import com.example.alpr_v1.continuity.ObservationMask;
 
 
 /**
@@ -44,7 +45,25 @@ public final class SceneAnchorGuard {
     }
 
 
+    private ObservationMask observationMask;
     private float[] anchorSamples;
+
+    public synchronized void anchorLuma(byte[] gray,int width,int height,ObservationMask mask) {
+        if(mask==null) throw new IllegalArgumentException("TV_OBSERVATION_MASK_REQUIRED");
+        mask.requireSize(width,height);observationMask=mask;
+        anchorSamples=mask.samples(gray,null);anchorWidth=width;anchorHeight=height;
+    }
+    public synchronized Result evaluateLuma(byte[] gray,int width,int height,ObservationMask mask) {
+        if(mask==null) throw new IllegalArgumentException("TV_OBSERVATION_MASK_REQUIRED");
+        mask.requireSize(width,height);
+        if(!ObservationMask.same(observationMask,mask)||anchorSamples==null){anchorLuma(gray,width,height,mask);return new Result(false,0f,0f);}
+        float[] current=mask.samples(gray,null);
+        float a=mean(anchorSamples),b=mean(current),sum=0;int changed=0;
+        for(int i=0;i<current.length;i++){float d=Math.abs((anchorSamples[i]-a)-(current[i]-b));sum+=d;if(d>=SAMPLE_DIFFERENCE_THRESHOLD)changed++;}
+        float score=sum/(current.length*255f),fraction=changed/(float)current.length;
+        return new Result(score>=SCORE_THRESHOLD&&fraction>=CHANGED_FRACTION_THRESHOLD,score,fraction);
+    }
+
 
     private int anchorWidth;
     private int anchorHeight;
@@ -53,6 +72,7 @@ public final class SceneAnchorGuard {
     public synchronized void anchor(
             Bitmap frame
     ) {
+        observationMask=null;
 
         if (frame == null
                 || frame.isRecycled()) {
@@ -77,6 +97,7 @@ public final class SceneAnchorGuard {
     public synchronized Result evaluate(
             Bitmap frame
     ) {
+        if(observationMask!=null) reset();
 
         if (frame == null
                 || frame.isRecycled()
@@ -204,6 +225,7 @@ public final class SceneAnchorGuard {
 
     public synchronized void reset() {
 
+        observationMask = null;
         anchorSamples =
                 null;
 

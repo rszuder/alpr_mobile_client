@@ -1,6 +1,7 @@
 package com.example.alpr_v1.vision;
 
 import android.graphics.Bitmap;
+import com.example.alpr_v1.continuity.ObservationMask;
 
 /**
  * Lekki detektor nagłej zmiany sceny.
@@ -52,7 +53,24 @@ public final class SceneChangeDetector {
         }
     }
 
+    private ObservationMask observationMask;
     private float[] previousSamples;
+
+    public synchronized Result update(Bitmap frame,ObservationMask mask) {
+        if(mask==null) return update(frame);
+        mask.requireSize(frame.getWidth(),frame.getHeight());
+        if(!ObservationMask.same(observationMask,mask)) reset();
+        observationMask=mask;
+        return updateSamples(mask.samples(null,frame),frame.getWidth(),frame.getHeight());
+    }
+    public synchronized Result updateLuma(byte[] gray,int width,int height,ObservationMask mask) {
+        if(mask==null) throw new IllegalArgumentException("TV_OBSERVATION_MASK_REQUIRED");
+        mask.requireSize(width,height);
+        if(!ObservationMask.same(observationMask,mask)) reset();
+        observationMask=mask;
+        return updateSamples(mask.samples(gray,null),width,height);
+    }
+
 
     private int previousWidth;
     private int previousHeight;
@@ -67,6 +85,7 @@ public final class SceneChangeDetector {
     private boolean armed;
 
     public synchronized Result update(Bitmap frame) {
+        if(observationMask!=null) reset();
 
         if (frame == null || frame.isRecycled()) {
             return new Result(
@@ -236,6 +255,7 @@ public final class SceneChangeDetector {
 
     public synchronized void reset() {
         previousSamples = null;
+        observationMask = null;
         previousWidth = 0;
         previousHeight = 0;
         armed = false;
