@@ -12,8 +12,8 @@
     <string name="tv_outline_hide">Ukryj obrys TV</string>
     <string name="tv_outline_show">Pokaż obrys TV</string>
     <string name="tv_outline_edit">Popraw</string>
-    <string name="tv_editor_draft">DRAFT · Dopasuj cztery rogi</string>
-    <string name="tv_editor_draft_compact">DRAFT · Dopasuj rogi</string>
+    <string name="tv_editor_draft">Do zapisania</string>
+    <string name="tv_editor_draft_compact">Do zapisania</string>
     <string name="tv_input_mode_full">Wejście modeli: pełna klatka kamery</string>
     <string name="tv_rectification_blocked">Rektyfikacja TV nieaktywna — wymaga zgodnej obsługi w Desktopie.</string>
     <string name="tv_camera_back">Wróć do obiektywu i zoomu</string>

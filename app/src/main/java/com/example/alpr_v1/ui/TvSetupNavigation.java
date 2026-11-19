@@ -15,10 +15,11 @@ public final class TvSetupNavigation {
     }
 
     public static void request(SharedPreferences preferences,TvSetupController.Mode mode) {
-        preferences.edit().putString(TvSetupController.ACTION,mode==TvSetupController.Mode.DISTANCE?"distance":"calibrate").apply();
+        preferences.edit().putString(TvSetupController.ACTION,mode==TvSetupController.Mode.F6_PHOTO?"f6_photo":mode==TvSetupController.Mode.DISTANCE?"distance":"calibrate").apply();
     }
 
     static TvSetupController.Mode requestedMode(String action) {
+        if("f6_photo".equals(action))return TvSetupController.Mode.F6_PHOTO;
         return "distance".equals(action)?TvSetupController.Mode.DISTANCE:
                 "calibrate".equals(action)?TvSetupController.Mode.CALIBRATION:null;
     }

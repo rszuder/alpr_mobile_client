@@ -369,6 +369,18 @@ public final class PipelineResult implements AutoCloseable {
         );
     }
 
+    /** Keep resource ownership intact while dropping readings from superseded physical owners. */
+    public PipelineResult filterIdentityObservations(java.util.function.Predicate<PlateObservation> current) {
+        List<PlateObservation> kept=new ArrayList<>();
+        for(PlateObservation observation:plateObservations)if(current.test(observation))kept.add(observation);
+        if(kept.size()==plateObservations.size())return this;
+        List<PlateRecognition> readings=new ArrayList<>();
+        for(PlateObservation o:kept)if(!o.text.isEmpty())readings.add(new PlateRecognition(o.text,o.recognitionConfidence,o.confirmed,o.observations));
+        return new PipelineResult(kept.isEmpty()?"identity_verification":status,
+                kept.isEmpty()?"Weryfikacja tożsamości pojazdu":message,
+                readings,overlayItems,sourceWidth,sourceHeight,kept,sceneReset,continuityStamp(),resourceOwner);
+    }
+
     public PipelineResult withoutGeometryAndFinalization() {
         List<PlateRecognition> safeRecognitions = new ArrayList<>(recognitions.size());
         for (PlateRecognition recognition : recognitions) {

@@ -34,6 +34,58 @@ import static org.junit.Assert.*;
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class CameraGeometryProviderTest {
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    public void final176SharedAspectEditorAndSourcePixelsAndStaleApproval()throws Exception{
+        start();
+        List<Size> available=java.util.Arrays.asList(new Size(960,720),new Size(1920,1080),new Size(1440,1080),new Size(1280,960),new Size(1280,720));
+        assertEquals(java.util.Arrays.asList(new Size(1440,1080),new Size(960,720),new Size(1280,960)),CameraController.compatibleResolutions(available,new Size(1440,1080)));
+        assertEquals(java.util.Arrays.asList(new Size(1920,1080),new Size(1280,720)),CameraController.compatibleResolutions(available,new Size(1920,1080)));
+        com.example.alpr_v1.setup.TvSetupCalibration previous=null;String originalApproval=null;org.json.JSONObject previousPhoto=null;
+        com.example.alpr_v1.ui.TvSetupController editor=new com.example.alpr_v1.ui.TvSetupController(controller.get(),preview,
+                controller.get().findViewById(com.example.alpr_v1.R.id.detection_overlay),()->true,()->{},(n,d)->{});
+        int nonFullCrops=0;
+        for(int height:new int[]{120,90})for(int degrees:new int[]{0,90,180,270}){
+            preview.layout(0,0,360,520); // both actual buffers are letterboxed in the editor
+            // Include unlike stream aspects too: CameraX supplies a nonzero common viewport crop.
+            Size previewBuffer=degrees==180?new Size(960,height==120?540:720):new Size(960,height*6);
+            hardware.configureSdk(new Rect(0,0,4000,3000),new Size(160,height),previewBuffer,degrees);
+            if(!hardware.crop.equals(new Rect(0,0,160,height)))nonFullCrops++;
+            hardware.bitmap=Bitmap.createBitmap(160,height,Bitmap.Config.ARGB_8888);
+            for(int y=0;y<height;y++)for(int x=0;x<160;x++)hardware.bitmap.setPixel(x,y,Color.rgb(x,y,17));
+            CameraGeometryProvider.GeometryState state=publish();assertEquals(state.detail,CameraGeometryProvider.Availability.READY,state.availability);
+            CameraPreviewGeometry g=state.geometry;editor.onGeometryState(state);assertSame(g,editor.observationGeometry());
+            Bitmap actual=CameraImageConverter.convert(hardware.image()).bitmap;
+            assertEquals(actual.getWidth(),g.sourceWidth);assertEquals(actual.getHeight(),g.sourceHeight);
+            java.util.List<com.example.alpr_v1.vision.Point2> points=java.util.Arrays.asList(new com.example.alpr_v1.vision.Point2(.1f,.1f),new com.example.alpr_v1.vision.Point2(.9f,.1f),new com.example.alpr_v1.vision.Point2(.9f,.9f),new com.example.alpr_v1.vision.Point2(.1f,.9f));
+            com.example.alpr_v1.setup.TvSetupCalibration tv=com.example.alpr_v1.setup.TvSetupCalibration.confirm(points,g,1,"2026-11-14T00:00:00Z");
+            com.example.alpr_v1.camera.CameraSetupSnapshot camera=new CameraSetupSnapshot(new CameraSelection(g.cameraId,null),1);
+            com.example.alpr_v1.setup.TvBboxCrop crop=com.example.alpr_v1.setup.TvBboxCrop.prepare(tv.approval(),g,camera);
+            com.example.alpr_v1.experiment.Final180PhotoRoi photo=com.example.alpr_v1.experiment.Final180PhotoRoi.prepare(
+                    new org.json.JSONArray("[{x:.25,y:.3},{x:.75,y:.3},{x:.75,y:.7},{x:.25,y:.7}]"),crop);
+            for(double[] corner:new double[][]{{.1,.1},{.9,.9},{.25,.3},{.75,.7}}){
+                int x=(int)(corner[0]*actual.getWidth()),y=(int)(corner[1]*actual.getHeight());int pixel=actual.getPixel(x,y);
+                float[] independent={Color.red(pixel)+.5f,Color.green(pixel)+.5f};
+                hardware.sdkAnalysisToSensor.mapPoints(independent);preview.getSensorToViewTransform().mapPoints(independent);
+                double[] mapped=g.normalizedToView((x+.5)/g.sourceWidth,(y+.5)/g.sourceHeight);
+                assertEquals(independent[0],mapped[0],2);assertEquals(independent[1],mapped[1],2);
+            }
+            try(com.example.alpr_v1.setup.TvBboxCrop.Frame f=crop.open(actual,g,camera)){
+                assertEquals(actual.getPixel(photo.left,photo.top),f.input.getPixel(photo.left-crop.left,photo.top-crop.top));
+                assertEquals(actual.getPixel(photo.right-1,photo.bottom-1),f.input.getPixel(photo.right-1-crop.left,photo.bottom-1-crop.top));
+            }
+            if(previous!=null){assertNotEquals("READY",previous.status(g));assertEquals(originalApproval,previous.approval().toString());
+                org.json.JSONObject stale=previousPhoto;
+                assertThrows(IllegalArgumentException.class,()->com.example.alpr_v1.experiment.Final180PhotoRoi.fromJson(stale,crop));}
+            previous=tv;previousPhoto=photo.toJson();originalApproval=tv.approval().toString();actual.recycle();hardware.bitmap.recycle();
+        }
+        assertTrue("The mapping must exercise ImageProxy crop offsets, not only full buffers",nonFullCrops>0);
+        // A presentation change keeps source coordinates; old frame callbacks cannot revive a binding.
+        CameraPreviewGeometry saved=editor.observationGeometry();
+        CameraPreviewGeometry layout=CameraPreviewGeometry.fromJson(saved.toJson().put("preview_width",600).put("viewport_revision",99));
+        assertTrue(com.example.alpr_v1.setup.TvEditDraft.sameCoordinates(saved,layout));
+        ImageProxy old=hardware.image();hardware.binding++;hardware.bind();hardware.provider.observeFrame(old,hardware.binding-1);idle();
+        assertEquals(CameraGeometryProvider.Availability.WAITING_FRAME,hardware.provider.latestState().availability);
+    }
     public static class Host extends AppCompatActivity {
         @Override public void onCreate(Bundle bundle){setTheme(R.style.Theme_ALPR_v1);super.onCreate(bundle);setContentView(R.layout.activity_main);}
     }

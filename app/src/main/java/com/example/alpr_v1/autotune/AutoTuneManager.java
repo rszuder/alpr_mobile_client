@@ -183,6 +183,36 @@ public final class AutoTuneManager {
         return preferences.getString(key(model), "");
     }
 
+    /** Metadata/preference read only: null preserves an unobserved runtime, without fallback guesses. */
+    public ModelVariant inspectedVariant(InstalledModel model) {
+        if (model == null) return null;
+        // A manual variant is selected metadata even while its library is unobserved.
+        // Do not describe that choice as AUTO or initialize the library to display it.
+        String pin = storedVariantId(model);
+        for (ModelVariant variant : model.manifest().variants())
+            if (variant.id().equals(pin) && !Boolean.FALSE.equals(RuntimeBackendFactory.observedAvailability(variant.runtime()))) return variant;
+        try {
+            return chosenVariant(model, runtime -> {
+                Boolean available = RuntimeBackendFactory.observedAvailability(runtime);
+                if (available == null) throw new UnobservedRuntime();
+                return available;
+            });
+        } catch (UnobservedRuntime | IllegalStateException unresolved) { return null; }
+    }
+    private static final class UnobservedRuntime extends RuntimeException { }
+    public ExecutionProfile normalProfile(InstalledModel model, ModelVariant variant) {
+        return new NormalExecutionSettings(context).resolve(model, variant, profileForVariant(model, variant));
+    }
+    public String normalExecutionLabel(InstalledModel model, ModelVariant variant) {
+        int requested = new NormalExecutionSettings(context).requestedThreads(model);
+        if (requested != 0) return "CPU: " + NormalExecutionSettings.threadLabel(requested) + " (ustawione)";
+        if (variant == null || !Boolean.TRUE.equals(RuntimeBackendFactory.observedAvailability(variant.runtime())))
+            return "Auto (liczba wątków do ustalenia)";
+        ExecutionProfile profile = profileForVariant(model, variant);
+        return profile.gpu ? "Auto (wybrano GPU; wątki CPU nie dotyczą)"
+                : "Auto (wybrano CPU: " + NormalExecutionSettings.threadLabel(profile.cpuThreads) + ")";
+    }
+
     public ExecutionProfile chosenProfile(InstalledModel model) {
         return profileForVariant(model, chosenVariant(model));
     }
@@ -215,38 +245,65 @@ public final class AutoTuneManager {
     }
 
     public ModelVariant chosenVariant(InstalledModel model) {
-        String pinnedId = pinnedVariantId(model);
-        if (!pinnedId.isEmpty()) {
+        return chosenVariant(model, RuntimeBackendFactory::isRuntimeAvailable);
+    }
+
+    /** Same selection, with an injected read-only availability observation for UI callers. */
+    public ModelVariant chosenVariant(InstalledModel model, java.util.function.Predicate<ModelRuntime> available) {
+        return selectionPreferences(model).choose(model,available);
+    }
+    /** Immutable preference inputs, also usable with a freshly read manifest on a worker. */
+    public static final class VariantSelection {
+        public final String pinnedId,automaticId;
+        VariantSelection(String pinned,String automatic){pinnedId=pinned;automaticId=automatic;}
+        public ModelVariant choose(InstalledModel model,java.util.function.Predicate<ModelRuntime> available){
+            if (!pinnedId.isEmpty()) {
             for (ModelVariant variant : model.manifest().variants()) {
                 if (variant.id().equals(pinnedId)
-                        && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                        && available.test(variant.runtime())) {
                     return variant;
                 }
             }
+            }
+            return automatic(model,available);
         }
-        return automaticVariant(model);
+        ModelVariant automatic(InstalledModel model,java.util.function.Predicate<ModelRuntime> available){
+            for(ModelVariant variant:model.manifest().variants())
+                if(variant.id().equals(automaticId)&&available.test(variant.runtime()))return variant;
+            return fallbackVariant(model,available);
+        }
+    }
+    public VariantSelection selectionPreferences(InstalledModel model){
+        JSONObject parsed=profileObject(model);
+        return new VariantSelection(storedVariantId(model),parsed==null?"":parsed.optString("chosen_variant_id",""));
     }
 
     public ModelVariant requireResearchVariant(InstalledModel model) {
         // Read the stored pin itself: pinnedVariantId() intentionally hides stale ordinary-mode pins.
         return com.example.alpr_v1.experiment.ResearchVariantSelection.require(model,
-                model == null ? "" : preferences.getString(pinKey(model), ""), RuntimeBackendFactory::isRuntimeAvailable);
+                storedVariantId(model), RuntimeBackendFactory::isRuntimeAvailable);
+    }
+
+    public String storedVariantId(InstalledModel model) {
+        return model == null ? "" : preferences.getString(pinKey(model), "");
     }
 
     /** AutoTune winner or deterministic fallback, without changing the manual pin. */
     public ModelVariant automaticVariant(InstalledModel model) {
-        JSONObject parsed = profileObject(model);
-        String selectedId = parsed == null ? "" : parsed.optString("chosen_variant_id", "");
-        for (ModelVariant variant : model.manifest().variants()) {
-            if (variant.id().equals(selectedId)
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
-                return variant;
-            }
-        }
-        return fallbackVariant(model);
+        return automaticVariant(model, RuntimeBackendFactory::isRuntimeAvailable);
+    }
+    private ModelVariant automaticVariant(InstalledModel model, java.util.function.Predicate<ModelRuntime> available) {
+        return selectionPreferences(model).automatic(model,available);
     }
 
     public void pinVariant(InstalledModel model, String variantId) {
+        pinVariant(model, variantId, RuntimeBackendFactory::isRuntimeAvailable);
+    }
+    /** Explicit UI selection of metadata; an unobserved library is checked at START. */
+    public void pinInspectedVariant(InstalledModel model, String variantId) {
+        pinVariant(model, variantId, runtime -> !Boolean.FALSE.equals(RuntimeBackendFactory.observedAvailability(runtime)));
+    }
+    private void pinVariant(InstalledModel model, String variantId, java.util.function.Predicate<ModelRuntime> available) {
         ModelVariant selected = null;
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.id().equals(variantId)) {
@@ -257,7 +314,7 @@ public final class AutoTuneManager {
         if (selected == null) {
             throw new IllegalArgumentException("Model nie zawiera wariantu: " + variantId);
         }
-        if (!RuntimeBackendFactory.isRuntimeAvailable(selected.runtime())) {
+        if (!available.test(selected.runtime())) {
             throw new IllegalArgumentException(RuntimeBackendFactory.unavailableReason(selected.runtime()));
         }
         preferences.edit().putString(pinKey(model), selected.id()).apply();
@@ -272,12 +329,15 @@ public final class AutoTuneManager {
     }
 
     public String pinnedVariantId(InstalledModel model) {
+        return pinnedVariantId(model, RuntimeBackendFactory::isRuntimeAvailable);
+    }
+    private String pinnedVariantId(InstalledModel model, java.util.function.Predicate<ModelRuntime> available) {
         if (model == null) return "";
         String value = preferences.getString(pinKey(model), "");
         if (value == null || value.isEmpty()) return "";
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.id().equals(value)
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) {
+                    && available.test(variant.runtime())) {
                 return value;
             }
         }
@@ -343,24 +403,24 @@ public final class AutoTuneManager {
         }
     }
 
-    private static ModelVariant fallbackVariant(InstalledModel model) {
+    private static ModelVariant fallbackVariant(InstalledModel model, java.util.function.Predicate<ModelRuntime> available) {
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.runtime() == ModelRuntime.TFLITE && isFp32(variant)
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+                    && available.test(variant.runtime())) return variant;
         }
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.runtime() == ModelRuntime.ONNX && isFp32(variant)
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+                    && available.test(variant.runtime())) return variant;
         }
         for (ModelVariant variant : model.manifest().variants()) {
-            if (isFp32(variant) && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+            if (isFp32(variant) && available.test(variant.runtime())) return variant;
         }
         for (ModelVariant variant : model.manifest().variants()) {
             if (variant.runtime() == ModelRuntime.TFLITE
-                    && RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+                    && available.test(variant.runtime())) return variant;
         }
         for (ModelVariant variant : model.manifest().variants()) {
-            if (RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
+            if (available.test(variant.runtime())) return variant;
         }
         throw new IllegalStateException("Pakiet nie zawiera wariantu wykonywalnego w tej wersji aplikacji");
     }

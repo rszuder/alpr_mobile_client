@@ -43,33 +43,46 @@ public class TvBboxPipelineTest {
     @After public void close()throws Exception{for(Suite s:suites)s.close();}
 
     final class Suite implements AutoCloseable {
-        final TvBboxCrop crop=TvBboxCropTest.selection(640,400);
-        final Bitmap camera=Bitmap.createBitmap(640,400,Bitmap.Config.ARGB_8888);
+        final TvBboxCrop crop;
+        final Bitmap camera;
         final ModelRegistry registry=new ModelRegistry(RuntimeEnvironment.getApplication());
         final Map<ModelRole,FakeBackend> backends=new EnumMap<>(ModelRole.class);
         final ResearchExecutionConfig config;
         final ResearchSessionStore store;
-        final String scenario;
+        String scenario;
         final boolean cropped;
         final MobileAlprEngine engine;
         final List<JSONObject> observedMt=new ArrayList<>();
         final List<byte[]> expectedMz=new ArrayList<>();
+        final Set<String> checkedMzAttemptIds=new HashSet<>();
         int checkedMpTensors,checkedMtTensors;
         File archive;
+        Runnable onMtRun=()->{};
         Suite(RoiBudgetPolicy policy,String scenario,boolean cropped)throws Exception{
+            this(policy,scenario,cropped,false);
+        }
+        Suite(RoiBudgetPolicy policy,String scenario,boolean cropped,boolean f6)throws Exception{
+            this(policy,scenario,cropped,f6,null,null,null);
+        }
+        Suite(RoiBudgetPolicy policy,String scenario,boolean cropped,boolean f6,TvBboxCrop approvedTv,Final180PhotoRoi approvedPhoto,String label)throws Exception{
             this.scenario=scenario;this.cropped=cropped;
+            crop=approvedTv==null?TvBboxCropTest.selection(640,400):approvedTv;
+            camera=Bitmap.createBitmap(crop.sourceWidth,crop.sourceHeight,Bitmap.Config.ARGB_8888);
             Canvas draw=new Canvas(camera);draw.drawColor(Color.rgb(25,80,140));Paint paint=new Paint();
             for(int index=0;index<2;index++){
+                if(index>0&&(scenario.equals("extra-final")||scenario.equals("duplicate-final")))continue;
                 List<Point2> points=plate(index);paint.setColor(Color.WHITE);draw.drawRect(points.get(0).x-5,points.get(0).y-5,points.get(1).x+5,points.get(2).y+5,paint);
                 paint.setColor(Color.BLACK);for(int x=(int)points.get(0).x;x<points.get(1).x;x+=8)draw.drawRect(x,points.get(0).y,x+3,points.get(2).y,paint);
             }
             Map<ModelRole,InstalledModel> active=(Map<ModelRole,InstalledModel>)field(registry,"active");active.clear();
             for(ModelRole role:ModelRole.values())active.put(role,model(role));
             ResearchStageExecutionConfig mp=policy.usesVehicleCascade()?stage(active.get(ModelRole.VEHICLE)):ResearchStageExecutionConfig.disabled(ModelRole.VEHICLE);
-            ResearchExecutionConfig base=new ResearchExecutionConfig("roi_budget","R"+policy.ordinal(),policy,RecognitionProfile.BALANCED,"640x400",
+            ResearchExecutionConfig base=new ResearchExecutionConfig("roi_budget",label==null?"R"+policy.ordinal():label,policy,RecognitionProfile.BALANCED,"640x400",
                     false,false,policy.usesVehicleCascade(),true,false,false,mp,stage(active.get(ModelRole.PLATE)),stage(active.get(ModelRole.CHARACTER)))
                     .withCameraSetup(crop.cameraSetup);
-            config=cropped?base.withTvBboxCrop(crop):base;
+            ResearchExecutionConfig selected=cropped?base.withTvBboxCrop(crop):base;
+            config=f6?selected.withFinal180(approvedPhoto==null?Final180PhotoRoi.prepare(new JSONArray("[{x:.2,y:.22},{x:.82,y:.22},{x:.82,y:.72},{x:.2,y:.72}]"),crop):approvedPhoto):selected;
+            if(f6){paint.setColor(Color.MAGENTA);draw.drawRect(90,70,110,90,paint);}
             store=TvBboxProducerFixture.prepare(temp.newFolder(),config);
             engine=new MobileAlprEngine(registry,new AutoTuneManager(RuntimeEnvironment.getApplication()),policy,MtExecutionPolicy.LEGACY_BURST,
                     scenario.equals("zero")?MtFallbackPolicy.DEFERRED:MtFallbackPolicy.SAME_CYCLE,VehicleTrackingPolicy.RAW_MP,config,
@@ -92,12 +105,14 @@ public class TvBboxPipelineTest {
         }
         ResearchStageExecutionConfig stage(InstalledModel model){return ResearchStageExecutionConfig.enabled(model.manifest().role(),model,
                 model.manifest().variants().get(0),ExecutionProfile.tfliteCpu(2),registry);}
-        PipelineResult run(int sequence)throws Exception{
-            ContinuityStamp stamp=stamp(sequence);String scene=store.f5aEvidence().ticket(stamp);if(!scene.isEmpty())store.captureSceneEvidence(scene,stamp,camera);
+        PipelineResult run(int sequence)throws Exception{return run(sequence,stamp(sequence));}
+        PipelineResult run(int sequence,ContinuityStamp stamp)throws Exception{
+            String scene=store.f5aEvidence().ticket(stamp);if(!scene.isEmpty())store.captureSceneEvidence(scene,stamp,camera);
             InferenceTrace trace=new InferenceTrace(sequence,stamp);trace.start("total");
+            int mtBefore=backends.containsKey(ModelRole.PLATE)?backends.get(ModelRole.PLATE).runs:0;
             try{
                 if(cropped)try(TvBboxCrop.Frame input=crop.open(camera,crop.geometry,crop.cameraSetup)){
-                    return engine.run(camera,trace,stamp,(a,w,h,s)->{},()->scenario.equals("cancelled")&&backends.get(ModelRole.PLATE).runs>0,null,input);
+                    return engine.run(camera,trace,stamp,(a,w,h,s)->{},()->scenario.equals("cancelled")&&backends.containsKey(ModelRole.PLATE)&&backends.get(ModelRole.PLATE).runs>mtBefore,null,input);
                 }else return engine.run(camera,trace,stamp,(a,w,h,s)->{},()->false);
             }finally{store.appendTelemetry("traces.jsonl",trace.toJson().toString());}
         }
@@ -112,12 +127,51 @@ public class TvBboxPipelineTest {
         void checkPixels(byte[] received,int left,int top,int width,int height)throws Exception{
             Bitmap input=Bitmap.createBitmap(camera,left,top,width,height);try{assertArrayEquals(tensor(input),received);}finally{if(input!=camera)input.recycle();}
         }
+        void checkActualDecodedMz(byte[] received)throws Exception{
+            Object batch=field(engine,"researchBatch");List<AcquisitionAttemptRecord> records=(List<AcquisitionAttemptRecord>)field(batch,"records");
+            for(AcquisitionAttemptRecord record:records){JSONObject data=TvBboxProducerFixture.data(record);
+                if(data.optBoolean("mz_executed")&&checkedMzAttemptIds.add(record.attemptId)){
+                    JSONArray points=data.getJSONObject("tv_bbox_local_geometry").getJSONArray("corners_px");List<Point2> full=new ArrayList<>();
+                    for(int i=0;i<4;i++)full.add(new Point2((float)points.getJSONArray(i).getDouble(0)+crop.left,(float)points.getJSONArray(i).getDouble(1)+crop.top));
+                    Bitmap rectified=PlateRectifier.rectify(camera,full);try{assertArrayEquals("MZ must use the actual decoded source Pose",tensor(rectified),received);}finally{rectified.recycle();}return;
+                }
+            }fail("MZ backend needs an actual executed detection attempt");
+        }
         File finish(String name)throws Exception{
             archive=TvBboxProducerFixture.finish(store,config);
             assertEquals(cropped?"PASS":"ABSENT",TvBboxInputValidator.validate(archive));
+            F6ProducerContractVerifier.validateScenes(archive);
             export(archive,name);return archive;
         }
+        File finishF6(String name,String status)throws Exception{
+            archive=TvBboxProducerFixture.finish(store,config);assertEquals(status,F6ProducerContractVerifier.validate(archive));
+            String folder=System.getenv("F6_FIXTURES");if(folder!=null){java.nio.file.Path target=Paths.get(folder,name+".alprsession");Files.createDirectories(target.getParent());Files.copy(archive.toPath(),target,StandardCopyOption.REPLACE_EXISTING);}
+            return archive;
+        }
         public void close()throws Exception{engine.close();TvBboxProducerFixture.close(store);if(!camera.isRecycled())camera.recycle();}
+    }
+    /** Shared producer boundary for the real UI preference -> engine -> STOP -> archive regression. */
+    public static File produceUiLifecycle(TvBboxCrop tv,Final180PhotoRoi photo,String label,File output)throws Exception{
+        return produceUiLifecycle(tv,photo,label,output,()->{});
+    }
+    public static File produceUiLifecycle(TvBboxCrop tv,Final180PhotoRoi photo,String label,File output,Runnable afterFrozen)throws Exception{
+        TvBboxPipelineTest fixture=new TvBboxPipelineTest();fixture.temp.create();
+        try{
+            Suite s=fixture.new Suite(RoiBudgetPolicy.FULL_FRAME,"no-detection",true,true,tv,photo,label);
+            F6LifecycleTrace.record(s.store.sessionId(),"START_FROZEN",new JSONObject(new String(Files.readAllBytes(new File(s.store.directory(),"session.json").toPath()),StandardCharsets.UTF_8)));
+            afterFrozen.run();
+            PipelineResult result=s.run(1);if(result!=null)result.close();
+            TvBboxProducerFixture.drain(s.store);
+            F6LifecycleTrace.record(s.store.sessionId(),"FIRST_FRAME_PROCESSED",new JSONObject().put("execution",s.config.toJson())
+                    .put("lifecycle_journal",new String(Files.readAllBytes(new File(s.store.directory(),Final180Evidence.FILE).toPath()),StandardCharsets.UTF_8)));
+            s.store.closeAdmission("manual",System.currentTimeMillis(),System.nanoTime());
+            F6LifecycleTrace.record(s.store.sessionId(),"STOP_ADMISSION_CLOSED",new JSONObject(new String(Files.readAllBytes(new File(s.store.directory(),"session.json").toPath()),StandardCharsets.UTF_8)));
+            File archive=s.store.finish(new ResearchSessionStore.Telemetry("{\"synthetic\":true,\"test_only\":true,\"device_run\":\"NOT_RUN\"}","","","","",""),s.config);
+            F6LifecycleTrace.record(s.store.sessionId(),"FINALIZED_EXPORT",new JSONObject(new String(Files.readAllBytes(new File(s.store.directory(),"session.json").toPath()),StandardCharsets.UTF_8)));
+            assertEquals("PASS",F6ProducerContractVerifier.validate(archive));
+            assertEquals("NO_DETECTION",rows(archive,"samples/attempts.jsonl").get(0).getString("mt_status"));
+            Files.createDirectories(output.getParentFile().toPath());Files.copy(archive.toPath(),output.toPath(),StandardCopyOption.REPLACE_EXISTING);return output;
+        }finally{fixture.close();fixture.temp.delete();}
     }
     static byte[] bytes(ByteBuffer buffer){ByteBuffer copy=buffer.duplicate();copy.rewind();byte[] result=new byte[copy.remaining()];copy.get(result);return result;}
     final class FakeBackend implements InferenceBackend {
@@ -127,6 +181,11 @@ public class TvBboxPipelineTest {
         public String runtimeName(){return "SYNTHETIC_MODEL_CALCULATION_ONLY";}public void close(){}
         public InferenceRunResult run(ByteBuffer input){
             runs++;byte[] got=bytes(input);received.add(got);
+            if(role==ModelRole.PLATE)suite.onMtRun.run();
+            if(role==ModelRole.PLATE&&suite.scenario.equals("mt-error"))throw new IllegalStateException("SYNTHETIC_MT_FAILURE");
+            if(role==ModelRole.CHARACTER&&suite.scenario.equals("mz-error"))throw new IllegalStateException("SYNTHETIC_MZ_FAILURE");
+            if(role==ModelRole.PLATE&&suite.scenario.equals("mt-fatal"))throw new OutOfMemoryError("SYNTHETIC_NO_ALLOCATION");
+            if(role==ModelRole.CHARACTER&&suite.scenario.equals("mz-fatal"))throw new OutOfMemoryError("SYNTHETIC_NO_ALLOCATION");
             int channels=role==ModelRole.PLATE?17:role==ModelRole.CHARACTER?8:5,anchors=4;
             float[] values=new float[channels*anchors];
             try {
@@ -144,16 +203,25 @@ public class TvBboxPipelineTest {
                     suite.checkPixels(got,l,t,r-l,b-t);suite.checkedMtTensors++;
                     boolean empty=suite.scenario.equals("no-detection")||suite.scenario.equals("fallback")&&runs<=2;
                     if(!empty)for(int i=0;i<2;i++){
-                        if(suite.scenario.equals("one")&&i>0)continue;
-                        List<Point2> points=plate(i);boolean inside=true;for(Point2 p:points)inside&=p.x>=l&&p.x<=r&&p.y>=t&&p.y<=b;
+                        if((suite.scenario.equals("one")||suite.scenario.equals("no-mz"))&&i>0)continue;
+                        List<Point2> points=new ArrayList<>(plate(i));
+                        if(suite.scenario.equals("no-mz"))points=Arrays.asList(new Point2(170,160),new Point2(180,160),new Point2(180,170),new Point2(170,170));
+                        if(suite.scenario.equals("duplicate-final"))points=Arrays.asList(new Point2(i==0?160:222,150),new Point2(i==0?212:280,150),new Point2(i==0?212:280,190),new Point2(i==0?160:222,190));
+                        boolean inside=true;for(Point2 p:points)inside&=p.x>=l&&p.x<=r&&p.y>=t&&p.y<=b;
                         if(!inside)continue;
                         List<Point2> local=new ArrayList<>();for(Point2 p:points)local.add(new Point2(p.x-l,p.y-t,1));
                         encode(values,channels,anchors,i,points.get(0).x-l,points.get(0).y-t,points.get(1).x-l,points.get(2).y-t,r-l,b-t,0,local);
+                        if(suite.scenario.equals("no-mz")){
+                            // A valid small quad, low keypoint confidence and an oversized box use the existing MZ quality gate.
+                            encode(values,channels,anchors,i,0,0,r-l,b-t,r-l,b-t,0,local);
+                            for(int k=0;k<4;k++)values[(7+k*3)*anchors+i]=0;
+                        }
                         Bitmap rectified=PlateRectifier.rectify(suite.camera,points);try{suite.expectedMz.add(suite.tensor(rectified));}finally{rectified.recycle();}
                     }
                 }else {
-                    boolean match=false;for(byte[] expected:suite.expectedMz)match|=Arrays.equals(expected,got);assertTrue("MZ must use full source and translated Pose",match);
-                    for(int i=0;i<4;i++){
+                    if(suite.config.final180PhotoRoi()!=null)suite.checkActualDecodedMz(got);
+                    else{boolean match=false;for(byte[] expected:suite.expectedMz)match|=Arrays.equals(expected,got);assertTrue("MZ must use full source and translated Pose",match);}
+                    for(int i=0;i<(suite.scenario.equals("no-read")?0:4);i++){
                         float cx=8+i*14,cy=32;values[0*anchors+i]=cx;values[1*anchors+i]=cy;values[2*anchors+i]=7;values[3*anchors+i]=10;values[(4+i)*anchors+i]=.95f;
                     }
                 }
@@ -183,6 +251,87 @@ public class TvBboxPipelineTest {
         File archive=s.finish("tv-r0");List<JSONObject> a=rows(archive,"samples/attempts.jsonl");assertEquals(1,a.size());
         String pose=a.get(0).getString("mt_pose_corners_norm");assertTrue(pose.startsWith("0.25:"));
         assertEquals("source_frame_normalized_v1",a.get(0).getString("mt_pose_coordinate_space"));
+    }
+    @Test public void f6PhotoRoiUsesExactPixelsAndKeepsOuterTvAndSourceEvidence()throws Exception{
+        Suite s=new Suite(RoiBudgetPolicy.FULL_FRAME,"one",true,true);PipelineResult result=s.run(1);if(result!=null)result.close();
+        File archive=s.finishF6("r0-positive","PASS");JSONObject a=rows(archive,"samples/attempts.jsonl").get(0);
+        assertEquals(s.config.final180PhotoRoi().left,a.getInt("roi_left"));assertEquals(s.config.final180PhotoRoi().top,a.getInt("roi_top"));
+        assertEquals(1,s.checkedMtTensors);assertFalse(s.backends.containsKey(ModelRole.VEHICLE));
+        List<JSONObject> events=rows(archive,Final180Evidence.FILE);JSONObject start=events.stream().filter(e->"MT_STARTED".equals(e.optString("event"))).findFirst().get();
+        assertEquals(a.getString("mt_invocation_id"),start.getString("mt_invocation_id"));assertEquals(stamp(1).sourceTimestampNanos,start.getJSONObject("source_stamp").getLong("source_timestamp_nanos"));
+        JSONObject frame=rows(archive,TvBboxEvidence.INDEX).get(0);try(ZipFile zip=new ZipFile(archive)){
+            for(String name:new String[]{"source_image","crop_image"}){byte[] image=zip.getInputStream(zip.getEntry(frame.getJSONObject(name).getString("entry"))).readAllBytes();Bitmap b=BitmapFactory.decodeByteArray(image,0,image.length);
+                int x="source_image".equals(name)?100:100-s.crop.left,y="source_image".equals(name)?80:80-s.crop.top;
+                int color=b.getPixel(x,y);assertTrue(Color.red(color)>180&&Color.blue(color)>180&&Color.green(color)<80);b.recycle();}
+        }
+    }
+    @Test public void f6ExportsZeroMultipleNoReadAndBackendErrorsWithoutFiltering()throws Exception{
+        for(String scenario:new String[]{"no-detection","two","no-read","no-mz","extra-final","duplicate-final","mt-error","mz-error","mt-fatal","mz-fatal","cancelled"}){
+            Suite s=new Suite(RoiBudgetPolicy.FULL_FRAME,scenario,true,true);
+            if(scenario.endsWith("error"))assertThrows(IllegalStateException.class,()->s.run(1));
+            else if(scenario.endsWith("fatal"))assertThrows(OutOfMemoryError.class,()->s.run(1));
+            else if(scenario.equals("cancelled"))assertThrows(MobileAlprEngine.ProcessingCancelledException.class,()->s.run(1));
+            else{PipelineResult result=s.run(1);if(result!=null)result.close();}
+            File archive=s.finishF6("r0-"+scenario,scenario.endsWith("error")||scenario.endsWith("fatal")||scenario.equals("cancelled")?"PARTIAL":"PASS");
+            List<JSONObject> attempts=rows(archive,"samples/attempts.jsonl"),roles=rows(archive,F5aEvidence.ROLES);
+            if(scenario.equals("no-detection")){assertEquals(1,attempts.size());assertEquals(0,roles.get(0).getJSONArray("final_attempt_ids").length());assertEquals(0,attempts.get(0).getInt("mt_detection_count"));}
+            if(scenario.equals("two")){assertEquals(2,attempts.size());assertEquals(2,roles.get(0).getJSONArray("final_attempt_ids").length());}
+            if(scenario.equals("extra-final")||scenario.equals("duplicate-final"))assertEquals(2,roles.get(0).getJSONArray("final_attempt_ids").length());
+            if(scenario.equals("no-mz")){assertEquals(1,roles.get(0).getJSONArray("final_attempt_ids").length());assertEquals("NOT_RUN",attempts.get(0).getString("mz_status"));assertEquals(0,s.backends.get(ModelRole.CHARACTER).runs);}
+            if(scenario.equals("no-read"))for(JSONObject a:attempts){assertEquals("NO_CHARACTERS",a.getString("mz_status"));assertEquals("",a.getString("prediction"));}
+        }
+    }
+    @Test public void f6ManySceneStopExportRetainsActualMtMzLinksOverVirtualTwentyMinutes()throws Exception{
+        Suite s=new Suite(RoiBudgetPolicy.FULL_FRAME,"two",true,true,null,null,"R0_FINAL");
+        JSONObject original=new JSONObject(new String(Files.readAllBytes(new File(s.store.directory(),"session.json").toPath()),StandardCharsets.UTF_8));
+        long start=original.getLong("started_elapsed_nanos"),wall=java.time.Instant.parse(original.getString("started_at")).toEpochMilli();
+        for(int n=1;n<=120;n++){
+            final int current=n;
+            ContinuityStamp source=new ContinuityStamp(n,n,0,n,9007199254740993L+n*10_000_000_000L,SourceTimestampDomain.CAMERAX_SENSOR);
+            s.engine.hardResetScene("SYNTHETIC_TEST_ONLY_scene_change");
+            s.store.f5aEvidence().boundary("SYNTHETIC_20MIN_VIRTUAL",n,"TEST_ONLY",source,wall+n*10000L,start+n*10_000_000_000L);
+            s.scenario=new String[]{"two","one","no-detection","no-read","no-mz"}[n%5];
+            s.onMtRun=n%17==0?()->s.store.f5aEvidence().boundary("SYNTHETIC_LATE",current+1,"TEST_ONLY_next_scene",
+                    new ContinuityStamp(current+1,current+1,0,current+1,source.sourceTimestampNanos+1,SourceTimestampDomain.CAMERAX_SENSOR),wall+current*10000L,start+current*10_000_000_000L):()->{};
+            if(n%17==0){s.scenario="cancelled";assertThrows(MobileAlprEngine.ProcessingCancelledException.class,()->s.run(current,source));}
+            else{PipelineResult result=s.run(n,source);if(result!=null)result.close();}
+            TvBboxProducerFixture.drain(s.store);
+        }
+        s.store.closeAdmission("synthetic_completed_20min_virtual_NOT_THERMAL",wall+1_200_000L,start+1_200_000_000_000L);
+        File archive=s.store.finish(new ResearchSessionStore.Telemetry("{\"synthetic\":true,\"device_run\":\"NOT_RUN\",\"virtual_duration_seconds\":1200}","","","","",""),s.config);
+        assertEquals("PARTIAL",F6ProducerContractVerifier.validate(archive));
+        assertEquals(120,s.backends.get(ModelRole.PLATE).runs);assertTrue(s.backends.get(ModelRole.CHARACTER).runs>60);
+        List<JSONObject> roles=rows(archive,F5aEvidence.ROLES);assertEquals(120,roles.size());
+        assertTrue(rows(archive,F5aEvidence.SCENES).size()>=120);
+        assertTrue(roles.stream().anyMatch(r->r.optBoolean("stale_or_cancelled")));
+        JSONObject meta;try(ZipFile zip=new ZipFile(archive)){meta=new JSONObject(new String(zip.getInputStream(zip.getEntry("session.json")).readAllBytes(),StandardCharsets.UTF_8));}
+        assertEquals(1_200_000_000_000L,meta.getLong("finished_elapsed_nanos")-meta.getLong("started_elapsed_nanos"));
+        assertFalse(meta.getBoolean("collection_complete"));
+        String folder=System.getenv("F6_STATE_FIXTURES");if(folder!=null){Files.createDirectories(Paths.get(folder));Files.copy(archive.toPath(),Paths.get(folder,"synthetic-20min-120scenes-mt-mz-PARTIAL.alprsession"));}
+    }
+    @Test public void f6DelayedResultKeepsTheOriginalSourceAcrossSceneBoundary()throws Exception{
+        Suite s=new Suite(RoiBudgetPolicy.FULL_FRAME,"one",true,true);
+        s.onMtRun=()->s.store.f5aEvidence().boundary("synthetic",2,"synthetic-next-photo",new ContinuityStamp(2,2,0,2,9007199254741000L,SourceTimestampDomain.CAMERAX_SENSOR),System.currentTimeMillis(),System.nanoTime());
+        PipelineResult r=s.run(1);if(r!=null)r.close();File archive=s.finishF6("r0-delayed-old-frame","PARTIAL");
+        JSONObject a=rows(archive,"samples/attempts.jsonl").get(0);assertEquals(1,a.getLong("scene_generation"));
+        for(JSONObject event:rows(archive,Final180Evidence.FILE))if(!event.isNull("mt_invocation_id"))assertEquals(1,event.getJSONObject("source_stamp").getLong("scene_generation"));
+    }
+    @Test public void f6PassiveLoggingDoesNotChangeTensorsOrModelCallCounts()throws Exception{
+        Suite on=new Suite(RoiBudgetPolicy.FULL_FRAME,"one",true,true),off=new Suite(RoiBudgetPolicy.FULL_FRAME,"one",true,true);
+        // Test-only removal of the passive sink; both engines retain the identical approved photo input domain.
+        Field f=ResearchSessionStore.class.getDeclaredField("final180");f.setAccessible(true);f.set(off.store,null);
+        PipelineResult a=on.run(1),b=off.run(1);assertEquals(a.status,b.status);assertEquals(a.recognitions.size(),b.recognitions.size());
+        for(ModelRole role:new ModelRole[]{ModelRole.PLATE,ModelRole.CHARACTER}){
+            assertEquals(on.backends.get(role).runs,off.backends.get(role).runs);
+            for(int i=0;i<on.backends.get(role).received.size();i++)assertArrayEquals(on.backends.get(role).received.get(i),off.backends.get(role).received.get(i));
+        }
+        a.close();b.close();TvBboxProducerFixture.drain(off.store);on.finishF6("r0-logging-equivalence","PASS");
+    }
+    @Test public void f6RejectsContradictoryFramesOffsetsAndAttemptIdentities()throws Exception{
+        Suite s=new Suite(RoiBudgetPolicy.FULL_FRAME,"one",true,true);PipelineResult r=s.run(1);if(r!=null)r.close();File good=s.finishF6("r0-validator-reference","PASS");
+        for(String fault:new String[]{"image-sha","payload-missing","source-stamp","unknown-invocation","duplicate-index","missing-offset","double-offset","roi-offset","wrong-space","dimensions","snapshot-digest","false-homography"}){
+            File bad=mutate(good,fault,s.crop);assertThrows("F6 rejects "+fault,Exception.class,()->Final180ArchiveValidator.validate(bad));
+        }
     }
     @Test public void R1UsesMpCropAndAtMostOneRoi()throws Exception{
         Suite s=new Suite(RoiBudgetPolicy.ONE_ROI,"one",true);PipelineResult result=s.run(1);if(result!=null)result.close();

@@ -11,6 +11,16 @@ import java.util.List;
 
 /** Migawka tracku przekazywana do trwałej galerii wyników w UI. */
 public final class PlateObservation {
+    /** Runtime-only ownership; never a field of a research/archive/export record. */
+    private transient com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp identityOwner;
+    public com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp identityOwner() {return identityOwner;}
+    private transient long historyAnalysisRunId;
+    private transient com.example.alpr_v1.camera.BitmapMemoryBudget.Lease memoryLease;
+    public long dynamicAnalysisRunId() {return identityOwner==null?historyAnalysisRunId:identityOwner.analysisRunId;}
+    PlateObservation stampHistoryRun(long run) {historyAnalysisRunId=run;return this;}
+    PlateObservation stampIdentityOwner(com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner) {
+        this.identityOwner=owner;return this;
+    }
     /** A carried consensus or an empty MZ attempt is not a new gallery reading. */
     public boolean hasFreshMzRead() {
         return freshMzAttempted && freshPrediction != null && !freshPrediction.trim().isEmpty();
@@ -319,7 +329,7 @@ public final class PlateObservation {
                 predictionAfter,
                 stamp,
                 acquisitionDirectiveRevision
-        );
+        ).stampIdentityOwner(identityOwner).stampHistoryRun(historyAnalysisRunId);
     }
 
     private PlateVehicleAssociation copiedAssociation() {
@@ -341,7 +351,22 @@ public final class PlateObservation {
         return PlateVehicleAssociation.unassigned(associationReason);
     }
 
+    PlateObservation withMzResult(Bitmap bitmap,TemporalCharacterAggregator.Result result,
+            List<PlateCharacter> readCharacters,String raw,CropInferenceTiming cropTiming,int attempt,
+            com.example.alpr_v1.camera.BitmapMemoryBudget.Lease lease) {
+        String consensus=result==null?text:result.text;
+        PlateObservation value=new PlateObservation(trackId,copiedAssociation(),sourceRoiKind,sourceMtReason,frameId,
+                bitmap,consensus,plateConfidence,result==null?recognitionConfidence:result.confidence,
+                result!=null&&result.stable,result==null?observations:result.observations,readCharacters,
+                System.currentTimeMillis(),android.os.SystemClock.elapsedRealtimeNanos(),sharpness,appearanceDescriptor,
+                cropTiming,geometry,true,!raw.isEmpty(),raw,!raw.isEmpty()&&raw.equals(consensus),attempt,
+                result==null?layout:result.layout,result==null?rowCounts:result.rowCounts,text,consensus,
+                continuityStamp(),acquisitionDirectiveRevision).stampIdentityOwner(identityOwner).stampHistoryRun(historyAnalysisRunId);
+        value.memoryLease=lease;
+        return value;
+    }
     void recyclePreview() {
         if (previewBitmap != null && !previewBitmap.isRecycled()) previewBitmap.recycle();
+        if(memoryLease!=null){memoryLease.close();memoryLease=null;}
     }
 }

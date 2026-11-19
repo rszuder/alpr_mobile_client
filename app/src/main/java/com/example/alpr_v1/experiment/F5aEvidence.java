@@ -23,7 +23,7 @@ public final class F5aEvidence {
     private final ResearchSessionStore store;
     private final Map<String,JSONObject> scenes = new LinkedHashMap<>();
     private final Map<String,JSONObject> roles = new LinkedHashMap<>();
-    private final Set<String> revisions = new HashSet<>();
+    private final Set<String> revisions = new LinkedHashSet<>();
     private long sequence, metadataConflicts;
     private String active = "";
     private boolean closed;
@@ -52,6 +52,7 @@ public final class F5aEvidence {
     }
     public synchronized void boundary(String pipelineOwner,long revision,String reason,ContinuityStamp stamp,long wall,long now) {
         if (closed || !store.accepting() || !revisions.add(pipelineOwner+"/"+revision)) return;
+        if(store.final180()!=null&&revisions.size()>64)revisions.remove(revisions.iterator().next());
         JSONObject old = scenes.get(active);
         if (old != null && "PENDING".equals(old.optString("write_status"))) {
             missing(old,"superseded_before_capture"); journal("SCENE",old);
@@ -72,6 +73,7 @@ public final class F5aEvidence {
         put(row,"write_status","PENDING"); put(row,"mp_observations",new JSONArray());
         put(row,"mt_invocation_ids",new JSONArray()); put(row,"mt_execution_status","NOT_RUN");
         put(row,"mt_not_run_reason","no_mt_invocation_for_scene"); put(row,"links_status","COMPLETE");
+        if(store.final180()!=null)scenes.clear();
         scenes.put(id,row); active=id; journal("SCENE",row);
     }
     public synchronized boolean pending() {
@@ -151,6 +153,7 @@ public final class F5aEvidence {
         put(row,"source_frame_entry",null); put(row,"source_frame_sha256",null);
     }
     public synchronized void invocation(String sceneId,String invocation) {
+        if(store.final180()!=null)return; // Actual START events supply this relation during the streaming projection.
         JSONObject row=scenes.get(sceneId);
         if(row==null) {
             row=scenes.get(active);
@@ -169,6 +172,10 @@ public final class F5aEvidence {
         journal("SCENE",row);
     }
     public synchronized void observation(String sceneId,JSONObject mp,String noMtReason) {
+        if(store.final180()!=null){
+            JSONObject d=new JSONObject();put(d,"mp",mp);put(d,"not_run_reason",noMtReason);
+            store.final180().event("SCENE_OBSERVATION",null,null,sceneId,0,null,null,null,d);return;
+        }
         JSONObject row=scenes.get(sceneId); if(row==null)return;
         if(mp!=null)row.optJSONArray("mp_observations").put(copy(mp));
         if("NOT_RUN".equals(row.optString("mt_execution_status")) && noMtReason!=null && !noMtReason.isEmpty())
@@ -176,6 +183,7 @@ public final class F5aEvidence {
         journal("SCENE",row);
     }
     public synchronized void roles(JSONObject row) {
+        if(store.final180()!=null){journal("ROLE",row);return;}
         String id=row.optString("mt_invocation_id");
         if(id.isEmpty() || roles.containsKey(id)) { metadataConflicts++;return; }
         roles.put(id,copy(row)); journal("ROLE",row);
@@ -192,11 +200,12 @@ public final class F5aEvidence {
         String line=envelope.toString()+"\n";
         store.enqueueF5a(() -> {
             try { ResearchSessionStore.append(new File(store.directory(),JOURNAL),line); }
-            catch(IOException error) { /* Retained metadata is retried by flushFinal; failed final persistence throws. */ }
+            catch(IOException error) { if(store.final180()!=null)store.recordMetadataFailure("f6_scene_journal_write_failed"); }
         });
     }
     /** Off the UI/inference threads, after the shared writer has drained. */
     synchronized void flushFinal() throws IOException {
+        if(store.final180()!=null)return; // Never rewrite a streaming journal from a partial RAM cache.
         // Rewrite from retained metadata, so a full image queue cannot silently discard an event ID.
         StringBuilder text=new StringBuilder();
         for(JSONObject row:scenes.values())appendEnvelope(text,"SCENE",row);
@@ -290,7 +299,7 @@ public final class F5aEvidence {
         put(schema,"scene_evidence_file",SCENES);put(schema,"mt_detection_roles_file",ROLES);
         writeRows(new File(directory,SCENES),scenes.values());writeRows(new File(directory,ROLES),roles.values());
     }
-    private static File safeFrame(File root,String entry) throws IOException {
+    static File safeFrame(File root,String entry) throws IOException {
         if(!entry.startsWith("samples/frames/") || entry.contains("\\") || entry.contains("..") || entry.contains(":"))
             throw new IOException("Unsafe F5A image path");
         File file=new File(root,entry);

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="main_timer_duration_title">Czas analizy</string>
+    <string name="main_timer_off">wyłączony</string>
+    <string name="main_timer_tile_on">Timer\nON</string>
+    <string name="main_timer_tile_off">Timer\nOFF</string>
+    <string name="main_timer_enable">Włącz timer automatycznego zatrzymania</string>
+    <string name="main_timer_disable">Wyłącz timer automatycznego zatrzymania</string>
+    <string name="main_timer_duration_action">%1$s, %2$s. Ustaw czas przed START.</string>
+    <string name="main_timer_locked">%1$s, %2$s. Ustawienia zablokowane podczas uruchomienia.</string>
+</resources>

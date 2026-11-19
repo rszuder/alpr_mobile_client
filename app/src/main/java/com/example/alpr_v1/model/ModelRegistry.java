@@ -36,7 +36,11 @@ public final class ModelRegistry {
     private InstalledAlprPackage activePackage;
     private InstalledAlprPackage basePackage;
 
-    public ModelRegistry(Context context) {
+    private final boolean inspectionOnly;
+    public ModelRegistry(Context context) { this(context, false); }
+    /** UI inspection does not migrate storage or initialize inference libraries. */
+    public ModelRegistry(Context context, boolean inspectionOnly) {
+        this.inspectionOnly = inspectionOnly;
         File appStorage = context.getExternalFilesDir(null);
         File privateStorage = context.getFilesDir();
         if (appStorage == null) {
@@ -46,7 +50,7 @@ public final class ModelRegistry {
         this.modelsRoot = new File(appStorage, "models");
         this.packagesRoot = new File(appStorage, "alpr-packages");
         this.preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        if (!samePath(appStorage, privateStorage)) {
+        if (!inspectionOnly && !samePath(appStorage, privateStorage)) {
             migrateLegacyDirectory(new File(privateStorage, "models"), modelsRoot, true);
             migrateLegacyDirectory(
                     new File(privateStorage, "alpr-packages"),
@@ -75,7 +79,7 @@ public final class ModelRegistry {
                     break;
                 }
             }
-            if (selected != null && !isExecutable(selected)) selected = null;
+            if (selected != null && !executable(selected)) selected = null;
             // MT and MZ may use a legacy fallback when no explicit active
             // preference exists. MP is optional and must never become active
             // merely because an old executable vehicle model is installed.
@@ -83,7 +87,7 @@ public final class ModelRegistry {
             // active.vehicle and reload() immediately resurrects the old MP.
             if (selected == null && !roleModels.isEmpty() && role != ModelRole.VEHICLE) {
                 for (int index = roleModels.size() - 1; index >= 0; index--) {
-                    if (isExecutable(roleModels.get(index))) {
+                    if (executable(roleModels.get(index))) {
                         selected = roleModels.get(index);
                         break;
                     }
@@ -201,7 +205,7 @@ public final class ModelRegistry {
         InstalledModel baseVehicle = basePackage.vehicleModel();
         InstalledModel activeVehicle = active.get(ModelRole.VEHICLE);
         if (baseVehicle == null) return activeVehicle != null;
-        if (!isExecutable(baseVehicle)) return activeVehicle != null;
+        if (!executable(baseVehicle)) return activeVehicle != null;
         return !sameModel(activeVehicle, baseVehicle);
     }
 
@@ -247,6 +251,16 @@ public final class ModelRegistry {
             if (RuntimeBackendFactory.isRuntimeAvailable(variant.runtime())) return variant;
         }
         return model.manifest().variants().get(0);
+    }
+
+    private boolean executable(InstalledModel model) {
+        return inspectionOnly ? isExecutableForInspection(model) : isExecutable(model);
+    }
+    public static boolean isExecutableForInspection(InstalledModel model) {
+        if (model == null) return false;
+        for (ModelVariant variant : model.manifest().variants())
+            if (!Boolean.FALSE.equals(RuntimeBackendFactory.observedAvailability(variant.runtime()))) return true;
+        return false;
     }
 
     public static boolean isExecutable(InstalledModel model) {

@@ -8,6 +8,21 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DynamicVehicleSizeGateTest {
+    @Test public void a12FramingExplainsWhyMtDoesNotRunAndAdmitsAfterEntry() {
+        DynamicVehicleSizeGate gate=new DynamicVehicleSizeGate(new DynamicVehicleSizeGate.Config(256,112,100,64));
+        gate.setEnabled(true);
+        gate.observe(stamp(1),1080,1440,Collections.singletonMap(7L,new NormalizedBounds(0,0,185f/1080,143f/1440)));
+        assertFalse(gate.canSchedule(7));
+        DynamicVehicleSizeGate.Decision blocked=gate.decisions().get(7L);
+        assertEquals(DynamicVehicleSizeGate.Reason.VEHICLE_TOO_SMALL,blocked.reason);
+        assertEquals(185,blocked.widthPx,.01f);assertEquals(256,blocked.requiredWidthPx);
+        gate.observe(stamp(2),1080,1440,Collections.singletonMap(7L,new NormalizedBounds(0,0,256f/1080,143f/1440)));
+        assertTrue(gate.canSchedule(7));
+        gate.observe(stamp(3),1080,1440,Collections.singletonMap(7L,new NormalizedBounds(0,0,185f/1080,143f/1440)));
+        assertTrue(gate.canSchedule(7));
+        gate.observe(stamp(4),200,300,Collections.singletonMap(7L,new NormalizedBounds(0,0,.9f,.9f)));
+        assertFalse(gate.canSchedule(7));assertEquals(DynamicVehicleSizeGate.Reason.INVALID_CONFIGURATION,gate.decisions().get(7L).reason);
+    }
     private static final int WIDTH = 640, HEIGHT = 480;
     @Test public void changingConfiguredThresholdsRequiresNewMpAndRespectsNewValues() {
         DynamicVehicleSizeGate gate = enabled();

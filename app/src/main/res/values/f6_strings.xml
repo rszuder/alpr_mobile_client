@@ -1,0 +1,8 @@
+<resources>
+    <string name="f6_capture_title">Zapis badania na fotografiach</string>
+    <string name="f6_photo_roi_title">Obszar fotografii</string>
+    <string name="f6_capture_hint">Zapis dla analizy całego obszaru fotografii na TV, bez wykrywania pojazdów. Najpierw zatwierdź narożniki TV, następnie ustaw stały obszar zdjęć. Kody pozostaw poza analizowanym obszarem.</string>
+    <string name="f6_roi_instruction">Wskaż stałe pole pokazu zdjęć. Żółty prostokąt pokazuje obszar analizowany przez model tablic. Ma obejmować całe pole zdjęć, ale żadnego kodu.</string>
+    <string name="f6_roi_saved">Zapisano obszar fotografii; kalibracja TV pozostaje zachowana</string>
+    <string name="f6_roi_requires_tv">Najpierw zatwierdź aktualną kalibrację TV i kamerę</string>
+</resources>

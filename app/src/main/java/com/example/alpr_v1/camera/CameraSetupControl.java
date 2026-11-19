@@ -21,10 +21,16 @@ public interface CameraSetupControl {
         public final boolean loading;
         public final String reason;
         public final long revision;
+        public final CameraSetupReadiness readiness;
         public State(List<Choice> choices,CameraSelection requested,float requestedZoom,float min,float max,
                 CameraSetupSnapshot applied,boolean loading,String reason,long revision){
+            this(choices,requested,requestedZoom,min,max,applied,loading,reason,revision,null);
+        }
+        public State(List<Choice> choices,CameraSelection requested,float requestedZoom,float min,float max,
+                CameraSetupSnapshot applied,boolean loading,String reason,long revision,CameraSetupReadiness readiness){
             this.choices=Collections.unmodifiableList(new ArrayList<>(choices));this.requested=requested;this.requestedZoom=requestedZoom;
             minZoom=min;maxZoom=max;this.applied=applied;this.loading=loading;this.reason=reason==null?"":reason;this.revision=revision;
+            this.readiness=readiness;
         }
         public boolean ready(){return applied!=null&&!loading;}
         public static State unavailable(){return new State(Collections.emptyList(),CameraSelection.defaultBack(),1,1,1,null,false,"Uruchom podgląd, aby odczytać dostępne obiektywy",0);}
@@ -32,4 +38,6 @@ public interface CameraSetupControl {
     State state();
     void setListener(Consumer<State> listener);
     void apply(CameraSelection selection,float zoom);
+    /** Last actual stream observations; diagnostic only, never a readiness proof. */
+    default org.json.JSONObject observation(){return null;}
 }

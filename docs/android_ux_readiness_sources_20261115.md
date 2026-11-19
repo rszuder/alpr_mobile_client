@@ -1,0 +1,29 @@
+# Mapa istniejących wymagań gotowości Android
+
+Podstawa: specyfikacja UX v2 i doprecyzowanie odbioru z 2026-11-15. Mapa sporządzona przed zmianami GUI, na roboczym kodzie Opcji v2 (HEAD f7943a7, katalog roboczy zawiera wcześniejsze zmiany). Mechanizm jest odczytowy; START zachowuje dotychczasową semantykę.
+
+| Problem użytkownika | Istniejący kontrakt i lokalizacja | Bezpieczny odczyt / wydzielenie | Kiedy | Konkretne narzędzie / pole | Dotychczasowa blokada |
+|---|---|---|---|---|---|
+| Brak modelu tablic lub znaków | `MobileAlprEngine.required`, `MainActivity.resolveResearchStage` | aktywne obiekty `ModelRegistry.getActive`, bez `reload` | konfiguracja | selektor odpowiedniego modelu MT/MZ | tak |
+| Brak MP przy R1/R2 w badaniu | `ResearchExecutionConfig` konstruktor: `usesVehicleCascade && !vehicle.enabled` | wspólny czysty predykat z niezmienionym wyjątkiem | konfiguracja | selektor MP | tak; zwykła analiza dopuszcza brak MP |
+| Brak jawnego wariantu badawczego / nieaktualne przypięcie | `ResearchVariantSelection.require`, `AutoTuneManager.requireResearchVariant` | wydzielony `requirePinned`; surowe przypięcie, bez AUTO fallback | konfiguracja | istniejący dialog wariantu właściwego modelu | tak |
+| Niedostępny runtime | `RuntimeBackendFactory.isRuntimeAvailable` | wyłącznie odczyt wcześniej zaobserwowanego wyniku; nie inicjuje NCNN | konfiguracja lub urządzenie | dialog wariantu; przy braku obserwacji kontrola odroczona | tak, gdy dostępność jest faktycznie znana |
+| AUTO wykonania w badaniu / GPU z runtime innym niż TFLite | `ResearchExecutionChoice.resolveApproved` | istniejące czyste API | konfiguracja | dokładna lista wykonania MP/MT/MZ | tak; AUTO zwykłej analizy pozostaje dozwolone |
+| Nieobsługiwany kontrakt dekodera | `MobileAlprEngine.validateDecoder/validateCharacterDecoder` | wydzielenie istniejącej walidacji metadanych do wspólnego API | konfiguracja | wariant właściwego modelu | tak |
+| Niezgodne zadeklarowane wejście NCNN | `NcnnBackend` konstruktor: NCHW, FLOAT32, 3 kanały | wydzielony `ModelConfigurationRequirements.requireRuntimeInput`, bez inicjalizacji klasy NCNN | konfiguracja | wariant właściwego modelu | tak |
+| Zmienione lub brakujące pliki wariantu badawczego | `ResearchStageExecutionConfig.requireVariant` | wspólny odczyt integralności plików poza wątkiem UI | konfiguracja | wariant / zarządzanie właściwym modelem | tak |
+| Zmienione archiwum bazowego pakietu | `ResearchExecutionConfig` konstruktor | ten sam warunek SHA; niedostępne archiwum pozostaje informacją, jak wcześniej | konfiguracja, odczyt poza UI | zarządzanie pakietami | tylko dowiedziony konflikt SHA |
+| Autozoom bez Lock w ciągłości dynamicznej | `ResearchExecutionConfig` konstruktor | wspólny czysty predykat, z zachowaniem warunku trybu sceny | konfiguracja | przełącznik Lock | tak, wyłącznie obecna kombinacja |
+| TV z automatycznym przybliżeniem | `withTvBboxCrop`, `MainActivity.tvBboxStartReason` | wspólny predykat stałego zoomu | konfiguracja | przełącznik Autozoom | tak |
+| Profil fotografii z R1/R2 lub bez wejścia TV | `withFinal180`; aktywowany w `buildResearchExecutionConfig` tylko dla `roi_budget` | wspólny predykat R0/TV/wyłączonego etapu MP | konfiguracja | strategia / wejście; bez automatycznej zmiany | tak; nieaktywne flagi nie tworzą nowych wymagań |
+| Brak prawidłowego zatwierdzenia TV | `TvSetupCalibration.restore`, `TvSetupController.open`, `bboxPreparationStatus` | odczyt integralności i zatwierdzenia; aktualna kamera oceniana osobno | zapisane dane / urządzenie | istniejący kalibrator narożników TV | tak dla aktywnego wejścia TV |
+| Brak / niezgodny obszar fotografii | `Final180PhotoRoiApproval.review/reviewAgainst/resolve`, `withFinal180` | istniejący odczyt; zgodna autentyczna ścieżka odzyskania starszego zatwierdzenia poza UI | zapisane dane / urządzenie | istniejący kalibrator fotografii; najpierw TV, gdy brak jego zatwierdzenia | tak w aktywnym profilu fotografii |
+| Brak potwierdzenia geometrii i świeżej kamery | `CameraSetupReadiness`, `tvBboxStartReason`, `experimentStartBlocker` | odczyt obecnej obserwacji i generacji; próg świeżości bez zmian | urządzenie | podgląd / ustawienie kamery | tak przy START; brak dowodu w Opcjach jest odroczony |
+| Zażądana ostrość nie jest utrzymana | `MainActivity.focusBlocksF6Start` | wspólny czysty warunek profilu, żądania i utrzymania | urządzenie | istniejący przycisk ostrości w podglądzie | tak, tylko obecny warunek; brak żądania nie blokuje |
+| Sesja jeszcze nieprzygotowana | `experimentStartBlocker`: `MODELS`, `ensureExperimentPrepared` | odczyt faktu przygotowania; bez wołania przygotowania | przygotowanie | informacja o przygotowaniu po START | tak chwilowo; nie oznacza braku modelu |
+| Trwa zapis / sesja / przygotowanie | `settingsActionsLocked`, `ResearchOperationState.hasActiveWriteWork` | istniejący stan operacji, oddzielny od błędów konfiguracji | sesja | powód blokady i późniejszy powrót do podsumowania | istniejąca blokada edycji |
+| Niezapisane pola przebiegu | `SettingsActivity.persistExperimentIdentity`, `ExperimentIdentity` | identyczna normalizacja w odczytowym nakładaniu szkicu formularza | konfiguracja | istniejące pola serii, scenariusza, powtórzenia, wariantu, notatki | obecne wartości są normalizowane, nie dodajemy walidacji surowego tekstu |
+
+`ReadinessFinding`, snapshot i kontekst powrotu są wyłącznie danymi UI. Nie serializujemy ich w archiwach ani preferencjach badawczych. Powrót z zapisu, anulowania i rekreacji zawsze wymaga ponownego odczytu. Neutralne przeliczanie nie jest czwartym stabilnym stanem gotowości.
+
+Ten sam kontekst powrotu obejmuje kalibratory uruchamiane ręcznie z Opcji otwartych przez ekran główny. Nie wymaga to istnienia problemu ani tworzenia nowego wymagania konfiguracji. Starsza ścieżka wywołania bez właściciela wyniku pozostaje obsługiwana.

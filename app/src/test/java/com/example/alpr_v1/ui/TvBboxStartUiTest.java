@@ -47,6 +47,9 @@ public class TvBboxStartUiTest {
     }
     Object call(String n)throws Exception{return call(main,n,new Class<?>[0]);}
     @Before public void setup()throws Exception{
+        setup(false);
+    }
+    void setup(boolean realCameraController)throws Exception{
         main=Robolectric.buildActivity(MainActivity.class).get();main.setTheme(R.style.Theme_ALPR_v1);main.setContentView(R.layout.activity_main);
         prefs=main.getSharedPreferences("f22-ui-synthetic",0);prefs.edit().clear().putBoolean(SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,true)
                 .putString(SettingsActivity.KEY_EXPERIMENT_TYPE,"roi_budget").putString(SettingsActivity.KEY_TV_INPUT_MODE,"TV_BBOX_CROP").commit();
@@ -61,10 +64,10 @@ public class TvBboxStartUiTest {
         ModelRegistry registry=new ModelRegistry(main);set(main,"modelRegistry",registry);set(main,"pipeline",new AlprPipeline(main,registry,gallery.metricsCollector(),new AutoTuneManager(main)));
         set(main,"deviceProfile",DeviceProfile.capture(main));set(main,"cameraResolutionCatalog",new CameraResolutionCatalog(main));set(main,"cameraResolutionSelection",CameraResolutionSelection.exact(new Size(640,400)));
         set(main,"experimentPreviewSize",new Size(640,400));set(main,"crashSessionMarker",new CrashSessionMarker(main));
-        CameraController control=new CameraController(main,main,preview);set(main,"cameraController",control);camera=org.robolectric.shadow.api.Shadow.extract(control);
+        CameraController control=new CameraController(main,main,preview);set(main,"cameraController",control);if(!realCameraController)camera=org.robolectric.shadow.api.Shadow.extract(control);
         tv=new TvSetupController(main,preview,main.findViewById(R.id.detection_overlay),()->true,()->{},(n,d)->{});set(main,"tvSetup",tv);
-        geometry=TvBboxCropTest.geometry(640,400);set(tv,"geometry",geometry);confirm("2026-11-06T20:00:00Z");camera.applied=TvBboxCropTest.setup(1);
-        set(tv,"cameraState",new CameraSetupControl.State(Collections.emptyList(),camera.applied.selection,1,1,4,camera.applied,false,"",1));
+        geometry=TvBboxCropTest.geometry(640,400);set(tv,"geometry",geometry);confirm("2026-11-06T20:00:00Z");CameraSetupSnapshot applied=TvBboxCropTest.setup(1);if(!realCameraController)camera.applied=applied;
+        set(tv,"cameraState",new CameraSetupControl.State(Collections.emptyList(),applied.selection,1,1,4,applied,false,"",1));
         Shadows.shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.CAMERA);
     }
     void confirm(String at)throws Exception{
@@ -75,7 +78,7 @@ public class TvBboxStartUiTest {
         ExperimentSession.Prepared p=sessions.experiment.prepare("roi_budget",config.variant,(TimerConfig)get(main,"experimentTimerConfig"),(ThermalConfig)get(main,"experimentThermalConfig"),new ExperimentIdentity("UNOFFICIAL-TV-BBOX","SYNTHETIC",1,"synthetic=true"),config);
         store=TvBboxProducerFixture.prepareFor(temp.newFolder(),p);set(sessions,"store",store);
         Class<?> type=Class.forName(MainActivity.class.getName()+"$PreparedAnalysisStart");Constructor<?> ctor=type.getDeclaredConstructors()[0];ctor.setAccessible(true);
-        ready=ctor.newInstance(config,p,store,0);set(main,"preparedExperimentStart",ready);((AlprPipeline)get(main,"pipeline")).setResearchExecutionConfig(config);
+        ready=ctor.newInstance(config,p,store,0,call("capturePreparationCameraContext"));set(main,"preparedExperimentStart",ready);((AlprPipeline)get(main,"pipeline")).setResearchExecutionConfig(config);
     }
     String blocker()throws Exception{return call("experimentStartBlocker").toString();}
     MaterialButton button()throws Exception{return (MaterialButton)get(main,"analysisStartButton");}
@@ -268,6 +271,12 @@ public class TvBboxStartUiTest {
     public static class CameraIo {
         CameraSetupSnapshot applied;boolean streamReady=true;
         @Implementation public CameraSetupSnapshot setupSnapshot(){return applied;}
+        @Implementation public CameraSetupReadiness captureSetupReadiness(){
+            long now=android.os.SystemClock.elapsedRealtimeNanos();
+            return new CameraSetupReadiness(applied==null?CameraSetupReadiness.Reason.ZOOM_NOT_ACKNOWLEDGED:CameraSetupReadiness.Reason.READY,
+                    applied,CameraSelection.defaultBack(),applied==null?1:applied.zoomRatio,applied==null?null:applied.selection,
+                    applied==null?Float.NaN:applied.zoomRatio,7,0,now,now,1,1,0,applied!=null,applied!=null);
+        }
         @Implementation public boolean isStreamReady(Size size,boolean high){return streamReady;}
     }
 }

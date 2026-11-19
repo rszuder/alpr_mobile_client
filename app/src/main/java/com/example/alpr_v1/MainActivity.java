@@ -1,5 +1,7 @@
 package com.example.alpr_v1;
 
+import com.example.alpr_v1.ui.readiness.*;
+
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.Manifest;
@@ -59,6 +61,7 @@ import com.google.android.material.materialswitch.MaterialSwitch;
 import com.example.alpr_v1.autotune.AutoTuneManager;
 import com.example.alpr_v1.autotune.AutoTuneResult;
 import com.example.alpr_v1.camera.CameraController;
+import com.example.alpr_v1.camera.CameraSetupReadiness;
 import com.example.alpr_v1.camera.LumaFrame;
 import com.example.alpr_v1.continuity.SceneObservationDomain;
 import com.example.alpr_v1.continuity.ObservationMask;
@@ -187,6 +190,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private static final String KEY_LAST_EXPERIMENT_TIMER_SECONDS =
             "last_experiment_timer_seconds";
+    private static final String KEY_ANALYSIS_TIMER_ENABLED = "analysis_timer_enabled";
     private static final String KEY_LAST_EXPERIMENT_THERMAL_TENTHS =
             "last_experiment_thermal_tenths";
     private static final String KEY_AUTO_ZOOM_ENABLED =
@@ -256,6 +260,8 @@ public final class MainActivity extends AppCompatActivity {
         final float visualMotionResidual;
         final int visualMotionInliers;
         final float visualMotionSpatialCoverage;
+        final boolean rawVisualChange;
+        final float rawChangedFraction,rawMeanDelta;
 
         PreviewCoordinationRequest(
                 SourceFrameStamp sourceFrame,
@@ -277,7 +283,8 @@ public final class MainActivity extends AppCompatActivity {
                 float visualMotionCoherence,
                 float visualMotionResidual,
                 int visualMotionInliers,
-                float visualMotionSpatialCoverage
+                float visualMotionSpatialCoverage,
+                boolean rawVisualChange,float rawChangedFraction,float rawMeanDelta
         ) {
             this.sourceFrame = sourceFrame;
             this.continuityStamp = continuityStamp;
@@ -304,6 +311,9 @@ public final class MainActivity extends AppCompatActivity {
             this.visualMotionSpatialCoverage = clamp01(
                     visualMotionSpatialCoverage
             );
+            this.rawVisualChange=rawVisualChange;
+            this.rawChangedFraction=clamp01(rawChangedFraction);
+            this.rawMeanDelta=clamp01(rawMeanDelta/255f);
         }
 
         boolean currentMotion() {
@@ -417,7 +427,37 @@ public final class MainActivity extends AppCompatActivity {
     private volatile long lastDirectLumaFrameNanos;
     private volatile long lastDirectLumaSourceTimestampNanos;
     private volatile boolean directLumaTrackingUnavailable;
+    private volatile LumaFrame latestCameraLuma;
+    // Main-thread scope of the already generation-validated neural result.
+    private LumaFrame presentingSourceLuma;
+    private ContinuityStamp presentingSourceStamp;
+    private final com.example.alpr_v1.tracking.PreviewLumaHistory ordinaryLumaHistory=
+            new com.example.alpr_v1.tracking.PreviewLumaHistory();
     private volatile long previewVehicleGeometryFreshAtNanos;
+    private com.example.alpr_v1.camera.OrdinaryDynamicResourcePolicy ordinaryResourcePolicy;
+    private com.example.alpr_v1.camera.BitmapMemoryBudget ordinaryBitmapBudget;
+    private final java.util.Map<Bitmap,com.example.alpr_v1.camera.BitmapMemoryBudget.Lease> previewBitmapLeases =
+            java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+    private volatile boolean ordinaryMemoryPaused;
+    private long lastOrdinaryResourceLogNanos;
+    private final Object ordinaryPreviewCoordinationLock = new Object();
+    private com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot dynamicDisplaySnapshot;
+    private final Runnable ordinaryMemoryMonitor = new Runnable() {
+        @Override public void run() {
+            if(!cameraStarted || !ordinaryDynamicResourcesEnabled()) return;
+            if(ordinaryMemoryCritical()) { pauseOrdinaryForMemory(); return; }
+            long now=android.os.SystemClock.elapsedRealtimeNanos();
+            if(now-lastOrdinaryResourceLogNanos>=5_000_000_000L) {
+                lastOrdinaryResourceLogNanos=now;
+                Size actual=cameraController==null?null:cameraController.actualAnalysisSize();
+                android.util.Log.i("ALPR_DYNAMIC_RESOURCES","analysis="+actual+" cap_pixels="+dynamicResourcePolicy().analysisPixels
+                        +" bitmap_used="+ordinaryBitmapBudget.usedBytes()+" bitmap_peak="+ordinaryBitmapBudget.peakBytes()
+                        +" heap_used="+(Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory())
+                        +" native_heap="+android.os.Debug.getNativeHeapAllocatedSize());
+            }
+            previewSceneHandler.postDelayed(this,1000L);
+        }
+    };
     /*
      * Lokalny KLT ma sens dla ruchu pojedynczego obiektu przy nieruchomej
      * kamerze. Podczas obrotu telefonu maĹ‚e MP boxy zawierajÄ… za maĹ‚o tekstury
@@ -451,9 +491,15 @@ public final class MainActivity extends AppCompatActivity {
 
                     if (previewFrameInFlight.compareAndSet(false, true)) {
                         Bitmap previewBitmap = null;
+                        com.example.alpr_v1.camera.BitmapMemoryBudget.Lease previewLease = null;
                         try {
-                            previewBitmap = previewView.getBitmap();
+                            if(ordinaryDynamicResourcesEnabled()) {
+                                dynamicResourcePolicy();
+                                previewLease=ordinaryBitmapBudget.acquire(4L*previewView.getWidth()*previewView.getHeight());
+                            }
+                            if(!ordinaryDynamicResourcesEnabled() || previewLease!=null)previewBitmap = previewView.getBitmap();
                             if (previewBitmap != null && !previewBitmap.isRecycled()) {
+                                if(previewLease!=null) { previewBitmapLeases.put(previewBitmap,previewLease); previewLease=null; }
                                 final SceneObservationDomain observationDomain=observationDomain();
                                 final CameraPreviewGeometry observationGeometry=tvSetup==null?null:tvSetup.observationGeometry();
                                 final Bitmap ownedBitmap = previewBitmap;
@@ -465,7 +511,6 @@ public final class MainActivity extends AppCompatActivity {
                                 final ContinuityStamp continuityStamp =
                                         currentPreviewSourceFrameStamp()
                                                 .continuityStamp();
-                                previewBitmap = null;
                                 previewTrackingExecutor.execute(() ->
                                         processPreviewTrackingFrame(
                                                 ownedBitmap,
@@ -475,13 +520,15 @@ public final class MainActivity extends AppCompatActivity {
                                                 continuityStamp, observationDomain, observationGeometry
                                         )
                                 );
+                                previewBitmap = null;
                             } else {
                                 previewFrameInFlight.set(false);
                             }
                         } catch (RuntimeException ignored) {
                             previewFrameInFlight.set(false);
                         } finally {
-                            recycleBitmap(previewBitmap);
+                            recycleBudgetedPreviewBitmap(previewBitmap);
+                            if(previewLease!=null)previewLease.close();
                         }
                     }
 
@@ -507,6 +554,10 @@ public final class MainActivity extends AppCompatActivity {
     ) {
         boolean bitmapHandedToUi = false;
         try {
+            // Ordinary DYN has one pixel-tracker owner: the camera-luma worker.
+            // A queued Preview bitmap must not consume a stamped neural anchor,
+            // reset its dimensions or publish a competing absence observation.
+            if (ordinaryDynamicResourcesEnabled()) return;
             if(domain!=observationDomain()) return;
             if (pipeline != null && pipeline.isStaticIdle()) return;
             if (!cameraStarted
@@ -645,6 +696,15 @@ public final class MainActivity extends AppCompatActivity {
                             :previewPlateTracker.updateLuma(observation.gray,observation.width,observation.height,observation.mask));
             List<OverlayItem> trackedItems = trackingFrame == null
                     ? null : trackingFrame.overlayItems;
+            if (trackingFrame != null && pipeline != null) {
+                boolean localVehiclesAvailable = !cameraTransformInProgress
+                        && !previewVehicleTrackerAwaitingFreshMpAnchor
+                        && !previewVehicleTrackerAwaitingFirstLocalFrame;
+                PreviewTrackingFrame fallbackVehicles = localVehiclesAvailable
+                        ? (observation == null ? previewVehicleTracker.updateTracking(previewBitmap)
+                        : previewVehicleTracker.updateLuma(observation.gray, observation.width, observation.height, observation.mask)) : null;
+                pipeline.observeVehicleIdentity(continuityStamp, fallbackVehicles, localVehiclesAvailable, trackingFrame, true);
+            }
 
             TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
             TargetSnapshot targetAfterTracking = targetBeforeTracking;
@@ -706,7 +766,7 @@ public final class MainActivity extends AppCompatActivity {
                  * pod tym samym monitorem co pipeline zapobiega wysłaniu do
                  * koordynatora dowodu policzonego względem starej referencji.
                  */
-                synchronized (activePipeline) {
+                synchronized (ordinaryDynamicResourcesEnabled()?ordinaryPreviewCoordinationLock:activePipeline) {
                     SceneContinuitySnapshot submissionContinuity =
                             activePipeline.sceneContinuitySnapshot();
                     long requestedRebaseRevision =
@@ -726,7 +786,7 @@ public final class MainActivity extends AppCompatActivity {
                         );
                         return;
                     }
-                    continuityDecision = activePipeline.onPreviewSceneEvidence(
+                    continuityDecision = activePipeline.onWorkerPreviewSceneEvidence(
                             continuityStamp.sourceFrameStamp(),
                             changed,
                             evidenceScore,
@@ -780,6 +840,8 @@ public final class MainActivity extends AppCompatActivity {
             bitmapHandedToUi = true;
             runOnUiThread(() -> {
                 try {
+                    if (ordinaryDynamicResourcesEnabled()) return;
+                    refreshVehicleIdentityPresentation();
                     if (renderStaticIdle()) return;
                     if (!cameraStarted
                             || sceneGeneration != uiSceneGeneration.get()
@@ -855,15 +917,18 @@ public final class MainActivity extends AppCompatActivity {
                         presentTrackedPreviewOverlay(presentationTrackedItems);
                     }
                 } finally {
-                    recycleBitmap(previewBitmap);
+                    recycleBudgetedPreviewBitmap(previewBitmap);
+                    previewFrameInFlight.set(false);
                 }
             });
         } catch (RuntimeException ignored) {
             if(domain!=null) handleObservationFailure(domain,continuityStamp,ignored);
             // PreviewView może zmienić powierzchnię podczas restartu kamery.
         } finally {
-            previewFrameInFlight.set(false);
-            if (!bitmapHandedToUi) recycleBitmap(previewBitmap);
+            if (!bitmapHandedToUi) {
+                recycleBudgetedPreviewBitmap(previewBitmap);
+                previewFrameInFlight.set(false);
+            }
         }
     }
 
@@ -959,15 +1024,22 @@ public final class MainActivity extends AppCompatActivity {
     private static final class PreviewFrameMotionSample {
         final FrameMotionTransform motion;
         final LumaSceneChangeDetector.Result sceneChange;
+        final PreviewPlateTracker.CameraMotionSample cameraMotion;
+        final long[] motionStageNanos;
 
         PreviewFrameMotionSample(
                 FrameMotionTransform motion,
-                LumaSceneChangeDetector.Result sceneChange
+                LumaSceneChangeDetector.Result sceneChange,
+                PreviewPlateTracker.CameraMotionSample cameraMotion,long[] motionStageNanos
         ) {
             this.motion = motion;
             this.sceneChange = sceneChange;
+            this.cameraMotion=cameraMotion;
+            this.motionStageNanos=motionStageNanos;
         }
     }
+    // Guarded by previewMotionStateLock; this is the actual global image reference.
+    private SourceFrameStamp globalLumaMotionSource;
 
     private PreviewFrameMotionSample updatePreviewFrameMotion(
             LumaFrame frame,
@@ -981,9 +1053,23 @@ public final class MainActivity extends AppCompatActivity {
         ObservationMask mask=observation==null?null:observation.mask;
         List<com.example.alpr_v1.domain.NormalizedBounds> foregroundMasks =
                 recentVehicleForegroundMasks();
+        byte[] motionGray=gray;int motionWidth=width,motionHeight=height;
+        if(mask==null&&ordinaryDynamicResourcesEnabled()&&width>96) {
+            // The coarse global recovery search scales with both search area
+            // and image area. It must not delay the independent local trackers.
+            motionWidth=96;motionHeight=Math.max(1,Math.round(height*96f/width));
+            motionGray=new byte[motionWidth*motionHeight];
+            for(int y=0;y<motionHeight;y++)for(int x=0;x<motionWidth;x++) {
+                int left=x*width/motionWidth,right=Math.max(left+1,(x+1)*width/motionWidth);
+                int top=y*height/motionHeight,bottom=Math.max(top+1,(y+1)*height/motionHeight),sum=0,count=0;
+                for(int sy=top;sy<bottom;sy++)for(int sx=left;sx<right;sx++){sum+=gray[sy*width+sx]&255;count++;}
+                motionGray[y*motionWidth+x]=(byte)(sum/count);
+            }
+        }
         synchronized (previewMotionStateLock) {
             if (previewMotionGenerationGate.enter(stamp)) {
                 globalLumaMotionTracker.reset();
+                globalLumaMotionSource=null;
                 lumaSceneChangeDetector.reset();
                 frameMotionHistory.reset();
                 visualMotionEvidenceDecay.reset();
@@ -993,13 +1079,16 @@ public final class MainActivity extends AppCompatActivity {
                             gray, width, height,
                             foregroundMasks, mask
                     );
+            SourceFrameStamp previousMotionSource=globalLumaMotionSource;
             FrameMotionTransform motion = globalLumaMotionTracker.update(
-                    gray, width, height,
+                    motionGray, motionWidth, motionHeight,
                     foregroundMasks,
                     cameraMotionConfirmedBySensor, mask
             );
             frameMotionHistory.record(frame.timestampNanos, motion);
-            return new PreviewFrameMotionSample(motion, sceneChange);
+            globalLumaMotionSource=stamp.sourceFrameStamp();
+            return new PreviewFrameMotionSample(motion,sceneChange,
+                    new PreviewPlateTracker.CameraMotionSample(previousMotionSource,globalLumaMotionSource,motion),globalLumaMotionTracker.stageNanos());
         }
     }
 
@@ -1029,10 +1118,15 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void resetGlobalPreviewMotionState() {
+        resetGlobalPreviewMotionState(true);
+    }
+    private void resetGlobalPreviewMotionState(boolean clearSourcePixels) {
+        if(clearSourcePixels)ordinaryLumaHistory.clear();
         vehiclePreviewMotionPolicy.reset();
         stationarySceneSupport.reset();
         synchronized (previewMotionStateLock) {
             globalLumaMotionTracker.reset();
+            globalLumaMotionSource=null;
             lumaSceneChangeDetector.reset();
             frameMotionHistory.reset();
             previewMotionGenerationGate.reset();
@@ -1093,6 +1187,7 @@ public final class MainActivity extends AppCompatActivity {
     }
     private void processDirectLumaFrame(LumaFrame frame,SceneObservationDomain domain) {
         if(domain!=observationDomain()) return;
+        final long lumaWorkStarted=android.os.SystemClock.elapsedRealtimeNanos();
         /*
          * Direct-luma comes from the camera stream, not from PreviewView. UI
          * overlay holds and post-return validation therefore cannot suppress
@@ -1100,11 +1195,12 @@ public final class MainActivity extends AppCompatActivity {
          * active presentation barrier is allowed to pause this channel.
          */
         boolean staticScene = effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY;
+        boolean ordinaryDynamic = ordinaryDynamicResourcesEnabled();
         if (frame == null || !cameraStarted || cameraTransformInProgress
-                || !staticScene && previewPresentationBarrier.active()) return;
+                || !staticScene && !ordinaryDynamic && previewPresentationBarrier.active()) return;
         final long presentationGeneration = previewPresentationBarrier.capture();
-        if (!staticScene && !previewPresentationBarrier.permits(presentationGeneration)) return;
-        if (!staticScene && PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
+        if (!staticScene && !ordinaryDynamic && !previewPresentationBarrier.permits(presentationGeneration)) return;
+        if (!staticScene && !ordinaryDynamic && PreviewContinuityUiPolicy.shouldSuspendDirectLumaEvidence(
                 previewSceneRecoveryRebaseRevision.get(),
                 previewSceneRecoveryRebaseAppliedRevision
         )) return;
@@ -1125,6 +1221,14 @@ public final class MainActivity extends AppCompatActivity {
         byte[] gray=observation==null?frame.gray:observation.gray;
         int width=observation==null?frame.width:observation.width,height=observation==null?frame.height:observation.height;
         ObservationMask mask=observation==null?null:observation.mask;
+        if(ordinaryDynamicResourcesEnabled())try {
+            ordinaryLumaHistory.offer(lumaSourceFrame,gray,width,height);
+        } catch(OutOfMemoryError exhausted) {
+            ordinaryLumaHistory.clear();ordinaryMemoryPaused=true;
+            runOnUiThread(this::pauseOrdinaryForMemory);return;
+        }
+        if (ordinaryDynamic && rebaseOrdinaryLumaReference(frame, observation,
+                continuityStamp, presentationGeneration)) return;
         lastDirectLumaFrameNanos = System.nanoTime();
         lastDirectLumaSourceTimestampNanos = frame.timestampNanos;
         if (staticScene && pipeline != null) {
@@ -1141,11 +1245,13 @@ public final class MainActivity extends AppCompatActivity {
         CameraMotionMonitor earlyMotionMonitor = cameraMotionMonitor;
         boolean earlySensorMotion = earlyMotionMonitor != null
                 && earlyMotionMonitor.isMoving();
+        long motionStarted=android.os.SystemClock.elapsedRealtimeNanos();
         PreviewFrameMotionSample motionSample = updatePreviewFrameMotion(
                 frame,
                 continuityStamp,
                 earlySensorMotion, observation
         );
+        long motionElapsed=android.os.SystemClock.elapsedRealtimeNanos()-motionStarted;
         FrameMotionTransform frameMotion = motionSample.motion;
         if (!isCurrentPreviewStamp(continuityStamp)
                 || !previewPresentationBarrier.permits(presentationGeneration)) {
@@ -1166,9 +1272,12 @@ public final class MainActivity extends AppCompatActivity {
                 visualMotionEvidenceDecay.snapshot(
                         android.os.SystemClock.elapsedRealtimeNanos()
                 );
+        boolean earlyAutoZoomSensorMotion = !experimentModeEnabled && pipeline.researchExecutionConfig() == null
+                ? earlyMotionMonitor != null && earlyMotionMonitor.isRapidMotion() : earlySensorMotion;
         if (effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY
                 && autoZoomController.state() == AutoZoomController.State.ZOOMED_RETRY
-                && com.example.alpr_v1.acquisition.DynamicZoomPolicy.shouldAbort(earlyVisualMotion.rapid || earlySensorMotion,
+                && com.example.alpr_v1.acquisition.DynamicZoomPolicy.shouldAbort(earlyVisualMotion.rapid
+                        || earlyAutoZoomSensorMotion,
                 targetStateMachine.snapshot().state == TargetSnapshot.State.LOST, pipeline.sceneContinuitySnapshot().state)) {
             runOnUiThread(() -> {
                 if (!cameraStarted || autoZoomController.state() != AutoZoomController.State.ZOOMED_RETRY) return;
@@ -1221,7 +1330,7 @@ public final class MainActivity extends AppCompatActivity {
                     )
             );
         }
-        if (effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY && PreviewContinuityUiPolicy
+        if (!ordinaryDynamic && effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY && PreviewContinuityUiPolicy
                 .shouldForceHardSceneBoundaryFromDirectLuma(
                 motionSample.sceneChange.changed,
                 motionSample.sceneChange.changedFraction,
@@ -1321,10 +1430,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         long trackingStartedNanos =
                 android.os.SystemClock.elapsedRealtimeNanos();
-        PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
-                gray, width, height, mask
-        );
-        boolean cameraMotionOwnsVehicleGeometry = vehiclePreviewMotionPolicy.update(
+        boolean cameraMotionOwnsVehicleGeometry = !ordinaryDynamicResourcesEnabled() && vehiclePreviewMotionPolicy.update(
                 earlySensorMotion || earlyVisualMotion.motionEstimated || isVisualCameraMotion(frameMotion),
                 android.os.SystemClock.elapsedRealtimeNanos());
         if (cameraMotionOwnsVehicleGeometry
@@ -1362,8 +1468,13 @@ public final class MainActivity extends AppCompatActivity {
                 previewVehicleTrackerAwaitingFreshMpAnchor
                         ? null
                         : previewVehicleTracker.updateLuma(
-                                gray, width, height, mask
+                                gray, width, height, mask,lumaSourceFrame,ordinaryDynamicResourcesEnabled()?ordinaryLumaHistory:null,
+                                ordinaryDynamicResourcesEnabled()?motionSample.cameraMotion:null
                         );
+        PreviewTrackingFrame trackingFrame = previewPlateTracker.updateLuma(
+                gray, width, height, mask,lumaSourceFrame,ordinaryDynamicResourcesEnabled()?ordinaryLumaHistory:null,
+                ordinaryDynamicResourcesEnabled()?motionSample.cameraMotion:null
+        );
         long trackingElapsedNanos = Math.max(
                 0L,
                 android.os.SystemClock.elapsedRealtimeNanos()
@@ -1377,6 +1488,12 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         float maximumQuality = 0f;
+        long identityStarted=android.os.SystemClock.elapsedRealtimeNanos();
+        if (pipeline != null) pipeline.observeVehicleIdentity(continuityStamp,
+                vehicleTrackingFrame, !cameraMotionOwnsVehicleGeometry
+                        && !previewVehicleTrackerAwaitingFreshMpAnchor
+                        && !previewVehicleTrackerAwaitingFirstLocalFrame, trackingFrame, trackingFrame != null);
+        long identityElapsed=android.os.SystemClock.elapsedRealtimeNanos()-identityStarted;
         int maximumInliers = 0;
         if (trackingFrame != null) {
             for (com.example.alpr_v1.tracking.TrackedPlate plate
@@ -1385,20 +1502,33 @@ public final class MainActivity extends AppCompatActivity {
                 maximumInliers = Math.max(maximumInliers, plate.trackerInliers);
             }
         }
+        com.example.alpr_v1.tracking.TrackedPlate bodyDiagnostic=vehicleTrackingFrame==null||vehicleTrackingFrame.trackedPlates.isEmpty()
+                ?null:vehicleTrackingFrame.trackedPlates.get(0);
+        LumaFrame newestLuma=latestCameraLuma;
         android.util.Log.d(
                 "ALPR_TRACK_TIMING",
                 String.format(
                         Locale.ROOT,
-                        "timestamp_ns=%d update_ms=%.3f tracks=%d quality=%.3f inliers=%d",
+                        "timestamp_ns=%d update_ms=%.3f tracks=%d quality=%.3f inliers=%d body_state=%s plate_state=%s body_replay=%d plate_replay=%d body_n=%d body_q=%.3f body_app=%.3f body_fail=%d luma_ms=%.3f input_lag_ms=%.3f motion_ms=%.3f identity_ms=%.3f global_flow_ms=%.3f global_affine_ms=%.3f global_fallback_ms=%.3f",
                         frame.timestampNanos,
                         trackingElapsedNanos / 1_000_000.0,
                         trackingFrame == null ? 0 : trackingFrame.trackedPlates.size(),
                         maximumQuality,
-                        maximumInliers
+                        maximumInliers,
+                        vehicleTrackingFrame==null?"UNAVAILABLE":vehicleTrackingFrame.state.name(),
+                        trackingFrame==null?"UNAVAILABLE":trackingFrame.state.name(),
+                        previewVehicleTracker.lastReplaySteps(),previewPlateTracker.lastReplaySteps(),
+                        vehicleTrackingFrame==null?0:vehicleTrackingFrame.trackedPlates.size(),
+                        bodyDiagnostic==null?0f:bodyDiagnostic.trackingQuality,bodyDiagnostic==null?0f:bodyDiagnostic.localAppearanceSimilarity,
+                        bodyDiagnostic==null?0:bodyDiagnostic.consecutiveFailures,
+                        (android.os.SystemClock.elapsedRealtimeNanos()-lumaWorkStarted)/1_000_000.0,
+                        newestLuma==null?0.0:Math.max(0L,newestLuma.timestampNanos-frame.timestampNanos)/1_000_000.0,
+                        motionElapsed/1_000_000.0,identityElapsed/1_000_000.0,
+                        motionSample.motionStageNanos[0]/1_000_000.0,motionSample.motionStageNanos[1]/1_000_000.0,motionSample.motionStageNanos[2]/1_000_000.0
                 )
         );
         TargetSnapshot targetBeforeTracking = targetStateMachine.snapshot();
-        TargetSnapshot targetAfterTracking = trackingFrame == null
+        TargetSnapshot targetAfterTracking = trackingFrame == null || trackingFrame.state!=PreviewTrackingFrame.State.LIVE
                 ? targetBeforeTracking
                 : targetStateMachine.onTrackingFrame(trackingFrame);
         if (!isCurrentPreviewStamp(continuityStamp)
@@ -1412,8 +1542,13 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> trackedItems = trackingFrame == null
                 ? java.util.Collections.emptyList()
                 : trackingFrame.overlayItems;
-        List<OverlayItem> locallyTrackedVehicles =
-                trackedVehicleOverlayItems(vehicleTrackingFrame);
+        List<OverlayItem> locallyTrackedVehicles = new ArrayList<>(trackedVehicleOverlayItems(vehicleTrackingFrame));
+        if (pipeline != null) {
+            java.util.Set<Long> localOwners = new java.util.HashSet<>();
+            for (OverlayItem item : locallyTrackedVehicles) localOwners.add(item.trackId);
+            for (OverlayItem item : pipeline.plateAnchoredVehicleItems(frame.timestampNanos))
+                if (!localOwners.contains(item.trackId)) locallyTrackedVehicles.add(item);
+        }
         if (!locallyTrackedVehicles.isEmpty()) {
             previewVehicleGeometryFreshAtNanos =
                     android.os.SystemClock.elapsedRealtimeNanos();
@@ -1461,6 +1596,8 @@ public final class MainActivity extends AppCompatActivity {
                     || cameraTransformInProgress
                     || !previewPresentationBarrier.permits(presentationGeneration)
                     || !isCurrentPreviewStamp(continuityStamp)) return;
+            refreshVehicleIdentityPresentation();
+            if(pipeline!=null&&pipeline.targetFocus().revision!=presentedFocusRevision)renderSearchControls();
             if (!trackedItems.isEmpty()) {
                 presentTrackedPreviewOverlay(
                         trackedItems,
@@ -1503,14 +1640,64 @@ public final class MainActivity extends AppCompatActivity {
                 visualMotion.quality.coherenceScore,
                 normalizedMotionResidual(visualMotion.quality),
                 visualMotion.quality.inliers,
-                visualMotion.quality.spatialCoverage
+                visualMotion.quality.spatialCoverage,
+                ordinaryDynamic&&(motionSample.sceneChange.changed||motionSample.sceneChange.globalChanged),
+                Math.max(motionSample.sceneChange.changedFraction,motionSample.sceneChange.globalChangedFraction),
+                Math.max(motionSample.sceneChange.meanDelta,motionSample.sceneChange.globalMeanDelta)
         ));
+    }
+
+    /** Recovery in ordinary DYN uses a fresh camera sample, never a Preview bitmap. */
+    private boolean rebaseOrdinaryLumaReference(LumaFrame frame, SceneObservationDomain.Frame observation,
+            ContinuityStamp stamp, long presentationGeneration) {
+        long requested = previewSceneRecoveryRebaseRevision.get();
+        if (!previewPresentationBarrier.active()
+                && requested <= previewSceneRecoveryRebaseAppliedRevision) return false;
+        AlprPipeline active = pipeline;
+        if (active == null || !isCurrentPreviewStamp(stamp)
+                || !previewPresentationBarrier.matchesGeneration(presentationGeneration)) return true;
+        if (active.sceneContinuitySnapshot().state
+                != com.example.alpr_v1.continuity.SceneContinuityState.STABLE) {
+            // HARD_RESETTING needs a fresh source observation to release inference.
+            // Recovery deadlines also need to advance while local evidence is N/A.
+            final SceneTransitionDecision decision;
+            synchronized (ordinaryPreviewCoordinationLock) {
+                decision = active.onWorkerPreviewSceneEvidence(stamp.sourceFrameStamp(),
+                        false, 0f, 0f, 0f, 0f, 0f, false, false, currentPreviewMotionEvidence());
+            }
+            if (decision != null && decision.action != SceneTransitionAction.NONE) runOnUiThread(() -> {
+                if (cameraStarted && isCurrentPreviewStamp(stamp))
+                    renderPreviewContinuityDecision(decision, 0f, 0f, java.util.Collections.emptyList());
+            });
+            if (active.sceneContinuitySnapshot().state
+                    != com.example.alpr_v1.continuity.SceneContinuityState.STABLE) return true;
+        }
+        resetGlobalPreviewMotionState(false);
+        updatePreviewFrameMotion(frame, stamp, false, observation);
+        if (!isCurrentPreviewStamp(stamp)) return true;
+        if (previewPresentationBarrier.commitRebase(presentationGeneration) < 0L) return true;
+        previewSceneRecoveryRebaseAppliedRevision = requested;
+        previewSceneAnchorPending = false;
+        android.util.Log.d("ALPR_PREVIEW_REFERENCE", "rebase=camera_luma recovery_revision="
+                + requested + " source=" + frame.timestampNanos);
+        return true; // This sample establishes the reference; the next one supplies evidence.
     }
 
     private void submitDirectLumaFrame(LumaFrame frame) {
         if (frame == null || directLumaTrackingExecutor.isShutdown()) return;
+        latestCameraLuma=frame;
         liveCameraFrameRate.onFrame(android.os.SystemClock.elapsedRealtimeNanos());
-        pendingDirectLumaFrame.set(new PendingObservation(frame,observationDomain()));
+        SceneObservationDomain domain=observationDomain();
+        // Capture source pixels before the latest-frame drain coalesces work.
+        // Research TV domains retain their existing transformed/masked route.
+        if(cameraStarted && domain==null && ordinaryDynamicResourcesEnabled())try {
+            ordinaryLumaHistory.offer(cameraSourceFrameStamp(frame.sourceSequence,frame.timestampNanos,frame.timestampDomain),
+                    frame.gray,frame.width,frame.height);
+        } catch(OutOfMemoryError exhausted) {
+            ordinaryLumaHistory.clear();ordinaryMemoryPaused=true;
+            runOnUiThread(this::pauseOrdinaryForMemory);return;
+        }
+        pendingDirectLumaFrame.set(new PendingObservation(frame,domain));
         if (directLumaWorkerRunning.compareAndSet(false, true)) {
             scheduleDirectLumaDrain();
         }
@@ -1593,7 +1780,7 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         SceneTransitionDecision decision;
-        synchronized (activePipeline) {
+        synchronized (ordinaryDynamicResourcesEnabled()?ordinaryPreviewCoordinationLock:activePipeline) {
             SceneContinuitySnapshot submissionContinuity =
                     activePipeline.sceneContinuitySnapshot();
             long requestedRebaseRevision =
@@ -1626,12 +1813,12 @@ public final class MainActivity extends AppCompatActivity {
                     || !previewPresentationBarrier.permits(
                             request.presentationGeneration
                     )) return;
-            decision = activePipeline.onPreviewSceneEvidence(
+            decision = activePipeline.onWorkerPreviewSceneEvidence(
                     request.sourceFrame,
-                    false,
-                    0f,
-                    0f,
-                    0f,
+                    request.rawVisualChange,
+                    request.rawChangedFraction,
+                    request.rawChangedFraction,
+                    request.rawMeanDelta,
                     0f,
                     0f,
                     request.trackingLost,
@@ -1652,7 +1839,7 @@ public final class MainActivity extends AppCompatActivity {
             );
         }
         if (PreviewContinuityUiPolicy.requestsRecoveryRebase(decision)) {
-            resetGlobalPreviewMotionState();
+            resetGlobalPreviewMotionState(false);
             previewSceneRecoveryRebaseRevision.accumulateAndGet(
                     decision.revision,
                     Math::max
@@ -1697,7 +1884,7 @@ public final class MainActivity extends AppCompatActivity {
     private final PreviewPlateTracker previewPlateTracker =
             new PreviewPlateTracker();
     private final PreviewPlateTracker previewVehicleTracker =
-            new PreviewPlateTracker();
+            new PreviewPlateTracker(true);
     private final TargetStateMachine targetStateMachine =
             new TargetStateMachine();
     private ExperimentSession experimentSession = new ExperimentSession();
@@ -1755,7 +1942,7 @@ public final class MainActivity extends AppCompatActivity {
             new Runnable() {
                 @Override
                 public void run() {
-                    if (!experimentSession.isRunning()) {
+                    if (!researchSessions.timerState().running) {
                         return;
                     }
                     long now = android.os.SystemClock.elapsedRealtime();
@@ -1774,6 +1961,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private List<CapturedPlateItem> capturedCrops;
     private Map<Long, CropSamplingPolicy.Previous> lastCaptureByTrack;
+    private final Map<Long, String> normalCropIdentityOwners = new java.util.HashMap<>();
     private RecognitionHistoryStore recognitionHistory;
 
     private PreviewView previewView;
@@ -1926,7 +2114,8 @@ public final class MainActivity extends AppCompatActivity {
     private static final String KEY_COLLECTION_ARMED = "collection_armed";
     private volatile boolean collectionActive;
     private boolean normalCollectionReady;
-    private long analysisControlGeneration;
+    private volatile long analysisControlGeneration;
+    private long analysisStartRequestedElapsedNanos;
     private String collectionSessionId = "";
     private long collectionSessionStartedElapsedNanos;
     private int collectionSequence;
@@ -1949,16 +2138,16 @@ public final class MainActivity extends AppCompatActivity {
             registerForActivityResult(
                     new ActivityResultContracts.RequestPermission(),
                     granted -> {
-                        boolean requestedExperiment = experimentStartRequest.permissionResult(granted);
+                        boolean requestedStart = experimentStartRequest.permissionResult(granted);
                         if (granted) {
                             boolean previewRequested = pendingPreviewPermissionRequest;
                             pendingPreviewPermissionRequest = false;
                             if (previewRequested) {
                                 experimentPreviewPaused = false;
                                 startCameraPreview();
-                            } else if (!experimentModeEnabled) {
+                            } else if (!experimentModeEnabled && requestedStart) {
                                 requestAnalysisStart();
-                            } else if (requestedExperiment) {
+                            } else if (requestedStart) {
                                 experimentPreviewPaused = false;
                             }
                             requestExperimentReadinessRefresh();
@@ -1993,9 +2182,29 @@ public final class MainActivity extends AppCompatActivity {
                         : null;
                 ResearchArchive.Kind kind = pendingExportKind;
                 pendingExportKind = null;
-                if (uri != null && kind != null) writeResearchExport(uri, kind);
+                if (uri != null && kind != null) {
+                    int grants=result.getData().getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    if((result.getData().getFlags()&Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)!=0)
+                        try{getContentResolver().takePersistableUriPermission(uri,grants);}catch(SecurityException ignored){}
+                    writeResearchExport(uri,kind);
+                }else pendingPersistentResearchArchive=null;
             }
     );
+
+    private ReadinessController configurationReadiness;
+    private final ReadinessEvaluator readinessDeviceProjection=new ReadinessEvaluator();
+    private ReadinessSnapshot readinessSnapshot;
+    private ReadinessResult readinessConfiguration;
+    private ReadinessReturnContext readinessReturn;
+    private String readinessDestination="";
+    private boolean readinessEditorStarted,readinessReturnDue,readinessReturnManual;
+    private final SharedPreferences.OnSharedPreferenceChangeListener configurationReadinessChanges=(prefs,key)->{
+        if(configurationReadiness!=null)runOnUiThread(()->configurationReadiness.refresh());
+    };
+    private final ActivityResultLauncher<Intent> settingsScreen=registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),result->{
+                receiveReadinessSettingsResult(result.getData());
+            });
 
     private final ActivityResultLauncher<Intent> diagnosticsScreen = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -2013,8 +2222,17 @@ public final class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if(savedInstanceState!=null)timerConfiguredAfterFinishedSession=savedInstanceState.getString("timer_configured_after_finished_session","");
+        if(savedInstanceState!=null){
+            readinessReturn=ReadinessReturnContext.fromBundle(savedInstanceState.getBundle("readiness_main_return"));
+            readinessDestination=savedInstanceState.getString("readiness_destination","");
+            readinessReturnDue=savedInstanceState.getBoolean("readiness_return_due");
+            readinessReturnManual=savedInstanceState.getBoolean("readiness_return_manual");
+            if(savedInstanceState.getBoolean("readiness_editor_started")){readinessReturnDue=true;readinessReturnManual=true;}
+        }
         researchSessions = new ViewModelProvider(this).get(com.example.alpr_v1.experiment.ResearchSessionViewModel.class);
         experimentSession = researchSessions.experiment;
+        restoreResearchExportSelection(savedInstanceState);
+        researchSessions.operationChanged.observe(this,ignored->{if(exportReportButton!=null)renderAnalysisControls();});
         researchSessions.messages.observe(this,message -> {
             if (message != null) Toast.makeText(this,message,Toast.LENGTH_LONG).show();
             if (galleryOpenButton != null) { refreshResearchCropCount(); updateExperimentTimerButton(); }
@@ -2022,13 +2240,7 @@ public final class MainActivity extends AppCompatActivity {
         researchSessions.galleryChanged.observe(this, revision -> {
             if (galleryOpenButton != null) renderCapturedCrops();
         });
-        researchSessions.timerExpired.observe(this, id -> {
-            if (id != null && id.equals(experimentSession.sessionId()) && !researchSessions.finalizing()
-                    && researchSessions.store() != null
-                    && researchSessions.store().state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.FINALIZING) {
-                stopAnalysis(ExperimentSession.CompletionReason.TIMER);
-            }
-        });
+        researchSessions.timerExpired.observe(this, this::onAnalysisTimerExpired);
         EdgeToEdge.enable(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
@@ -2045,6 +2257,7 @@ public final class MainActivity extends AppCompatActivity {
             if (!cameraStarted || pipeline == null || effectiveSceneHandlingMode() != SceneHandlingMode.DYNAMIC_CONTINUITY) return;
             ResearchExecutionConfig frozen = pipeline.researchExecutionConfig();
             if (frozen != null && !frozen.lockEnabled) return;
+            if(!experimentModeEnabled&&pipeline.targetFocus().entityId==entity)return;
             returnZoomBeforeUserTargetChange();
             pipeline.pickVehicle(entity);
             renderSearchControls();
@@ -2081,6 +2294,10 @@ public final class MainActivity extends AppCompatActivity {
         });
         deviceProfile = DeviceProfile.capture(this);
         pipeline = new AlprPipeline(this, modelRegistry, metricsCollector, autoTuneManager);
+        if(BuildConfig.DEBUG&&getIntent()!=null&&getIntent().hasExtra(com.example.alpr_v1.pipeline.MpDiagnosticCapture.INTENT_EXTRA)) {
+            try {pipeline.requestMpDiagnosticCapture(getIntent().getStringExtra(com.example.alpr_v1.pipeline.MpDiagnosticCapture.INTENT_EXTRA));}
+            catch(Exception invalid){android.util.Log.e("ALPR_MP_DIAGNOSTIC","Invalid debug capture request",invalid);}
+        }
         cameraController = new CameraController(this, this, previewView);
         cameraController.setPreviewGeometryListener(overlayView::setPreviewSourceSize);
         metricsCollector.setCameraTimestampSource(
@@ -2091,24 +2308,25 @@ public final class MainActivity extends AppCompatActivity {
         recordInfo("Uruchomiono aplikację");
 
         uiPreferences = getSharedPreferences("alpr_ui", MODE_PRIVATE);
+        restoreTimerConfiguration();
         verificationSessionId=uiPreferences.getString("gallery_session_id", "");
         researchSessions.refreshGallerySessions();
         restoreTvCameraSetup();
         tvSetup = new com.example.alpr_v1.ui.TvSetupController(this, previewView, overlayView,
-                () -> tvSetupAvailable()
-                        && !cameraStarted && !experimentSession.isRunning()
-                        && !experimentStartRequest.pending(),
+                () -> tvSetupAvailable() && !preparationActionsLocked(),
                 () -> { if (!cameraPreviewActive) { experimentPreviewPaused = false; ensureCameraPermission(true); } },
                 this::onTvSetupEvent);
         tvSetup.setInputSummaryProvider(this::tvInputSummary);
         tvSetup.setControlsRefresh(this::renderAnalysisControls);
+        installReadinessEditorReturn();
         tvSetup.setGeometryRefresh(cameraController::refreshSetupGeometry);
         cameraController.setSetupGeometryListener(tvSetup::onGeometryState);
         tvSetup.setCameraControls(new com.example.alpr_v1.camera.CameraSetupControl(){
             public State state(){return cameraController.state();}
             public void setListener(java.util.function.Consumer<State> listener){cameraController.setListener(listener);}
+            public org.json.JSONObject observation(){return cameraController.observation();}
             public void apply(com.example.alpr_v1.camera.CameraSelection selection,float zoom){
-                if(!tvSetupAvailable()||cameraStarted||experimentSession.isRunning()||experimentStartRequest.pending())return;
+                if(!tvSetupAvailable()||preparationActionsLocked())return;
                 State previous=state();
                 if(previous.requested.equals(selection)&&Math.abs(previous.requestedZoom-zoom)<1e-4&&previous.reason.isEmpty())return;
                 invalidatePreparedExperiment();
@@ -2197,6 +2415,17 @@ public final class MainActivity extends AppCompatActivity {
         configureSceneModeHudToggle();
         configureAnalysisControls();
         modelRegistry.reload();
+
+        configurationReadiness=new ReadinessController(ticket->{
+            readinessSnapshot=ReadinessSnapshot.capture(uiPreferences,modelRegistry,autoTuneManager,null,
+                    com.example.alpr_v1.experiment.ResearchSessionStore.sessionsRoot(this),readinessDevice(),ticket);
+            return readinessSnapshot;
+        },result->{readinessConfiguration=result;renderConfigurationReadiness();});
+        for(String name:new String[]{SettingsActivity.PREFERENCES,"autotune","model_registry"})
+            getSharedPreferences(name,MODE_PRIVATE).registerOnSharedPreferenceChangeListener(configurationReadinessChanges);
+        topAppBar.getMenu().add(0,R.id.readiness_main_return,0,R.string.readiness_return).setVisible(false);
+        findViewById(R.id.tv_frame_status).setOnClickListener(v->{if(!settingsActionsLocked())openReadinessOptions(null);});
+        configurationReadiness.refresh();
 
         scheduleMissingAutotuning();
     }
@@ -2410,7 +2639,7 @@ public final class MainActivity extends AppCompatActivity {
     private void showRegistrationSearch() {
         if (!cameraStarted || pipeline == null || effectiveSceneHandlingMode() != SceneHandlingMode.DYNAMIC_CONTINUITY) return;
         if (!pipeline.searchRegistration().isEmpty()) {
-            new MaterialAlertDialogBuilder(this).setTitle(R.string.search_vehicle)
+            new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle(R.string.search_vehicle)
                     .setItems(new String[]{getString(R.string.search_plate_change), getString(R.string.search_plate_end)},
                             (dialog, choice) -> {
                                 if (choice == 0) showRegistrationSearchInput();
@@ -2429,7 +2658,7 @@ public final class MainActivity extends AppCompatActivity {
         int padding = Math.round(24f * getResources().getDisplayMetrics().density);
         android.widget.FrameLayout container = new android.widget.FrameLayout(this);
         container.setPadding(padding, padding / 2, padding, 0); container.addView(input);
-        androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+        androidx.appcompat.app.AlertDialog dialog = new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.search_vehicle).setView(container)
                 .setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.search_plate_start, null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
@@ -2450,7 +2679,7 @@ public final class MainActivity extends AppCompatActivity {
         long locked = pipeline.lockedEntityId();
         if (searchPlateButton != null) {
             searchPlateButton.setVisibility(View.VISIBLE);
-            searchPlateButton.setEnabled(dynamic && cameraStarted);
+            searchPlateButton.setEnabled(dynamic && cameraStarted && !pipeline.manualTargetSelected());
             tintCameraAction(searchPlateButton, text.isEmpty() ? R.color.alpr_text_secondary : R.color.alpr_success);
         }
         if (releaseTargetButton != null) {
@@ -2461,20 +2690,27 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (!dynamic || !cameraStarted) return false;
         String status = null;
-        boolean recoveringFocus = pipeline.targetFocus().sessionState == com.example.alpr_v1.domain.TargetSessionState.RECOVERING;
-        if (locked > 0L && recoveringFocus) status = getString(R.string.target_focus_recovering, locked);
+        com.example.alpr_v1.acquisition.TargetFocusSnapshot selectedFocus=pipeline.targetFocus();
+        boolean recoveringFocus = selectedFocus.sessionState == com.example.alpr_v1.domain.TargetSessionState.RECOVERING;
+        long displayNumber=selectedFocus.displayNumber;
+        if(locked>0L&&selectedFocus.waitingForTarget)status=getString(R.string.dynamic_lock_target_unavailable);
+        else if (locked > 0L && recoveringFocus) status = displayNumber>0
+                ?getString(R.string.target_focus_recovering, displayNumber):getString(R.string.dynamic_lock_recovering);
         else if (pipeline.searchMatchState() == com.example.alpr_v1.domain.SearchMatchState.POSSIBLE_MATCH
                 && pipeline.foregroundEntityId() > 0L && locked == 0L)
             status = getString(R.string.search_plate_verifying);
         else if (locked > 0L) status = !text.isEmpty()
                 && pipeline.searchMatchState() == com.example.alpr_v1.domain.SearchMatchState.CONFIRMED_MATCH
-                ? getString(R.string.search_plate_found, text) : getString(R.string.vehicle_locked, locked);
+                ? getString(R.string.search_plate_found, text) : displayNumber>0
+                ?getString(R.string.dynamic_vehicle_locked,displayNumber):getString(R.string.dynamic_lock_selected);
         else if (!text.isEmpty()) status = getString(pipeline.searchMatchState()
                 == com.example.alpr_v1.domain.SearchMatchState.REJECTED_MATCH
                 ? R.string.search_plate_unconfirmed : R.string.search_plate_active, text);
         if (status == null) return false;
-        livePresentation.showUserStatus(recoveringFocus ? LivePresentationController.State.RECOVERING
-                : LivePresentationController.State.SEARCHING, status, "");
+        livePresentation.showUserStatus(recoveringFocus||selectedFocus.waitingForTarget ? LivePresentationController.State.RECOVERING
+                : LivePresentationController.State.SEARCHING, status,
+                selectedFocus.waitingForTarget?getString(R.string.dynamic_lock_release_hint):
+                !experimentModeEnabled&&requestedAutoZoomEnabled()?autoZoomHudLabel():"");
         return true;
     }
 
@@ -2486,7 +2722,16 @@ public final class MainActivity extends AppCompatActivity {
             if (presentedFocusRevision >= 0L && cameraStarted) uiSceneGeneration.incrementAndGet();
             presentedFocusRevision = focus.revision;
             pendingPreviewCoordination.set(null);
-            previewVehicleTracker.reset();
+            if(focus.entityId>0L&&!experimentModeEnabled&&effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY) {
+                previewVehicleTracker.retainOnly(java.util.Collections.singleton(focus.entityId));
+                java.util.Set<Long> selectedPlates=new java.util.HashSet<>();
+                for(java.util.Map.Entry<Long,Long> owner:pipeline.vehicleIdentityPlateOwners().entrySet())
+                    if(owner.getValue()==focus.entityId)selectedPlates.add(owner.getKey());
+                previewPlateTracker.retainOnly(selectedPlates);
+            } else {
+                previewVehicleTracker.retainOnly(null);previewPlateTracker.retainOnly(null);
+                if(!ordinaryDynamicResourcesEnabled())previewVehicleTracker.reset();
+            }
             overlayTracker.reset();
             latestDiagnosticOverlayItems = focusPresentationItems(latestDiagnosticOverlayItems, focus);
             latestPipelinePlateItems = focusPresentationItems(latestPipelinePlateItems, focus);
@@ -2502,7 +2747,7 @@ public final class MainActivity extends AppCompatActivity {
                 latestPipelinePlateEntityId = 0L;
                 latestFreshMzPlateTrackIds = java.util.Collections.emptySet();
             }
-            if (focus.awaitingFreshScanAnchor) {
+            if (focus.awaitingFreshScanAnchor || focus.waitingForTarget) {
                 returnZoomBeforeUserTargetChange();
                 hideAutoZoomTarget();
                 previewPlateTracker.reset();
@@ -2512,12 +2757,12 @@ public final class MainActivity extends AppCompatActivity {
                 clearAutoZoomRecognitionMemory();
             }
         }
-        overlayView.setTargetFocus(focus.entityId, focus.awaitingFreshScanAnchor);
+        overlayView.setTargetFocus(focus.entityId, focus.awaitingFreshScanAnchor || focus.waitingForTarget);
     }
 
     private List<OverlayItem> focusPresentationItems(List<OverlayItem> items,
             com.example.alpr_v1.acquisition.TargetFocusSnapshot focus) {
-        if (focus.awaitingFreshScanAnchor) return java.util.Collections.emptyList();
+        if (focus.awaitingFreshScanAnchor || focus.waitingForTarget) return java.util.Collections.emptyList();
         if (focus.entityId == 0L) return items;
         List<OverlayItem> kept = new ArrayList<>();
         for (OverlayItem item : items) {
@@ -2531,7 +2776,7 @@ public final class MainActivity extends AppCompatActivity {
         int id = item.getItemId();
         if (com.example.alpr_v1.ui.TvSetupNavigation.select(id, tvSetup)) return true;
         if (id == R.id.menu_settings) {
-            if (experimentSession.isRunning() || analysisStartGate.preparing()) {
+            if (settingsActionsLocked()) {
                 Toast.makeText(
                         this,
                         R.string.research_settings_locked,
@@ -2539,9 +2784,14 @@ public final class MainActivity extends AppCompatActivity {
                 ).show();
                 return true;
             }
-            startActivity(new Intent(this, SettingsActivity.class));
+            openReadinessOptions(null);
+        } else if(id==R.id.readiness_main_return){
+            if(settingsActionsLocked()){Toast.makeText(this,R.string.readiness_busy_return,Toast.LENGTH_LONG).show();return true;}
+            readinessReturnManual=false;readinessReturnDue=true;continueReadinessNavigation();
         } else if (id == R.id.menu_diagnostics) {
             openDiagnostics();
+        } else if(id==R.id.menu_session_operation){
+            showSessionOperationDetails();
         } else if (id == R.id.menu_clear_result) {
             clearCurrentResult();
         } else if (id == R.id.menu_help) {
@@ -2905,7 +3155,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showHelp() {
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.help_title)
                 .setMessage(R.string.help_message)
                 .setPositiveButton(R.string.menu_close, null)
@@ -2913,7 +3163,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showAbout() {
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.about_title)
                 .setMessage(R.string.about_message)
                 .setPositiveButton(R.string.menu_close, null)
@@ -2921,7 +3171,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showExitConfirmation() {
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.exit_app_title)
                 .setMessage(R.string.exit_app_message)
                 .setNegativeButton(
@@ -2988,15 +3238,123 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void applySystemInsets() {
-        com.example.alpr_v1.ui.CameraWindowUi.install(getWindow(), findViewById(R.id.main));
+        com.example.alpr_v1.ui.CameraWindowUi.install(getWindow(), findViewById(R.id.main),com.example.alpr_v1.ui.CameraWindowUi.ContentPolicy.MAIN_FULL_BLEED);
     }
 
+    private boolean f6FocusMode(){return experimentModeEnabled&&uiPreferences!=null
+            &&uiPreferences.getBoolean(com.example.alpr_v1.experiment.Final180PhotoRoi.ENABLED,false);}
+    private boolean sessionWriteBusy(){return researchSessions!=null&&(researchSessions.finalizing()
+            ||researchSessions.documentBusy()||researchSessions.operations.hasWriteWork());}
+    private boolean preparationActionsLocked(){return cameraStarted||experimentSession.isRunning()
+            ||analysisStartGate.preparing()||experimentStartRequest.pending()||sessionWriteBusy();}
+    private boolean settingsActionsLocked(){return experimentSession.isRunning()||analysisStartGate.preparing()
+            ||experimentStartRequest.pending()||sessionWriteBusy()||tvSetup!=null&&tvSetup.editing();}
+    private void renderPreparationActions(){
+        View actions=findViewById(R.id.main_calibration_actions);if(actions==null)return;
+        int visibility=experimentModeEnabled?View.VISIBLE:View.GONE;
+        if(actions.getVisibility()!=visibility){actions.setVisibility(visibility);
+            com.example.alpr_v1.ui.LivePresentationController.configureLayout(findViewById(R.id.main));}
+        boolean available=tvSetupAvailable(),enabled=available&&!preparationActionsLocked()&&(tvSetup==null||!tvSetup.editing());
+        findViewById(R.id.tv_frame_edit).setEnabled(enabled);
+        findViewById(R.id.f6_photo_roi_edit).setEnabled(enabled&&f6FocusMode());
+        if(topAppBar!=null){MenuItem settings=topAppBar.getMenu().findItem(R.id.menu_settings);
+            if(settings!=null)settings.setEnabled(!settingsActionsLocked());}
+    }
+    private void showSessionOperationDetails(){
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle(R.string.main_session_work_dialog)
+                .setMessage(researchSessions.operationHistoryDescription()).setPositiveButton(android.R.string.ok,null).show();
+    }
+    private void renderSessionOperation(){
+        View panel=findViewById(R.id.session_operation_panel);if(panel==null||researchSessions==null)return;
+        com.example.alpr_v1.experiment.ResearchOperationState.Snapshot receipt=researchSessions.operations.presentation();
+        com.example.alpr_v1.ui.ResearchOperationPresentation state=com.example.alpr_v1.ui.ResearchOperationPresentation.from(receipt);
+        boolean editor=tvSetup!=null&&tvSetup.editing();
+        boolean show=state.visible&&state.active&&!editor;
+        panel.setVisibility(show?View.VISIBLE:View.GONE);
+        MaterialToolbar toolbar=findViewById(R.id.top_app_bar);
+        if(toolbar!=null){MenuItem detailsItem=toolbar.getMenu().findItem(R.id.menu_session_operation);
+            if(detailsItem!=null)detailsItem.setVisible(state.visible&&!editor);}
+        TextView title=findViewById(R.id.session_operation_title),detail=findViewById(R.id.session_operation_detail);
+        if(!state.title.contentEquals(title.getText()))title.setText(state.title);
+        String description=state.detail;
+        if(!state.active&&researchSessions.ready())description+=" "+getString(R.string.main_session_work_next);
+        if(!description.contentEquals(detail.getText()))detail.setText(description);
+        int color=receipt!=null&&("FAILED".equals(receipt.status)||"INTERRUPTED".equals(receipt.status))?R.color.alpr_error
+                :receipt!=null&&"SAVED_UNVERIFIED".equals(receipt.status)?R.color.alpr_warning:R.color.alpr_accent;
+        title.setTextColor(ContextCompat.getColor(this,color));
+        boolean warning=receipt!=null&&("FAILED".equals(receipt.status)||"INTERRUPTED".equals(receipt.status)||"SAVED_UNVERIFIED".equals(receipt.status));
+        if(livePresentation!=null)livePresentation.setOperationStatus(editor?null:state,!cameraStarted&&!experimentSession.isRunning(),warning);
+        com.google.android.material.progressindicator.LinearProgressIndicator progress=findViewById(R.id.session_operation_progress);
+        if(progress.isIndeterminate()==state.determinate){progress.setVisibility(View.INVISIBLE);progress.setIndeterminate(!state.determinate);}
+        if(state.determinate)progress.setProgressCompat(state.percent,false);
+        progress.setVisibility(show?View.VISIBLE:View.GONE);
+    }
+    private boolean focusBlocksF6Start(){return com.example.alpr_v1.experiment.ConfigurationRequirements.focusBlocksStart(
+            f6FocusMode(),cameraController!=null&&cameraController.focusRequested(),cameraController!=null&&cameraController.focusHeld());}
+    private void renderCameraFocusButton(){
+        MaterialButton button=findViewById(R.id.f6_focus_toggle);if(button==null)return;
+        button.setVisibility(f6FocusMode()?View.VISIBLE:View.GONE);
+        if(cameraController==null){button.setEnabled(false);return;}
+        boolean running=cameraStarted||experimentSession.isRunning(),requested=cameraController.focusRequested(),held=cameraController.focusHeld();
+        button.setText(held?(running?"AF ✓\nna TV":"AF ✓\nZwolnij"):requested?
+                ("PENDING".equals(cameraController.focusStatus())?"AF…\nAnuluj":"AF brak\nAnuluj"):"Ustaw AF\nna TV");
+        button.setContentDescription(cameraController.focusDescription()+". "+(requested?"Zwolnij żądanie AF":"Ustaw i utrzymaj ostrość TV"));
+        button.setTooltipText(cameraController.focusDescription());
+        button.setEnabled(!running&&!sessionWriteBusy()&&(tvSetup==null||!tvSetup.editing())
+                &&(!experimentStartRequest.pending()||requested));
+    }
+    private void toggleF6Focus(){
+        if(!f6FocusMode()||cameraController==null||cameraStarted||experimentSession.isRunning()||sessionWriteBusy())return;
+        if(cameraController.focusRequested()){
+            if(experimentStartRequest.pending())cancelExperimentStart();
+            cameraController.releaseFocus("operator");renderAnalysisControls();return;
+        }
+        if(experimentStartRequest.pending())return;
+        try{
+            CameraSetupReadiness confirmation=currentCameraConfirmation();
+            if(confirmation==null||!confirmation.ready())throw new IllegalStateException("Poczekaj na zgodną klatkę kamery");
+            com.example.alpr_v1.setup.TvBboxCrop tv=tvSetup.selectionForInput(confirmation.applied);
+            double x=(tv.left+tv.right)/2.0,y=(tv.top+tv.bottom)/2.0;
+            // Prefer the approved inner field; an unavailable F6 approval never invents an ROI.
+            try{
+                com.example.alpr_v1.experiment.Final180PhotoRoi photo=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.resolve(
+                        uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,""),
+                        uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,""),tv,
+                        new org.json.JSONObject(tvSetup.approvedTvRecord()),null).forSession(tv,new org.json.JSONObject(tvSetup.approvedTvRecord()));
+                x=(photo.left+photo.right)/2.0;y=(photo.top+photo.bottom)/2.0;
+            }catch(Exception unavailable){/* AF may use the confirmed TV centre before inner-field approval. */}
+            cameraController.focusOnSource(tv.geometry,x,y);
+            Toast.makeText(this,cameraController.focusDescription(),Toast.LENGTH_LONG).show();
+        }catch(Exception error){Toast.makeText(this,"Nie ustawiono AF: "+error.getMessage(),Toast.LENGTH_LONG).show();}
+        renderAnalysisControls();
+    }
+    private void onCameraFocusChanged(){
+        if(isFinishing()||isDestroyed())return;
+        if(!cameraStarted&&("FAILED".equals(cameraController.focusStatus())||"UNAVAILABLE".equals(cameraController.focusStatus())||"LOST".equals(cameraController.focusStatus())))
+            Toast.makeText(this,cameraController.focusDescription(),Toast.LENGTH_LONG).show();
+        com.example.alpr_v1.experiment.ResearchSessionStore store=researchSessions==null?null:researchSessions.store();
+        ResearchExecutionConfig config=experimentSession.isRunning()?experimentSession.frozenExecutionConfig():null;
+        if(store!=null&&config!=null&&config.final180PhotoRoi()!=null&&store.sessionId().equals(experimentSession.sessionId()))try{
+            store.appendTelemetry("events.jsonl",new org.json.JSONObject().put("event_type","camera_focus_state_changed")
+                    .put("experiment_session_id",store.sessionId()).put("camera_observation",cameraController.observation()).toString());
+        }catch(Exception error){AppLog.error(this,"CAMERA_FOCUS","Nie zapisano diagnostyki AF",error);}
+        renderAnalysisControls();
+        if(experimentStartRequest.pending())requestExperimentReadinessRefresh();
+    }
     private void configureAnalysisControls() {
+        MaterialButton focus=findViewById(R.id.f6_focus_toggle);
+        focus.setOnClickListener(v->toggleF6Focus());
+        findViewById(R.id.f6_photo_roi_edit).setOnClickListener(v->{
+            if(tvSetupAvailable()&&f6FocusMode()&&!preparationActionsLocked())tvSetup.open(com.example.alpr_v1.ui.TvSetupController.Mode.F6_PHOTO);
+        });
+        findViewById(R.id.session_operation_details).setOnClickListener(v->showSessionOperationDetails());
+        if(cameraController!=null)cameraController.setFocusListener(this::onCameraFocusChanged);
 
         experimentTimerButton.setOnClickListener(
                 view ->
-                        showExperimentTimerDialog()
+                        toggleAnalysisTimer()
         );
+        findViewById(R.id.experiment_timer_status).setOnClickListener(view -> showExperimentTimerDialog());
         experimentThermalButton.setOnClickListener(
                 view ->
                         showExperimentThermalDialog()
@@ -3012,7 +3370,7 @@ public final class MainActivity extends AppCompatActivity {
 
         cameraPreviewButton.setOnClickListener(view -> {
             if (cameraStarted || waitingForThermalStart || analysisStartGate.preparing()
-                    || experimentStartRequest.pending()) return;
+                    || experimentStartRequest.pending() || sessionWriteBusy()) return;
             if (cameraPreviewActive) {
                 experimentPreviewPaused = true;
                 stopCameraPreview(true);
@@ -3033,10 +3391,16 @@ public final class MainActivity extends AppCompatActivity {
                 else requestExperimentStart();
                 return;
             }
-            if (analysisStartGate.preparing()) cancelAnalysisPreparation();
-            else if (cameraStarted) stopAnalysis();
-            else if (waitingForThermalStart) cancelThermalStartWaiting();
-            else ensureCameraPermission(false);
+            if (cameraStarted) stopAnalysis();
+            else if (experimentStartRequest.pending() || analysisStartGate.preparing() || waitingForThermalStart)
+                cancelExperimentStart();
+            else {
+                if(sessionWriteBusy()){renderAnalysisControls();return;}
+                experimentStartRequest.request();
+                analysisStartRequestedElapsedNanos=android.os.SystemClock.elapsedRealtimeNanos();
+                renderAnalysisControls();
+                ensureCameraPermission(false);
+            }
         });
 
         if (!cameraStarted && !cameraPreviewActive) {
@@ -3060,11 +3424,16 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private ResearchExecutionConfig researchSummaryFrozenOwner;
+    private int researchSummarySettingsRevision=Integer.MIN_VALUE;
+    private boolean researchSummaryWasFrozen;
+
     private void renderAnalysisControls() {
+        renderCameraFocusButton();
         if (topAppBar != null) {
             boolean tvAvailable=tvSetupAvailable();
             com.example.alpr_v1.ui.TvSetupMenuState.render(topAppBar.getMenu(),tvAvailable,
-                    !cameraStarted&&!experimentSession.isRunning()&&!experimentStartRequest.pending(),
+                    !preparationActionsLocked(),
                     tvSetup!=null&&tvSetup.editing()?tvSetup.mode():null,tvSetup!=null&&tvSetup.restoring());
         }
         if (tvSetup != null) {tvSetup.openRequested();tvSetup.refreshInputSummary();}
@@ -3079,7 +3448,7 @@ public final class MainActivity extends AppCompatActivity {
             cameraPreviewButton.setIconResource(R.drawable.ic_camera_preview_32);
             cameraPreviewButton.setEnabled(
                     !cameraStarted && !waitingForThermalStart && !analysisStartGate.preparing()
-                            && !experimentStartRequest.pending()
+                            && !experimentStartRequest.pending() && !sessionWriteBusy()
             );
             styleDashboardAction(cameraPreviewButton, cameraPreviewActive ? R.color.alpr_success : R.color.alpr_accent);
         }
@@ -3091,7 +3460,7 @@ public final class MainActivity extends AppCompatActivity {
 
                         : waitingForThermalStart || analysisStartGate.preparing()
 
-                          ? R.string.camera_action_cancel
+                          ? R.string.main_ui_stop_analysis
 
                           : R.string.camera_action_start
         );
@@ -3100,17 +3469,27 @@ public final class MainActivity extends AppCompatActivity {
         if (experimentModeEnabled && !cameraStarted) {
             boolean pending = experimentStartRequest.pending();
             StartBlocker blocker=experimentStartBlocker();
-            analysisStartButton.setEnabled(pending||!researchSessions.finalizing()&&(!tvBboxRequested()||blocker==StartBlocker.READY));
-            analysisStartButton.setText(pending ? R.string.camera_action_cancel : R.string.camera_action_start);
+            PreparationCameraContext context=preparedExperimentStart!=null?preparedExperimentStart.cameraContext:preparingCameraContext;
+            String inputReason=tvBboxRequested()?tvBboxStartReason():"";
+            boolean cameraWait=tvCameraPreparationEnabled()&&cameraPreparationWait(context,currentCameraConfirmation(),inputReason);
+            boolean preparationAction=blocker==StartBlocker.READY||blocker==StartBlocker.MODELS
+                    ||blocker==StartBlocker.FOCUS
+                    ||blocker==StartBlocker.PREVIOUS_SESSION||blocker==StartBlocker.ERROR;
+            analysisStartButton.setEnabled(pending||!tvBboxRequested()||inputReason.isEmpty()&&preparationAction||cameraWait);
+            analysisStartButton.setText(pending ? R.string.main_ui_stop_analysis : R.string.camera_action_start);
             analysisStartButton.setContentDescription(pending ? "Anuluj oczekujące uruchomienie eksperymentu"
                     : "START: przygotuj i uruchom eksperyment");
 
         } else analysisStartButton.setEnabled(true);
+        if (!cameraStarted && experimentStartRequest.pending()) {
+            analysisStartButton.setText(R.string.main_ui_stop_analysis);
+            analysisStartButton.setContentDescription("Zatrzymaj oczekujące uruchomienie analizy");
+        }
 
 
         analysisStartButton.setIconResource(
                 cameraStarted
-                        || waitingForThermalStart || (experimentModeEnabled ? experimentStartRequest.pending() : analysisStartGate.preparing())
+                        || waitingForThermalStart || experimentStartRequest.pending() || !experimentModeEnabled&&analysisStartGate.preparing()
 
                         ? R.drawable.ic_analysis_stop_32
 
@@ -3126,16 +3505,10 @@ public final class MainActivity extends AppCompatActivity {
         renderCollectionControl();
 
 
-        /*
-         * Timer jest widoczny wyłącznie w trybie EXP.
-         */
+        // The same persistent timer is available for ordinary analysis and F5A.
         if (experimentTimerButton != null) {
 
-            experimentTimerButton.setVisibility(
-                    experimentModeEnabled
-                            ? View.VISIBLE
-                            : View.GONE
-            );
+            experimentTimerButton.setVisibility(View.VISIBLE);
 
 
             /*
@@ -3143,8 +3516,7 @@ public final class MainActivity extends AppCompatActivity {
              * tylko przed rozpoczęciem przebiegu.
              */
             experimentTimerButton.setEnabled(
-                    experimentModeEnabled
-                            && !cameraStarted && !analysisStartGate.preparing() && !researchSessions.finalizing()
+                    timerSettingsAvailable()
             );
 
 
@@ -3152,24 +3524,23 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         if (exportReportButton != null) {
-
-            boolean experimentFinished =
-                    experimentModeEnabled
-                            && experimentSession.state()
-                            == ExperimentSession.State.FINISHED;
-
-            exportReportButton.setVisibility(
-                    experimentFinished
-                            ? View.VISIBLE
-                            : View.GONE
-            );
-
-            exportReportButton.setEnabled(
-                    experimentFinished
-                            && !exportInProgress
-            );
-            com.example.alpr_v1.ui.CockpitControlStyle.apply(exportReportButton,exportInProgress
+            exportReportButton.setVisibility(View.VISIBLE);
+            exportReportButton.setText(R.string.research_sessions_export);
+            exportReportButton.setEnabled(true);
+            com.example.alpr_v1.ui.CockpitControlStyle.apply(exportReportButton,exportInProgress||researchSessions.documentBusy()
                     ?com.example.alpr_v1.ui.CockpitControlStyle.State.BUSY:com.example.alpr_v1.ui.CockpitControlStyle.State.OFF);
+        }
+        if(tvSetup!=null&&uiPreferences!=null&&modelRegistry!=null&&autoTuneManager!=null){
+            ResearchExecutionConfig frozen=experimentSession.isRunning()||researchSessions.finalizing()?experimentSession.snapshot().frozenExecutionConfig:null;
+            int revision=uiPreferences.getInt(SettingsActivity.KEY_REVISION,0);
+            if(frozen!=null? !researchSummaryWasFrozen||researchSummaryFrozenOwner!=frozen : researchSummaryWasFrozen||revision!=researchSummarySettingsRevision){
+                researchSummaryFrozenOwner=frozen;researchSummaryWasFrozen=frozen!=null;researchSummarySettingsRevision=revision;
+                try{
+                    org.json.JSONObject configuration=frozen==null?com.example.alpr_v1.ui.ResearchConfigurationText.planned(uiPreferences,modelRegistry,autoTuneManager):frozen.toJson();
+                    tvSetup.setResearchSummary(com.example.alpr_v1.ui.ResearchConfigurationText.isF6(configuration)?
+                            com.example.alpr_v1.ui.ResearchConfigurationText.title(configuration)+" · "+com.example.alpr_v1.ui.ResearchConfigurationText.compactDetails(configuration):"");
+                }catch(Exception unavailable){tvSetup.setResearchSummary("Konfiguracja niepotwierdzona: "+unavailable.getMessage());}
+            }
         }
 
         if (recognitionHint != null) {
@@ -3193,9 +3564,115 @@ public final class MainActivity extends AppCompatActivity {
             analysisStartButton.setEnabled(false);
             tvSetup.maintainPreparationUi();
         }
+        if(!cameraStarted&&!experimentStartRequest.pending()&&sessionWriteBusy())analysisStartButton.setEnabled(false);
+        renderPreparationActions();renderCameraFocusButton();renderSessionOperation();
+        updateAutoZoomButton();renderSceneModeHudToggle();
         // Presentation follows the final enabled state, including the existing TV editor lock.
         if(experimentModeEnabled&&!cameraStarted)renderExperimentStartStatus(experimentStartBlocker());
+        renderConfigurationReadiness();
     }
+    private void receiveReadinessSettingsResult(Intent data){
+        if(data==null)return;
+        ReadinessReturnContext context=ReadinessReturnContext.fromBundle(data.getBundleExtra(ReadinessReturnContext.EXTRA));
+        if(context==null)return;
+        readinessReturn=context;readinessEditorStarted=false;
+        String action=data.getStringExtra(ReadinessReturnContext.EXTRA_ACTION);
+        readinessReturnDue="BLOCKED".equals(action);readinessReturnManual=readinessReturnDue;
+        readinessDestination="CALIBRATOR".equals(action)?data.getStringExtra(ReadinessReturnContext.EXTRA_MODE)
+                :"PREVIEW".equals(action)||"FOCUS".equals(action)?action:"";
+        if(readinessDestination==null)readinessDestination="";
+        getWindow().getDecorView().post(this::continueReadinessNavigation);
+    }
+    private void installReadinessEditorReturn(){
+        tvSetup.setEditorExitListener(reason->{
+            if(readinessReturn==null||!readinessEditorStarted)return;
+            readinessEditorStarted=false;readinessReturnDue=true;
+            readinessReturnManual=reason==com.example.alpr_v1.ui.TvSetupController.EditorExit.BACKGROUND;
+            if(configurationReadiness!=null)configurationReadiness.refresh(true);
+            renderConfigurationReadiness();
+            getWindow().getDecorView().post(this::continueReadinessNavigation);
+        });
+    }
+    private ReadinessSnapshot.Device readinessDevice(){
+        boolean permission=ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED;
+        CameraSetupReadiness camera=currentCameraConfirmation();
+        boolean stream=false;
+        if(analysisScreenForeground&&cameraPreviewActive&&cameraController!=null){
+            Size size=chooseAnalysisSize();
+            stream=cameraController.isStreamReady(size,cameraResolutionCatalog!=null&&cameraResolutionCatalog.isHighResolution(size));
+        }
+        boolean verified=stream&&(!tvCameraPreparationEnabled()||camera!=null&&camera.ready()&&camera.frameFreshAt(android.os.SystemClock.elapsedRealtimeNanos()));
+        PreparedAnalysisStart prepared=preparedExperimentStart;
+        boolean preparedCurrent=prepared!=null&&uiPreferences!=null&&prepared.settingsRevision==uiPreferences.getInt(SettingsActivity.KEY_REVISION,0)
+                &&prepared.prepared.timer==experimentTimerConfig&&prepared.prepared.thermal==experimentThermalConfig
+                &&prepared.store.state()==com.example.alpr_v1.experiment.ResearchSessionStore.State.PREPARED;
+        return new ReadinessSnapshot.Device(permission,verified,experimentModeEnabled?preparedCurrent:cameraStarted,
+                !experimentThermalConfig.enabled()||prestartThermalReady,cameraController!=null&&cameraController.focusRequested(),
+                cameraController!=null&&cameraController.focusHeld(),sessionWriteBusy(),experimentSession.isRunning(),"",
+                camera==null?0:camera.bindingGeneration,analysisControlGeneration);
+    }
+    private void renderConfigurationReadiness(){
+        if(topAppBar!=null){
+            MenuItem back=topAppBar.getMenu().findItem(R.id.readiness_main_return);
+            if(back!=null){
+                boolean show=readinessReturn!=null&&!readinessEditorStarted&&readinessDestination.isEmpty();
+                back.setVisible(show);back.setEnabled(show&&!settingsActionsLocked());
+                if(show&&settingsActionsLocked()){readinessReturnManual=true;back.setTitle("Podsumowanie · trwa operacja");}
+                else back.setTitle(R.string.readiness_return);
+            }
+        }
+        if(configurationReadiness==null||tvSetup==null||!analysisScreenForeground||cameraStarted||experimentSession.isRunning()
+                ||sessionWriteBusy()||analysisStartGate.preparing()||experimentStartRequest.pending()||tvSetup.editing()||experimentPreparationFailed)return;
+        ReadinessResult result=readinessConfiguration==null||readinessSnapshot==null?null:
+                readinessDeviceProjection.updateDevice(readinessSnapshot.withDevice(readinessDevice()),readinessConfiguration);
+        String text=new ReadinessPresentation(result,experimentModeEnabled).mainText();
+        tvSetup.setResearchSummary(text);
+        TextView summary=findViewById(R.id.tv_frame_status);
+        summary.setContentDescription(text+". Otwórz Opcje, aby zobaczyć wymagania.");
+        summary.setClickable(!settingsActionsLocked());
+    }
+    private void openReadinessOptions(ReadinessReturnContext context){
+        Intent settings=new Intent(this,SettingsActivity.class);
+        settings.putExtra(SettingsActivity.EXTRA_THERMAL_ENABLED,experimentThermalConfig.enabled());
+        settings.putExtra(SettingsActivity.EXTRA_RETURN_TO_SUMMARY,true);
+        if(cameraController!=null)settings.putExtra(SettingsActivity.EXTRA_CAMERA_OBSERVATION,cameraController.observation().toString());
+        MetricsCollector.LiveSnapshot mtFrame=metricsCollector.liveSnapshot();
+        settings.putExtra(SettingsActivity.EXTRA_MT_FRAME_WIDTH,mtFrame.sourceWidth);
+        settings.putExtra(SettingsActivity.EXTRA_MT_FRAME_HEIGHT,mtFrame.sourceHeight);
+        if(context!=null)settings.putExtra(ReadinessReturnContext.EXTRA,context.toBundle());
+        settingsScreen.launch(settings);
+    }
+    private void continueReadinessNavigation(){
+        if(!analysisScreenForeground||isFinishing()||isDestroyed()||readinessReturn==null)return;
+        if(!readinessDestination.isEmpty()){
+            if(settingsActionsLocked()||preparationActionsLocked()){
+                readinessDestination="";readinessReturnDue=true;readinessReturnManual=true;
+                Toast.makeText(this,R.string.readiness_busy_return,Toast.LENGTH_LONG).show();renderConfigurationReadiness();return;
+            }
+            String destination=readinessDestination;readinessDestination="";
+            if("PREVIEW".equals(destination)||"FOCUS".equals(destination)){
+                readinessReturnDue=true;readinessReturnManual=true;ensureCameraPermission(true);
+                if("FOCUS".equals(destination))findViewById(R.id.f6_focus_toggle).requestFocus();
+                renderConfigurationReadiness();return;
+            }
+            try{
+                com.example.alpr_v1.ui.TvSetupController.Mode mode=com.example.alpr_v1.ui.TvSetupController.Mode.valueOf(destination);
+                if(tvSetupAvailable())tvSetup.open(mode);
+                readinessEditorStarted=tvSetup.editing();
+                if(readinessEditorStarted)return;
+            }catch(IllegalArgumentException invalid){/* A removed destination returns to a fresh summary. */}
+            readinessReturnDue=true;
+        }
+        if(!readinessReturnDue||readinessReturnManual)return;
+        if(settingsActionsLocked()){
+            readinessReturnManual=true;Toast.makeText(this,R.string.readiness_busy_return,Toast.LENGTH_LONG).show();
+            renderConfigurationReadiness();return;
+        }
+        ReadinessReturnContext context=readinessReturn;
+        readinessReturn=null;readinessReturnDue=false;readinessReturnManual=false;
+        openReadinessOptions(context);
+    }
+
     private void pauseCropCollectionForStoppedAnalysis() {
         normalCollectionReady = false;
         analysisControlGeneration++;
@@ -3230,34 +3707,33 @@ public final class MainActivity extends AppCompatActivity {
     private void stopAnalysis(
             ExperimentSession.CompletionReason reason
     ) {
+        experimentStartRequest.cancel();
+        analysisStartGate.cancel();
+        experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
+        cancelExperimentTimer();
+        preparingCameraContext=null;
+        waitingForThermalStart=false;
         closeResearchAdmission(reason);
+        cameraStarted = false;
+        dynamicDisplaySnapshot=null;
+        if(overlayView!=null)overlayView.setDynamicVehicleSnapshot(null,0L);
+        if(livePresentation!=null)livePresentation.setDynamicPresentation(false);
+        cameraPreviewActive = false;
+        analysisControlGeneration++;
+        uiSceneGeneration.incrementAndGet();
+        renderAnalysisControls();
         pendingPreviewCoordination.set(null);
         // Odpowiedź wizualna na STOP nie może czekać na zamknięcie CameraX,
         // pipeline'u ani zapisu metryk.
         overlayView.setActiveVehicleEntityId(0L);
         overlayView.setAnalysisViewportEnabled(false);
         resetAutoZoomForStoppedCamera();
-        cameraStarted = false;
-        cameraPreviewActive = false;
-        liveHudAwaitingFreshResult =
-                true;
+        liveHudAwaitingFreshResult = true;
         stopPreviewSceneMonitor();
-
-        /*
-         * Unieważniamy również ewentualną inferencję
-         * znajdującą się jeszcze w toku.
-         */
-        uiSceneGeneration.incrementAndGet();
-        /*
-         * Po zatrzymaniu źródła danych kolektor cropów
-         * również nie może pozostać aktywny.
-         */
+        // The UI generation was invalidated before rendering the stopped controls.
         pauseCropCollectionForStoppedAnalysis();
-        if (pipeline != null) {
-            pipeline.stopScanRun(
-                    android.os.SystemClock.elapsedRealtimeNanos()
-            );
-        }
+        long stoppedAt=android.os.SystemClock.elapsedRealtimeNanos();
+        deferPipelineControl(p -> p.stopScanRun(stoppedAt));
         /*
          * Od tej chwili żaden kolejny trace nie należy
          * już do zakończonego przebiegu.
@@ -3329,12 +3805,23 @@ public final class MainActivity extends AppCompatActivity {
 
     private void scheduleExperimentTimer(TimerConfig timerConfig) {
         cancelExperimentTimer(); // Detach presentation only; the retained deadline is not rearmed.
-        if (!experimentSession.isRunning()) return;
+        if (!researchSessions.timerState().running) return;
         researchSessions.armTimer(metricsCollector);
-        long deadline = experimentSession.timerDeadlineElapsedNanos();
+        long deadline = researchSessions.timerState().deadlineElapsedNanos;
         experimentTimerDeadlineElapsedMillis = deadline < 0L ? -1L : deadline / 1_000_000L;
         updateExperimentTimerButton();
         if (deadline >= 0L) experimentTimerHandler.post(experimentTimerUiRunnable);
+    }
+
+    private void onAnalysisTimerExpired(String id) {
+        com.example.alpr_v1.experiment.ResearchSessionViewModel.TimerState timer=researchSessions.timerState();
+        if (id == null || !id.equals(timer.id) || !timer.expired || timer.running) return;
+        if (!experimentSession.sessionId().equals(id)) {
+            if (cameraStarted) stopAnalysis(ExperimentSession.CompletionReason.TIMER);
+        } else if (!researchSessions.finalizing() && researchSessions.store() != null
+                && researchSessions.store().state() == com.example.alpr_v1.experiment.ResearchSessionStore.State.FINALIZING) {
+            stopAnalysis(ExperimentSession.CompletionReason.TIMER);
+        }
     }
 
     private void cancelExperimentTimer() {
@@ -3344,6 +3831,14 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean beginAnalysisMeasurement(PreparedAnalysisStart ready) {
+        if(ready.config!=null&&ready.config.final180PhotoRoi()!=null&&focusBlocksF6Start())return false;
+        CameraSetupReadiness startCamera=null;
+        if(ready.config!=null&&"roi_budget".equals(ready.config.experimentType)){
+            CameraSetupReadiness current=currentCameraConfirmation();
+            startCamera=current;
+            CameraSetupReadiness.Reason failure=preparedCameraFailure(ready,current);
+            if(failure!=CameraSetupReadiness.Reason.READY){rejectPreparedCamera(ready,failure,current);return false;}
+        }
         if (researchSessions.finalizing()) {
             discardPreparedStart(ready);
             Toast.makeText(this,"Trwa zapisywanie paczki poprzedniego eksperymentu",Toast.LENGTH_LONG).show();
@@ -3374,9 +3869,17 @@ public final class MainActivity extends AppCompatActivity {
                 long startWall = ready.startWall;
                 long startElapsed = ready.startElapsed;
                 long startMonotonic = ready.startMonotonic;
+                org.json.JSONObject calibrationValidation="roi_budget".equals(ready.config.experimentType)
+                        ?tvSetup.revalidationEvidence(startCamera):null;
+                if(ready.config.tvBboxCrop()!=null){
+                    if(calibrationValidation==null)throw new IllegalStateException("CALIBRATION_REVALIDATION_EVIDENCE_MISSING");
+                    calibrationValidation.put("calibration_digest_sha256",ready.config.tvBboxCrop().calibrationDigest);
+                }
+                if(ready.config.final180PhotoRoi()!=null)store.setCameraObservationBeforeStart(cameraController.observation());
                 java.util.concurrent.CompletableFuture<Void> startCommitted = store.startAtQueued(startWall, startElapsed,
                         "roi_budget".equals(ready.config.experimentType)
                                 ?ready.config.tvBboxCrop()==null?tvSetup.freeze(startWall):tvSetup.freezeInputSelection(ready.config.tvBboxCrop()):null,
+                        calibrationValidation==null?null:calibrationValidation.put("event_type","tv_setup_calibration_revalidated"),
                         error -> runOnUiThread(() -> {
                     if (experimentSession.isRunning() && experimentSession.sessionId().equals(prepared.sessionId)) {
                         recordError("Nie zapisano początku sesji", error);
@@ -3408,7 +3911,7 @@ public final class MainActivity extends AppCompatActivity {
                 discardPreparedStart(ready);
                 recordWarning("START badania zablokowany: "+error.getMessage());
                 livePresentation.showState(LivePresentationController.State.ERROR,"Nie przygotowano zapisu sesji");
-                Toast.makeText(this,"Nie można rozpocząć badania: "+error.getMessage(),Toast.LENGTH_LONG).show();
+                Toast.makeText(this,"Nie można rozpocząć badania: "+com.example.alpr_v1.ui.CalibrationOperatorText.preparationError(this,error.getMessage()),Toast.LENGTH_LONG).show();
                 return false;
             }
 
@@ -3452,7 +3955,7 @@ public final class MainActivity extends AppCompatActivity {
             cancelExperimentTimer();
             metricsCollector.setResearchCollector(null);
             pipeline.setResearchCollector(null);
-            metricsCollector.startMeasurementSession();
+            metricsCollector.startMeasurementSession(ready.startWall, ready.startElapsed, ready.startMonotonic);
 
             /*
              * Zwykła analiza nie może odziedziczyć informacji
@@ -3460,6 +3963,8 @@ public final class MainActivity extends AppCompatActivity {
              */
             experimentSession.reset();
             metricsCollector.setExperimentSessionId("");
+            researchSessions.startOrdinaryTimer(ready.timer, ready.startWall, ready.startElapsed, metricsCollector);
+            scheduleExperimentTimer(ready.timer);
             if (latestThermalSnapshot != null) {
                 metricsCollector.recordThermalSample(latestThermalSnapshot);
             }
@@ -3475,7 +3980,7 @@ public final class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    private ResearchExecutionConfig buildResearchExecutionConfig() {
+    private ResearchExecutionConfig buildResearchExecutionConfig(PreparationCameraContext capturedCamera) {
         String experimentType = uiPreferences.getString(
                 SettingsActivity.KEY_EXPERIMENT_TYPE,
                 "roi_budget"
@@ -3532,12 +4037,117 @@ public final class MainActivity extends AppCompatActivity {
                 com.example.alpr_v1.acquisition.DynamicMtSettings.read(uiPreferences)
         );
         if("roi_budget".equals(experimentType)){
-            com.example.alpr_v1.camera.CameraSetupSnapshot setup=cameraController.setupSnapshot();
-            if(setup==null)throw new IllegalStateException("Niepotwierdzony obiektyw lub zoom kamery");
-            configuration=configuration.withCameraSetup(setup);
+            if(capturedCamera==null)throw new CameraPreparationWait(CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_MISSING);
+            if(tvBboxRequested()!=(capturedCamera.input!=null))throw new CameraPreparationWait(CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_STALE);
+            configuration=configuration.withCameraSetup(capturedCamera.confirmation.applied);
+            if(capturedCamera.input!=null)configuration=configuration.withTvBboxCrop(capturedCamera.input);
+            if(capturedCamera.f6Enabled){
+                try{configuration=configuration.withFinal180(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.resolve(
+                        capturedCamera.photoRecord,capturedCamera.photoApprovalContext,capturedCamera.input,
+                        new org.json.JSONObject(capturedCamera.tvApproval),com.example.alpr_v1.experiment.ResearchSessionStore.sessionsRoot(this))
+                        .forSession(capturedCamera.input,new org.json.JSONObject(capturedCamera.tvApproval)));}
+                catch(org.json.JSONException invalid){throw new IllegalStateException("F6_PHOTO_ROI_REQUIRED: wskaż obszar fotografii F6",invalid);}
+            }
+            android.util.Log.i("ALPR_CAMERA_SETUP","preparation_worker "+capturedCamera.confirmation.diagnostics());
+            if(configuration.final180PhotoRoi()!=null)try{
+                AppLog.info(this,"F6_SESSION_CONFIG",new org.json.JSONObject().put("phase","prepared_frozen")
+                        .put("execution",configuration.toJson()).put("time_domain","ANDROID_ELAPSED_REALTIME")
+                        .put("elapsed_nanos",android.os.SystemClock.elapsedRealtimeNanos()).toString());
+            }catch(org.json.JSONException diagnosticFailure){android.util.Log.w("F6_SESSION_CONFIG",diagnosticFailure);}
         }
-        if(tvBboxRequested())configuration=configuration.withTvBboxCrop(tvSetup.selectionForInput());
         return configuration;
+    }
+
+    private static final class PreparationCameraContext {
+        final CameraSetupReadiness confirmation;
+        final com.example.alpr_v1.setup.TvBboxCrop input;
+        final boolean f6Enabled;
+        final String photoRecord,photoApprovalContext,tvApproval;
+        PreparationCameraContext(CameraSetupReadiness confirmation,com.example.alpr_v1.setup.TvBboxCrop input){
+            this(confirmation,input,false,"","","");
+        }
+        PreparationCameraContext(CameraSetupReadiness confirmation,com.example.alpr_v1.setup.TvBboxCrop input,
+                boolean enabled,String photo,String context,String approval){
+            this.confirmation=confirmation;this.input=input;
+            f6Enabled=enabled;photoRecord=photo;photoApprovalContext=context;tvApproval=approval;
+        }
+    }
+    private static final class CameraPreparationWait extends IllegalStateException {
+        final CameraSetupReadiness.Reason reason;
+        CameraPreparationWait(CameraSetupReadiness.Reason reason){super(reason.description());this.reason=reason;}
+    }
+    private String lastCameraSetupDiagnostic="",cameraPreparationNotice="";
+    private CameraSetupReadiness.Reason missingCameraReason(){return cameraController==null?CameraSetupReadiness.Reason.CAMERA_NOT_BOUND:CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_MISSING;}
+    private CameraSetupReadiness currentCameraConfirmation(){
+        CameraSetupReadiness current=cameraController==null?null:cameraController.captureSetupReadiness();
+        logCameraSetup("readiness",current==null?missingCameraReason():current.reason,current,false);
+        return current;
+    }
+    private void logCameraSetup(String phase,CameraSetupReadiness.Reason reason,CameraSetupReadiness current,boolean force){
+        String key=phase+":"+reason+":"+(current==null?"missing":current.bindingGeneration+":"+current.revision+":"+current.requested+":"+current.requestedZoom);
+        if(force||!key.equals(lastCameraSetupDiagnostic)){
+            lastCameraSetupDiagnostic=key;
+            android.util.Log.i("ALPR_CAMERA_SETUP",phase+" refusal="+reason+" "+(current==null?"published_setup=missing reader_thread="+Thread.currentThread().getName():current.diagnostics()));
+        }
+    }
+    private PreparationCameraContext capturePreparationCameraContext(){
+        if(!tvCameraPreparationEnabled())return null;
+        CameraSetupReadiness current=currentCameraConfirmation();
+        if(current==null)throw new CameraPreparationWait(missingCameraReason());
+        if(!current.ready())throw new CameraPreparationWait(current.reason);
+        if(tvSetup!=null)tvSetup.revalidateForCamera(current);
+        com.example.alpr_v1.setup.TvBboxCrop input=null;
+        if(tvBboxRequested()){
+            if(tvSetup==null)throw new CameraPreparationWait(CameraSetupReadiness.Reason.CAMERA_SETUP_GEOMETRY_MISMATCH);
+            try{input=tvSetup.selectionForInput(current.applied);}
+            catch(RuntimeException invalid){throw new CameraPreparationWait(CameraSetupReadiness.Reason.CAMERA_SETUP_GEOMETRY_MISMATCH);}
+            if(input.geometry.bindingGeneration!=current.bindingGeneration)throw new CameraPreparationWait(CameraSetupReadiness.Reason.CAMERA_SETUP_GENERATION_CHANGED);
+        }
+        logCameraSetup("preparation_capture",CameraSetupReadiness.Reason.READY,current,true);
+        return new PreparationCameraContext(current,input,
+                uiPreferences.getBoolean(com.example.alpr_v1.experiment.Final180PhotoRoi.ENABLED,false),
+                uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,""),
+                uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,""),
+                tvSetup==null?"":tvSetup.approvedTvRecord());
+    }
+    private CameraSetupReadiness.Reason preparationCameraFailure(PreparationCameraContext captured,CameraSetupReadiness current,boolean requireFresh){
+        if(captured==null||current==null)return CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_MISSING;
+        CameraSetupReadiness.Reason identity=captured.confirmation.identityFailure(current);
+        if(identity!=CameraSetupReadiness.Reason.READY)return identity;
+        if(captured.input!=null&&(tvSetup==null||!tvSetup.matchesPreparedGeometry(captured.input)))return CameraSetupReadiness.Reason.CAMERA_SETUP_GEOMETRY_MISMATCH;
+        if(requireFresh&&!current.ready())return current.reason;
+        if(requireFresh&&!captured.confirmation.applied.same(current.applied))return CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_STALE;
+        return CameraSetupReadiness.Reason.READY;
+    }
+    private void rejectPreparedCamera(PreparedAnalysisStart ready,CameraSetupReadiness.Reason reason,CameraSetupReadiness current){
+        boolean retain=ready.cameraContext!=null&&transientFrameWait(ready.cameraContext,current);
+        if(retain)preparedExperimentStart=ready;
+        else{if(preparedExperimentStart==ready)preparedExperimentStart=null;discardPreparedStart(ready);}
+        if(!retain)experimentStartRequest.cancel();
+        experimentPreparationFailed=false;experimentPreparationError="";
+        cameraPreparationNotice=reason.description();logCameraSetup("start_rejected",reason,current,true);
+        requestExperimentReadinessRefresh();renderAnalysisControls();
+    }
+    private boolean transientFrameWait(PreparationCameraContext captured,CameraSetupReadiness current){
+        return current!=null&&current.reason==CameraSetupReadiness.Reason.NO_FRESH_CAMERA_FRAME
+                &&(captured==null||preparationCameraFailure(captured,current,false)==CameraSetupReadiness.Reason.READY);
+    }
+    /** Only authorizes waiting/preparation. A fresh UI capture is still mandatory before model admission. */
+    private boolean cameraPreparationWait(PreparationCameraContext captured,CameraSetupReadiness current,String inputReason){
+        if(current==null||!inputReason.equals(current.reason.description()))return false;
+        if(captured!=null)return transientFrameWait(captured,current);
+        return current.reason==CameraSetupReadiness.Reason.CAMERA_NOT_BOUND
+                ||current.reason==CameraSetupReadiness.Reason.CAMERA_ROUTE_UNCONFIRMED
+                ||current.reason==CameraSetupReadiness.Reason.ZOOM_NOT_ACKNOWLEDGED
+                ||current.reason==CameraSetupReadiness.Reason.NO_FRESH_CAMERA_FRAME;
+    }
+    private CameraSetupReadiness.Reason preparedCameraFailure(PreparedAnalysisStart ready,CameraSetupReadiness current){
+        CameraSetupReadiness.Reason failure=preparationCameraFailure(ready.cameraContext,current,true);
+        if(failure!=CameraSetupReadiness.Reason.READY)return failure;
+        if(ready.config==null||ready.config.cameraSetup==null)return CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_MISSING;
+        if(!ready.config.cameraSetup.same(ready.cameraContext.confirmation.applied)
+                ||(ready.cameraContext.input!=null)!=(ready.config.tvBboxCrop()!=null))return CameraSetupReadiness.Reason.CAMERA_SETUP_SNAPSHOT_STALE;
+        return CameraSetupReadiness.Reason.READY;
     }
 
     private boolean tvCameraPreparationEnabled(){return uiPreferences!=null&&uiPreferences.getBoolean(SettingsActivity.KEY_EXPERIMENT_MODE_ENABLED,false)
@@ -3625,6 +4235,11 @@ public final class MainActivity extends AppCompatActivity {
         if (researchWasRunning && researchSessions.store() != null) {
             com.example.alpr_v1.experiment.ResearchSessionStore store = researchSessions.store();
             ExperimentSession.Snapshot snapshot = experimentSession.snapshot();
+            if(snapshot.frozenExecutionConfig!=null&&snapshot.frozenExecutionConfig.final180PhotoRoi()!=null)try{
+                AppLog.info(this,"F6_SESSION_CONFIG",new org.json.JSONObject().put("phase","stop_frozen")
+                        .put("session_id",store.sessionId()).put("execution",snapshot.frozenExecutionConfig.toJson())
+                        .put("time_domain","ANDROID_ELAPSED_REALTIME").put("elapsed_nanos",android.os.SystemClock.elapsedRealtimeNanos()).toString());
+            }catch(org.json.JSONException diagnosticFailure){android.util.Log.w("F6_SESSION_CONFIG",diagnosticFailure);}
             MetricsCollector measured = metricsCollector;
             android.content.Context application = getApplicationContext();
             AlprPipeline finishingPipeline = pipeline;
@@ -3632,9 +4247,10 @@ public final class MainActivity extends AppCompatActivity {
             collectionSessionId="";
             retainCaptureGalleryState();
             com.example.alpr_v1.experiment.ResearchSessionViewModel retained = researchSessions;
+            try{
             java.util.concurrent.CompletableFuture<Void> cropPrepared = captureGalleryState.cropPreparationBarrier();
             pipelineInferenceExecutor.execute(() -> {
-                cropPrepared.join();
+                try{cropPrepared.join();
                 finishingPipeline.setResearchCollector(null);
                 finishingPipeline.setResearchExecutionConfig(null);
                 measured.setResearchCollector(null);
@@ -3642,7 +4258,8 @@ public final class MainActivity extends AppCompatActivity {
                         measured.createJsonReport(DeviceProfile.capture(application),new ModelRegistry(application),
                                 new AutoTuneManager(application),snapshot),measured.createCsvReport(),measured.createThermalCsv(),
                         measured.createFrameFlowCsv(),measured.createEventsJsonl(),AppLog.contents(application)),snapshot.frozenExecutionConfig);
-            });
+                }catch(Exception|Error failure){retained.failFinalization(store,failure);}
+            });}catch(RuntimeException|Error failure){retained.failFinalization(store,failure);}
         } else deferPipelineControl(p -> p.setResearchExecutionConfig(null));
         targetStateMachine.setEnabled(true);
         autoZoomController.setEnabled(uiPreferences.getBoolean(
@@ -3718,7 +4335,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showCameraPermissionSettingsDialog() {
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle("Dostęp do kamery")
                 .setMessage(
                         "Dostęp do kamery został wyłączony. "
@@ -3749,6 +4366,8 @@ public final class MainActivity extends AppCompatActivity {
         startActivity(intent);
     }
     private void startPreviewSceneMonitor() {
+        previewSceneHandler.removeCallbacks(ordinaryMemoryMonitor);
+        if(ordinaryDynamicResourcesEnabled()&&cameraStarted)previewSceneHandler.post(ordinaryMemoryMonitor);
         lastPhoneOrientationUiNanos = 0L;
 
         previewSceneHandler.removeCallbacks(
@@ -3802,6 +4421,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean needsPreviewSceneSampling() {
+        if (ordinaryDynamicResourcesEnabled()) return false;
         if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY)
             return autoZoomReturnValidationPending || isAutoZoomHoldingMemory();
         if (pipeline != null && pipeline.isStaticIdle()) return false;
@@ -3822,6 +4442,7 @@ public final class MainActivity extends AppCompatActivity {
 
 
     private void stopPreviewSceneMonitor() {
+        previewSceneHandler.removeCallbacks(ordinaryMemoryMonitor);
 
         previewSceneMonitorRunning =
                 false;
@@ -3850,6 +4471,10 @@ public final class MainActivity extends AppCompatActivity {
                 == com.example.alpr_v1.continuity.SceneContinuityState.STABLE) {
             lastRenderedContinuityState =
                     com.example.alpr_v1.continuity.SceneContinuityState.STABLE;
+            if (ordinaryDynamicResourcesEnabled()) {
+                refreshVehicleIdentityPresentation();
+                return;
+            }
             if (renderSearchControls()) return;
             TargetSnapshot target = targetStateMachine.snapshot();
             if (target != null && target.hasTrack()) {
@@ -4241,7 +4866,7 @@ public final class MainActivity extends AppCompatActivity {
 
         Size requestedCameraSize = experimentModeEnabled ? chooseAnalysisSize() : choosePreviewSize();
         experimentPreviewSize = experimentModeEnabled ? requestedCameraSize : null;
-        boolean allowHighResolution = cameraResolutionCatalog != null
+        boolean allowHighResolution = !ordinaryDynamicResourcesEnabled() && cameraResolutionCatalog != null
                 && cameraResolutionCatalog.isHighResolution(requestedCameraSize);
         cameraController.startPreview(
                 error -> runOnUiThread(() -> {
@@ -4299,13 +4924,14 @@ public final class MainActivity extends AppCompatActivity {
     private final Handler experimentReadinessHandler = new Handler(Looper.getMainLooper());
     private final Runnable experimentReadinessRunnable = new Runnable() {
         @Override public void run() {
-            if (!analysisScreenForeground || !experimentModeEnabled || cameraStarted) return;
+            if (!analysisScreenForeground || cameraStarted || !experimentModeEnabled&&!experimentStartRequest.pending()) return;
             refreshExperimentStartReadiness();
-            if (analysisScreenForeground && experimentModeEnabled && !cameraStarted)
+            if (analysisScreenForeground && !cameraStarted && (experimentModeEnabled||experimentStartRequest.pending()))
                 experimentReadinessHandler.postDelayed(this, 250L);
         }
     };
     private PreparedAnalysisStart preparedExperimentStart;
+    private PreparationCameraContext preparingCameraContext;
     private boolean analysisScreenForeground, experimentPreparationFailed;
     private String experimentPreparationError = "";
     private long prestartThermalSince = -1L;
@@ -4315,7 +4941,7 @@ public final class MainActivity extends AppCompatActivity {
     private long previewRequestGeneration;
     private final java.util.concurrent.atomic.AtomicLong firstFrameAfterStart = new java.util.concurrent.atomic.AtomicLong();
 
-    private enum StartBlocker { READY, FOREGROUND, PERMISSION, PREVIOUS_SESSION, MODELS, CAMERA, THERMAL, ERROR, INPUT_MODE }
+    private enum StartBlocker { READY, FOREGROUND, PERMISSION, PREVIOUS_SESSION, MODELS, CAMERA, THERMAL, ERROR, INPUT_MODE, FOCUS }
     private void onTvSetupEvent(String name,org.json.JSONObject details){
         if (experimentSession.isRunning()) metricsCollector.recordEvent(name,0L,0L,details);
         ResearchExecutionConfig frozen=experimentSession.isRunning()?experimentSession.frozenExecutionConfig():null;
@@ -4328,36 +4954,59 @@ public final class MainActivity extends AppCompatActivity {
     private boolean tvBboxRequested(){return tvCameraPreparationEnabled()
             &&"TV_BBOX_CROP".equals(uiPreferences.getString(SettingsActivity.KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME"));}
     private String tvBboxStartReason(){
-        return tvBboxStartReason(preparedExperimentStart==null?null:preparedExperimentStart.config);
+        return tvBboxStartReason(preparedExperimentStart==null?null:preparedExperimentStart.config,
+                preparedExperimentStart==null?preparingCameraContext:preparedExperimentStart.cameraContext);
     }
     private String tvBboxStartReason(ResearchExecutionConfig prepared){
+        return tvBboxStartReason(prepared,preparedExperimentStart==null?preparingCameraContext:preparedExperimentStart.cameraContext);
+    }
+    private String tvBboxStartReason(ResearchExecutionConfig prepared,PreparationCameraContext captured){
         if(uiPreferences.getBoolean(SettingsActivity.KEY_RESEARCH_AUTOZOOM_ENABLED,false))return "TV_BBOX_REQUIRES_FIXED_ZOOM · wyłącz AZ przed kalibracją";
         if(tvSetup!=null&&tvSetup.editing())return "Zakończ i zatwierdź kalibrację TV";
-        String geometry=tvSetup==null?"Brak aktualnej kalibracji TV":tvSetup.bboxPreparationStatus();
+        CameraSetupReadiness current=currentCameraConfirmation();
+        String cameraReason=current==null?missingCameraReason().description():current.reason.description();
+        if(tvSetup!=null)tvSetup.revalidateForCamera(current);
+        String geometry=tvSetup==null?"Brak aktualnej kalibracji TV":tvSetup.bboxPreparationStatus(current!=null&&current.ready()?current.applied:null,cameraReason);
         if(!"READY".equals(geometry))return geometry;
-        if(cameraController==null||!tvSetup.selectionForInput().cameraSetup.same(cameraController.setupSnapshot()))return "Czekam na potwierdzenie kamery i zoomu";
+        if(current==null||!current.ready())return cameraReason;
         if(prepared!=null){
             try{prepared.requireSessionInputReady();}catch(RuntimeException error){return "Nieprawidłowa zamrożona konfiguracja TV";}
-            if(!tvSetup.matchesInputSelection(prepared.tvBboxCrop()))return "Kalibracja lub geometria TV zmieniła się · przygotuj START ponownie";
+            if(!tvSetup.matchesPreparedGeometry(prepared.tvBboxCrop()))return "Kalibracja lub geometria TV zmieniła się · przygotuj START ponownie";
+            boolean f6=uiPreferences.getBoolean(com.example.alpr_v1.experiment.Final180PhotoRoi.ENABLED,false);
+            if(f6!=(prepared.final180PhotoRoi()!=null))return "Zmieniono profil F6 · przygotuj START ponownie";
+            if(f6)try{
+                // The worker already verified/rebound the approved source coordinates. The stored approval
+                // intentionally retains its original TV digest; it is not this session's projection.
+                if(captured==null||!captured.f6Enabled||captured.input==null||!captured.input.digest.equals(prepared.tvBboxCrop().digest)
+                        ||!captured.photoRecord.equals(uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,""))
+                        ||!captured.photoApprovalContext.equals(uiPreferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,""))
+                        ||!new org.json.JSONObject(captured.tvApproval).getString("digest_sha256").equals(new org.json.JSONObject(tvSetup.approvedTvRecord()).getString("digest_sha256")))
+                    return "Zmieniono zatwierdzenie pola fotografii F6 · przygotuj START ponownie";
+            }catch(Exception invalid){return "F6: wskaż aktualny obszar fotografii";}
         }
         return "";
     }
 
     private void requestExperimentStart() {
-        if(tvBboxRequested()&&!tvBboxStartReason().isEmpty()){experimentStartRequest.cancel();renderAnalysisControls();return;}
+        if(sessionWriteBusy()&&!experimentStartRequest.pending()){renderAnalysisControls();return;}
+        PreparationCameraContext context=preparedExperimentStart!=null?preparedExperimentStart.cameraContext:preparingCameraContext;
+        String inputReason=tvBboxRequested()?tvBboxStartReason():"";
+        if(!inputReason.isEmpty()&&!cameraPreparationWait(context,currentCameraConfirmation(),inputReason)){
+            AppLog.info(this,"RESEARCH_START","event=start_rejected_before_preparation reason="+inputReason);
+            experimentStartRequest.cancel();renderAnalysisControls();return;
+        }
         if (cameraStarted || experimentSession.isRunning()) return;
         if (tvSetup != null && tvSetup.editing()) return;
-        if (researchSessions.finalizing()) {
-            renderAnalysisControls();
-            return;
-        }
         if (preparedExperimentStart != null && (preparedExperimentStart.settingsRevision
                 != uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0)
                 || preparedExperimentStart.prepared.timer != experimentTimerConfig
                 || preparedExperimentStart.prepared.thermal != experimentThermalConfig
                 || preparedExperimentStart.store.state() != com.example.alpr_v1.experiment.ResearchSessionStore.State.PREPARED))
             invalidatePreparedExperiment();
-        experimentStartRequest.request();
+        boolean newRequest=!experimentStartRequest.pending();
+        long requestGeneration=experimentStartRequest.request();
+        if(newRequest)AppLog.info(this,"RESEARCH_START","event=start_requested request_generation="+requestGeneration);
+        if(newRequest)analysisStartRequestedElapsedNanos=android.os.SystemClock.elapsedRealtimeNanos();
         experimentPreviewPaused = false;
         experimentPreparationFailed = false;
         experimentPreparationError = "";
@@ -4371,7 +5020,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void cancelExperimentStart() {
+        AppLog.info(this,"RESEARCH_START","event=start_cancelled request_generation="+experimentStartRequest.pendingGeneration());
         experimentStartRequest.cancel();
+        waitingForThermalStart=false;
+        experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
         invalidatePreparedExperiment();
         cancelAnalysisPreparation();
         experimentPreviewPaused = true;
@@ -4383,15 +5035,23 @@ public final class MainActivity extends AppCompatActivity {
 
     private void requestExperimentReadinessRefresh() {
         experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
-        if (analysisScreenForeground && experimentModeEnabled && !cameraStarted)
+        if (analysisScreenForeground && !cameraStarted && (experimentModeEnabled||experimentStartRequest.pending()))
             experimentReadinessHandler.post(experimentReadinessRunnable);
     }
 
     private void refreshExperimentStartReadiness() {
-        if (!analysisScreenForeground || !experimentModeEnabled || cameraStarted) return;
+        if (!analysisScreenForeground || cameraStarted) return;
+        if (!experimentModeEnabled) {
+            if (!experimentStartRequest.pending() || experimentStartRequest.waitingForPermission()) return;
+            if (researchSessions.finalizing()) {
+                livePresentation.showUserStatus(LivePresentationController.State.PREVIEW,"Czekam na zapis poprzedniej sesji","Stop anuluje uruchomienie");
+            } else if (!analysisStartGate.preparing()) startCamera(true);
+            renderAnalysisControls();
+            return;
+        }
         ensureExperimentPrepared();
         updatePrestartThermalReadiness();
-        if (experimentStartRequest.consumeIfReady(isExperimentStartReady())) {
+        if (experimentStartRequest.pending() && !experimentStartRequest.waitingForPermission() && isExperimentStartReady()) {
             PreparedAnalysisStart ready = preparedExperimentStart;
             preparedExperimentStart = null;
             experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
@@ -4423,23 +5083,40 @@ public final class MainActivity extends AppCompatActivity {
         }
         String status, hint;
         switch (blocker) {
-            case INPUT_MODE: status="TV BBOX · START zablokowany";hint=tvBboxStartReason();break;
+            case INPUT_MODE:
+                hint=tvBboxStartReason();
+                PreparationCameraContext context=preparedExperimentStart!=null?preparedExperimentStart.cameraContext:preparingCameraContext;
+                boolean cameraWait=cameraPreparationWait(context,currentCameraConfirmation(),hint);
+                com.example.alpr_v1.camera.CameraSetupReadiness.Reason inputCameraReason=com.example.alpr_v1.ui.CameraOperatorPresentation.reason(hint);
+                if(cameraWait||inputCameraReason!=null){
+                    com.example.alpr_v1.ui.CameraOperatorPresentation cameraText=com.example.alpr_v1.ui.CameraOperatorPresentation.from(this,
+                            inputCameraReason,cameraPreviewActive,experimentPreviewPaused,experimentStartRequest.pending());
+                    status=cameraText.primary;hint=cameraText.hint;
+                }else{status=getString(R.string.camera_operator_tv_input);hint=com.example.alpr_v1.ui.CameraOperatorPresentation.readableDetail(this,hint);}
+                break;
             case READY:
                 status=!analysisStartButton.isEnabled()?"START zablokowany":experimentStartRequest.pending()?"Uruchamianie eksperymentu":tvBboxRequested()?"TV BBOX · próba nieoficjalna":"Gotowe do START";
-                hint=!analysisStartButton.isEnabled()?"Gotowość zmieniła się · sprawdź bieżący stan": "Timer i analiza ruszą po kliknięciu";
+                hint=!analysisStartButton.isEnabled()?"Gotowość zmieniła się · sprawdź bieżący stan": experimentTimerConfig.enabled()?"Timer i analiza ruszą po kliknięciu":"Analiza ruszy po kliknięciu";
                 break;
             case PERMISSION: status = "Potrzebny dostęp do kamery"; hint = "START otworzy obsługę uprawnienia"; break;
-            case PREVIOUS_SESSION: status = "Trwa przygotowanie lub zapis poprzedniej sesji"; hint = "Czekam na zakończenie zapisu"; break;
-            case MODELS: status = "Przygotowanie modeli i zapisu…"; hint = ""; break;
-            case CAMERA: status = experimentPreviewPaused ? "Podgląd jest zatrzymany" : "Czekam na klatki kamery";
-                hint = experimentPreviewPaused ? "START wznowi kamerę i uruchomi eksperyment" : ""; break;
+            case PREVIOUS_SESSION: status = "Trwa przygotowanie lub zapis poprzedniej sesji"; hint = researchSessions.operationDescription(); break;
+            case FOCUS: status=cameraController.focusDescription();hint="Anuluj żądanie AF lub ustaw ostrość ponownie przed START";break;
+            case MODELS:
+                status=analysisStartGate.preparing()?"Przygotowanie modeli i zapisu…":"START przygotuje modele i zapis";
+                hint="";break;
+            case CAMERA:
+                CameraSetupReadiness observedCamera=currentCameraConfirmation();
+                com.example.alpr_v1.ui.CameraOperatorPresentation cameraText=com.example.alpr_v1.ui.CameraOperatorPresentation.from(this,
+                        observedCamera==null?com.example.alpr_v1.ui.CameraOperatorPresentation.reason(cameraPreparationNotice):observedCamera.reason,
+                        cameraPreviewActive,experimentPreviewPaused,experimentStartRequest.pending());
+                status=cameraText.primary;hint=cameraText.hint;break;
             case THERMAL: status = "Czekam na warunki termiczne"; hint = "Sprawdzam temperaturę i jej stabilizację"; break;
             case ERROR: status = "Nie przygotowano eksperymentu";
-                hint = experimentPreparationError + " · START ponowi próbę"; break;
+                hint = com.example.alpr_v1.ui.CalibrationOperatorText.preparationMessage(this,experimentPreparationError) + " · START ponowi próbę"; break;
             default: return;
         }
         if (experimentStartRequest.pending()) {
-            hint = "Eksperyment rozpocznie się po uzyskaniu gotowości · Anuluj przerwie oczekiwanie";
+            hint = (blocker==StartBlocker.READY?"":hint.isEmpty()?"":hint+" · ")+"Stop anuluje uruchomienie";
         }
         livePresentation.showUserStatus(blocker == StartBlocker.ERROR ? LivePresentationController.State.ERROR
                 : LivePresentationController.State.PREVIEW, status, hint);
@@ -4459,13 +5136,34 @@ public final class MainActivity extends AppCompatActivity {
         if (cameraPreviewActive && !requested.equals(experimentPreviewSize)) stopCameraPreview(false);
         if (!cameraPreviewActive) startCameraPreview();
         if(tvSetup!=null&&tvSetup.editing())return;
-        if(tvBboxRequested()&&!tvBboxStartReason().isEmpty()){
-            if(preparedExperimentStart!=null||analysisStartGate.preparing()||experimentStartRequest.pending())invalidatePreparedExperiment();
+        CameraSetupReadiness current=tvCameraPreparationEnabled()?currentCameraConfirmation():null;
+        PreparationCameraContext existing=preparedExperimentStart!=null?preparedExperimentStart.cameraContext:preparingCameraContext;
+        if(existing!=null){
+            CameraSetupReadiness.Reason changed=preparationCameraFailure(existing,current,false);
+            if(changed!=CameraSetupReadiness.Reason.READY){
+                cameraPreparationNotice=changed.description();logCameraSetup("preparation_invalidated",changed,current,true);invalidatePreparedExperiment();
+            }
+        }
+        String inputReason=tvBboxRequested()?tvBboxStartReason():"";
+        if(!inputReason.isEmpty()){
+            boolean transientCamera=cameraPreparationWait(existing,current,inputReason);
+            if(transientCamera){cameraPreparationNotice=current.reason.description();}
+            else if(preparedExperimentStart!=null||analysisStartGate.preparing()||experimentStartRequest.pending())invalidatePreparedExperiment();
             return;
         }
-        if(tvCameraPreparationEnabled()&&cameraController.setupSnapshot()==null)return;
-        if(preparedExperimentStart!=null&&!cameraSetupMatches(preparedExperimentStart.config))invalidatePreparedExperiment(false);
-        if (preparedExperimentStart == null && !analysisStartGate.preparing()
+        if(tvCameraPreparationEnabled()&&(current==null||!current.ready())){
+            if(!cameraPreparationWait(existing,current,current==null?"":current.reason.description()))experimentStartRequest.cancel();
+            cameraPreparationNotice=current==null?missingCameraReason().description():current.reason.description();return;
+        }
+        cameraPreparationNotice="";
+        if(focusBlocksF6Start())return;
+        if(preparedExperimentStart!=null&&tvCameraPreparationEnabled()
+                &&(preparedExperimentStart.config==null||preparedExperimentStart.config.cameraSetup==null
+                ||!preparedExperimentStart.config.cameraSetup.same(current.applied)))invalidatePreparedExperiment();
+        // Preview/readiness, history and onResume are passive. Only an explicit START
+        // may allocate a durable session; finishing the previous one is not a request.
+        if (experimentStartRequest.pending() && !experimentStartRequest.waitingForPermission()
+                && preparedExperimentStart == null && !analysisStartGate.preparing()
                 && !experimentPreparationFailed && researchSessions.ready()) prepareCameraStart(false);
     }
 
@@ -4478,10 +5176,17 @@ public final class MainActivity extends AppCompatActivity {
         if (experimentStartRequest.waitingForPermission()
                 || ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
             return StartBlocker.PERMISSION;
-        if (researchSessions.finalizing()) return StartBlocker.PREVIOUS_SESSION;
+        if (sessionWriteBusy()&&!analysisStartGate.preparing()) return StartBlocker.PREVIOUS_SESSION;
+        if(focusBlocksF6Start())return StartBlocker.FOCUS;
         if(tvBboxRequested()&&!tvBboxStartReason().isEmpty())return StartBlocker.INPUT_MODE;
         if (experimentPreparationFailed) return StartBlocker.ERROR;
         if (experimentPreviewPaused || !cameraPreviewActive || cameraController == null) return StartBlocker.CAMERA;
+        if(tvCameraPreparationEnabled()){
+            CameraSetupReadiness current=currentCameraConfirmation();
+            if(current==null||!current.ready()){
+                cameraPreparationNotice=current==null?missingCameraReason().description():current.reason.description();return StartBlocker.CAMERA;
+            }
+        }
         PreparedAnalysisStart ready = preparedExperimentStart;
         if (ready == null) return !analysisStartGate.preparing() && !researchSessions.ready()
                 ? StartBlocker.PREVIOUS_SESSION : StartBlocker.MODELS;
@@ -4502,6 +5207,7 @@ public final class MainActivity extends AppCompatActivity {
     private void invalidatePreparedExperiment(boolean cancelStartRequest) {
         if (cancelStartRequest) experimentStartRequest.cancel();
         if (analysisStartGate.preparing()) analysisStartGate.cancel();
+        preparingCameraContext=null;
         PreparedAnalysisStart ready = preparedExperimentStart;
         preparedExperimentStart = null;
         experimentPreparationFailed = false;
@@ -4516,28 +5222,57 @@ public final class MainActivity extends AppCompatActivity {
         final ExperimentSession.Prepared prepared;
         final com.example.alpr_v1.experiment.ResearchSessionStore store;
         final int settingsRevision;
+        final PreparationCameraContext cameraContext;
+        TimerConfig timer=TimerConfig.disabled();
         long startWall, startElapsed, startMonotonic;
         PreparedAnalysisStart(ResearchExecutionConfig config, ExperimentSession.Prepared prepared,
-                com.example.alpr_v1.experiment.ResearchSessionStore store, int revision) {
+                com.example.alpr_v1.experiment.ResearchSessionStore store, int revision,PreparationCameraContext cameraContext) {
             this.config = config; this.prepared = prepared; this.store = store;
             settingsRevision = revision;
+            this.cameraContext=cameraContext;
         }
     }
 
     private void startCamera(boolean beginNewMeasurement) {
+        if(ordinaryDynamicResourcesEnabled()) {
+            if(ordinaryMemoryPaused && !beginNewMeasurement)return;
+            if(ordinaryMemoryCritical()) { pauseOrdinaryForMemory(); return; }
+            if(beginNewMeasurement)ordinaryMemoryPaused=false;
+        }
         if (cameraStarted) return;
         if (beginNewMeasurement && experimentModeEnabled) { requestExperimentStart(); return; }
         if (analysisStartGate.preparing()) return;
-        if (!beginNewMeasurement) { startPreparedCamera(false, null); return; }
+        if (!beginNewMeasurement) {
+            if (!researchSessions.timerState().running || !metricsCollector.isMeasurementSessionActive()) return;
+            ResearchExecutionConfig frozen=experimentSession.isRunning()?experimentSession.frozenExecutionConfig():null;
+            if(experimentSession.isRunning()&&!experimentSession.admitsWork(android.os.SystemClock.elapsedRealtimeNanos()))return;
+            startPreparedCamera(false,new PreparedAnalysisStart(frozen,null,null,knownSettingsRevision,null));
+            return;
+        }
+        if (!experimentStartRequest.pending()) {
+            experimentStartRequest.request();
+            analysisStartRequestedElapsedNanos=android.os.SystemClock.elapsedRealtimeNanos();
+        }
+        if(researchSessions.finalizing()) {renderAnalysisControls();requestExperimentReadinessRefresh();return;}
         prepareCameraStart(true);
     }
 
     private void prepareCameraStart(boolean startWhenReady) {
+        final long requestGeneration=experimentStartRequest.pendingGeneration();
+        if(requestGeneration<0L || analysisStartGate.preparing())return;
         if (experimentModeEnabled && !researchSessions.ready()) {
             Toast.makeText(this, "Trwa przygotowanie lub zapis poprzedniej sesji", Toast.LENGTH_LONG).show();
             return;
         }
+        final PreparationCameraContext capturedCamera;
+        try{capturedCamera=capturePreparationCameraContext();}
+        catch(CameraPreparationWait wait){
+            if(wait.reason!=CameraSetupReadiness.Reason.NO_FRESH_CAMERA_FRAME)experimentStartRequest.cancel();
+            experimentPreparationFailed=false;experimentPreparationError="";cameraPreparationNotice=wait.getMessage();
+            logCameraSetup("preparation_wait",wait.reason,null,true);renderAnalysisControls();return;
+        }
         final long ticket = analysisStartGate.begin();
+        preparingCameraContext=capturedCamera;
         final int revision = uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0);
         final boolean research = experimentModeEnabled;
         final TimerConfig timer = experimentTimerConfig;
@@ -4550,10 +5285,14 @@ public final class MainActivity extends AppCompatActivity {
             com.example.alpr_v1.experiment.ResearchSessionStore store = null;
             try {
                 if (!analysisStartGate.isCurrent(ticket)) return;
+                if (!experimentStartRequest.isCurrent(requestGeneration))
+                    throw new java.util.concurrent.CancellationException("START request no longer current");
                 long began = android.os.SystemClock.elapsedRealtime();
-                ResearchExecutionConfig config = research ? buildResearchExecutionConfig() : null;
+                ResearchExecutionConfig config = research ? buildResearchExecutionConfig(capturedCamera) : null;
                 ExperimentSession.Prepared prepared = null;
                 if (research) {
+                    if(!analysisStartGate.isCurrent(ticket)||!experimentStartRequest.isCurrent(requestGeneration))
+                        throw new java.util.concurrent.CancellationException("START cancelled before session allocation");
                     String defaultSeries = "ROI-" + new SimpleDateFormat("yyyyMMdd", Locale.ROOT).format(new Date());
                     ExperimentIdentity identity = new ExperimentIdentity(
                             uiPreferences.getString(SettingsActivity.KEY_EXPERIMENT_SERIES_ID, defaultSeries),
@@ -4562,30 +5301,44 @@ public final class MainActivity extends AppCompatActivity {
                             uiPreferences.getString(SettingsActivity.KEY_EXPERIMENT_NOTES, ""), config.autoZoomEnabled, maximumZoom);
                     prepared = experimentSession.prepare(config.experimentType, config.variant, timer, thermal, identity, config);
                     store = researchSessions.prepare(prepared);
+                    AppLog.info(this,"RESEARCH_START","event=session_prepared request_generation="+requestGeneration
+                            +" preparation_ticket="+ticket+" session_id="+prepared.sessionId);
                 }
                 pipeline.setResearchExecutionConfig(config);
                 pipeline.setResearchCollector(store);
                 pipeline.setSceneHandlingMode(config == null ? effectiveSceneHandlingMode() : config.sceneHandlingMode);
                 pipeline.prepareModels();
                 if (!requiredRecognitionModelsAvailable()) throw new IllegalStateException("Brak wymaganych modeli MT/MZ");
-                if (!analysisStartGate.isCurrent(ticket)
-                        || revision != uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0))
+                if (!analysisStartGate.isCurrent(ticket)||!experimentStartRequest.isCurrent(requestGeneration))
+                    throw new java.util.concurrent.CancellationException("START cancelled during preparation");
+                if (revision != uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0))
                     throw new IllegalStateException("Przygotowanie anulowane lub ustawienia zmienione");
                 pipeline.finishCameraTransform();
                 pipeline.resetTracking();
                 if (store != null) store.awaitPreparationWrites();
-                PreparedAnalysisStart ready = new PreparedAnalysisStart(config, prepared, store, revision);
+                PreparedAnalysisStart ready = new PreparedAnalysisStart(config, prepared, store, revision,capturedCamera);
+                ready.timer=timer;
                 android.util.Log.i("ALPR_PIPELINE_START", "preparation_ready_ms="
                         + (android.os.SystemClock.elapsedRealtime() - began));
                 runOnUiThread(() -> {
-                    if (!analysisStartGate.isCurrent(ticket) || isFinishing() || isDestroyed()
+                    if (!analysisStartGate.isCurrent(ticket) || !experimentStartRequest.isCurrent(requestGeneration)
+                            || isFinishing() || isDestroyed()
                             || revision != uiPreferences.getInt(SettingsActivity.KEY_REVISION, 0)) {
                         discardPreparedStart(ready);
-                        if (analysisStartGate.complete(ticket)) renderAnalysisControls();
+                        if (analysisStartGate.complete(ticket)){preparingCameraContext=null;renderAnalysisControls();}
                         return;
                     }
                     analysisStartGate.complete(ticket);
-                    if (startWhenReady) startPreparedCamera(true, ready);
+                    preparingCameraContext=null;
+                    if(research&&tvCameraPreparationEnabled()){
+                        CameraSetupReadiness current=currentCameraConfirmation();
+                        CameraSetupReadiness.Reason failure=preparedCameraFailure(ready,current);
+                        if(failure!=CameraSetupReadiness.Reason.READY){rejectPreparedCamera(ready,failure,current);return;}
+                    }
+                    if (startWhenReady) {
+                        if(experimentStartRequest.pending()&&!experimentStartRequest.waitingForPermission())startPreparedCamera(true, ready);
+                        else discardPreparedStart(ready);
+                    }
                     else {
                         preparedExperimentStart = ready;
                         livePresentation.showUserStatus(LivePresentationController.State.PREVIEW,
@@ -4596,18 +5349,35 @@ public final class MainActivity extends AppCompatActivity {
                         requestExperimentReadinessRefresh();
                     } else renderAnalysisControls();
                 });
+            } catch (java.util.concurrent.CancellationException cancelled) {
+                if(store!=null){
+                    store.abortPreparation("start_cancelled_before_camera");
+                    pipeline.setResearchCollector(null);
+                    pipeline.setResearchExecutionConfig(null);
+                }
+                runOnUiThread(()->{
+                    if(analysisStartGate.complete(ticket)){
+                        preparingCameraContext=null;renderAnalysisControls();
+                    }
+                });
             } catch (Exception | LinkageError error) {
+                if(capturedCamera!=null&&capturedCamera.f6Enabled)AppLog.error(this,"F6_SESSION_PREPARATION",
+                        "START preparation failed; captured TV="+(capturedCamera.input==null?"MISSING":capturedCamera.input.digest),error);
                 if (store != null) store.abortPreparation("start_preparation_failed: " + error.getClass().getSimpleName());
                 pipeline.setResearchCollector(null);
                 pipeline.setResearchExecutionConfig(null);
                 runOnUiThread(() -> {
                     if (!analysisStartGate.complete(ticket) || isDestroyed()) return;
-                    experimentPreparationFailed = !startWhenReady;
-                    experimentPreparationError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-                    if (research) experimentStartRequest.cancel();
+                    preparingCameraContext=null;
+                    if(!experimentStartRequest.isCurrent(requestGeneration)){renderAnalysisControls();return;}
+                    boolean cameraWait=error instanceof CameraPreparationWait;
+                    experimentPreparationFailed = !startWhenReady&&!cameraWait;
+                    experimentPreparationError = cameraWait?"":error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                    if(cameraWait)cameraPreparationNotice=error.getMessage();
+                    experimentStartRequest.cancel();
                     renderAnalysisControls();
-                    livePresentation.showState(LivePresentationController.State.ERROR, "Nie przygotowano analizy");
-                    Toast.makeText(this, "START zablokowany: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                    if(!cameraWait)livePresentation.showState(LivePresentationController.State.ERROR, "Nie przygotowano analizy");
+                    Toast.makeText(this, "START zablokowany: " + com.example.alpr_v1.ui.CalibrationOperatorText.preparationError(this,error.getMessage()), Toast.LENGTH_LONG).show();
                 });
             }
         });
@@ -4615,6 +5385,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private void discardPreparedStart(PreparedAnalysisStart ready) {
         Runnable discard = () -> {
+            if(ready.store!=null)AppLog.info(this,"RESEARCH_START","event=prepared_session_discarded session_id="+ready.store.sessionId()
+                    +" reason=start_cancelled_before_camera");
             if (ready.store != null) ready.store.abortPreparation("start_cancelled_before_camera");
             if (pipeline.researchExecutionConfig() == ready.config) {
                 pipeline.setResearchCollector(null);
@@ -4629,6 +5401,7 @@ public final class MainActivity extends AppCompatActivity {
     private void cancelAnalysisPreparation() {
         if (!analysisStartGate.preparing()) return;
         analysisStartGate.cancel();
+        preparingCameraContext=null;
         renderAnalysisControls();
         livePresentation.showUserStatus(LivePresentationController.State.SEARCHING,
                 "Przygotowanie anulowane", "");
@@ -4636,10 +5409,17 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startPreparedCamera(boolean beginNewMeasurement, PreparedAnalysisStart ready) {
         if (cameraStarted) return;
-        if(beginNewMeasurement&&ready.config!=null&&ready.config.tvBboxCrop()!=null&&!tvBboxStartReason(ready.config).isEmpty()){
-            discardPreparedStart(ready);experimentStartRequest.cancel();requestExperimentReadinessRefresh();renderAnalysisControls();return;
+        if(beginNewMeasurement&&ready.config!=null&&"roi_budget".equals(ready.config.experimentType)){
+            CameraSetupReadiness current=currentCameraConfirmation();
+            CameraSetupReadiness.Reason failure=preparedCameraFailure(ready,current);
+            if(failure!=CameraSetupReadiness.Reason.READY){rejectPreparedCamera(ready,failure,current);return;}
         }
-        if(beginNewMeasurement&&!cameraSetupMatches(ready.config)){invalidatePreparedExperiment();requestExperimentReadinessRefresh();return;}
+        if(beginNewMeasurement&&ready.config!=null&&ready.config.tvBboxCrop()!=null&&!tvBboxStartReason(ready.config,ready.cameraContext).isEmpty()){
+            CameraSetupReadiness current=currentCameraConfirmation();
+            if(transientFrameWait(ready.cameraContext,current))rejectPreparedCamera(ready,current.reason,current);
+            else {discardPreparedStart(ready);experimentStartRequest.cancel();requestExperimentReadinessRefresh();renderAnalysisControls();}
+            return;
+        }
         if(!beginNewMeasurement&&ready.config!=null&&ready.config.cameraSetup!=null)
             cameraController.apply(ready.config.cameraSetup.selection,ready.config.cameraSetup.zoomRatio);
         if(ready.config!=null&&ready.config.cameraSetup!=null)currentCameraZoomRatio=ready.config.cameraSetup.zoomRatio;
@@ -4663,6 +5443,9 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (beginNewMeasurement) {
             if (!beginAnalysisMeasurement(ready)) return;
+            experimentStartRequest.consumeIfReady(true);
+            if(analysisStartRequestedElapsedNanos>0L)android.util.Log.i("ALPR_PIPELINE_START",
+                    "request_to_measurement_ms="+(ready.startElapsed-analysisStartRequestedElapsedNanos)/1_000_000L);
         }
         cameraPreviewActive = false;
         previewView.setVisibility(View.VISIBLE);
@@ -4757,7 +5540,7 @@ public final class MainActivity extends AppCompatActivity {
                 chooseAnalysisSize();
 
         boolean allowHighResolution =
-                cameraResolutionCatalog != null
+                !ordinaryDynamicResourcesEnabled() && cameraResolutionCatalog != null
                         && cameraResolutionCatalog
                         .isHighResolution(
                                 requestedCameraSize
@@ -4777,6 +5560,7 @@ public final class MainActivity extends AppCompatActivity {
         });
         cameraController.start(
                 (image, cameraFrameStamp) -> {
+                    if(!cameraAnalysisAdmitted(controlsGeneration))return;
                     if (collectionFrameSeen.compareAndSet(false, true)) {
                         runOnUiThread(() -> onNormalAnalysisFrame(controlsGeneration));
                     }
@@ -4810,10 +5594,24 @@ public final class MainActivity extends AppCompatActivity {
                             );
                     final long sourceTimestampNanos =
                             sourceFrameStamp.sourceTimestampNanos;
+                    final LumaFrame candidateLuma=latestCameraLuma;
+                    final LumaFrame inferenceSourceLuma=ordinaryDynamicResourcesEnabled()&&candidateLuma!=null
+                            &&candidateLuma.sourceSequence==sourceFrameStamp.sourceSequence
+                            &&candidateLuma.timestampNanos==sourceTimestampNanos?candidateLuma:null;
                     final CameraImageConverter.Result conversion;
+                    final com.example.alpr_v1.camera.BitmapMemoryBudget.Lease sourceLease;
+                    if(ordinaryDynamicResourcesEnabled()) {
+                        dynamicResourcePolicy();
+                        sourceLease=ordinaryBitmapBudget.acquire(12L*image.getWidth()*image.getHeight());
+                        if(sourceLease==null) { pipelineFrameInFlight.set(false); return; }
+                    } else sourceLease=null;
                     try {
                         conversion = CameraImageConverter.convert(image);
                     } catch (RuntimeException | OutOfMemoryError conversionError) {
+                        if(sourceLease!=null)sourceLease.close();
+                        if(conversionError instanceof OutOfMemoryError && ordinaryDynamicResourcesEnabled()) {
+                            pipelineFrameInFlight.set(false);runOnUiThread(this::pauseOrdinaryForMemory);return;
+                        }
                         if(sceneEvidence!=null)sceneEvidence.captureMissing(sceneEvidenceTicket,"source_frame_unavailable");
                         ResearchExecutionConfig failedInput=pipeline.researchExecutionConfig();
                         if(failedInput!=null&&failedInput.tvBboxCrop()!=null&&sceneEvidenceStore!=null&&sceneEvidenceStore.tvBboxEvidence()!=null){
@@ -4845,7 +5643,7 @@ public final class MainActivity extends AppCompatActivity {
                         pipelineInferenceExecutor.execute(() -> {
                             com.example.alpr_v1.setup.TvBboxCrop.Frame tvInput=null;
                             try {
-                    if (!cameraStarted || !pipeline.researchWorkAdmitted()) return;
+                    if (!cameraAnalysisAdmitted(controlsGeneration) || !pipeline.researchWorkAdmitted()) return;
                     if (experimentSession.isRunning() && researchSessions.store() != null
                             && !researchSessions.store().accepting()) return;
 
@@ -4860,6 +5658,7 @@ public final class MainActivity extends AppCompatActivity {
                             cameraMotionMonitor.magnitude()
                     );
                     pipeline.setCurrentCameraZoomRatio(currentCameraZoomRatio);
+                    if(ordinaryDynamicResourcesEnabled())pipeline.setDynamicBitmapBudget(ordinaryBitmapBudget);
 
 
                     ResearchExecutionConfig inputConfig=pipeline.researchExecutionConfig();
@@ -4896,7 +5695,7 @@ public final class MainActivity extends AppCompatActivity {
                                                 autoZoomController.state()
                                                 == AutoZoomController.State.ZOOMED_RETRY;
                                         runOnUiThread(() -> {
-                                            if (!cameraStarted
+                                            if (!cameraAnalysisAdmitted(controlsGeneration)
                                                     || !previewPresentationBarrier.permits(
                                                             presentationGenerationAtStart
                                                     )
@@ -4938,25 +5737,12 @@ public final class MainActivity extends AppCompatActivity {
                                                             + " transform="
                                                             + sourceStamp.cameraTransformGeneration
                                             );
-                                            if (zoomedMtStage) {
-                                                presentZoomedMtStage(
-                                                        overlayItems,
-                                                        sourceWidth,
-                                                        sourceHeight,
-                                                        sourceStamp
-                                                );
-                                            } else {
-                                                presentScanMtStage(
-                                                        overlayItems,
-                                                        sourceWidth,
-                                                        sourceHeight,
-                                                        sourceStamp
-                                                );
-                                            }
+                                            presentIntermediateGeometryStage(overlayItems,sourceWidth,sourceHeight,
+                                                    sourceStamp,inferenceSourceLuma,zoomedMtStage);
                                         });
                                     },
                                     (score, changedFraction) -> runOnUiThread(() -> {
-                                        if (!cameraStarted
+                                        if (!cameraAnalysisAdmitted(controlsGeneration)
                                                 || sceneGenerationAtStart
                                                 != uiSceneGeneration.get()
                                                 || transformGenerationAtStart
@@ -5010,7 +5796,7 @@ public final class MainActivity extends AppCompatActivity {
                      * Takiego wyniku nie wolno ani pokazać,
                      * ani zapisać jako crop.
                      */
-                    if (!cameraStarted
+                    if (!cameraAnalysisAdmitted(controlsGeneration)
                             || !previewPresentationBarrier.permits(
                                     presentationGenerationAtStart
                             )
@@ -5053,7 +5839,7 @@ public final class MainActivity extends AppCompatActivity {
                                          * Generacja mogła zmienić się również
                                          * pomiędzy post() a wykonaniem callbacku UI.
                                          */
-                                        if (!cameraStarted
+                                        if (!cameraAnalysisAdmitted(controlsGeneration)
                                                 || !previewPresentationBarrier.permits(
                                                         presentationGenerationAtStart
                                                 )
@@ -5071,13 +5857,12 @@ public final class MainActivity extends AppCompatActivity {
                                             );
                                             return;
                                         }
-                                        if (presentResultIfCurrent(
-                                                result,
-                                                observationNanos
-                                        )) {
+                                        presentingSourceLuma=inferenceSourceLuma;
+                                        presentingSourceStamp=result.continuityStamp();
+                                        try { if (presentResultIfCurrent(result,observationNanos)) {
                                             metricsCollector
                                                     .finalResultDispatchAccepted();
-                                        }
+                                        } } finally {presentingSourceLuma=null;presentingSourceStamp=null;}
 
                                     } finally {
 
@@ -5097,7 +5882,7 @@ public final class MainActivity extends AppCompatActivity {
                                          * Stara scena nie może również trafić
                                          * do kolekcji cropów.
                                          */
-                                        if (!cameraStarted
+                                        if (!cameraAnalysisAdmitted(controlsGeneration)
                                                 || !previewPresentationBarrier.permits(
                                                         presentationGenerationAtStart
                                                 )
@@ -5133,17 +5918,24 @@ public final class MainActivity extends AppCompatActivity {
 
                         result.close();
                     }
+                            } catch(OutOfMemoryError memoryError) {
+                                if(!ordinaryDynamicResourcesEnabled())throw memoryError;
+                                ordinaryMemoryPaused=true;
+                                android.util.Log.e("ALPR_DYNAMIC_RESOURCES","inference_memory_exhausted",memoryError);
+                                runOnUiThread(this::pauseOrdinaryForMemory);
                             } finally {
                                 if(tvInput!=null)tvInput.close();
                                 if (!pipelineBitmap.isRecycled()) {
                                     pipelineBitmap.recycle();
                                 }
-                                pipelineFrameInFlight.set(false);
+                                if(sourceLease!=null)sourceLease.close();
+                                if(!queuePendingDynamicMz(controlsGeneration))pipelineFrameInFlight.set(false);
                             }
                         });
                     } catch (RuntimeException dispatchError) {
                         if (!pipelineBitmap.isRecycled()) pipelineBitmap.recycle();
                         pipelineFrameInFlight.set(false);
+                        if(sourceLease!=null)sourceLease.close();
                         throw dispatchError;
                     }
                 },
@@ -5193,6 +5985,12 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private boolean cameraAnalysisAdmitted(long generation) {
+        return cameraStarted && generation==analysisControlGeneration
+                && (!ordinaryMemoryPaused || !ordinaryDynamicResourcesEnabled())
+                && metricsCollector.isMeasurementSessionActive() && pipeline.researchWorkAdmitted();
+    }
+
     private void handleTvBboxFrameFailure(Bitmap frame,ContinuityStamp stamp,RuntimeException error){
         com.example.alpr_v1.experiment.ResearchSessionStore store=researchSessions.store();
         if(store!=null&&store.tvBboxEvidence()!=null){
@@ -5207,6 +6005,104 @@ public final class MainActivity extends AppCompatActivity {
         return chooseAnalysisSize(scanActive);
     }
 
+    private boolean ordinaryDynamicResourcesEnabled() {
+        return !experimentModeEnabled && (pipeline==null || pipeline.researchExecutionConfig()==null)
+                && effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY;
+    }
+
+    private synchronized com.example.alpr_v1.camera.OrdinaryDynamicResourcePolicy dynamicResourcePolicy() {
+        if(ordinaryResourcePolicy==null) {
+            android.app.ActivityManager manager=(android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo memory=new android.app.ActivityManager.MemoryInfo();
+            if(manager!=null)manager.getMemoryInfo(memory);
+            ordinaryResourcePolicy=new com.example.alpr_v1.camera.OrdinaryDynamicResourcePolicy(memory.totalMem,
+                    manager!=null&&manager.isLowRamDevice(),Runtime.getRuntime().maxMemory());
+            ordinaryBitmapBudget=new com.example.alpr_v1.camera.BitmapMemoryBudget(ordinaryResourcePolicy.bitmapBytes);
+        }
+        return ordinaryResourcePolicy;
+    }
+
+    private boolean ordinaryMemoryCritical() {
+        android.app.ActivityManager manager=(android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        if(manager==null)return false;
+        android.app.ActivityManager.MemoryInfo memory=new android.app.ActivityManager.MemoryInfo();manager.getMemoryInfo(memory);
+        return memory.lowMemory || memory.totalMem>0 && memory.availMem<Math.max(256L*1024*1024,memory.threshold);
+    }
+
+    /** Transfers the occupied neural slot; the full camera bitmap has already been released. */
+    private boolean queuePendingDynamicMz(long controlsGeneration) {
+        AlprPipeline scheduled=pipeline;
+        if(scheduled==null)return false;
+        if(!ordinaryDynamicResourcesEnabled()||!cameraAnalysisAdmitted(controlsGeneration)) {
+            scheduled.discardPendingDynamicMz();return false;
+        }
+        if(!scheduled.hasPendingDynamicMz())return false;
+        try {
+            pipelineInferenceExecutor.execute(()->{
+                try {
+                    if(!cameraAnalysisAdmitted(controlsGeneration)||pipeline!=scheduled){scheduled.discardPendingDynamicMz();return;}
+                    PipelineResult result=scheduled.processPendingDynamicMz();
+                    if(result==null)return;
+                    runOnUiThread(()->{
+                        try {
+                            if(!cameraAnalysisAdmitted(controlsGeneration)||pipeline!=scheduled
+                                    ||!PipelineResultDispatchGate.isCurrent(scheduled,result))return;
+                            collectRecognitionHistory(result.plateObservations);
+                            collectCrops(result.plateObservations);
+                            refreshVehicleIdentityPresentation();
+                            if("pipeline_error".equals(result.status))livePresentation.showState(LivePresentationController.State.ERROR,"");
+                        } finally {result.close();}
+                    });
+                } catch(OutOfMemoryError error) {
+                    ordinaryMemoryPaused=true;runOnUiThread(this::pauseOrdinaryForMemory);
+                } catch(RuntimeException error) {
+                    android.util.Log.e("ALPR_DYNAMIC_MZ","deferred_mz_failed",error);
+                } finally {pipelineFrameInFlight.set(false);}
+            });
+            return true;
+        } catch(java.util.concurrent.RejectedExecutionException stopped) {scheduled.discardPendingDynamicMz();return false;}
+    }
+
+    private void pauseOrdinaryForMemory() {
+        if(!ordinaryDynamicResourcesEnabled())return;
+        ordinaryMemoryPaused=true;
+        if(cameraStarted)stopAnalysis(ExperimentSession.CompletionReason.ERROR);
+        queuePausedOrdinaryRuntimeRelease();
+        if(livePresentation!=null)livePresentation.showUserStatus(LivePresentationController.State.ERROR,
+                getString(R.string.dynamic_memory_paused),getString(R.string.dynamic_memory_resume));
+        recordInfo("Analiza dynamiczna wstrzymana: mało pamięci RAM");
+    }
+
+    private void queuePausedOrdinaryRuntimeRelease() {
+        AlprPipeline target=pipeline;long generation=analysisControlGeneration;
+        if(target==null||pipelineInferenceExecutor.isShutdown())return;
+        try {
+            pipelineInferenceExecutor.execute(()->{
+                if(pipeline!=target||cameraStarted||!ordinaryMemoryPaused
+                        ||generation!=analysisControlGeneration||!ordinaryDynamicResourcesEnabled())return;
+                // Native model heaps must be returned after the cancelled pass,
+                // rather than retained by a screen already paused for low RAM.
+                target.close();
+                android.util.Log.i("ALPR_DYNAMIC_RESOURCES","paused_runtime_released generation="+generation);
+            });
+        } catch(RejectedExecutionException stopped) { /* Activity teardown already owns runtime cleanup. */ }
+    }
+
+    private void recycleBudgetedPreviewBitmap(Bitmap bitmap) {
+        if(bitmap==null)return;
+        com.example.alpr_v1.camera.BitmapMemoryBudget.Lease lease=previewBitmapLeases.remove(bitmap);
+        recycleBitmap(bitmap);
+        if(lease!=null)lease.close();
+    }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if(level==android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                || level==android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
+            runOnUiThread(this::pauseOrdinaryForMemory);
+    }
+    @Override public void onLowMemory() { super.onLowMemory();runOnUiThread(this::pauseOrdinaryForMemory); }
+
     private Size choosePreviewSize() {
         boolean scanWillBeActive = vehicleCascadeEnabled
                 && !experimentModeEnabled
@@ -5215,6 +6111,13 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private Size chooseAnalysisSize(boolean scanActive) {
+        Size requested=chooseRequestedAnalysisSize(scanActive);
+        boolean limited=ordinaryDynamicResourcesEnabled();
+        if(cameraController!=null)cameraController.setOrdinaryDynamicResourcePolicy(limited?dynamicResourcePolicy():null);
+        return limited?dynamicResourcePolicy().analysisSize(cameraResolutionCatalog.resolutions(),requested):requested;
+    }
+
+    private Size chooseRequestedAnalysisSize(boolean scanActive) {
 
         /*
          * Ręczny wybór:
@@ -5458,6 +6361,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void showScanUserStatus(ScanAcquisitionSnapshot scan) {
+        if(ordinaryDynamicResourcesEnabled()) {
+            if(livePresentation!=null&&dynamicDisplaySnapshot!=null)
+                livePresentation.renderDynamicResult(dynamicDisplaySnapshot,overlayView.dynamicSelectedEntity(),scan);
+            return;
+        }
         if (cameraStarted && pipeline != null && pipeline.isStaticIdle()) {
             livePresentation.showState(LivePresentationController.State.STATIC_IDLE, "");
             return;
@@ -5586,6 +6494,8 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private String autoZoomHudLabel() {
+        if(!experimentModeEnabled&&pipeline!=null&&effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY
+                &&autoZoomController.state()==AutoZoomController.State.READY)return dynamicAutoZoomWaitLabel();
         switch (autoZoomController.state()) {
             case ZOOM_SETTLING:
                 return getString(R.string.hud_auto_zoom_focusing);
@@ -5604,7 +6514,23 @@ public final class MainActivity extends AppCompatActivity {
                 );
         }
     }
+    private String dynamicAutoZoomWaitLabel() {
+        if(pipeline==null)return getString(R.string.dynamic_az_wait_pick);
+        switch(pipeline.dynamicZoomWaitReason()) {
+            case "PICK":return getString(R.string.dynamic_az_wait_pick);
+            case "MOTION":return getString(R.string.dynamic_az_wait_motion);
+            case "BUDGET":return getString(R.string.dynamic_az_cycle_used);
+            case "RECOVERY":return getString(R.string.dynamic_az_wait_recovery);
+            default:return getString(R.string.dynamic_az_wait_geometry);
+        }
+    }
     private String hudRoiLabel() {
+        if(ordinaryDynamicResourcesEnabled()) {
+            Size actual=cameraController==null?null:cameraController.actualAnalysisSize();
+            if(actual!=null)return (effectiveRoiBudgetPolicy()==RoiBudgetPolicy.ONE_ROI?"R1":
+                    effectiveRoiBudgetPolicy()==RoiBudgetPolicy.TWO_ROI?"R2":"R0")+" · "+
+                    getString(R.string.dynamic_memory_resolution,actual.getWidth(),actual.getHeight(),dynamicResourcePolicy().analysisPixels/1_000_000.0);
+        }
 
         switch (effectiveRoiBudgetPolicy()) {
 
@@ -5650,6 +6576,31 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void presentCurrentResult(PipelineResult result, long observationNanos) {
+        refreshVehicleIdentityPresentation();
+        presentIdentityCurrentResult(pipeline == null ? result : pipeline.currentIdentityResult(result), observationNanos);
+    }
+
+    private void refreshVehicleIdentityPresentation() {
+        if (overlayView == null) return;
+        boolean enabled = cameraStarted && pipeline != null && ordinaryDynamicResourcesEnabled();
+        dynamicDisplaySnapshot=enabled?pipeline.dynamicDisplaySnapshot(currentPreviewSourceFrameStamp().continuityStamp()):null;
+        Map<Long, com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> values =
+                enabled ? dynamicDisplaySnapshot==null?java.util.Collections.emptyMap():dynamicDisplaySnapshot.identities : null;
+        normalIdentityPresentationStarted = enabled;
+        overlayView.setVehicleIdentityPresentation(values,
+                enabled && dynamicDisplaySnapshot!=null ? dynamicDisplaySnapshot.plateOwners : null);
+        overlayView.setDynamicVehicleSnapshot(enabled,enabled?dynamicDisplaySnapshot:null,
+                enabled?pipeline.targetFocus().entityId:0L);
+        if(livePresentation!=null) {
+            livePresentation.setDynamicPresentation(enabled);
+            if(enabled)livePresentation.renderDynamicResult(dynamicDisplaySnapshot,overlayView.dynamicSelectedEntity(),pipeline.scanAcquisitionSnapshot());
+        }
+        if(enabled)for(long entity:overlayView.consumeDynamicPlateRefresh())pipeline.requestDynamicPlateRefresh(entity);
+    }
+
+    private boolean normalIdentityPresentationStarted;
+
+    private void presentIdentityCurrentResult(PipelineResult result, long observationNanos) {
         overlayView.setPresentationStamp(result.continuityStamp());
         if ("models_missing".equals(result.status)) {
             showMissingModelsStatus();
@@ -5869,6 +6820,8 @@ public final class MainActivity extends AppCompatActivity {
                         previewVehicleGeometryAgeNanos,
                         vehiclePresentationMaximumAgeNanos
                 );
+        if(ordinaryDynamicResourcesEnabled())preserveDynamicVehiclePresentation &=
+                hasLocalVehicleGeometry(scanScopedItems,dynamicDisplaySnapshot);
         if (preserveDynamicVehiclePresentation) {
             diagnosticItems.clear();
             diagnosticItems.addAll(nonPlateOverlayItems(latestPreviewMotionItems));
@@ -5892,11 +6845,9 @@ public final class MainActivity extends AppCompatActivity {
                 result.sourceTimestampNanos,
                 lastDirectLumaSourceTimestampNanos
         );
-        anchorPreviewVehicleTracker(
-                latestDiagnosticOverlayItems,
-                result.sourceWidth,
-                result.sourceHeight
-        );
+        if(!ordinaryDynamicResourcesEnabled()||!preserveDynamicVehiclePresentation)
+            anchorPreviewVehicleTracker(ordinaryDynamicResourcesEnabled()?scanScopedItems:latestDiagnosticOverlayItems,
+                    result.sourceWidth,result.sourceHeight);
 
 
         long freshPlateEntityId = plateEntityId(result, pipelinePlateItems);
@@ -6028,13 +6979,14 @@ public final class MainActivity extends AppCompatActivity {
          * przez krótki czas.
          */
         List<OverlayItem> targetAnchorItems = scanTargetAnchorItems(
-                visibleOverlayItems
+                ordinaryDynamicResourcesEnabled()?scanScopedItems:visibleOverlayItems
         );
         boolean previewTrackerAnchored =
-                previewPlateTracker.anchor(
+                anchorOwnedPlatePreview(
                         targetAnchorItems,
                         result.sourceWidth,
-                        result.sourceHeight
+                        result.sourceHeight,
+                        result.continuityStamp()
                 );
 
 
@@ -6086,6 +7038,8 @@ public final class MainActivity extends AppCompatActivity {
                     hudRoiLabel()
             );
             livePresentation.showTransient(result.message);
+        } else if(ordinaryDynamicResourcesEnabled()) {
+            refreshVehicleIdentityPresentation();
         } else {
             PlateObservation bestObservation = null;
             ScanAcquisitionSnapshot resultScan = pipeline == null
@@ -6108,7 +7062,10 @@ public final class MainActivity extends AppCompatActivity {
                 }
             }
             if (bestObservation != null) {
-                livePresentation.showResult(
+                if(bestObservation.identityOwner()!=null)livePresentation.showCurrentResult(bestObservation.trackId,
+                        bestObservation.text,bestObservation.recognitionConfidence,bestObservation.confirmed,bestObservation.observations,
+                        bestObservation.sourceTimestampNanos,bestObservation.identityOwner().epoch);
+                else livePresentation.showResult(
                         bestObservation.trackId,
                         bestObservation.text,
                         bestObservation.recognitionConfidence,
@@ -6151,6 +7108,9 @@ public final class MainActivity extends AppCompatActivity {
         AutoZoomController.Sample sample = autoZoomRecognitionSample(result);
         if (sample == null
                 || !sample.recognitionExecuted) return;
+        if(sample.entityId>0) {
+            autoZoomBestText=sample.text;autoZoomBestConfidence=sample.recognitionConfidence;return;
+        }
         AutoZoomRecognitionMemory.Result selected =
                 AutoZoomRecognitionMemory.choose(
                         autoZoomBestText,
@@ -6166,6 +7126,7 @@ public final class MainActivity extends AppCompatActivity {
     private boolean hasRecognitionCompatibleWithZoomMemory(PipelineResult result) {
         AutoZoomController.Sample sample = autoZoomRecognitionSample(result);
         if (sample == null || !sample.recognitionExecuted) return false;
+        if(sample.entityId>0)return !sample.text.isEmpty();
         if (autoZoomBestText.isEmpty()) return !sample.text.isEmpty();
         return autoZoomBestText.equals(sample.text)
                 && (sample.confirmed
@@ -6206,7 +7167,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private boolean autoZoomSettingsLocked() {
-        return experimentSession.isRunning()
+        return sessionWriteBusy() || experimentSession.isRunning()
                 || (experimentModeEnabled && analysisStartGate.preparing());
     }
 
@@ -6268,7 +7229,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void showAutoZoomModeDialog() {
         String[] modes = getResources().getStringArray(R.array.auto_zoom_modes);
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.auto_zoom_mode_title)
                 .setSingleChoiceItems(modes, 0, (dialog, which) -> {
                     if (which == 0) {
@@ -6322,6 +7283,10 @@ public final class MainActivity extends AppCompatActivity {
         autoZoomButton.setActivated(enabled && autoZoomController.enabled());
         if(enabled && !autoZoomController.enabled())autoZoomButton.setContentDescription(
                 "AZ: ustawienie ON; funkcja nieaktywna. Kliknij, aby wyłączyć ustawienie.");
+        if(enabled&&autoZoomController.enabled()&&!experimentModeEnabled&&pipeline!=null
+                &&effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY
+                &&autoZoomController.state()==AutoZoomController.State.READY)
+            autoZoomButton.setContentDescription(dynamicAutoZoomWaitLabel()+". "+getString(R.string.auto_zoom_disable));
         autoZoomButton.setTooltipText(autoZoomButton.getContentDescription());
         if (autoZoomControl != null) {
             autoZoomControl.setVisibility(View.VISIBLE);
@@ -6451,6 +7416,10 @@ public final class MainActivity extends AppCompatActivity {
                     || ((id==R.id.search_plate_button||id==R.id.camera_preview_button||id==R.id.live_diagnostics_toggle||id==R.id.live_model_info_toggle)&&colorResource==R.color.alpr_success)
                     || (id==R.id.auto_zoom_button&&colorResource==R.color.alpr_success&&autoZoomController.enabled()))
                 state=com.example.alpr_v1.ui.CockpitControlStyle.State.ON;
+            if(id==R.id.experiment_timer_button){
+                com.example.alpr_v1.experiment.ResearchSessionViewModel.TimerState timer=researchSessions==null?null:researchSessions.timerState();
+                if(timer!=null&&timer.running?timer.enabled:experimentTimerConfig.enabled())state=com.example.alpr_v1.ui.CockpitControlStyle.State.ON;
+            }
             if(id==R.id.analysis_start_button){
                 if(cameraStarted)state=com.example.alpr_v1.ui.CockpitControlStyle.State.STOP;
                 else if(waitingForThermalStart||analysisStartGate.preparing()||experimentStartRequest.pending())state=com.example.alpr_v1.ui.CockpitControlStyle.State.BUSY;
@@ -6529,6 +7498,7 @@ public final class MainActivity extends AppCompatActivity {
         List<AutoZoomController.Sample> samples = new ArrayList<>();
         TargetSnapshot target = targetStateMachine.snapshot();
         for (PlateObservation observation : result.plateObservations) {
+            if(pipeline!=null&&!pipeline.isCurrentIdentityObservation(observation))continue;
             OverlayItem plate = null;
             for (OverlayItem item : result.overlayItems) {
                 if (item.kind == OverlayItem.Kind.PLATE
@@ -6552,14 +7522,23 @@ public final class MainActivity extends AppCompatActivity {
                     observation.freshMzSuccessful,
                     observation.text,
                     (target.state == TargetSnapshot.State.LOCKED || target.state == TargetSnapshot.State.TRACKING)
-                            && target.trackId == observation.trackId
+                            && target.trackId == observation.trackId,
+                    observation.identityOwner()==null?0L:observation.entityId,
+                    observation.identityOwner()==null?0L:observation.identityOwner().epoch,
+                    observation.identityOwner()==null||pipeline==null?0L:pipeline.targetFocus().sessionId,
+                    observation.identityOwner()==null||pipeline==null?0L:pipeline.targetFocus().revision
             ));
         }
         return samples;
     }
 
     private void requestAutoZoom(AutoZoomController.Decision decision) {
-        if (cameraTransformInProgress || cameraController == null) return;
+        if (cameraTransformInProgress || cameraController == null) {
+            if(!experimentModeEnabled&&pipeline!=null&&effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY) {
+                autoZoomController.onRequestFailed();pipeline.finishDynamicZoom();
+            }
+            return;
+        }
         if (cameraController.maximumZoomRatio() <= 1.01f) {
             autoZoomController.onRequestFailed();
             if (effectiveSceneHandlingMode() == SceneHandlingMode.STRICT_SCENE_BOUNDARY) {
@@ -6740,6 +7719,7 @@ public final class MainActivity extends AppCompatActivity {
                     @Override
                     public void onProgress(float appliedZoomRatio) {
                         if (!isCurrentAutoZoomOperation(operation)) return;
+                        if(appliedZoomRatio>1.01f)pipeline.dynamicZoomPhysicallyStarted();
                         currentCameraZoomRatio = appliedZoomRatio;
                         transformMemoryOverlay(appliedZoomRatio);
                         showAutoZoomTarget(
@@ -6757,6 +7737,7 @@ public final class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSuccess(float appliedZoomRatio) {
                         if (!isCurrentAutoZoomOperation(operation)) return;
+                        if(appliedZoomRatio>1.01f)pipeline.dynamicZoomPhysicallyStarted();
                         currentCameraZoomRatio = appliedZoomRatio;
                         float zoomedCenterX = com.example.alpr_v1.pipeline.ZoomTargetGeometry.map(
                                 autoZoomTargetSceneX,
@@ -7105,7 +8086,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void resetScanPlateVisualState(boolean fadeVisiblePlate) {
-        previewPlateTracker.reset();
+        if(!ordinaryDynamicResourcesEnabled())previewPlateTracker.reset();
         overlayTracker.reset();
         plateOverlayFreshness.reset();
         latestPipelinePlateItems = java.util.Collections.emptyList();
@@ -7298,7 +8279,7 @@ public final class MainActivity extends AppCompatActivity {
         );
         autoZoomMemoryVisible = true;
 
-        if (previewPlateTracker.anchor(visibleItems, sourceWidth, sourceHeight)) {
+        if (anchorOwnedPlatePreview(visibleItems, sourceWidth, sourceHeight,sourceStamp)) {
             if (pipeline != null) {
                 pipeline.setTargetSnapshotIfCurrent(
                         targetStateMachine.onMtAnchor(visibleItems),
@@ -7503,6 +8484,8 @@ public final class MainActivity extends AppCompatActivity {
                     ? java.util.Collections.emptyList()
                     : result.overlayItems;
         }
+        if(ordinaryDynamicResourcesEnabled())return dynamicOwnedPlateItems(result.overlayItems,
+                pipeline.vehicleIdentityPlateStamps(result.continuityStamp()));
 
         ScanAcquisitionSnapshot scan = pipeline.scanAcquisitionSnapshot();
         boolean releaseBarrier = scan.directive.action
@@ -7683,6 +8666,27 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private void presentIntermediateGeometryStage(List<OverlayItem> items,int width,int height,
+            ContinuityStamp stamp,LumaFrame source,boolean zoomed) {
+        LumaFrame previousLuma=presentingSourceLuma;
+        ContinuityStamp previousStamp=presentingSourceStamp;
+        presentingSourceLuma=source;presentingSourceStamp=stamp;
+        try {
+            if(ordinaryDynamicResourcesEnabled()&&pipeline!=null) {
+                refreshVehicleIdentityPresentation();
+                if(!containsPlate(items)||!hasLocalVehicleGeometry(items,dynamicDisplaySnapshot))
+                    anchorPreviewVehicleTracker(items,width,height);
+                List<OverlayItem> owned=dynamicOwnedPlateItems(items,pipeline.vehicleIdentityPlateStamps(stamp));
+                if(containsPlate(owned))anchorOwnedPlatePreview(owned,width,height,stamp);
+                latestOverlaySourceWidth=width;latestOverlaySourceHeight=height;
+                if(overlayView!=null)overlayView.setItems(java.util.Collections.emptyList(),width,height);
+                return;
+            }
+            if(zoomed)presentZoomedMtStage(items,width,height,stamp);
+            else presentScanMtStage(items,width,height,stamp);
+        } finally {presentingSourceLuma=previousLuma;presentingSourceStamp=previousStamp;}
+    }
+
     private void presentScanMtStage(
             List<OverlayItem> overlayItems,
             int sourceWidth,
@@ -7725,7 +8729,7 @@ public final class MainActivity extends AppCompatActivity {
         );
         applyVisibleOverlay(freshStage, sourceWidth, sourceHeight);
         overlayView.setActiveVehicleEntityId(scan.activeEntityId);
-        previewPlateTracker.anchor(freshStage, sourceWidth, sourceHeight);
+        anchorOwnedPlatePreview(freshStage, sourceWidth, sourceHeight,sourceStamp);
         livePresentation.showState(
                 LivePresentationController.State.TRACKING,
                 ""
@@ -8143,6 +9147,16 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
+    private static boolean hasLocalVehicleGeometry(List<OverlayItem> measured,
+            com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot) {
+        if(snapshot==null||measured==null)return false;
+        boolean vehicle=false;
+        for(OverlayItem item:measured)if(item!=null&&item.kind==OverlayItem.Kind.VEHICLE) {
+            vehicle=true;if(!snapshot.localGeometry.containsKey(item.trackId))return false;
+        }
+        return vehicle;
+    }
+
     private void anchorPreviewVehicleTracker(
             List<OverlayItem> diagnostics,
             int sourceWidth,
@@ -8163,7 +9177,7 @@ public final class MainActivity extends AppCompatActivity {
             String source
     ) {
         if (diagnostics == null || diagnostics.isEmpty()) return;
-        if ("MP".equals(source)) {
+        if ("MP".equals(source) && !ordinaryDynamicResourcesEnabled()) {
             VisualMotionEvidenceDecay.Snapshot visualMotion =
                     visualMotionEvidenceDecay.snapshot(
                             android.os.SystemClock.elapsedRealtimeNanos()
@@ -8202,7 +9216,16 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         if (!anchors.isEmpty()) {
-            if (previewVehicleTracker.anchor(anchors, sourceWidth, sourceHeight)) {
+            boolean anchored;
+            if(ordinaryDynamicResourcesEnabled()&&"MP".equals(source)) {
+                LumaFrame measured=presentingSourceLuma;
+                if(measured==null) {
+                    android.util.Log.d("ALPR_VEHICLE_PREVIEW_TRACK","anchor=false reason=source_luma_unavailable");return;
+                }
+                anchored=previewVehicleTracker.anchorLuma(anchors,sourceWidth,sourceHeight,pipeline==null?java.util.Collections.emptyMap():pipeline.vehicleIdentityStamps(anchors),
+                        measured.gray,measured.width,measured.height,presentingSourceStamp==null?null:presentingSourceStamp.sourceFrameStamp());
+            } else anchored=previewVehicleTracker.anchor(anchors, sourceWidth, sourceHeight);
+            if (anchored) {
                 previewVehicleTrackerAwaitingFreshMpAnchor = false;
                 previewVehicleTrackerAwaitingFirstLocalFrame =
                         "GLOBAL_PRESENTATION".equals(source);
@@ -8307,6 +9330,15 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private List<OverlayItem> scanOwnedTrackedPlateItems(List<OverlayItem> trackedItems) {
+        if(ordinaryDynamicResourcesEnabled()&&pipeline!=null) {
+            java.util.Map<Long,Long> owners=pipeline.vehicleIdentityPlateOwners();
+            long selected=pipeline.targetFocus().entityId;
+            List<OverlayItem> result=new ArrayList<>();
+            if(trackedItems!=null)for(OverlayItem item:trackedItems)
+                if(item.kind!=OverlayItem.Kind.PLATE||owners.containsKey(item.trackId)
+                        &&(selected<=0||owners.get(item.trackId)==selected))result.add(item);
+            return result;
+        }
         if (trackedItems == null || trackedItems.isEmpty() || pipeline == null) {
             return trackedItems == null
                     ? java.util.Collections.emptyList()
@@ -8480,6 +9512,10 @@ public final class MainActivity extends AppCompatActivity {
                 diagnosticMotion,
                 candidateMotion
         );
+        if (!experimentModeEnabled && effectiveSceneHandlingMode()
+                == com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY) {
+            projected = com.example.alpr_v1.ui.VehicleMeasurementOverlay.retainSupportedVehicles(projected, vehicleFrame,dynamicDisplaySnapshot);
+        }
         latestPreviewMotionItems = projected;
         String projectionEvent = focusedEntityId > 0L
                 ? "overlay_dynamic_projection_applied"
@@ -8575,7 +9611,7 @@ public final class MainActivity extends AppCompatActivity {
         );
     }
 
-    private static List<OverlayItem> trackedVehicleOverlayItems(
+    private List<OverlayItem> trackedVehicleOverlayItems(
             PreviewTrackingFrame frame
     ) {
         if (frame == null || frame.overlayItems.isEmpty()) {
@@ -8584,6 +9620,8 @@ public final class MainActivity extends AppCompatActivity {
         List<OverlayItem> vehicles = new ArrayList<>(frame.overlayItems.size());
         for (OverlayItem item : frame.overlayItems) {
             if (item == null || item.trackId <= 0L) continue;
+            if(!experimentModeEnabled&&effectiveSceneHandlingMode()==com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY
+                    &&item.carriedPrediction)continue;
             vehicles.add(new OverlayItem(
                     OverlayItem.Kind.VEHICLE,
                     new RectF(item.normalizedBounds),
@@ -8594,6 +9632,37 @@ public final class MainActivity extends AppCompatActivity {
             ));
         }
         return java.util.Collections.unmodifiableList(vehicles);
+    }
+
+    private boolean anchorOwnedPlatePreview(List<OverlayItem> items,int width,int height,ContinuityStamp source) {
+        if(pipeline!=null&&!experimentModeEnabled&&effectiveSceneHandlingMode()==SceneHandlingMode.DYNAMIC_CONTINUITY) {
+            long selected=pipeline.targetFocus().entityId;
+            if(selected>0) {
+                java.util.Set<Long> tracks=new java.util.HashSet<>();
+                for(java.util.Map.Entry<Long,Long> owner:pipeline.vehicleIdentityPlateOwners().entrySet())
+                    if(owner.getValue()==selected)tracks.add(owner.getKey());
+                previewPlateTracker.retainOnly(tracks);
+            } else previewPlateTracker.retainOnly(null);
+        }
+        Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> owners=
+                pipeline==null?java.util.Collections.emptyMap():pipeline.vehicleIdentityPlateStamps(source);
+        if(ordinaryDynamicResourcesEnabled()) {
+            LumaFrame measured=presentingSourceLuma;
+            return measured!=null&&source!=null&&measured.timestampNanos==source.sourceTimestampNanos
+                    &&previewPlateTracker.anchorLuma(items,width,height,owners,measured.gray,measured.width,measured.height,source.sourceFrameStamp());
+        }
+        return previewPlateTracker.anchor(items,width,height,owners);
+    }
+
+    private List<OverlayItem> dynamicOwnedPlateItems(List<OverlayItem> items,
+            Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> owners) {
+        List<OverlayItem> result=new ArrayList<>();long selected=pipeline.targetFocus().entityId;
+        if(items!=null)for(OverlayItem item:items) {
+            if(item.kind!=OverlayItem.Kind.PLATE){result.add(item);continue;}
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner=owners.get(item.trackId);
+            if(owner!=null&&(selected<=0||owner.entityId==selected))result.add(item);
+        }
+        return java.util.Collections.unmodifiableList(result);
     }
 
     private void applyDynamicOverlayDisposition(
@@ -8994,6 +10063,7 @@ public final class MainActivity extends AppCompatActivity {
             clearGallerySheetReferences();
         });
         dialog.show();
+        com.example.alpr_v1.ui.CameraWindowUi.install(dialog.getWindow(),content);
         View bottomSheet = dialog.findViewById(
                 com.google.android.material.R.id.design_bottom_sheet
         );
@@ -9194,7 +10264,7 @@ public final class MainActivity extends AppCompatActivity {
         if (collectionToggle == null) return;
         boolean automatic = experimentModeEnabled || experimentSession.isRunning();
         boolean armed = normalCollectionArmed();
-        collectionToggle.setEnabled(!automatic && !exportInProgress);
+        collectionToggle.setEnabled(!automatic && !exportInProgress && !sessionWriteBusy());
         collectionToggle.setText(automatic ? R.string.camera_action_crops_automatic
                 : armed ? R.string.camera_action_crops_on : R.string.camera_action_crops_off);
         collectionToggle.setActivated(armed || automatic);
@@ -9215,7 +10285,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void toggleCollection() {
-        if (experimentModeEnabled || experimentSession.isRunning() || exportInProgress) return;
+        if (experimentModeEnabled || experimentSession.isRunning() || exportInProgress || sessionWriteBusy()) return;
         uiPreferences.edit().putBoolean(KEY_COLLECTION_ARMED, !normalCollectionArmed()).apply();
         applyNormalCollectionSelection();
         renderCapturedCrops();
@@ -9457,6 +10527,7 @@ public final class MainActivity extends AppCompatActivity {
     private void collectCrops(List<PlateObservation> observations) {
         if (!collectionActive) return;
         for (PlateObservation observation : observations) {
+            if (pipeline != null && !pipeline.isCurrentIdentityObservation(observation)) continue;
             if (!observation.hasFreshMzRead()) continue;
             if (!experimentModeEnabled) {
                 String numberKey = RecognitionHistoryStore.numberKey(observation.freshMzAttempted
@@ -9469,6 +10540,12 @@ public final class MainActivity extends AppCompatActivity {
             }
             if (observation.previewBitmap == null || observation.previewBitmap.isRecycled()
                     || observation.timing == null) continue;
+            if (!experimentModeEnabled && observation.identityOwner() != null) {
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner = observation.identityOwner();
+                String token = owner.entityId + ":" + owner.vehicleTrackId + ":" + owner.epoch;
+                String old = normalCropIdentityOwners.put(observation.trackId, token);
+                if (!token.equals(old)) lastCaptureByTrack.remove(observation.trackId);
+            }
             CropSamplingPolicy.Previous previous = lastCaptureByTrack.get(observation.trackId);
             if (!CropSamplingPolicy.shouldCapture(
                     previous,
@@ -9795,7 +10872,7 @@ public final class MainActivity extends AppCompatActivity {
         java.util.List<com.example.alpr_v1.capture.GallerySessionScope> choices=new java.util.ArrayList<>(entries.values());
         String[] labels=new String[choices.size()];int selected=-1;
         for(int i=0;i<labels.length;i++){labels[i]=choices.get(i).label();if(choices.get(i).contains(verificationSessionId()))selected=i;}
-        new MaterialAlertDialogBuilder(this).setTitle(R.string.f16_gallery_choose_session)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle(R.string.f16_gallery_choose_session)
                 .setSingleChoiceItems(labels,selected,(dialog,index)->{
                     commitVerificationNote();selectVerificationSession(choices.get(index).sessionId);
                     renderResearchVerification();renderCapturedCrops();dialog.dismiss();
@@ -10028,7 +11105,7 @@ public final class MainActivity extends AppCompatActivity {
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT
         ));
-        androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+        androidx.appcompat.app.AlertDialog dialog = new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.verification_edit_title)
                 .setView(container)
                 .setNegativeButton(R.string.menu_close, null)
@@ -10092,7 +11169,8 @@ public final class MainActivity extends AppCompatActivity {
             long presentationGeneration
     ) {
         if (!cameraStarted || pipeline == null
-                || !pipeline.isCurrentContinuityStamp(observation.continuityStamp())) return;
+                || !pipeline.isCurrentContinuityStamp(observation.continuityStamp())
+                || !pipeline.isCurrentIdentityObservation(observation)) return;
         PlateObservation snapshot = observation.copyForGallery();
         if (snapshot == null) return;
         runOnUiThread(() -> {
@@ -10101,7 +11179,9 @@ public final class MainActivity extends AppCompatActivity {
                         || sceneGeneration != uiSceneGeneration.get()
                         || transformGeneration != uiCameraTransformGeneration.get()
                         || !previewPresentationBarrier.permits(presentationGeneration)
-                        || !pipeline.isCurrentContinuityStamp(snapshot.continuityStamp())) return;
+                        || !pipeline.isCurrentContinuityStamp(snapshot.continuityStamp())
+                        || !pipeline.isCurrentIdentityObservation(snapshot)) return;
+                refreshVehicleIdentityPresentation();
                 List<PlateObservation> crops = java.util.Collections.singletonList(snapshot);
                 overlayView.setPresentationStamp(snapshot.continuityStamp());
                 overlayView.animatePlateObservation(snapshot);
@@ -10124,6 +11204,12 @@ public final class MainActivity extends AppCompatActivity {
         if (experimentModeEnabled
                 || observations == null || observations.isEmpty()) return;
         boolean changed = false;
+        if(ordinaryDynamicResourcesEnabled()&&pipeline!=null) {
+            com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot=
+                    pipeline.dynamicDisplaySnapshot(currentPreviewSourceFrameStamp().continuityStamp());
+            if(snapshot!=null)changed=recognitionHistory.promoteDynamicOwners(snapshot.analysisRunId,snapshot.sceneGeneration,
+                    snapshot.canonicalOwners,snapshot.identities);
+        }
         long telemetryAt = android.os.SystemClock.elapsedRealtimeNanos();
         com.example.alpr_v1.capture.ObservationTelemetry telemetry =
                 new com.example.alpr_v1.capture.ObservationTelemetry(
@@ -10132,6 +11218,7 @@ public final class MainActivity extends AppCompatActivity {
                         liveHudRow == null ? Double.NaN : ((com.example.alpr_v1.ui.LiveHudView) liveHudRow).cpuPercent(),
                         telemetryAt, pipeline == null ? java.util.Collections.emptyList() : pipeline.activeModelRuntimeSummaries());
         for (PlateObservation observation : observations) {
+            if (pipeline != null && !pipeline.isCurrentIdentityObservation(observation)) continue;
             String source = autoZoomController.captureSource();
             captureGalleryState.recentReads.remember(observation, telemetry, source);
             changed |= storeCollectedRead(observation, telemetry, source);
@@ -10151,7 +11238,7 @@ public final class MainActivity extends AppCompatActivity {
             });
         }
         return recognitionHistory.upsertObservation(observation, telemetry,
-                effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY, source);
+                effectiveSceneHandlingMode() == SceneHandlingMode.DYNAMIC_CONTINUITY, source,collectionSessionId);
     }
 
     private void importCachedReads() {
@@ -10164,7 +11251,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void confirmClearRecognitionHistory() {
         if (recognitionHistory.size() == 0) return;
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.history_clear_title)
                 .setMessage(R.string.history_clear_message)
                 .setNegativeButton(R.string.menu_close, null)
@@ -10191,11 +11278,11 @@ public final class MainActivity extends AppCompatActivity {
         MaterialButton delete = content.findViewById(R.id.history_detail_delete);
         ((TextView) content.findViewById(R.id.history_detail_characters)).setText(characterBoxesText(item.characters));
         preview.setPlate(item.previewBitmap, item.characters);
-        preview.setBoxesVisible(true);
-        number.setText(item.text.isEmpty() ? getString(R.string.result_placeholder) : item.text);
-        copy.setEnabled(!item.text.isEmpty());
-        ((com.example.alpr_v1.ui.RecognitionEntityPager) content.findViewById(R.id.history_detail_entities))
-                .setItem(item);
+        preview.setBoxesVisible(!item.dynamicOwner);
+        content.findViewById(R.id.history_detail_characters).setVisibility(item.dynamicOwner?View.GONE:View.VISIBLE);
+        number.setText(item.displayText().isEmpty() ? getString(R.string.result_placeholder) : item.displayText());
+        copy.setEnabled(!(item.dynamicOwner?item.currentText:item.text).isEmpty());
+        com.example.alpr_v1.ui.RecognitionEntityPager attempts=content.findViewById(R.id.history_detail_entities);
         meta.setText(getString(
                 R.string.history_detail_full,
                 getString(
@@ -10211,11 +11298,18 @@ public final class MainActivity extends AppCompatActivity {
                         Math.max(1, item.observations)
                 )
         ));
+        if(item.dynamicOwner)meta.setText(getString(R.string.dynamic_history_best_detail,percent(item.currentConfidence),
+                Math.max(1,item.observations)));
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setContentView(content);
+        android.app.Dialog[] rawPhoto={null};java.util.concurrent.atomic.AtomicBoolean photoLoading=new java.util.concurrent.atomic.AtomicBoolean();
+        if(item.dynamicOwner)attempts.setPhotoListener(observation->showHistoryObservationPhoto(observation,
+                item.currentText,item.currentConfidence,dialog,rawPhoto,photoLoading));
+        attempts.setItem(item);
         content.findViewById(R.id.history_detail_close).setOnClickListener(view -> dialog.dismiss());
         dialog.setOnDismissListener(ignored -> {
+            if(rawPhoto[0]!=null)rawPhoto[0].dismiss();
             preview.setPlate(null, java.util.Collections.emptyList());
             item.close();
         });
@@ -10224,10 +11318,11 @@ public final class MainActivity extends AppCompatActivity {
                     CLIPBOARD_SERVICE
             );
             if (clipboard != null) {
-                clipboard.setPrimaryClip(ClipData.newPlainText("plate_number", item.text));
+                String copied=item.dynamicOwner?item.currentText:item.text;
+                clipboard.setPrimaryClip(ClipData.newPlainText("plate_number", copied));
                 Toast.makeText(
                         this,
-                        getString(R.string.history_copied, item.text),
+                        getString(R.string.history_copied, copied),
                         Toast.LENGTH_SHORT
                 ).show();
             }
@@ -10242,10 +11337,39 @@ public final class MainActivity extends AppCompatActivity {
         android.view.Window detailWindow = dialog.getWindow();
         if (detailWindow != null) {
             detailWindow.setBackgroundDrawableResource(R.color.alpr_background);
-            WindowCompat.setDecorFitsSystemWindows(detailWindow, true);
+            com.example.alpr_v1.ui.CameraWindowUi.install(detailWindow,content);
             detailWindow.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT);
         }
+    }
+
+    private void showHistoryObservationPhoto(com.example.alpr_v1.capture.RecognitionHistoryObservation observation,
+            String bestReading,double bestConfidence,android.app.Dialog parent,android.app.Dialog[] current,
+            java.util.concurrent.atomic.AtomicBoolean loading) {
+        if(!loading.compareAndSet(false,true))return;
+        captureGalleryState.cropSessions(this).previewForObservation(observation.captureSessionId,observation.key())
+                .whenComplete((photo,error)->runOnUiThread(()->{
+                    loading.set(false);
+                    if(!parent.isShowing()) {if(photo!=null)photo.close();return;}
+                    if(error!=null||photo==null) {
+                        Toast.makeText(this,R.string.dynamic_history_photo_unavailable,Toast.LENGTH_SHORT).show();return;
+                    }
+                    if(current[0]!=null)current[0].dismiss();
+                    View content=getLayoutInflater().inflate(R.layout.dialog_recognition_history_detail,null);
+                    PlateCropView image=content.findViewById(R.id.history_detail_preview);
+                    image.setPlate(photo.bitmap,photo.characters);image.setBoxesVisible(false);
+                    ((TextView)content.findViewById(R.id.history_detail_number)).setText(bestReading);
+                    ((TextView)content.findViewById(R.id.history_detail_meta)).setText(getString(R.string.dynamic_history_best_photo,
+                            new SimpleDateFormat("HH:mm:ss.SSS",Locale.getDefault()).format(new Date(photo.capturedAtMillis)),percent(bestConfidence)));
+                    for(int id:new int[]{R.id.history_detail_entities,R.id.history_detail_copy,R.id.history_detail_save,R.id.history_detail_delete,
+                            R.id.history_detail_characters})content.findViewById(id).setVisibility(View.GONE);
+                    android.app.Dialog dialog=new android.app.Dialog(this);dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);dialog.setContentView(content);
+                    content.findViewById(R.id.history_detail_close).setOnClickListener(v->dialog.dismiss());
+                    dialog.setOnDismissListener(ignored->{image.setPlate(null,java.util.Collections.emptyList());photo.close();if(current[0]==dialog)current[0]=null;});
+                    current[0]=dialog;
+                    try {dialog.show();if(dialog.getWindow()!=null)dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT);}
+                    catch(RuntimeException staleWindow){current[0]=null;photo.close();}
+                }));
     }
 
     private void saveRecognitionHistoryImage(RecognitionHistoryItem item) {
@@ -10260,7 +11384,7 @@ public final class MainActivity extends AppCompatActivity {
                             "yyyyMMdd_HHmmss_SSS",
                             Locale.ROOT
                     ).format(new Date(item.capturedAtMillis));
-                    String text = item.text.replaceAll("[^A-Za-z0-9_-]", "");
+                    String text = (item.dynamicOwner?item.currentText:item.text).replaceAll("[^A-Za-z0-9_-]", "");
                     if (text.isEmpty()) text = "odczyt";
                     imageUri = createDocument(
                             "image/jpeg",
@@ -10531,7 +11655,7 @@ public final class MainActivity extends AppCompatActivity {
                         new SimpleDateFormat("dd.MM.yyyy HH:mm:ss",Locale.getDefault()).format(new Date(session.startedAtMillis)),
                         session.crops, session.observations);
             }
-            new MaterialAlertDialogBuilder(this).setTitle(R.string.crop_session_choose)
+            new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle(R.string.crop_session_choose)
                     .setItems(labels,(dialog,index) -> {
                         String id = sessions.get(index).id;
                         captureGalleryState.pendingCropSessionExport = id;
@@ -10569,7 +11693,7 @@ public final class MainActivity extends AppCompatActivity {
                 getString(R.string.export_thesis_bundle),
                 getString(R.string.export_legacy_report)
         };
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(R.string.export_choose_title)
                 .setItems(options, (dialog, which) -> {
                     ResearchArchive.Kind kind = which == 0
@@ -10584,32 +11708,39 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void requestExportDestination(ResearchArchive.Kind kind) {
-        if (researchArchivePickerLoading) return;
-        if (experimentSession.isRunning() || researchSessions.finalizing()) {
-            Toast.makeText(this,"Paczka badawcza powstaje automatycznie po zakończeniu pomiaru i zapisu",Toast.LENGTH_LONG).show();
+        if(researchArchivePickerLoading)return;
+        if(kind==ResearchArchive.Kind.RESEARCH_SESSION){
+            if(pendingExportKind!=null){Toast.makeText(this,"Dokończ lub anuluj otwarte okno zapisu",Toast.LENGTH_LONG).show();return;}
+            researchArchivePickerLoading=true;
+            backgroundExecutor.execute(()->{
+                List<com.example.alpr_v1.experiment.ResearchSessionSummary> sessions=com.example.alpr_v1.experiment.ResearchSessionSummary.catalog(
+                        com.example.alpr_v1.experiment.ResearchSessionStore.sessionsRoot(getApplicationContext()));
+                runOnUiThread(()->{
+                    researchArchivePickerLoading=false;if(isFinishing()||isDestroyed())return;
+                    com.example.alpr_v1.ui.ResearchSessionPicker.showHistory(this,sessions,researchSessions::operationHistoryDescription,selected->{
+                        if(!researchDocumentDestinationAvailable())return;
+                        if(selected.isFile()){pendingPersistentResearchArchive=selected;launchExportDestination(kind);return;}
+                        researchArchivePickerLoading=true;
+                        researchSessions.recoverArchive(selected).whenComplete((archive,error)->runOnUiThread(()->{
+                            researchArchivePickerLoading=false;if(isFinishing()||isDestroyed())return;
+                            if(error!=null){new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle("Nie utworzono eksportu; pliki sesji zachowano")
+                                    .setMessage(com.example.alpr_v1.experiment.ResearchOperationState.chain(error)).setPositiveButton("OK",null).show();return;}
+                            pendingPersistentResearchArchive=archive;launchExportDestination(kind);
+                        }));
+                    },backgroundExecutor);
+                });
+            });
             return;
         }
-        pendingPersistentResearchArchive=null;
-        if (kind == ResearchArchive.Kind.RESEARCH_SESSION) {
-            List<java.io.File> archives = researchSessions.archives();
-            if (!archives.isEmpty()) {
-                researchArchivePickerLoading = true;
-                backgroundExecutor.execute(() -> {
-                    List<com.example.alpr_v1.experiment.ResearchSessionSummary> sessions =
-                            com.example.alpr_v1.experiment.ResearchSessionSummary.load(archives);
-                    runOnUiThread(() -> {
-                        researchArchivePickerLoading = false;
-                        if (isFinishing() || isDestroyed() || experimentSession.isRunning() || researchSessions.finalizing()) return;
-                        com.example.alpr_v1.ui.ResearchSessionPicker.show(this, sessions, archive -> {
-                            pendingPersistentResearchArchive = archive;
-                            launchExportDestination(kind);
-                        });
-                    });
-                });
-                return;
-            }
-        }
-        launchExportDestination(kind);
+        if(experimentSession.isRunning()||researchSessions.finalizing()){Toast.makeText(this,researchSessions.operationDescription(),Toast.LENGTH_LONG).show();return;}
+        pendingPersistentResearchArchive=null;launchExportDestination(kind);
+    }
+
+    /** Browsing history stays available; leaving for the file picker must not interrupt a live run. */
+    private boolean researchDocumentDestinationAvailable(){
+        if(!experimentSession.isRunning()&&!sessionWriteBusy()&&!analysisStartGate.preparing()&&!experimentStartRequest.pending())return true;
+        String message=experimentSession.isRunning()?"Trwa pomiar "+experimentSession.snapshot().sessionId+". Dokument można zapisać po STOP i zakończeniu zapisu sesji.":researchSessions.operationDescription();
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this).setTitle("Historia dostępna — zapis dokumentu oczekuje").setMessage(message).setPositiveButton("OK",null).show();return false;
     }
 
     private void launchExportDestination(ResearchArchive.Kind kind) {
@@ -10630,22 +11761,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void writeResearchExport(Uri destination, ResearchArchive.Kind kind) {
-        if (pendingPersistentResearchArchive != null && kind == ResearchArchive.Kind.RESEARCH_SESSION) {
-            java.io.File source = pendingPersistentResearchArchive; pendingPersistentResearchArchive=null;
-            exportInProgress=true;
-            backgroundExecutor.execute(() -> {
-                String message;
-                try (java.io.InputStream input = new java.io.FileInputStream(source);
-                     OutputStream output = getContentResolver().openOutputStream(destination,"w")) {
-                    if (output == null) throw new java.io.IOException("Brak pliku docelowego");
-                    byte[] buffer = new byte[65536]; int count;
-                    while ((count=input.read(buffer)) != -1) output.write(buffer,0,count);
-                    message=getString(R.string.export_saved);
-                } catch (Exception error) { message=getString(R.string.export_failed,error.getMessage()); }
-                final String result = message;
-                runOnUiThread(() -> { exportInProgress=false; Toast.makeText(this,result,Toast.LENGTH_LONG).show(); });
-            });
-            return;
+        if (kind == ResearchArchive.Kind.RESEARCH_SESSION) {
+            java.io.File source=pendingPersistentResearchArchive;pendingPersistentResearchArchive=null;
+            if(source==null){Toast.makeText(this,"Brak zachowanego wyboru sesji. Otwórz Sesje / Eksport; nie tworzono nowego pomiaru.",Toast.LENGTH_LONG).show();return;}
+            researchSessions.exportArchive(source,destination);renderAnalysisControls();return;
         }
         exportInProgress = true;
         if (collectionActive) {
@@ -10772,7 +11891,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void toggleSceneHandlingModeFromHud() {
-        if (analysisStartGate.preparing()) return;
+        if (analysisStartGate.preparing() || sessionWriteBusy()) return;
         if (!SceneModeHudPolicy.isToggleEnabled(experimentModeEnabled || experimentSession.isRunning())) {
             livePresentation.showTransient(
                     getString(R.string.scene_mode_experiment_locked_hud)
@@ -10816,7 +11935,7 @@ public final class MainActivity extends AppCompatActivity {
         SceneHandlingMode mode = effectiveSceneHandlingMode();
         boolean dynamic = mode == SceneHandlingMode.DYNAMIC_CONTINUITY;
         overlayView.setDynamicVehicleMotion(dynamic);
-        boolean enabled = !analysisStartGate.preparing()
+        boolean enabled = !sessionWriteBusy() && !analysisStartGate.preparing()
                 && SceneModeHudPolicy.isToggleEnabled(experimentModeEnabled || experimentSession.isRunning());
         int icon = dynamic
                 ? R.drawable.ic_scene_dynamic_24
@@ -10840,6 +11959,8 @@ public final class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         analysisScreenForeground = true;
+        if(configurationReadiness!=null)configurationReadiness.resume();
+        getWindow().getDecorView().post(this::continueReadinessNavigation);
         experimentPreparationFailed = false;
 
         applySettingsRevision();
@@ -10849,6 +11970,10 @@ public final class MainActivity extends AppCompatActivity {
         if (experimentSession.isRunning()) {
             scheduleExperimentTimer(experimentTimerConfig);
             if (tvSetup != null && researchSessions.store() != null) tvSetup.resumeSession(researchSessions.store().tvSetupSnapshot());
+        }
+        if (!experimentSession.isRunning() && researchSessions.timerState().running) {
+            scheduleExperimentTimer(experimentTimerConfig);
+            if(!cameraStarted)startCamera(false);
         }
         if (experimentSession.admitsWork(android.os.SystemClock.elapsedRealtimeNanos())
                 && !cameraStarted && researchSessions.store() != null) {
@@ -11092,6 +12217,8 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        if(configurationReadiness!=null)configurationReadiness.suspend();
+        readinessConfiguration=null;
         if (tvSetup != null) tvSetup.onBackground();
         analysisScreenForeground = false;
         experimentReadinessHandler.removeCallbacks(experimentReadinessRunnable);
@@ -11114,9 +12241,25 @@ public final class MainActivity extends AppCompatActivity {
         super.onPause();
     }
 
+    private void restoreResearchExportSelection(Bundle state){
+        if(state!=null){
+            String selected=state.getString("research_export_source","");
+            if(!selected.isEmpty())pendingPersistentResearchArchive=new java.io.File(selected);
+            try{String kind=state.getString("research_export_kind","");if(!kind.isEmpty())pendingExportKind=ResearchArchive.Kind.valueOf(kind);}
+            catch(IllegalArgumentException invalid){pendingPersistentResearchArchive=null;}
+        }
+    }
+    private void saveResearchExportSelection(Bundle state){
+        if(pendingPersistentResearchArchive!=null)state.putString("research_export_source",pendingPersistentResearchArchive.getAbsolutePath());
+        if(pendingExportKind!=null)state.putString("research_export_kind",pendingExportKind.name());
+    }
     @Override protected void onSaveInstanceState(Bundle state) {
+        if(readinessReturn!=null)state.putBundle("readiness_main_return",readinessReturn.toBundle());
+        state.putString("readiness_destination",readinessDestination);state.putBoolean("readiness_editor_started",readinessEditorStarted);
+        state.putBoolean("readiness_return_due",readinessReturnDue);state.putBoolean("readiness_return_manual",readinessReturnManual);
         if (captureGalleryState != null) state.putString("crop_session_export_id", captureGalleryState.pendingCropSessionExport);
         state.putString("timer_configured_after_finished_session",timerConfiguredAfterFinishedSession);
+        saveResearchExportSelection(state);
         super.onSaveInstanceState(state);
     }
 
@@ -11132,6 +12275,9 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if(configurationReadiness!=null)configurationReadiness.close();
+        for(String name:new String[]{SettingsActivity.PREFERENCES,"autotune","model_registry"})
+            getSharedPreferences(name,MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(configurationReadinessChanges);
         if(livePresentation!=null)livePresentation.dispose();
         if(previewView!=null&&previewView.getViewTreeObserver().isAlive())
             previewView.getViewTreeObserver().removeOnGlobalLayoutListener(overlayReadabilityLayoutListener);
@@ -11140,7 +12286,7 @@ public final class MainActivity extends AppCompatActivity {
         stopPhoneOrientationUi();
         if (researchSessions != null && pipeline != null)
             researchSessions.previousSceneGeneration=pipeline.sceneContinuitySnapshot().sceneGeneration;
-        if (experimentSession.isRunning() && !isChangingConfigurations())
+        if (researchSessions.timerState().running && !isChangingConfigurations())
             finishAnalysisMeasurement(ExperimentSession.CompletionReason.MANUAL);
         /*
          * Wywołanie defensywne. Standardowo monitor został już
@@ -11293,14 +12439,6 @@ public final class MainActivity extends AppCompatActivity {
                     getString(R.string.experiment_mode_disabled_status)
             );
         }
-        if (!experimentModeEnabled
-                && !experimentSession.isRunning()) {
-
-            experimentTimerConfig =
-                    TimerConfig.disabled();
-
-            cancelExperimentTimer();
-        }
 
         renderAnalysisControls();
     }
@@ -11325,12 +12463,40 @@ public final class MainActivity extends AppCompatActivity {
                 );
         }
     }
+    private void restoreTimerConfiguration() {
+        experimentTimerConfig=TimerConfig.of(uiPreferences.getBoolean(KEY_ANALYSIS_TIMER_ENABLED,false),
+                uiPreferences.getInt(KEY_LAST_EXPERIMENT_TIMER_SECONDS,TimerConfig.DEFAULT_DURATION_SECONDS));
+    }
+
+    private boolean timerSettingsAvailable() {
+        return !cameraStarted && !waitingForThermalStart && !analysisStartGate.preparing()
+                && !experimentStartRequest.pending() && !researchSessions.timerState().running
+                && !sessionWriteBusy();
+    }
+
+    private void toggleAnalysisTimer() {
+        if (!timerSettingsAvailable()) return;
+        applyTimerConfiguration(TimerConfig.of(!experimentTimerConfig.enabled(),experimentTimerConfig.durationSeconds()));
+    }
+
+    private void applyTimerConfiguration(TimerConfig next) {
+        if (!timerSettingsAvailable()) return;
+        experimentTimerConfig=next;
+        uiPreferences.edit().putInt(KEY_LAST_EXPERIMENT_TIMER_SECONDS,next.durationSeconds())
+                .putBoolean(KEY_ANALYSIS_TIMER_ENABLED,next.enabled()).apply();
+        timerConfiguredAfterFinishedSession=researchSessions.timerState().id;
+        invalidatePreparedExperiment();
+        recordInfo(next.enabled()?getString(R.string.experiment_timer_armed_log,next.durationSeconds())
+                :getString(R.string.experiment_timer_disabled_log));
+        ensureExperimentPrepared();
+        renderAnalysisControls();
+    }
+
     private void showExperimentTimerDialog() {
-        if (cameraStarted || analysisStartGate.preparing() || !experimentModeEnabled) return;
-        final int[] durations = {0, 15, 60, 180, 300, -1};
-        CharSequence[] labels = {getString(R.string.experiment_timer_none), "15 s", "1 min", "3 min", "5 min", "Własny czas (minuty)"};
-        int seconds = experimentTimerConfig.enabled() ? experimentTimerConfig.durationSeconds()
-                : uiPreferences.getInt(KEY_LAST_EXPERIMENT_TIMER_SECONDS, TimerConfig.DEFAULT_DURATION_SECONDS);
+        if (!timerSettingsAvailable()) return;
+        final int[] durations = {15, 60, 180, 300, -1};
+        CharSequence[] labels = {"15 s", "1 min", "3 min", "5 min", "Własny czas (minuty)"};
+        int seconds = experimentTimerConfig.durationSeconds();
         int initial = durations.length - 1;
         for (int i = 0; i < durations.length - 1; i++) if (durations[i] == seconds) initial = i;
         final int[] selected = {initial};
@@ -11347,8 +12513,8 @@ public final class MainActivity extends AppCompatActivity {
                 6, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString());
         field.addView(minutes);
         minutes.setEnabled(initial == durations.length - 1);
-        androidx.appcompat.app.AlertDialog timerDialog = new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.experiment_timer_dialog_title)
+        androidx.appcompat.app.AlertDialog timerDialog = new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
+                .setTitle(R.string.main_timer_duration_title)
                 .setSingleChoiceItems(labels, initial, (dialog, which) -> {
                     selected[0] = which;
                     minutes.setEnabled(which == durations.length - 1);
@@ -11363,66 +12529,60 @@ public final class MainActivity extends AppCompatActivity {
                     TimerConfig next;
                     try {
                         int preset = durations[selected[0]];
-                        next = preset == -1 ? TimerConfig.fromMinutes(String.valueOf(minutes.getText()))
-                                : preset == 0 ? TimerConfig.disabled() : TimerConfig.of(true, preset);
+                        int duration = preset == -1 ? TimerConfig.fromMinutes(String.valueOf(minutes.getText())).durationSeconds() : preset;
+                        next = TimerConfig.of(experimentTimerConfig.enabled(), duration);
                     } catch (IllegalArgumentException invalid) {
                         field.setError(invalid.getMessage());
                         return;
                     }
-                    experimentTimerConfig = next;
-                    timerConfiguredAfterFinishedSession=experimentSession.state()==ExperimentSession.State.FINISHED?experimentSession.sessionId():"";
-                    invalidatePreparedExperiment();
-                    if (next.enabled()) {
-                        uiPreferences.edit().putInt(KEY_LAST_EXPERIMENT_TIMER_SECONDS, next.durationSeconds()).apply();
-                        recordInfo(getString(R.string.experiment_timer_armed_log, next.durationSeconds()));
-                    } else recordInfo(getString(R.string.experiment_timer_disabled_log));
-                    updateExperimentTimerButton();
-                    ensureExperimentPrepared();
-                    renderAnalysisControls();
+                    applyTimerConfiguration(next);
                     timerDialog.dismiss();
                 }));
         timerDialog.show();
     }
 
-    /** Clock presentation only: no timer admission, scheduling or session transitions here. */
+    /** Clock presentation only: never creates, extends or restarts a deadline. */
     private void updateExperimentTimerButton() {
-        if(experimentTimerButton!=null)experimentTimerButton.setText(R.string.experiment_timer_button);
+        com.example.alpr_v1.experiment.ResearchSessionViewModel.TimerState timer=researchSessions.timerState();
+        boolean enabled=timer.running?timer.enabled:experimentTimerConfig.enabled();
+        if(experimentTimerButton!=null){
+            String tile=getString(enabled?R.string.main_timer_tile_on:R.string.main_timer_tile_off);
+            if(getResources().getConfiguration().screenWidthDp>getResources().getConfiguration().screenHeightDp)tile=tile.replace('\n',' ');
+            experimentTimerButton.setText(tile);
+            experimentTimerButton.setContentDescription(getString(enabled?R.string.main_timer_disable:R.string.main_timer_enable));
+            tintCameraAction(experimentTimerButton,R.color.alpr_accent);
+        }
         View clock=findViewById(R.id.experiment_timer_status);
         TextView value=findViewById(R.id.experiment_timer_value),caption=findViewById(R.id.experiment_timer_caption);
         if(clock==null||value==null||caption==null)return;
-        ExperimentSession.Snapshot snapshot=experimentSession.snapshot();
-        long deadline=experimentSession.timerDeadlineElapsedNanos(),seconds=0L;
-        int label=0;
-        boolean completed=false;
-        boolean configuredAfterFinish=snapshot.sessionId.equals(timerConfiguredAfterFinishedSession);
-        if(experimentModeEnabled){
-            if(experimentSession.isRunning()&&deadline>=0L){
-                seconds=com.example.alpr_v1.ui.ExperimentCountdown.remainingSeconds(deadline/1_000_000L,android.os.SystemClock.elapsedRealtime());
+        long seconds=experimentTimerConfig.durationSeconds();
+        int label=enabled?R.string.main_timer_set:R.string.main_timer_off;
+        boolean completed=timer.expired&&!timer.running&&!timer.id.equals(timerConfiguredAfterFinishedSession);
+        if(timer.running){
+            seconds=timer.durationSeconds;
+            if(timer.enabled){
+                seconds=com.example.alpr_v1.ui.ExperimentCountdown.remainingSeconds(timer.deadlineElapsedNanos/1_000_000L,android.os.SystemClock.elapsedRealtime());
                 label=R.string.main_timer_remaining;
-            }else if(experimentSession.state()==ExperimentSession.State.FINISHED&&!configuredAfterFinish){
-                if(experimentSession.completionReason()==ExperimentSession.CompletionReason.TIMER){
-                    label=R.string.main_timer_expired;completed=true;
-                }
-            }else if(experimentTimerConfig.enabled()){
-                seconds=experimentTimerConfig.durationSeconds();label=R.string.main_timer_set;
             }
-        }
+        }else if(completed){seconds=0L;label=R.string.main_timer_expired;}
         if(livePresentation!=null)livePresentation.setTimerCompleted(completed);
-        clock.setVisibility(label==0?View.GONE:View.VISIBLE);
-        if(label==0){clock.setContentDescription(null);return;}
+        clock.setVisibility(View.VISIBLE);
         value.setTextColor(getColor(label==R.string.main_timer_remaining?R.color.cockpit_cyan:R.color.white));
         String text=formatTimerDuration(seconds),description=getString(label);
         if(!text.contentEquals(value.getText()))value.setText(text);
         if(!description.contentEquals(caption.getText()))caption.setText(description);
-        long widest=Math.max(seconds,Math.max(experimentTimerConfig.durationSeconds(),(snapshot.timerDurationMillis+999L)/1000L));
+        long widest=Math.max(seconds,Math.max(experimentTimerConfig.durationSeconds(),timer.durationSeconds));
         float density=getResources().getDisplayMetrics().density;
-        float captionWidth=Math.max(caption.getPaint().measureText(getString(R.string.main_timer_remaining)),
-                Math.max(caption.getPaint().measureText(getString(R.string.main_timer_set)),caption.getPaint().measureText(getString(R.string.main_timer_expired))));
+        float captionWidth=0f;
+        for(int id:new int[]{R.string.main_timer_remaining,R.string.main_timer_set,R.string.main_timer_expired,R.string.main_timer_off})
+            captionWidth=Math.max(captionWidth,caption.getPaint().measureText(getString(id)));
         float numberWidth=value.getPaint().measureText(formatTimerDuration(widest))+30*density;
         boolean inline=clock instanceof LinearLayout&&((LinearLayout)clock).getOrientation()==LinearLayout.HORIZONTAL;
-        int width=(int)Math.ceil(inline?numberWidth+captionWidth+4*density:Math.max(numberWidth,captionWidth+8*density));
+        int width=(int)Math.ceil(Math.max(48*density,inline?numberWidth+captionWidth+4*density:Math.max(numberWidth,captionWidth+8*density)));
         if(clock.getLayoutParams().width!=width){clock.getLayoutParams().width=width;clock.requestLayout();}
-        clock.setContentDescription(text+", "+description);
+        boolean editable=timerSettingsAvailable();
+        clock.setEnabled(editable);clock.setClickable(editable);clock.setFocusable(editable);
+        clock.setContentDescription(getString(editable?R.string.main_timer_duration_action:R.string.main_timer_locked,text,description));
     }
 
     private static String formatTimerDuration(long seconds) {
@@ -11705,7 +12865,7 @@ public final class MainActivity extends AppCompatActivity {
         super.onWindowFocusChanged(hasFocus);
 
         if (hasFocus) {
-            com.example.alpr_v1.ui.CameraWindowUi.showSystemBars(getWindow());
+            com.example.alpr_v1.ui.CameraWindowUi.keepImmersive(getWindow());
         }
     }
     private final Runnable thermalUiRunnable =
@@ -12130,7 +13290,7 @@ public final class MainActivity extends AppCompatActivity {
         };
 
 
-        new MaterialAlertDialogBuilder(this)
+        new com.example.alpr_v1.ui.ImmersiveDialogBuilder(this)
                 .setTitle(
                         "Warunek temperatury"
                 )

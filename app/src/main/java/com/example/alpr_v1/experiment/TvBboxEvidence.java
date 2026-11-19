@@ -32,8 +32,12 @@ public final class TvBboxEvidence {
         if(stamp==null)throw new IllegalArgumentException("TV_BBOX_SOURCE_STAMP_REQUIRED");
         JSONObject identity=new JSONObject();put(identity,"source_stamp",F5aEvidence.stampJson(stamp));put(identity,"snapshot",snapshot.digest);
         String key=SetupJson.sha256(identity);FrameRecord previous=frames.get(key);if(previous!=null)return previous;
-        if(frames.size()>=MAX_FRAMES)throw new IllegalStateException("TV_BBOX_EVIDENCE_FRAME_LIMIT");
+        if(store.final180()==null&&frames.size()>=MAX_FRAMES)throw new IllegalStateException("TV_BBOX_EVIDENCE_FRAME_LIMIT");
+        if(store.final180()!=null)while(frames.size()>=64)frames.remove(frames.keySet().iterator().next());
+        long captureStarted=store.elapsedNow();
         FrameRecord row=new FrameRecord(key,stamp,camera,input,duration,rejection);frames.put(key,row);
+        if(store.final180()!=null){store.final180().captureCost(store.elapsedNow()-captureStarted);
+            store.final180().event("FRAME_OPENED",stamp,key,row.row.optString("scene_event_id"),0,null,null,null,null);}
         if(!store.enqueueF5a(row::write))row.queueRejected();
         return row;
     }
@@ -66,6 +70,7 @@ public final class TvBboxEvidence {
         private void queueRejected(){
             if(full!=null)full.release();if(crop!=null)crop.release();
             missing(image("source_image"),"writer_queue_full");missing(image("crop_image"),"writer_queue_full");
+            if(store.final180()!=null)store.recordTvBboxFailure("f6_image_writer_queue_full");
         }
         private void write(){
             JSONObject source,input;
@@ -93,9 +98,19 @@ public final class TvBboxEvidence {
         private void journal(){try{ResearchSessionStore.append(new File(store.directory(),JOURNAL),json().toString()+"\n");}
             catch(Exception error){store.recordTvBboxFailure("tv_bbox_journal_write_failed");}}
         public void complete(String status,String cancellation){
-            synchronized(this){put(row,"pipeline_status",status);put(row,"cancel_reason",cancellation);put(row,"stale_or_cancelled",!cancellation.isEmpty());}
-            store.enqueueF5a(this::journal);
+            complete(status,cancellation,0,"",0);
         }
+        public void complete(String status,String cancellation,int startedMt,String failure,long trace){
+            synchronized(this){put(row,"pipeline_status",status);put(row,"cancel_reason",cancellation);put(row,"stale_or_cancelled",!cancellation.isEmpty());}
+            if(store.final180()!=null)synchronized(this){put(row,"processing_error",failure);}
+            store.enqueueF5a(this::journal);
+            if(store.final180()!=null){
+                JSONObject d=new JSONObject();put(d,"pipeline_status",status);put(d,"mt_execution_status",startedMt==0?"NOT_RUN":"STARTED");
+                put(d,"mt_started_count",startedMt);put(d,"cancel_reason",cancellation);put(d,"processing_error",failure);
+                store.final180().event("FRAME_FINISHED",stampFromRow(),key,row.optString("scene_event_id"),trace,null,null,null,d);
+            }
+        }
+        private ContinuityStamp stampFromRow(){JSONObject s=row.optJSONObject("source_stamp");return new ContinuityStamp(s.optLong("scene_generation"),s.optLong("visual_epoch"),s.optLong("camera_transform_generation"),s.optLong("source_sequence"),s.optLong("source_timestamp_nanos"),com.example.alpr_v1.continuity.SourceTimestampDomain.valueOf(s.optString("source_timestamp_domain")));}
         public void bind(AcquisitionAttemptRecord record,int left,int top,int right,int bottom){
             if(record==null)return;
             record.tvBboxFrame=this;record.put("tv_bbox_frame_key",key);
@@ -122,6 +137,7 @@ public final class TvBboxEvidence {
         synchronized JSONObject json(){try{return new JSONObject(row.toString());}catch(Exception e){throw new IllegalStateException(e);}}
     }
     void flushFinal()throws Exception{
+        if(store.final180()!=null)return;
         StringBuilder text=new StringBuilder();synchronized(this){for(FrameRecord row:frames.values())text.append(row.json()).append('\n');}
         ResearchSessionStore.atomicText(new File(store.directory(),JOURNAL),text.toString());
     }

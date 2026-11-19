@@ -6,11 +6,24 @@ import com.example.alpr_v1.model.ModelVariant;
 
 public final class RuntimeBackendFactory {
     private RuntimeBackendFactory() {}
+    private static volatile Boolean observedNcnn;
+    private static final java.util.concurrent.atomic.AtomicLong availabilityGeneration = new java.util.concurrent.atomic.AtomicLong();
+
+    /** Null means unobserved, never an unavailable backend. Does not initialize NCNN. */
+    public static Boolean observedAvailability(ModelRuntime runtime) {
+        return runtime == ModelRuntime.TFLITE || runtime == ModelRuntime.ONNX ? Boolean.TRUE
+                : runtime == ModelRuntime.NCNN ? observedNcnn : Boolean.FALSE;
+    }
+    public static long availabilityGeneration() { return availabilityGeneration.get(); }
 
     public static boolean isRuntimeAvailable(ModelRuntime runtime) {
-        return runtime == ModelRuntime.TFLITE
+        boolean result = runtime == ModelRuntime.TFLITE
                 || runtime == ModelRuntime.ONNX
                 || (runtime == ModelRuntime.NCNN && NcnnBackend.isAvailable());
+        if (runtime == ModelRuntime.NCNN && !Boolean.valueOf(result).equals(observedNcnn)) {
+            observedNcnn = result; availabilityGeneration.incrementAndGet();
+        }
+        return result;
     }
 
     public static String unavailableReason(ModelRuntime runtime) {

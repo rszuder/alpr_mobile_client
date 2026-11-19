@@ -2,6 +2,7 @@ package com.example.alpr_v1.continuity;
 
 /** One immutable observation submitted to the future central scene coordinator. */
 public final class SceneEvidence {
+    public final LocalVehiclePoolEvidence localVehicles;
     public final long sourceFrameId;
     public final long sourceSequence;
     public final long sourceTimestampNanos;
@@ -128,7 +129,24 @@ public final class SceneEvidence {
         this.cameraRestarted = cameraRestarted;
         this.lensChanged = lensChanged;
         this.orientationChanged = orientationChanged;
+        this.localVehicles = LocalVehiclePoolEvidence.unavailable();
     }
+
+    private SceneEvidence(SceneEvidence original,LocalVehiclePoolEvidence local) {
+        sourceFrameId=original.sourceFrameId;sourceSequence=original.sourceSequence;
+        sourceTimestampNanos=original.sourceTimestampNanos;sourceTimestampDomain=original.sourceTimestampDomain;
+        rawVisualChange=original.rawVisualChange;rawVisualChangeScore=original.rawVisualChangeScore;
+        changedFraction=original.changedFraction;brightnessDelta=original.brightnessDelta;
+        anchorDriftScore=original.anchorDriftScore;anchorChangedFraction=original.anchorChangedFraction;
+        target=original.target;vehicles=original.vehicles;motion=original.motion;
+        focusedTrackingLost=original.focusedTrackingLost;focusedTrackingDegraded=original.focusedTrackingDegraded;
+        sourceDimensionsChanged=original.sourceDimensionsChanged;cameraRestarted=original.cameraRestarted;
+        lensChanged=original.lensChanged;orientationChanged=original.orientationChanged;
+        localVehicles=local!=null&&local.matches(sourceSequence,sourceTimestampNanos,sourceTimestampDomain)
+                ?local:LocalVehiclePoolEvidence.unavailable();
+    }
+
+    public SceneEvidence withLocalVehicles(LocalVehiclePoolEvidence local){return new SceneEvidence(this,local);}
 
     public boolean structuralChange() {
         return sourceDimensionsChanged || cameraRestarted

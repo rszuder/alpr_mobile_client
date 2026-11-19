@@ -59,7 +59,7 @@ public final class TemporalCharacterAggregator {
         public final List<Integer> rowCounts;
 
 
-        private Result(
+        Result(
                 String text,
                 double confidence,
                 int observations,

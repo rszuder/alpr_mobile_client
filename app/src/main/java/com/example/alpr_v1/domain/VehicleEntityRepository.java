@@ -46,6 +46,10 @@ public final class VehicleEntityRepository {
     public synchronized VehicleEntity get(long entityId) {
         return byEntityId.get(entityId);
     }
+    public synchronized void observeLocalPresence(long entityId,long sourceTime) {
+        VehicleEntity entity=byEntityId.get(entityId);
+        if(entity!=null)entity.observeLocalPresence(sourceTime);
+    }
 
     /** A confirmed continuity loss ends this identity, without touching neighbors or saved history. */
     public synchronized void retireEntity(long entityId) {
@@ -140,6 +144,21 @@ public final class VehicleEntityRepository {
         );
         entityIdByVehicleTrack.put(newVehicleTrackId, entityId);
         return entity;
+    }
+
+    /** Ordinary dynamic recovery only; called after fresh plate evidence and an atomic 1:1 check. */
+    public synchronized VehicleEntity promoteVerifiedVehicle(long candidateId,long originalId,long trackId,
+            NormalizedBounds bounds,MotionState motion,AppearanceDescriptor appearance,long now) {
+        VehicleEntity candidate=required(candidateId),original=required(originalId);
+        if(candidate.vehicleTrackId()!=trackId)throw new IllegalStateException("stale candidate track");
+        Long livePlate=candidate.plateTrackId();
+        if(livePlate!=null) {
+            reassignPlateTrack(livePlate,candidateId,originalId,candidate.plateQuad(),candidate.plateAppearance(),now);
+        }
+        entityIdByVehicleTrack.remove(trackId);
+        // Retire only the uncommitted working candidate. Historical A is never overwritten by B.
+        retireEntity(candidateId);
+        return reassignVehicleTrack(originalId,trackId,bounds,motion,appearance,now);
     }
 
     public synchronized PlateTrackAttachmentStatus attachPlate(
@@ -252,6 +271,11 @@ public final class VehicleEntityRepository {
 
     public synchronized void considerCrop(long entityId, CropReference crop) {
         required(entityId).considerCrop(crop);
+    }
+
+    public synchronized boolean updateDynamicRegistration(long entityId, PlateTextConsensus consensus,
+            long nowNanos, boolean freshMzAttempted, RegistrationConsensusSource source) {
+        return required(entityId).updateRegistration(consensus, nowNanos, freshMzAttempted, source, true);
     }
 
     public synchronized void markQueued(long entityId) {

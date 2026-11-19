@@ -1,0 +1,26 @@
+<resources>
+    <string name="dynamic_reading_available">Numer odczytany</string>
+    <string name="dynamic_best_reading_hint">Wyświetlam najlepszy dotychczasowy odczyt i jego ocenę MZ.</string>
+    <string name="dynamic_reading_verifying">Weryfikacja numeru</string>
+    <string name="dynamic_mz_confidence">MZ %1$d%%</string>
+    <string name="dynamic_stage_not_run">Jeszcze niewykonany w tej sesji</string>
+    <string name="dynamic_stage_last_run">Ostatnie wykonanie: %1$d s temu</string>
+    <string name="dynamic_stage_rejected">Wynik odrzucony jako nieaktualny</string>
+    <string name="dynamic_stage_no_plate">Tablica niewykryta</string>
+    <string name="dynamic_stage_read_pending">Odczyt wymaga kolejnych obserwacji</string>
+    <string name="dynamic_threshold_invalid">Próg MT nie mieści się w kadrze analizy</string>
+    <string name="dynamic_threshold_fix">Popraw próg pojazdu w Opcjach. Śledzenie pozostaje aktywne.</string>
+    <string name="dynamic_vehicle_too_small">Pojazd za mały do analizy tablicy</string>
+    <string name="dynamic_vehicle_size_hint">Zbliż kadr · %1$d × %2$d px / próg %3$d × %4$d px</string>
+    <string name="dynamic_plate_located">Tablica wykryta — oczekuję na odczyt</string>
+    <string name="dynamic_no_characters">Brak poprawnego odczytu znaków</string>
+    <string name="dynamic_locating_plate">Szukam tablicy pojazdu</string>
+    <string name="dynamic_collecting_read">Śledzę pojazd i zbieram kolejne obserwacje numeru.</string>
+    <string name="dynamic_keep_vehicle">Utrzymuj pojazd w kadrze.</string>
+    <string name="dynamic_mt_frame_size">Kadr analizy: %1$d × %2$d px. Progi odnoszą się do tych wymiarów, po obrocie obrazu.</string>
+    <string name="dynamic_mt_frame_unknown">Rzeczywisty rozmiar kadru będzie sprawdzony po powrocie do podglądu. Próg nie gwarantuje czytelnego odczytu znaków.</string>
+    <string name="dynamic_mt_frame_invalid">Próg nie mieści się w kadrze %1$d × %2$d px. Zmień wartości przed analizą.</string>
+    <string name="dynamic_plate_geometry_waiting">Sprawdzam pełną ramkę tablicy</string>
+    <string name="dynamic_plate_geometry_last">Ostatni odczyt pozostaje widoczny.</string>
+    <string name="dynamic_plate_geometry_hint">Utrzymuj cały pojazd i tablicę w kadrze.</string>
+</resources>

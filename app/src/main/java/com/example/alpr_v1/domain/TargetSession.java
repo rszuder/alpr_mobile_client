@@ -8,7 +8,7 @@ import java.util.EnumSet;
  */
 public final class TargetSession {
     private final long sessionId;
-    private final long entityId;
+    private long entityId;
     private final TargetPurpose purpose;
     private final long startedAtNanos;
     private TargetSessionState state = TargetSessionState.CREATED;
@@ -36,6 +36,11 @@ public final class TargetSession {
 
     public synchronized long sessionId() { return sessionId; }
     public synchronized long entityId() { return entityId; }
+    /** Canonicalize a verified ordinary-runtime observation without changing the session or user revision. */
+    public synchronized boolean rebindVerifiedVehicle(long expected,long canonical) {
+        if(entityId!=expected||canonical<=0L||state.terminal())return false;
+        entityId=canonical;return true;
+    }
     public synchronized TargetPurpose purpose() { return purpose; }
     public synchronized TargetSessionState state() { return state; }
     public synchronized long startedAtNanos() { return startedAtNanos; }
@@ -52,6 +57,11 @@ public final class TargetSession {
             throw new IllegalStateException("Session is already terminal: " + state);
         }
         if (next == state) {
+            touch(nowNanos);
+            return;
+        }
+        if (next == TargetSessionState.WAITING_FOR_TARGET && purpose == TargetPurpose.USER_PICK) {
+            state = next;
             touch(nowNanos);
             return;
         }
@@ -184,6 +194,8 @@ public final class TargetSession {
                         TargetSessionState.CANCELLED,
                         TargetSessionState.LOST
                 );
+            case WAITING_FOR_TARGET:
+                return EnumSet.of(TargetSessionState.CANCELLED,TargetSessionState.LOST);
             case COMPLETED:
             case CANCELLED:
             case LOST:

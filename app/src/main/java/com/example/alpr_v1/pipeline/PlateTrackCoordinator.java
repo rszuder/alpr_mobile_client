@@ -83,6 +83,7 @@ final class PlateTrackCoordinator {
 
         final TemporalCharacterAggregator.Result currentResult;
         final int mzAttemptIndex;
+        final String schedulingReason;
 
 
         private Decision(
@@ -93,7 +94,7 @@ final class PlateTrackCoordinator {
                 List<Integer> expectedRowCounts,
                 String expectedLayout,
                 TemporalCharacterAggregator.Result currentResult,
-                int mzAttemptIndex
+                int mzAttemptIndex,String schedulingReason
         ) {
             this.trackId =
                     trackId;
@@ -124,11 +125,17 @@ final class PlateTrackCoordinator {
             this.currentResult =
                     currentResult;
             this.mzAttemptIndex = Math.max(0, mzAttemptIndex);
+            this.schedulingReason=schedulingReason;
         }
     }
 
     private static final class State {
         final TemporalCharacterAggregator aggregator = new TemporalCharacterAggregator();
+        final DynamicCharacterEvidence dynamicEvidence = new DynamicCharacterEvidence();
+        final DynamicInferenceScheduler.Cadence cadence = new DynamicInferenceScheduler.Cadence();
+        long lastAttemptSourceNanos = Long.MIN_VALUE;
+        int emptyAttempts;
+        String schedulingReason="LEGACY";
         int attempts;
         float bestAttemptQuality;
         long lastAttemptFrame = Long.MIN_VALUE;
@@ -146,9 +153,27 @@ final class PlateTrackCoordinator {
      * odczyt od zera.
      */
     private final Map<Long, State> entityStates = new HashMap<>();
+    private final Map<Long, Long> identityEpochs = new HashMap<>();
+    private final Map<Long, Long> unassignedIdentityEpochs = new HashMap<>();
     private final Map<Long, State> activeStateByTrack = new HashMap<>();
     private RecognitionProfile profile = RecognitionProfile.BALANCED;
     private boolean zoomRetryPendingForNewTracks;
+    private boolean normalDynamicPolicy;
+    private com.example.alpr_v1.continuity.ContinuityStamp dynamicSource;
+    private final DynamicInferenceScheduler dynamicScheduler=new DynamicInferenceScheduler();
+    DynamicInferenceScheduler dynamicScheduler(){return dynamicScheduler;}
+    static final long DYNAMIC_RETRY_NANOS = 750_000_000L;
+    static final long DYNAMIC_PERIODIC_NANOS = 3_000_000_000L;
+
+    synchronized void beginSource(com.example.alpr_v1.continuity.ContinuityStamp source, boolean ordinaryDynamic) {
+        if (normalDynamicPolicy != ordinaryDynamic) reset();
+        normalDynamicPolicy = ordinaryDynamic;
+        dynamicSource = source;
+    }
+
+    private TemporalCharacterAggregator.Result current(State state) {
+        return normalDynamicPolicy ? state.dynamicEvidence.current() : state.aggregator.current();
+    }
 
     PlateTrackCoordinator() {}
 
@@ -161,6 +186,7 @@ final class PlateTrackCoordinator {
             long frameId,
             long nowNanos
     ) {
+        if(normalDynamicPolicy)activeStateByTrack.clear();
         onMtEvent(
                 observations == null || observations.isEmpty()
                         ? MtStateEvent.MT_RUN_WITHOUT_DETECTIONS
@@ -197,7 +223,7 @@ final class PlateTrackCoordinator {
             state.lastSeenNanos = nowNanos;
             state.missingSinceNanos = 0L;
             TemporalCharacterAggregator.Result current =
-                    state.aggregator.current();
+                    current(state);
 
             boolean recognize = shouldRecognize(state, observation, frameId);
             decisions.add(
@@ -205,13 +231,19 @@ final class PlateTrackCoordinator {
                             track.trackId,
                             track.sourceIndex,
                             recognize,
-                            state.aggregator.expectedCount(),
-                            state.aggregator.expectedRowCounts(),
-                            state.aggregator.expectedLayout(),
+                            normalDynamicPolicy ? 0 : state.aggregator.expectedCount(),
+                            normalDynamicPolicy ? java.util.Collections.emptyList() : state.aggregator.expectedRowCounts(),
+                            normalDynamicPolicy ? TemporalCharacterAggregator.LAYOUT_UNKNOWN : state.aggregator.expectedLayout(),
                             current,
-                            recognize ? state.attempts + 1 : state.attempts
+                            recognize ? state.attempts + 1 : state.attempts,state.schedulingReason
                     )
             );
+        }
+        if(normalDynamicPolicy) {
+            java.util.Set<Long> seen=new java.util.HashSet<>();
+            for(Decision decision:decisions)seen.add(decision.trackId);
+            for(Map.Entry<Long,State> entry:states.entrySet())if(!seen.contains(entry.getKey())&&entry.getValue().missingSinceNanos<=0L)
+                entry.getValue().missingSinceNanos=nowNanos;
         }
         expireMissingStates(nowNanos);
         if (!decisions.isEmpty()) {
@@ -252,10 +284,17 @@ final class PlateTrackCoordinator {
     ) {
         State state = activeStateByTrack.get(trackId);
         if (state == null) state = states.computeIfAbsent(trackId, ignored -> new State());
+        if (normalDynamicPolicy && !state.dynamicEvidence.isFresh(dynamicSource, frameId)) return current(state);
         state.zoomRetryPending = false;
         state.attempts++;
         state.bestAttemptQuality = Math.max(state.bestAttemptQuality, quality);
         state.lastAttemptFrame = frameId;
+        if (normalDynamicPolicy) {
+            state.cadence.attempted();
+            state.lastAttemptSourceNanos = dynamicSource.sourceTimestampNanos;
+            state.emptyAttempts = characters.isEmpty() ? state.emptyAttempts + 1 : 0;
+            return state.dynamicEvidence.accept(dynamicSource, frameId, quality, characters, labels);
+        }
         return state.aggregator.accept(characters, labels);
     }
 
@@ -273,6 +312,40 @@ final class PlateTrackCoordinator {
         activeStateByTrack.put(trackId, entityState);
     }
 
+    synchronized void bindEntityState(long trackId,long entityId,long epoch) {
+        unassignedIdentityEpochs.remove(trackId);
+        Long previous=identityEpochs.put(entityId,epoch);
+        if(previous==null||previous!=epoch&&!normalDynamicPolicy)entityStates.put(entityId,new State());
+        bindEntityState(trackId,entityId);
+    }
+
+    synchronized void bindUnassignedIdentity(long trackId,long epoch) {
+        Long previous=unassignedIdentityEpochs.put(trackId,epoch);
+        if(previous==null||previous!=epoch)states.put(trackId,new State());
+        activeStateByTrack.put(trackId,states.get(trackId));
+    }
+
+    synchronized Decision identityDecision(Decision original,Observation observation,long frameId) {
+        State state=activeStateByTrack.get(original.trackId);
+        if(state==null)return original;
+        boolean recognize=shouldRecognize(state,observation,frameId);
+        return new Decision(original.trackId,original.sourceIndex,recognize,normalDynamicPolicy?0:state.aggregator.expectedCount(),
+                normalDynamicPolicy?java.util.Collections.emptyList():state.aggregator.expectedRowCounts(),
+                normalDynamicPolicy?TemporalCharacterAggregator.LAYOUT_UNKNOWN:state.aggregator.expectedLayout(),current(state),
+                recognize?state.attempts+1:state.attempts,state.schedulingReason);
+    }
+    static Decision deferred(Decision original) {
+        return new Decision(original.trackId,original.sourceIndex,false,original.expectedCharacterCount,
+                original.expectedRowCounts,original.expectedLayout,original.currentResult,
+                original.mzAttemptIndex,original.schedulingReason);
+    }
+
+    synchronized void promoteVerifiedState(long candidate,long original,long plateTrackId,long epoch) {
+        State fresh=entityStates.remove(candidate);
+        identityEpochs.remove(candidate);identityEpochs.put(original,epoch);
+        if(fresh!=null){entityStates.put(original,fresh);activeStateByTrack.put(plateTrackId,fresh);}
+    }
+
     synchronized void recordFailedAttempt(long trackId, float quality, long frameId) {
         State state = activeStateByTrack.get(trackId);
         if (state == null) state = states.computeIfAbsent(trackId, ignored -> new State());
@@ -283,11 +356,21 @@ final class PlateTrackCoordinator {
     }
 
     synchronized void reset() {
+        dynamicScheduler.reset();
         tracker.reset();
         states.clear();
         entityStates.clear();
+        identityEpochs.clear();
+        unassignedIdentityEpochs.clear();
         activeStateByTrack.clear();
         zoomRetryPendingForNewTracks = false;
+    }
+    synchronized void resetTechnicalTracks() {
+        tracker.reset();states.clear();activeStateByTrack.clear();unassignedIdentityEpochs.clear();
+        zoomRetryPendingForNewTracks=false;
+    }
+    synchronized void retainEntityStates(java.util.Set<Long> ids) {
+        entityStates.keySet().retainAll(ids);identityEpochs.keySet().retainAll(ids);
     }
 
     private void expireMissingStates(long nowNanos) {
@@ -299,6 +382,7 @@ final class PlateTrackCoordinator {
                 iterator.remove();
             }
         }
+        if(normalDynamicPolicy)unassignedIdentityEpochs.keySet().retainAll(states.keySet());
     }
 
     synchronized void applyCameraZoomTransform(float relativeRatio) {
@@ -339,8 +423,24 @@ final class PlateTrackCoordinator {
          * ani dla bardzo słabego obrazu.
          */
         if (!observation.validGeometry) {
-
+            state.schedulingReason="INVALID_GEOMETRY";
             return false;
+        }
+
+        if (normalDynamicPolicy) {
+            if (dynamicSource == null || !state.dynamicEvidence.isFresh(dynamicSource, frameId)) {
+                state.schedulingReason="SOURCE_DUPLICATE";return false;
+            }
+            if (!Float.isFinite(observation.quality)||observation.quality < profile.minimumQuality) {
+                state.schedulingReason="IMAGE_QUALITY";return false;
+            }
+            TemporalCharacterAggregator.Result evidence = current(state);
+            boolean better=state.zoomRetryPending||observation.quality>=state.bestAttemptQuality+profile.qualityImprovement;
+            boolean due=dynamicScheduler.due(state.cadence,frameId,state.attempts,
+                    evidence!=null&&evidence.stable,state.emptyAttempts,better);
+            state.schedulingReason=state.attempts==0?"FIRST_OBSERVATION":!due?"ADAPTIVE_INTERVAL":better?"BETTER_CROP":
+                    state.emptyAttempts>=2?"EMPTY_BACKOFF":evidence!=null&&evidence.stable?"STABLE_CHECK":"UNCERTAIN_RETRY";
+            return due;
         }
 
         /*

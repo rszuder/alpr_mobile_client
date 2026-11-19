@@ -6,6 +6,11 @@ import com.example.alpr_v1.domain.TargetPurpose;
 
 public final class DynamicZoomPolicy {
     private DynamicZoomPolicy() { }
+    public static boolean allowsOrdinary(TargetPurpose purpose,AutoZoomController.Sample sample,
+            boolean moving,SceneContinuityState continuity) {
+        return (purpose==TargetPurpose.USER_PICK||purpose==TargetPurpose.SEARCH_PURSUIT)
+                &&allows(purpose,sample,moving,continuity);
+    }
     public static boolean allows(TargetPurpose purpose, AutoZoomController.Sample sample,
             boolean moving, SceneContinuityState continuity) {
         return purpose != null && purpose != TargetPurpose.SCAN_ACQUISITION

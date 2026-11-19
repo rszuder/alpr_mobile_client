@@ -29,7 +29,7 @@ public class StartPresentationConsistencyTest {
         ExperimentSession.Prepared prepared=f.sessions.experiment.prepare("roi_budget",config.variant,(TimerConfig)TvBboxStartUiTest.get(f.main,"experimentTimerConfig"),(ThermalConfig)TvBboxStartUiTest.get(f.main,"experimentThermalConfig"),ExperimentIdentity.defaults(),config);
         f.store=TvBboxProducerFixture.prepareFor(f.temp.newFolder(),prepared);TvBboxStartUiTest.set(f.sessions,"store",f.store);
         Class<?> type=Class.forName(MainActivity.class.getName()+"$PreparedAnalysisStart");Constructor<?> ctor=type.getDeclaredConstructors()[0];ctor.setAccessible(true);
-        TvBboxStartUiTest.set(f.main,"preparedExperimentStart",ctor.newInstance(config,prepared,f.store,0));
+        TvBboxStartUiTest.set(f.main,"preparedExperimentStart",ctor.newInstance(config,prepared,f.store,0,TvBboxStartUiTest.call(f.main,"capturePreparationCameraContext",new Class<?>[0])));
         ((AlprPipeline)TvBboxStartUiTest.get(f.main,"pipeline")).setResearchExecutionConfig(config);
     }
     @After public void close()throws Exception{if(presentation!=null)presentation.dispose();if(harness!=null)harness.close();}
@@ -53,11 +53,13 @@ public class StartPresentationConsistencyTest {
     @Test public void enabledPreparationActionDoesNotMeanReady()throws Exception{
         TvBboxStartUiTest.set(f.main,"cameraPreviewActive",false);call("renderAnalysisControls");
         assertTrue(start().isEnabled());assertFalse(status().contains("Gotowe do START"));
-        assertTrue(status().contains("kamery"));assertFalse(f.sessions.experiment.isRunning());
+        assertEquals("Kamera jest wyłączona",status());
+        assertTrue(((TextView)f.main.findViewById(R.id.live_status_secondary)).getText().toString().contains("Podgląd"));
+        assertFalse(f.sessions.experiment.isRunning());
     }
-    @Test public void pendingIntentShowsCancelAndCannotClaimReady()throws Exception{
+    @Test public void pendingIntentShowsStopAndCannotClaimReady()throws Exception{
         f.intent().request();call("renderAnalysisControls");assertTrue(start().isEnabled());
-        assertEquals(f.main.getString(R.string.camera_action_cancel),start().getText().toString());assertEquals("Uruchamianie eksperymentu",status());
+        assertEquals(f.main.getString(R.string.main_ui_stop_analysis),start().getText().toString());assertEquals("Uruchamianie eksperymentu",status());
         assertFalse(f.sessions.experiment.isRunning());assertFalse(f.store.accepting());
     }
 }

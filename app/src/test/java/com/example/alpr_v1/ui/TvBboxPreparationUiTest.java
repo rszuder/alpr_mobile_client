@@ -64,6 +64,8 @@ public class TvBboxPreparationUiTest {
         assertEquals("READY",controller.bboxPreparationStatus());TvBboxCrop selected=controller.selectionForInput();assertEquals(640,selected.sourceWidth);
         assertEquals(selected.calibrationDigest,controller.freezeInputSelection(selected).getString("digest_sha256"));
         set(controller,"geometry",TvBboxCropTest.geometry(640,400,0,640,400,new double[]{0,0,640,400},800,600,2));
-        assertTrue(controller.bboxPreparationStatus().contains("STALE"));assertThrows(Exception.class,controller::selectionForInput);
+        assertTrue(controller.bboxPreparationStatus().contains("wymaga sprawdzenia"));
+        assertTrue(controller.bboxPreparationStatus().contains("CAMERA_GEOMETRY_CHANGED"));
+        assertEquals("STALE",controller.snapshot(System.currentTimeMillis()).getString("status"));assertThrows(Exception.class,controller::selectionForInput);
     }
 }

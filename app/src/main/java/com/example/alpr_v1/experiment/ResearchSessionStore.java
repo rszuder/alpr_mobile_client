@@ -42,6 +42,8 @@ public final class ResearchSessionStore {
     private final JSONObject metadata;
     private final ThreadPoolExecutor writer;
     private final F5aEvidence f5aEvidence;
+    private final Final180Evidence final180;
+    public Final180Evidence final180(){return final180;}
     private MzInputEvidence mzInputEvidence;
     private TvBboxEvidence tvBboxEvidence;
     public TvBboxEvidence tvBboxEvidence(){return tvBboxEvidence;}
@@ -128,6 +130,8 @@ public final class ResearchSessionStore {
     }
     static ResearchSessionStore prepare(File root,ExperimentSession.Prepared prepared,int capacity,int attemptCapacity,
                                         long minimumFreeBytes,ImageEncoder encoder,java.util.function.LongSupplier clock) throws Exception {
+        if(prepared.execution!=null&&prepared.execution.final180PhotoRoi()!=null)
+            Final180PhotoRoi.requireExecution(prepared.execution.toJson());
         Files.createDirectories(root.toPath());
         if (!root.isDirectory() || root.getUsableSpace() < minimumFreeBytes)
             throw new IOException("Brak miejsca na trwałą sesję badawczą");
@@ -167,6 +171,7 @@ public final class ResearchSessionStore {
         for (String path : new String[]{"samples/attempts.jsonl","samples/crops.jsonl","samples/write_states.jsonl",
                 "telemetry/events.jsonl","telemetry/traces.jsonl","telemetry/thermal.jsonl",RuntimeEvidenceJournal.FILE})
             atomicText(new File(directory,path),"");
+        if(Final180Evidence.enabled(json))atomicText(new File(directory,Final180Evidence.FILE),"");
         atomicText(new File(directory,"session.json"),json.toString(2));
         ResearchSessionStore store = new ResearchSessionStore(directory,json,capacity,attemptCapacity,encoder,clock,
                 prepared.timer.enabled() ? prepared.timer.durationMillis() * 1_000_000L : -1L);
@@ -182,6 +187,14 @@ public final class ResearchSessionStore {
         writer = new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(capacity),r -> {
             Thread thread = new Thread(r,"research-session-writer"); thread.setDaemon(true); return thread;
         },new ThreadPoolExecutor.AbortPolicy());
+        final180=Final180Evidence.enabled(metadata)?new Final180Evidence(this):null;
+        if(final180!=null)try{metadata.put("capture_profile",Final180PhotoRoi.PROFILE).put("f6_pending_loss_unknown",true)
+                .put("f6_storage",new JSONObject().put("writer_queue_capacity",capacity).put("attempt_capacity",attemptCapacity)
+                        .put("source_copy_memory_bytes",MAX_SOURCE_FRAME_BYTES).put("image_copy_memory_bytes",MAX_IMAGE_BYTES)
+                        .put("minimum_start_free_bytes",128L*1024*1024).put("free_bytes_at_prepare",directory.getUsableSpace())
+                        .put("total_frame_count_limit",JSONObject.NULL).put("sort_buffer_bytes",ExternalJsonSort.BUFFER_BYTES)
+                        .put("sort_merge_fan_in",ExternalJsonSort.FAN_IN).put("storage_budget_90min","NOT_VERIFIED"));
+        }catch(Exception e){throw new IllegalArgumentException(e);}
         f5aEvidence = metadata.optBoolean("f5a_evidence_extensions") ? new F5aEvidence(this) : null;
         if("TV_BBOX_CROP".equals(metadata.optJSONObject("execution")==null?"":metadata.optJSONObject("execution").optString("input_mode"))){
             JSONObject crop=metadata.optJSONObject("execution").optJSONObject("tv_bbox_crop");
@@ -202,12 +215,17 @@ public final class ResearchSessionStore {
         try { return value==null?null:new JSONObject(value.toString()); }
         catch (org.json.JSONException invalid) { return null; }
     }
+    /** Optional diagnostic captured at actual START; no current preferences are used at export/recovery. */
+    public synchronized void setCameraObservationBeforeStart(JSONObject observation)throws org.json.JSONException{
+        if(state!=State.PREPARED)throw new IllegalStateException("Camera observation requires PREPARED session");
+        if(observation!=null)metadata.put("camera_observation",new JSONObject(observation.toString()));
+    }
     public F5aEvidence f5aEvidence() { return f5aEvidence; }
     public boolean evidenceExtensionsComplete() { return f5aEvidence==null || f5aComplete; }
     long elapsedNow() { return elapsedClock.getAsLong(); }
     boolean enqueueF5a(Runnable task) {
-        try { writer.execute(task); return true; }
-        catch (RejectedExecutionException full) { return false; }
+        try { writer.execute(()->{task.run();if(final180!=null)try{flushRejected();}catch(IOException e){recordMetadataFailure("f6_rejection_flush_failed");}}); return true; }
+        catch (RejectedExecutionException full) { if(final180!=null)recordMetadataFailure("f6_writer_queue_full");return false; }
     }
     /** Evidence-only work uses the existing full-source memory budget and shared writer. */
     public void captureSceneEvidence(String ticket,ContinuityStamp stamp,Bitmap source) {
@@ -273,6 +291,13 @@ public final class ResearchSessionStore {
             atomicText(new File(directory,"session.json"),metadata.toString(2));
         } catch (Exception ignored) { }
     }
+    /** Finalization failure is not a failed START. Keep its frozen metadata and all evidence. */
+    public synchronized void recordFinalizationFailure(Exception error){
+        accepting=false;state=State.ERROR;writer.shutdown();
+        try{metadata.put("state","ERROR").put("collection_complete",false).put("last_write_error",error.toString());
+            atomicText(new File(directory,"session.json"),metadata.toString(2));}
+        catch(Exception writeError){error.addSuppressed(writeError);}
+    }
     public synchronized void startAt(long wallMillis,long elapsedNanos) throws Exception {
         if (state != State.PREPARED || elapsedNanos < preparedElapsedNanos)
             throw new IllegalStateException("Magazyn sesji nie został przygotowany przed t0");
@@ -322,6 +347,11 @@ public final class ResearchSessionStore {
     /** Optional setup metadata is frozen in the same existing START write; never a model configuration. */
     public synchronized CompletableFuture<Void> startAtQueued(long wallMillis, long elapsedNanos,
             JSONObject tvSetup, java.util.function.Consumer<Exception> failure) throws Exception {
+        return startAtQueued(wallMillis,elapsedNanos,tvSetup,null,failure);
+    }
+    /** Optional audit event shares the durable START queue, before any sample admission. */
+    public synchronized CompletableFuture<Void> startAtQueued(long wallMillis,long elapsedNanos,
+            JSONObject tvSetup,JSONObject startEvent,java.util.function.Consumer<Exception> failure)throws Exception{
         if (state != State.PREPARED || elapsedNanos < preparedElapsedNanos)
             throw new IllegalStateException("Magazyn sesji nie został przygotowany przed t0");
         requireTvBboxStartAllowed(wallMillis);
@@ -340,10 +370,13 @@ public final class ResearchSessionStore {
             // Invalid optional data is ignored; it must not change samples-v2 error semantics.
         }
         String startRecord = metadata.toString(2);
+        String startEventRecord=startEvent==null?null:new JSONObject(startEvent.toString())
+                .put("experiment_session_id",sessionId()).toString();
         CompletableFuture<Void> committed = new CompletableFuture<>();
         writer.execute(() -> {
             try {
                 atomicText(new File(directory, "session.json"), startRecord);
+                if(startEventRecord!=null)append(new File(directory,"telemetry/events.jsonl"),startEventRecord+"\n");
                 synchronized (this) { if (state == State.RUNNING) accepting = true; }
                 committed.complete(null);
             }
@@ -638,6 +671,10 @@ public final class ResearchSessionStore {
     }
     /** Called off the UI/inference thread, after the pipeline's final in-flight work. */
     public File finish(Telemetry telemetry,ResearchExecutionConfig frozen) throws Exception {
+        return finish(telemetry,frozen,stage->{});
+    }
+    public File finish(Telemetry telemetry,ResearchExecutionConfig frozen,java.util.function.Consumer<String> progress) throws Exception {
+        progress.accept("QUEUE_DRAIN");
         if (accepting || state != State.FINALIZING) throw new IllegalStateException("Najpierw zakończ przyjmowanie prób");
         try {
             boolean attemptsDrained=attempts.tryAcquire(attemptCapacity,60,TimeUnit.SECONDS);
@@ -646,6 +683,7 @@ public final class ResearchSessionStore {
             if (!writer.awaitTermination(60,TimeUnit.SECONDS)) { fail("writer_drain_timeout"); throw new IOException("Nie zakończono kolejki zapisu"); }
             if(f5aEvidence!=null)f5aEvidence.flushFinal();
             if(tvBboxEvidence!=null){tvBboxEvidence.flushFinal();metadata.put("tv_bbox_inputs_pending",false);}
+            if(final180!=null)metadata.put("f6_pending_loss_unknown",false).put("f6_evidence",final180.summary());
             flushRejected();
             saveTelemetry(telemetry);
             if(mzInputEvidence!=null)metadata.put("mz_input_diagnostic_costs",mzInputEvidence.costs());
@@ -657,10 +695,11 @@ public final class ResearchSessionStore {
                         .put("attempt_count",written.get()).put("attempts_seen",sequence.get()).put("last_write_error",lastFailure);
                 atomicText(new File(directory,"session.json"),metadata.toString(2));
             }
-            File archive = buildArchive(directory,frozen,completed);
+            File archive = buildArchive(directory,frozen,completed,progress);
             JSONObject finalized=new JSONObject(read(new File(directory,"session.json")));
             state = State.valueOf(finalized.getString("state"));
             f5aComplete=finalized.optBoolean("scene_evidence_complete") && finalized.optBoolean("mt_detection_roles_complete");
+            if(final180!=null)f5aComplete &= finalized.getJSONObject("f6_evidence").optBoolean("complete");
             return archive;
         } catch (Exception error) {
             state = State.ERROR;
@@ -700,6 +739,10 @@ public final class ResearchSessionStore {
             boolean interrupted = state.equals("RUNNING") || state.equals("FINALIZING") || state.equals("PREPARED");
             File archive = new File(directory,"final/"+json.getString("session_id")+".alprsession");
             if (interrupted || !archive.isFile() && (state.equals("PARTIAL") || state.equals("ERROR") || state.equals("COMPLETED"))) {
+                if(Final180Evidence.enabled(json)){
+                    if(!archive.isFile())recovered.add(recoverF6Copy(directory,context));
+                    continue;
+                }
                 json.put("state","PARTIAL").put("collection_complete",false)
                         .put("completion_reason",interrupted ? "process_interrupted" : json.optString("completion_reason","archive_recovery"))
                         .put("finished_at",Instant.now().toString())
@@ -712,10 +755,69 @@ public final class ResearchSessionStore {
         if (recoveryFailure != null) throw recoveryFailure;
         return recovered;
     }
+    /** Recover F6 exclusively on a provenance-labelled copy. Raw metadata, journals and failed ZIP stay untouched. */
+    /** Explicit recovery action; original session metadata/journals are never rewritten. */
+    public static File recoverCopy(File source,Context context)throws Exception{
+        File root=sessionsRoot(context).getCanonicalFile();
+        if(!source.getCanonicalFile().getParentFile().equals(root))throw new IOException("RECOVERY_OUTSIDE_SESSION_REGISTRY");
+        JSONObject original=new JSONObject(read(new File(source,"session.json")));
+        File archive=new File(source,"final/"+original.getString("session_id")+".alprsession");
+        if(archive.isFile())return archive;
+        String state=original.optString("state");
+        if(PROCESS.equals(original.optString("process_owner"))&&(state.equals("RUNNING")||state.equals("PREPARED")||state.equals("FINALIZING")))
+            throw new IOException("RECOVERY_REQUIRES_CLOSED_OR_INTERRUPTED_OWNER");
+        recoverF6Copy(source,context);
+        return archive;
+    }
+    private static File recoverF6Copy(File source,Context context)throws Exception{
+        String sourceHash=com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(new File(source,"session.json"));
+        File work=new File(source,"recovery/f6-copy-"+sourceHash.substring(0,16));
+        String id=new JSONObject(read(new File(source,"session.json"))).getString("session_id");
+        File built=new File(work,"final/"+id+".alprsession");
+        if(!work.exists()){
+            Files.createDirectories(work.toPath());JSONObject manifest=new JSONObject();
+            for(String child:new String[]{"session.json","samples","telemetry","pipeline"}){
+                File input=new File(source,child);if(!input.exists())continue;
+                try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(input.toPath())){
+                    for(java.nio.file.Path path:(Iterable<java.nio.file.Path>)paths::iterator){
+                        java.nio.file.Path relative=source.toPath().relativize(path),target=work.toPath().resolve(relative);
+                        if(Files.isDirectory(path)){Files.createDirectories(target);continue;}
+                        Files.createDirectories(target.getParent());Files.copy(path,target);
+                        String digest=com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(path.toFile());
+                        if(!digest.equals(com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(target.toFile())))throw new IOException("F6_RECOVERY_COPY_SHA_MISMATCH");
+                        manifest.put(relative.toString().replace('\\','/'),digest);
+                    }
+                }
+            }
+            atomicText(new File(work,"recovery_provenance.json"),new JSONObject().put("source_directory",source.getAbsolutePath())
+                    .put("source_session_sha256",sourceHash).put("source_files_sha256",manifest)
+                    .put("recovery_policy","AUTHENTIC_COPY_ONLY_PARTIAL").toString(2));
+            JSONObject json=new JSONObject(read(new File(work,"session.json")));
+            String originalState=json.optString("state");
+            boolean interrupted=originalState.equals("RUNNING")||originalState.equals("FINALIZING")||originalState.equals("PREPARED");
+            json.put("state","PARTIAL").put("collection_complete",false).put("pending_sample_loss_unknown",true)
+                    .put("completion_reason",interrupted?"process_interrupted":json.optString("completion_reason","archive_recovery"))
+                    .put("finished_at",Instant.now().toString());
+            atomicText(new File(work,"session.json"),json.toString(2));
+            built=buildArchive(work,null);
+        }else if(!built.isFile())throw new IOException("F6_RECOVERY_WORKSPACE_PRESERVED_REQUIRES_REVIEW: "+work);
+        if(Final180Evidence.enabled(new JSONObject(read(new File(source,"session.json")))))Final180ArchiveValidator.validate(built);
+        if(!sourceHash.equals(com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(new File(source,"session.json"))))throw new IOException("F6_RECOVERY_SOURCE_CHANGED");
+        File destination=new File(source,"final/"+id+".alprsession");Files.createDirectories(destination.getParentFile().toPath());
+        File temporary=new File(source,"final/"+id+".recovered.tmp");
+        Files.copy(built.toPath(),temporary.toPath());ResearchArchive.verifyEntryHashes(temporary);
+        Files.move(temporary.toPath(),destination.toPath());
+        com.example.alpr_v1.logging.AppLog.info(context,"F6_SESSION_RECOVERY","Odzyskano kopię PARTIAL sesji "+id+"; źródło zachowano; pochodzenie: "+new File(work,"recovery_provenance.json"));
+        return work;
+    }
     public static File buildArchive(File directory,ResearchExecutionConfig frozen) throws Exception {
         return buildArchive(directory,frozen,null);
     }
     private static File buildArchive(File directory,ResearchExecutionConfig frozen,State completed) throws Exception {
+        return buildArchive(directory,frozen,completed,stage->{});
+    }
+    private static File buildArchive(File directory,ResearchExecutionConfig frozen,State completed,java.util.function.Consumer<String> progress) throws Exception {
+        progress.accept("FINALIZING_JSONL");
         JSONObject session = new JSONObject(read(new File(directory,"session.json")));
         if (completed != null) session.put("state",completed.name()).put("collection_complete",completed == State.COMPLETED);
         finalizeSamples(directory,session);
@@ -755,14 +857,17 @@ public final class ResearchSessionStore {
         File destination = new File(directory,"final/"+id+".alprsession");
         Files.createDirectories(destination.getParentFile().toPath());
         File temporary = new File(destination.getPath()+".tmp");
+        progress.accept("BUILDING_ARCHIVE");
         try (OutputStream output = new FileOutputStream(temporary)) {
+            boolean f6=Final180Evidence.enabled(session);
             ResearchArchive.writePersistentResearchSession(output,report.toString(2),
-                    readOr(new File(directory,"telemetry/traces.csv"),""),
-                    readOr(new File(directory,"telemetry/thermal.csv"),""),
-                    readOr(new File(directory,"telemetry/frame_flow.csv"),""),
-                    readOr(new File(directory,"telemetry/events.jsonl"),""),
-                    readOr(new File(directory,"telemetry/application.log"),""),directory,frozen);
+                    f6?"":readOr(new File(directory,"telemetry/traces.csv"),""),
+                    f6?"":readOr(new File(directory,"telemetry/thermal.csv"),""),
+                    f6?"":readOr(new File(directory,"telemetry/frame_flow.csv"),""),
+                    f6?"":readOr(new File(directory,"telemetry/events.jsonl"),""),
+                    f6?"":readOr(new File(directory,"telemetry/application.log"),""),directory,frozen);
         }
+        progress.accept("VALIDATING_ARCHIVE");
         ResearchArchive.verifyEntryHashes(temporary);
         if(session.optBoolean("mz_input_evidence_enabled"))MzInputEvidenceValidator.validate(temporary);
         if("TV_BBOX_CROP".equals(session.optString("input_mode")))TvBboxInputValidator.validate(temporary);
@@ -874,9 +979,10 @@ public final class ResearchSessionStore {
                 .put("mt_invocation_identity","one_backend_execution_one_input")
                 .put("mt_detection_index_base",0).put("mt_detection_order","decoder_output")
                 .put("attempts_file","samples/attempts.csv").put("crops_file","samples/index.csv");
-        F5aEvidence.finalizeStored(directory,session,sampleSchema);
+        if(Final180Evidence.enabled(session))Final180Evidence.finalizeStored(directory,session,sampleSchema);
+        else F5aEvidence.finalizeStored(directory,session,sampleSchema);
         MzInputEvidence.finalizeStored(directory,session,sampleSchema);
-        TvBboxEvidence.finalizeStored(directory,session,sampleSchema);
+        if(!Final180Evidence.enabled(session))TvBboxEvidence.finalizeStored(directory,session,sampleSchema);
         atomicText(new File(directory,"samples/schema.json"),sampleSchema.toString(2));
         long incomplete = malformed+malformedTelemetry+counts[2]+counts[3];
         long previousIncomplete = session.optLong("integrity_loss_count");

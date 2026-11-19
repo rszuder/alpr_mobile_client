@@ -5,6 +5,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class BadgeReadingPolicyTest {
+    @Test public void dynamicCurrentEvidenceCanLowerConfidenceCorrectTextAndRejectDelayedSnapshots() {
+        EntityRecognitionSnapshot before=new EntityRecognitionSnapshot(7,77,"WX1234",.95,true,4,1000,1);
+        EntityRecognitionSnapshot conflict=new EntityRecognitionSnapshot(7,77,"WX1284",.65,false,5,2000,1);
+        assertSame(conflict,BadgeReadingPolicy.currentDynamic(before,conflict));
+        assertSame(conflict,BadgeReadingPolicy.currentDynamic(conflict,before));
+        assertSame(conflict,BadgeReadingPolicy.currentDynamic(conflict,new EntityRecognitionSnapshot(7,77,"WX1234",.99,true,9,3000,0)));
+    }
     @Test public void weakerDifferentTextCannotReplaceEvenWhenItIsConfirmed() {
         EntityRecognitionSnapshot previous = reading("WX1234", 0.95, false);
         assertSame(previous, BadgeReadingPolicy.retainBest(previous, reading("WX1284", 0.65, true)));

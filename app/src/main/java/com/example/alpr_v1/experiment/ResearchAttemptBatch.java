@@ -37,6 +37,7 @@ public final class ResearchAttemptBatch {
             record.put("roi_left",left); record.put("roi_top",top); record.put("roi_right",right); record.put("roi_bottom",bottom);
             record.put("input_width",inputWidth); record.put("input_height",inputHeight);
             records.add(record);
+            if(store.final180()!=null)record.put("trace_frame_id",traceFrameId);
             detectionCounts.put(record,0); invocations.put(record,record);
             decoded.put(record,false);
             if(store.f5aEvidence()!=null)record.put("f5a_scene_event_id",sceneEventId);
@@ -65,6 +66,7 @@ public final class ResearchAttemptBatch {
                     "source_frame_missing_evidence_reason","source_frame_width_px",
                     "source_frame_height_px","source_frame_coordinate_space",
                     "source_frame_origin","source_frame_capture_elapsed_nanos"}) record.put(key,call.data.opt(key));
+            if(store.final180()!=null){record.put("trace_frame_id",traceFrameId);record.put("mt_started_elapsed_nanos",call.data.opt("mt_started_elapsed_nanos"));record.put("mt_backend_elapsed_nanos",call.data.opt("mt_backend_elapsed_nanos"));record.put("f5a_scene_event_id",sceneEventId);}
             if(call.inputPayloadFactory!=null)record.inputPayload=call.inputPayloadFactory.get();
             else record.copyEvidence(call.plateCrop ? call.mtInputImage : call.image);
             if (!record.plateCrop) record.put("evidence_kind",call.data.optString("mt_input_evidence_kind",

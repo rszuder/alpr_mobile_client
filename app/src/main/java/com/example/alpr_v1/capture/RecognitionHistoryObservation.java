@@ -9,6 +9,8 @@ public final class RecognitionHistoryObservation {
             entityId, vehicleTrackId, plateTrackId, capturedAtMillis, capturedElapsedNanos;
     public final String text, associationReason, captureSource;
     public final String rawPrediction, registrationKey;
+    /** Runtime location of the original session; never changes the observation/export identity. */
+    public final String captureSessionId;
     public final double confidence, plateConfidence;
     public final boolean confirmed;
     public final int sourceWidth, sourceHeight;
@@ -17,6 +19,11 @@ public final class RecognitionHistoryObservation {
 
     public RecognitionHistoryObservation(PlateObservation observation, String captureSource,
             ObservationTelemetry telemetry) {
+        this(observation,captureSource,telemetry,"");
+    }
+    public RecognitionHistoryObservation(PlateObservation observation,String captureSource,
+            ObservationTelemetry telemetry,String captureSessionId) {
+        this.captureSessionId=captureSessionId==null?"":captureSessionId;
         sceneGeneration = observation.sceneGeneration; visualEpoch = observation.visualEpoch;
         cameraTransformGeneration = observation.cameraTransformGeneration; frameId = observation.frameId;
         entityId = observation.entityId; vehicleTrackId = observation.vehicleTrackId;

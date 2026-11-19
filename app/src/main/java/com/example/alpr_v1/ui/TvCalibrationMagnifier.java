@@ -11,7 +11,6 @@ import android.graphics.SurfaceTexture;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.view.Gravity;
 import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -19,8 +18,7 @@ import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Magnifier;
-import android.widget.PopupWindow;
+import android.widget.FrameLayout;
 import androidx.camera.view.PreviewView;
 import com.example.alpr_v1.R;
 import com.example.alpr_v1.setup.CameraPreviewGeometry;
@@ -55,9 +53,9 @@ final class TvCalibrationMagnifier {
     private final Copy copy;
     private final Clock clock;
     private final int width, height;
-    private final float zoom, radius;
+    private float zoom;
+    private final float radius;
     private final Content content;
-    private PopupWindow popup;
     private ExecutorService worker;
     private CameraPreviewGeometry camera;
     private Source current;
@@ -83,47 +81,28 @@ final class TvCalibrationMagnifier {
     }
 
     private static float[] defaults(View anchor) {
-        Magnifier defaults = new Magnifier.Builder(anchor).build();
-        return new float[]{defaults.getWidth(), defaults.getHeight(), defaults.getZoom(), defaults.getCornerRadius()};
+        float dp=anchor.getResources().getDisplayMetrics().density;
+        return new float[]{160*dp,160*dp,4,8*dp};
     }
+
+    void attach(FrameLayout host) {
+        if(content.getParent()==host)return;
+        if(content.getParent()!=null)((ViewGroup)content.getParent()).removeView(content);
+        host.addView(content,new FrameLayout.LayoutParams(-1,-1));
+    }
+    void setZoom(float value) {
+        if(value!=4&&value!=8)throw new IllegalArgumentException("Expected loupe 4x or 8x");
+        zoom=value;content.invalidate();
+    }
+    float zoom(){return zoom;}
+    private int width(){return content.getWidth()>0?content.getWidth():width;}
+    private int height(){return content.getHeight()>0?content.getHeight():height;}
+    private void repaint(){anchor.invalidate();content.invalidate();}
 
     void show(CameraPreviewGeometry camera, float x, float y) {
+        boolean start=!showing||this.camera==null||camera==null||!this.camera.sameGeometry(camera);
         this.camera = camera; this.x = x; this.y = y; showing = true;
-        if (anchor.isAttachedToWindow() && anchor.getWindowVisibility() == View.VISIBLE) {
-            if (popup == null) {
-                popup = new PopupWindow(content, width, height, false);
-                popup.setTouchable(false); popup.setFocusable(false);
-                popup.setIsLaidOutInScreen(true); popup.setIsClippedToScreen(true);
-                popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
-                popup.setElevation(6 * anchor.getResources().getDisplayMetrics().density);
-            }
-            position();
-        }
-        update();
-    }
-
-    private void position() {
-        int[] origin = new int[2]; anchor.getLocationOnScreen(origin);
-        Rect bounds = new Rect(); anchor.getGlobalVisibleRect(bounds);
-        int[] rootOrigin=new int[2];anchor.getRootView().getLocationOnScreen(rootOrigin);bounds.offset(rootOrigin[0],rootOrigin[1]);
-        Rect position = popupBounds(bounds, origin[0]+x, origin[1]+y, width, height,
-                Math.round(8 * anchor.getResources().getDisplayMetrics().density));
-        if(position==null){if(popup.isShowing())popup.dismiss();return;}
-        int left=position.left,top=position.top;
-        if (popup.isShowing()) popup.update(left, top, -1, -1);
-        else popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, top);
-    }
-
-    static Rect popupBounds(Rect bounds,float pointX,float pointY,int width,int height,int inset){
-        if(bounds.width()<width||bounds.height()<height)return null;
-        int left=bounds.left+Math.min(inset,(bounds.width()-width)/2),right=bounds.right-width-Math.min(inset,(bounds.width()-width)/2);
-        int top=bounds.top+Math.min(inset,(bounds.height()-height)/2),bottom=bounds.bottom-height-Math.min(inset,(bounds.height()-height)/2);
-        Rect best=null;double distance=-1;
-        for(int x:new int[]{left,right})for(int y:new int[]{top,bottom}){
-            double d=Math.hypot(x+width/2f-pointX,y+height/2f-pointY);
-            if(d>distance){distance=d;best=new Rect(x,y,x+width,y+height);}
-        }
-        return best;
+        if(start)update();else repaint();
     }
 
     private void update() {
@@ -132,12 +111,12 @@ final class TvCalibrationMagnifier {
         Source source;
         try { source = resolver.resolve(camera); } catch (RuntimeException unavailable) { source = null; }
         if (source == null) {
-            epoch++; releaseCurrent(); clearCache(); content.invalidate(); schedule(INTERVAL_MS); return;
+            epoch++; releaseCurrent(); clearCache(); repaint(); schedule(INTERVAL_MS); return;
         }
         if (!source.same(current)) {
             epoch++; releaseCurrent(); current = source; clearCache();readbackUnavailable=false;
         } else { source.release(); }
-        content.invalidate();
+        repaint();
         long now = clock.now();
         if (inFlight) { schedule(INTERVAL_MS); return; }
         if (now - lastRequest < INTERVAL_MS) { schedule(INTERVAL_MS - (now - lastRequest)); return; }
@@ -145,7 +124,7 @@ final class TvCalibrationMagnifier {
         // SurfaceHolder's buffer space. A full copy to the inner-view dimensions is the
         // CameraX snapshot convention; apply the loupe crop only after this normalization.
         Rect rect = new Rect(0,0,current.geometry.rawWidth,current.geometry.rawHeight);
-        if(2L*rect.width()*rect.height()*4>MAX_BITMAP_BYTES){readbackUnavailable=true;clearCache();content.invalidate();schedule(INTERVAL_MS);return;}
+        if(2L*rect.width()*rect.height()*4>MAX_BITMAP_BYTES){readbackUnavailable=true;clearCache();repaint();schedule(INTERVAL_MS);return;}
         Source request;
         try { request = resolver.resolve(camera); } catch (RuntimeException unavailable) { request = null; }
         if (request == null || !current.same(request)) {
@@ -166,18 +145,19 @@ final class TvCalibrationMagnifier {
             copy.request(copying, destination, result -> {
                 // Copy ports deliver on main, including PixelCopy errors and late completions.
                 inFlight = false;
+                if(token!=epoch){destination.recycle();copying.release();if(showing)schedule(1);return;}
                 Source latest = null;
                 try { if (showing) latest = resolver.resolve(this.camera); } catch (RuntimeException ignored) { }
-                boolean valid = showing && token == epoch && copying.same(current) && copying.same(latest)
-                        && result == PixelCopy.SUCCESS && clock.now() - requestedAt <= MAX_AGE_MS;
+                boolean sameFrame = showing && token == epoch && copying.same(current) && copying.same(latest);
+                boolean valid = sameFrame && result == PixelCopy.SUCCESS && clock.now() - requestedAt <= MAX_AGE_MS;
                 if (latest != null) latest.release();
                 if (valid) {
                     readbackUnavailable=false;
                     if(spare!=null)spare.recycle();spare=cached;
                     cached = destination; cachedRect = new Rect(rect); cachedSource = copying; cachedAt = requestedAt;
-                } else { readbackUnavailable=result!=PixelCopy.SUCCESS;destination.recycle(); clearCache(); }
+                } else { readbackUnavailable=true;destination.recycle(); if(!sameFrame)clearCache(); }
                 copying.release();
-                content.invalidate();
+                repaint();
                 if (showing) schedule(Math.max(1, INTERVAL_MS - (clock.now() - lastRequest)));
             });
         } catch (RuntimeException unavailable) {
@@ -199,10 +179,10 @@ final class TvCalibrationMagnifier {
     private void clearCache() { if (cached != null) cached.recycle(); if(spare!=null)spare.recycle();spare=null;cached = null; cachedSource = null; cachedRect = null; }
     void dismiss() {
         showing = false; readbackUnavailable=false;epoch++; main.removeCallbacks(update);
-        if (popup != null) { popup.dismiss(); popup = null; }
         releaseCurrent(); clearCache();
         resolver.close();
         if (worker != null) { worker.shutdown(); worker = null; }
+        repaint();
     }
 
     boolean hasCurrentPixels() {
@@ -210,17 +190,34 @@ final class TvCalibrationMagnifier {
                 || clock.now() - cachedAt > MAX_AGE_MS) return false;
         return true; // A current full snapshot covers every corner; the renderer supplies padding.
     }
+    private boolean hasDisplayPixels(){return showing&&cached!=null&&current!=null&&cachedSource.same(current);}
 
     /** Also used by pixel tests before the reticle is painted. */
     void drawCamera(Canvas canvas) {
+        int width=width(),height=height();
         canvas.drawColor(0xff17212b);
-        if (!hasCurrentPixels()) return;
+        if (!hasDisplayPixels()) return;
         TvMagnifierGeometry geometry = current.geometry;
         int saved = canvas.save();
         canvas.clipPath(geometry.visibleImageInLoupe(x, y, width, height, zoom));
         canvas.clipRect(geometry.usableInLoupe(x, y, width, height, zoom));
         canvas.drawBitmap(cached, geometry.bitmapToLoupe(cachedRect, x, y, width, height, zoom), content.imagePaint);
         canvas.restoreToCount(saved);
+    }
+
+    /** The editor and loupe render the identical camera-only copy, never two independently sampled frames. */
+    void drawPreview(Canvas canvas) {
+        canvas.drawColor(0xff17212b);
+        if(!hasDisplayPixels())return;
+        TvMagnifierGeometry g=current.geometry;int saved=canvas.save();
+        canvas.clipPath(g.visibleImageInLoupe(0,0,0,0,1));canvas.clipRect(g.usableInLoupe(0,0,0,0,1));
+        canvas.drawBitmap(cached,g.bitmapToLoupe(cachedRect,0,0,0,0,1),content.imagePaint);
+        canvas.restoreToCount(saved);
+        if(!hasCurrentPixels()){
+            Paint text=new Paint(Paint.ANTI_ALIAS_FLAG);text.setTextSize(12*anchor.getResources().getDisplayMetrics().density);
+            text.setColor(Color.BLACK);canvas.drawRect(0,0,anchor.getWidth(),text.getTextSize()*1.7f,text);
+            text.setColor(Color.WHITE);canvas.drawText(anchor.getContext().getString(R.string.tv_loupe_paused),8,text.getTextSize()*1.25f,text);
+        }
     }
 
     void drawWindow(Canvas canvas) { content.layout(0, 0, width, height); content.draw(canvas); }
@@ -231,12 +228,13 @@ final class TvCalibrationMagnifier {
         Content() { super(anchor.getContext()); setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO); }
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+            int width=getWidth(),height=getHeight();
             Path round = new Path(); round.addRoundRect(0, 0, width, height, radius, radius, Path.Direction.CW);
             int saved = canvas.save(); canvas.clipPath(round); drawCamera(canvas);
             float density = getResources().getDisplayMetrics().density;
             if (!hasCurrentPixels()) {
                 pen.setColor(Color.WHITE); pen.setTextSize(10 * density); pen.setTextAlign(Paint.Align.CENTER);
-                canvas.drawText(getContext().getString(current == null||readbackUnavailable ? R.string.tv_loupe_unavailable : R.string.tv_loupe_updating),
+                canvas.drawText(getContext().getString(hasDisplayPixels()?R.string.tv_loupe_paused:current == null||readbackUnavailable ? R.string.tv_loupe_unavailable : R.string.tv_loupe_updating),
                         width / 2f, height - 7 * density, pen);
             }
             float cx = width / 2f, cy = height / 2f;
@@ -245,7 +243,9 @@ final class TvCalibrationMagnifier {
             canvas.restoreToCount(saved);
         }
         private void cross(Canvas canvas, float cx, float cy, float arm) {
-            canvas.drawLine(cx - arm, cy, cx + arm, cy, pen); canvas.drawLine(cx, cy - arm, cx, cy + arm, pen);
+            float gap=3*getResources().getDisplayMetrics().density;
+            canvas.drawLine(cx-arm,cy,cx-gap,cy,pen);canvas.drawLine(cx+gap,cy,cx+arm,cy,pen);
+            canvas.drawLine(cx,cy-arm,cx,cy-gap,pen);canvas.drawLine(cx,cy+gap,cx,cy+arm,pen);
         }
     }
 

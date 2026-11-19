@@ -188,6 +188,130 @@ public final class DetectionOverlayView extends View {
             Collections.emptyMap();
     private Map<Long, EntityRecognitionSnapshot> requestedVehicleRecognitions =
             Collections.emptyMap();
+    private Map<Long, com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> runtimeIdentities = Collections.emptyMap();
+    private Map<Long, Long> runtimePlateOwners = Collections.emptyMap();
+    private boolean runtimeIdentityEnabled;
+    private boolean ordinaryDynamicPresentation;
+    private final DynamicPresentationController dynamicPresenter=new DynamicPresentationController();
+    private final Paint dynamicPaint=new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint dynamicSelectedPaint=new Paint(Paint.ANTI_ALIAS_FLAG);
+    private long dynamicSelectedEntity;
+    private com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot dynamicSnapshot;
+    private long dynamicSnapshotReceivedAtNanos;
+    private long lastDynamicPresentationNanos;
+    private String lastDynamicGeometrySignature="";
+    private long lastDynamicGeometryLog;
+    private void logDynamicGeometry() {
+        if(!com.example.alpr_v1.BuildConfig.DEBUG)return;
+        List<String> owners=new ArrayList<>();java.util.Set<Long> renderedOwners=new java.util.HashSet<>();int plates=0;
+        for(RenderItem render:renderItems) {
+            OverlayItem item=render.item;
+            if(item.kind==OverlayItem.Kind.PLATE)plates++;
+            else if(item.kind==OverlayItem.Kind.VEHICLE) {
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation owner=runtimeIdentities.get(item.trackId);
+                owners.add(item.trackId+"/P"+(owner==null?0:owner.number));
+                renderedOwners.add(item.trackId);
+            }
+        }
+        int mzObserved=0;
+        if(dynamicSnapshot!=null)for(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot.Vehicle v:dynamicSnapshot.vehicles.values())
+            if(v.mzAttempts>0&&renderedOwners.contains(v.entityId))mzObserved++;
+        Collections.sort(owners);String signature=owners+"/plates="+plates+"/readings="+vehicleRecognitions.size()+"/mz_observed="+mzObserved;
+        long now=android.os.SystemClock.elapsedRealtimeNanos();
+        if(!signature.equals(lastDynamicGeometrySignature)||now-lastDynamicGeometryLog>=1_000_000_000L) {
+            lastDynamicGeometrySignature=signature;lastDynamicGeometryLog=now;
+            android.util.Log.d("ALPR_DYNAMIC_PRESENTATION","source_ns="+(dynamicSnapshot==null?0:dynamicSnapshot.sourceTimeNanos)
+                    +" run="+(dynamicSnapshot==null?0:dynamicSnapshot.analysisRunId)+" scene="+(dynamicSnapshot==null?0:dynamicSnapshot.sceneGeneration)
+                    +" phase=draw bodies="+owners.size()+" owners="+owners+" plates="+plates+" readings="+vehicleRecognitions.size()+" mz_observed="+mzObserved);
+        }
+    }
+    public long dynamicSelectedEntity(){return dynamicSelectedEntity;}
+    private long dynamicPresentationTime() {
+        if(dynamicSnapshot==null)return 0L;
+        long candidate=dynamicSnapshot.sourceTimeNanos+Math.max(0L,
+                android.os.SystemClock.elapsedRealtimeNanos()-dynamicSnapshotReceivedAtNanos);
+        lastDynamicPresentationNanos=Math.max(lastDynamicPresentationNanos,candidate);
+        return lastDynamicPresentationNanos;
+    }
+    public Set<Long> consumeDynamicPlateRefresh(){return dynamicPresenter.consumePlateRefresh();}
+    public void setDynamicVehicleSnapshot(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot,long explicit) {
+        setDynamicVehicleSnapshot(snapshot!=null,snapshot,explicit);
+    }
+    public void setDynamicVehicleSnapshot(boolean enabled,com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot,long explicit) {
+        if(!enabled&&!ordinaryDynamicPresentation)return;
+        if(snapshot==null||dynamicSnapshot==null||snapshot.analysisRunId!=dynamicSnapshot.analysisRunId
+                ||snapshot.sceneGeneration!=dynamicSnapshot.sceneGeneration)lastDynamicPresentationNanos=0L;
+        if(snapshot==null||dynamicSnapshot==null||snapshot.analysisRunId!=dynamicSnapshot.analysisRunId
+                ||snapshot.sceneGeneration!=dynamicSnapshot.sceneGeneration||snapshot.sourceTimeNanos>dynamicSnapshot.sourceTimeNanos)
+            dynamicSnapshotReceivedAtNanos=android.os.SystemClock.elapsedRealtimeNanos();
+        ordinaryDynamicPresentation=enabled;dynamicSnapshot=snapshot;
+        if(!enabled){dynamicPresenter.reset();dynamicSelectedEntity=0;return;}
+        if(snapshot==null){dynamicPresenter.reset();items=Collections.emptyList();rebuildRenderItems();postInvalidateOnAnimation();return;}
+        dynamicPaint.setColor(getContext().getColor(R.color.cockpit_cyan));dynamicPaint.setStyle(Paint.Style.STROKE);dynamicPaint.setStrokeWidth(dp(1.8f));
+        dynamicSelectedPaint.setColor(dynamicPaint.getColor());dynamicSelectedPaint.setStyle(Paint.Style.STROKE);dynamicSelectedPaint.setStrokeWidth(dp(3f));
+        dynamicSelectedEntity=dynamicPresenter.selected(snapshot,explicit);
+        cancelPlateAbsorption();cancelPlateFade();pendingPlateTransfers.clear();pendingPlateReadings.clear();absorbedPlateTrackIds.clear();
+        Map<Long,EntityRecognitionSnapshot> readings=new HashMap<>();
+        for(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot.Vehicle vehicle:snapshot.vehicles.values()) {
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation identity=snapshot.identities.get(vehicle.entityId);
+            com.example.alpr_v1.domain.PlateTextConsensus reading=vehicle.displayReading;
+            if(identity==null||!identity.visible||identity.verifying||!reading.available())continue;
+            readings.put(vehicle.entityId,new EntityRecognitionSnapshot(vehicle.entityId,vehicle.plateTrackId,reading.text,
+                    reading.confidence,reading.stable,reading.observations,vehicle.displayReadingSourceNanos,identity.epoch));
+        }
+        vehicleRecognitions=requestedVehicleRecognitions=Collections.unmodifiableMap(readings);
+        setItems(items,sourceWidth,sourceHeight,true);
+    }
+
+    /** Runtime ownership only. An unverified current MP box has no historical badge. */
+    public void setVehicleIdentityPresentation(
+            Map<Long, com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> identities,
+            Map<Long, Long> plateOwners) {
+        boolean enabled = identities != null;
+        Map<Long, com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> next =
+                enabled ? identities : Collections.emptyMap();
+        Set<Long> invalid = new HashSet<>();
+        Set<Long> cached = new HashSet<>(requestedVehicleRecognitions.keySet());
+        cached.addAll(vehicleRecognitions.keySet());
+        cached.addAll(runtimeIdentities.keySet());
+        if (enabled) for (Long id : cached) {
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation old = runtimeIdentities.get(id), value = next.get(id);
+            if (value == null || !value.visible || value.verifying || old != null && old.epoch != value.epoch) invalid.add(id);
+        }
+        Map<Long, EntityRecognitionSnapshot> requested = new HashMap<>(requestedVehicleRecognitions);
+        Map<Long, EntityRecognitionSnapshot> displayed = new HashMap<>(vehicleRecognitions);
+        for (Long id : invalid) {
+            EntityRecognitionSnapshot recognition = requested.remove(id);
+            if (recognition == null) recognition = displayed.get(id);
+            if (recognition != null) {
+                pendingPlateReadings.remove(recognition.plateTrackId);
+                absorbedPlateTrackIds.remove(recognition.plateTrackId);
+            }
+            displayed.remove(id);
+            transferredVehicleEntityIds.remove(id);
+        }
+        if (absorbingPlate != null && invalid.contains(absorbingPlate.recognition.entityId)) cancelPlateAbsorption();
+        pendingPlateTransfers.removeIf(p -> invalid.contains(p.recognition.entityId));
+        requestedVehicleRecognitions = Collections.unmodifiableMap(requested);
+        vehicleRecognitions = Collections.unmodifiableMap(displayed);
+        runtimeIdentityEnabled = enabled;
+        runtimeIdentities = Collections.unmodifiableMap(new HashMap<>(next));
+        runtimePlateOwners = enabled && plateOwners != null
+                ? Collections.unmodifiableMap(new HashMap<>(plateOwners)) : Collections.emptyMap();
+        rebuildRenderItems();
+        postInvalidateOnAnimation();
+    }
+
+    private boolean currentBadgeOwner(long id) {
+        if (!runtimeIdentityEnabled) return true;
+        com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation value = runtimeIdentities.get(id);
+        return value != null && value.visible && !value.verifying;
+    }
+
+    private boolean verifyingPlate(long plateTrackId) {
+        Long owner = runtimePlateOwners.get(plateTrackId);
+        return runtimeIdentityEnabled && owner != null && !currentBadgeOwner(owner);
+    }
     private final Set<Long> absorbedPlateTrackIds = new HashSet<>();
     private boolean zoomPresentationActive;
 
@@ -212,6 +336,7 @@ public final class DetectionOverlayView extends View {
     private int previewSourceHeight;
     private java.util.function.LongConsumer vehicleTapListener;
     private long touchedEntity;
+    private long touchedIdentityEpoch;
     private float touchX, touchY;
     public void setVehicleTapListener(java.util.function.LongConsumer listener) { vehicleTapListener = listener; }
 
@@ -219,17 +344,26 @@ public final class DetectionOverlayView extends View {
         if (vehicleTapListener == null) return super.onTouchEvent(event);
         if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
             touchedEntity = 0L; float smallest = Float.MAX_VALUE;
-            for (RenderItem item : renderItems) if (item.item.kind == OverlayItem.Kind.VEHICLE
-                    && item.item.trackId > 0L && item.bounds.contains(event.getX(), event.getY())) {
-                float area = item.bounds.width() * item.bounds.height();
-                if (area < smallest) { smallest = area; touchedEntity = item.item.trackId; }
+            if(runtimeIdentityEnabled)for(RectF exclusion:labelExclusionRects)if(exclusion.contains(event.getX(),event.getY()))return false;
+            for (RenderItem item : renderItems) {
+                long owner=item.item.kind==OverlayItem.Kind.VEHICLE?item.item.trackId:
+                        runtimeIdentityEnabled&&item.item.kind==OverlayItem.Kind.PLATE?plateEntityResolver.applyAsLong(item.item.trackId):0L;
+                if(owner<=0L||runtimeIdentityEnabled&&exclusiveEntityId>0L&&owner!=exclusiveEntityId)continue;
+                boolean badge=runtimeIdentityEnabled&&item.badge!=null&&item.badge.contains(event.getX(),event.getY());
+                if(!badge&&!item.bounds.contains(event.getX(),event.getY()))continue;
+                float area=badge?-1f:item.bounds.width()*item.bounds.height();
+                if(area<smallest){smallest=area;touchedEntity=owner;}
             }
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation identity=runtimeIdentities.get(touchedEntity);
+            touchedIdentityEpoch=identity==null?0L:identity.epoch;
             touchX = event.getX(); touchY = event.getY();
             return touchedEntity > 0L;
         }
         if (event.getActionMasked() == android.view.MotionEvent.ACTION_UP && touchedEntity > 0L) {
             long entity = touchedEntity; touchedEntity = 0L;
             if (Math.hypot(event.getX() - touchX, event.getY() - touchY) < dp(12)) {
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation identity=runtimeIdentities.get(entity);
+                if(runtimeIdentityEnabled&&(identity==null||!identity.visible||identity.epoch!=touchedIdentityEpoch))return true;
                 performClick(); vehicleTapListener.accept(entity);
             }
             return true;
@@ -389,6 +523,7 @@ public final class DetectionOverlayView extends View {
 
     /** Natychmiast usuwa PLATE, np. podczas STOP lub pełnego resetu sceny. */
     public void clearPlateItems() {
+        if(ordinaryDynamicPresentation)return;
         cancelPlateFade();
         if (overlayAnimator != null) {
             overlayAnimator.cancel();
@@ -411,6 +546,7 @@ public final class DetectionOverlayView extends View {
 
     /** Wygasza wyłącznie tablice nieobecne już w zbiorze nadal świeżych ramek. */
     public void fadeOutPlateItems(List<OverlayItem> retainedPlates) {
+        if(ordinaryDynamicPresentation)return;
         List<OverlayItem> safeRetained = new ArrayList<>();
         if (retainedPlates != null) {
             for (OverlayItem item : retainedPlates) {
@@ -602,6 +738,12 @@ public final class DetectionOverlayView extends View {
     }
 
     private void setItems(List<OverlayItem> newItems, int sourceWidth, int sourceHeight, boolean preview) {
+        if(ordinaryDynamicPresentation) {
+            if(overlayAnimator!=null){overlayAnimator.cancel();overlayAnimator=null;}
+            items=dynamicSnapshot==null?Collections.emptyList():Collections.unmodifiableList(focusItems(dynamicPresenter.geometry(newItems,dynamicSnapshot,dynamicPresentationTime())));
+            this.sourceWidth=sourceWidth;this.sourceHeight=sourceHeight;setPreviewSourceSize(sourceWidth,sourceHeight);
+            rebuildRenderItems();postInvalidateOnAnimation();return;
+        }
         long presentationMillis = android.os.SystemClock.uptimeMillis();
         long dynamicDurationMillis = lastDynamicPresentationMillis == 0L ? 50L
                 : Math.max(16L, Math.min(80L, presentationMillis - lastDynamicPresentationMillis));
@@ -780,10 +922,12 @@ public final class DetectionOverlayView extends View {
             Set<Long> completedEntityIds,
             Map<Long, EntityRecognitionSnapshot> recognitions
     ) {
+        if(ordinaryDynamicPresentation)return;
         identifiedVehicleEntityIds = Collections.unmodifiableSet(focusIds(positiveEntityIds(identifiedEntityIds)));
         completedVehicleEntityIds = Collections.unmodifiableSet(focusIds(positiveEntityIds(completedEntityIds)));
         Map<Long, EntityRecognitionSnapshot> requested = new HashMap<>(requestedVehicleRecognitions);
         for (EntityRecognitionSnapshot candidate : positiveRecognitions(recognitions).values()) {
+            if (!currentBadgeOwner(candidate.entityId)) continue;
             if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && candidate.entityId != exclusiveEntityId) continue;
             EntityRecognitionSnapshot old = requested.get(candidate.entityId);
             if (old != null && candidate.confirmed && old.plateTrackId != candidate.plateTrackId
@@ -793,7 +937,8 @@ public final class DetectionOverlayView extends View {
                 absorbedPlateTrackIds.add(candidate.plateTrackId);
                 pendingPlateReadings.remove(candidate.plateTrackId);
             }
-            requested.put(candidate.entityId, BadgeReadingPolicy.retainBest(old, candidate));
+            requested.put(candidate.entityId, runtimeIdentityEnabled&&candidate.evidenceSourceNanos>0
+                    ?BadgeReadingPolicy.currentDynamic(old,candidate):BadgeReadingPolicy.retainBest(old, candidate));
         }
         requestedVehicleRecognitions = Collections.unmodifiableMap(requested);
         for (EntityRecognitionSnapshot recognition : requested.values()) {
@@ -972,6 +1117,7 @@ public final class DetectionOverlayView extends View {
 
     /** The crop callback owns this exact source geometry, even after the short PLATE TTL expires. */
     public void animatePlateObservation(com.example.alpr_v1.pipeline.PlateObservation observation) {
+        if(ordinaryDynamicPresentation)return;
         if (awaitingFreshScanAnchor || exclusiveEntityId > 0L && (observation == null || observation.entityId != exclusiveEntityId)) return;
         if (observation == null || !observation.freshMzAttempted) return;
         com.example.alpr_v1.pipeline.PlateGeometry geometry = observation.geometry.forRecognition();
@@ -979,11 +1125,11 @@ public final class DetectionOverlayView extends View {
         expirePendingPlateReadings();
         PlateDisplayGeometry display = PlateDisplayGeometry.fromRecognition(geometry);
         PendingPlateReading old = pendingPlateReadings.get(observation.plateTrackId);
-        String text = observation.freshPrediction;
+        String text = runtimeIdentityEnabled ? observation.text : observation.freshPrediction;
         double confidence = observation.recognitionConfidence;
         boolean confirmed = observation.confirmed;
         int observations = observation.observations;
-        if (old != null && !old.text.isEmpty() && (text.isEmpty() || old.confidence > confidence)) {
+        if (!runtimeIdentityEnabled && old != null && !old.text.isEmpty() && (text.isEmpty() || old.confidence > confidence)) {
             text = old.text; confidence = old.confidence;
             confirmed = old.confirmed; observations = old.observations;
         }
@@ -1003,8 +1149,11 @@ public final class DetectionOverlayView extends View {
         }
         EntityRecognitionSnapshot previous = requestedVehicleRecognitions.get(observation.entityId);
         EntityRecognitionSnapshot recognition = new EntityRecognitionSnapshot(observation.entityId,
-                observation.plateTrackId, text, confidence, confirmed, observations);
-        recognition = BadgeReadingPolicy.retainBest(previous, recognition);
+                observation.plateTrackId, text, confidence, confirmed, observations,
+                runtimeIdentityEnabled?observation.sourceTimestampNanos:0L,
+                observation.identityOwner()==null?0L:observation.identityOwner().epoch);
+        recognition = runtimeIdentityEnabled&&recognition.evidenceSourceNanos>0
+                ?BadgeReadingPolicy.currentDynamic(previous,recognition):BadgeReadingPolicy.retainBest(previous, recognition);
         RenderItem visiblePlate = findPlateRenderItem(observation.plateTrackId);
         RectF source = visiblePlate == null ? mapToView(
                 androidBounds(display.bounds),
@@ -1166,6 +1315,7 @@ public final class DetectionOverlayView extends View {
     }
 
     private void ensureActiveVehicleMarkerAnimator() {
+        if(ordinaryDynamicPresentation){stopActiveVehicleMarkerAnimator();return;}
         if (!isAttachedToWindow() || activeVehicleMarkerAnimator != null) return;
         activeVehicleMarkerAnimator = ValueAnimator.ofFloat(0f, 1f);
         activeVehicleMarkerAnimator.setDuration(ACTIVE_VEHICLE_MARKER_HALF_CYCLE_MS);
@@ -1743,6 +1893,12 @@ public final class DetectionOverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        if(ordinaryDynamicPresentation&&dynamicSnapshot!=null) {
+            long now=dynamicPresentationTime();
+            items=Collections.unmodifiableList(focusItems(dynamicPresenter.geometry(items,dynamicSnapshot,now)));
+            rebuildRenderItems();
+            if(dynamicPresenter.canAnimate(dynamicSnapshot,now))postInvalidateOnAnimation();
+        }
         if (cameraMappingRequired && (cameraGeometry == null || cameraGeometry.sourceWidth != sourceWidth
                 || cameraGeometry.sourceHeight != sourceHeight)) return;
         // The analysis viewport decoration duplicated the TV outline and dimmed the image.
@@ -1793,6 +1949,7 @@ public final class DetectionOverlayView extends View {
             if (renderItem.badge != null) drawLabel(canvas, renderItem);
         }
         if (geometryCalibrationEnabled) drawGeometryCalibration(canvas);
+        if(ordinaryDynamicPresentation)logDynamicGeometry();
     }
 
     private void drawAnalysisViewport(Canvas canvas) {
@@ -1969,6 +2126,11 @@ public final class DetectionOverlayView extends View {
     }
 
     private void drawActiveVehicleMarker(Canvas canvas) {
+        if(ordinaryDynamicPresentation)return;
+        if(runtimeIdentityEnabled) {
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation owner=runtimeIdentities.get(activeVehicleEntityId);
+            if(owner==null||!owner.visible)return;
+        }
         PointF tip = activeVehicleMarkerTip(activeVehicleMarkerProgress);
         if (tip == null) return;
         activeVehicleMarkerPaint.setColor(activeVehicleMarkerColor());
@@ -2160,6 +2322,9 @@ public final class DetectionOverlayView extends View {
         }
     }
     private Paint paintFor(OverlayItem item) {
+        if(ordinaryDynamicPresentation)return item.kind==OverlayItem.Kind.VEHICLE&&item.trackId==dynamicSelectedEntity
+                ?dynamicSelectedPaint:dynamicPaint;
+        if (runtimeIdentityEnabled && item.kind == OverlayItem.Kind.VEHICLE && !currentBadgeOwner(item.trackId)) return vehiclePaint;
         if (zoomPresentationActive && item.kind == OverlayItem.Kind.PLATE) return boxPaint;
         // A reading delivered to the badge wins over the still-active scan target.
         if (item.kind == OverlayItem.Kind.VEHICLE
@@ -2260,6 +2425,10 @@ public final class DetectionOverlayView extends View {
         List<RectF> vehicleFrameBounds = new ArrayList<>();
 
         for (OverlayItem item : orderedForRendering(items)) {
+            if (runtimeIdentityEnabled && item.kind == OverlayItem.Kind.VEHICLE) {
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation owner = runtimeIdentities.get(item.trackId);
+                if (owner == null || !owner.visible) continue;
+            }
             if (!diagnosticMode && item.kind == OverlayItem.Kind.VEHICLE_ROI) continue;
             RectF bounds = mapToView(
                     item.normalizedBounds,
@@ -2692,6 +2861,7 @@ public final class DetectionOverlayView extends View {
             this.bounds = bounds;
             this.points = points;
             if (item.kind == OverlayItem.Kind.VEHICLE && item.trackId > 0L) {
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation owner = runtimeIdentities.get(item.trackId);
                 EntityRecognitionSnapshot recognition = vehicleRecognitions.get(
                         item.trackId
                 );
@@ -2700,16 +2870,24 @@ public final class DetectionOverlayView extends View {
                 EntityRecognitionSnapshot labelRecognition = recognition != null
                         ? recognition : requestedRecognition;
                 this.parts = new LabelParts(
-                        labelRecognition == null
-                                ? "P" + item.trackId
-                                : "P" + item.trackId + ": "
-                                + labelRecognition.text,
-                        labelRecognition != null
-                                ? getResources().getString(com.example.alpr_v1.R.string.main_ui_mz_saved,Math.round(labelRecognition.confidence * 100.0))
+                        (runtimeIdentityEnabled&&exclusiveEntityId==item.trackId?"LOCK · ":"")
+                                +(runtimeIdentityEnabled && owner != null && owner.verifying
+                                    ? ordinaryDynamicPresentation ? "Pojazd" : "Weryfikacja"
+                                : labelRecognition == null
+                                ? "P" + (runtimeIdentityEnabled && owner != null ? owner.number : item.trackId)
+                                    +(ordinaryDynamicPresentation&&dynamicSnapshot!=null
+                                        &&dynamicSnapshot.vehicles.containsKey(item.trackId)
+                                        &&dynamicSnapshot.vehicles.get(item.trackId).mzInProgress?" · Weryfikacja":"")
+                                : "P" + (runtimeIdentityEnabled && owner != null ? owner.number : item.trackId) + ": "
+                                + labelRecognition.text),
+                        currentBadgeOwner(item.trackId) && labelRecognition != null
+                                ? getResources().getString(ordinaryDynamicPresentation?com.example.alpr_v1.R.string.dynamic_mz_confidence:
+                                    com.example.alpr_v1.R.string.main_ui_mz_saved,Math.round(labelRecognition.confidence * 100.0))
                                 : ""
                 );
             } else {
-                this.parts = LabelParts.parse(item.kind == OverlayItem.Kind.PLATE && points.size() != 4
+                this.parts = LabelParts.parse(item.kind == OverlayItem.Kind.PLATE && verifyingPlate(item.trackId)
+                        ? "T · Weryfikacja" : item.kind == OverlayItem.Kind.PLATE && points.size() != 4
                         ? "MT BBOX — brak Pose" : item.kind == OverlayItem.Kind.PLATE
                         ? item.label.replaceFirst("(?i)^tablica\\b", "T") : item.label);
             }

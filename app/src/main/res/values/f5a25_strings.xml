@@ -1,0 +1,10 @@
+<resources>
+    <string name="f25_tv_reused">zachowana</string>
+    <string name="f25_tv_reused_detail">Kalibracja zachowana; geometria źródła zgodna</string>
+    <string name="f25_tv_review">wymaga sprawdzenia</string>
+    <string name="f25_cpu_threads_hint">Liczba wątków określa sposób wykorzystania procesora podczas inferencji. Więcej wątków nie zawsze oznacza krótszy czas wykonania.</string>
+    <string name="f25_explicit_execution_required">Wybierz jawny profil CPU/GPU</string>
+    <string name="f25_mz_tensor_diagnostic">Diagnostyka tensorów wejściowych MZ: %1$s\n%2$s</string>
+    <string name="f25_diagnostic_off">wyłączona</string>
+    <string name="f25_diagnostic_on">włączona</string>
+</resources>

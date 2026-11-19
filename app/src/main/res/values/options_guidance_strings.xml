@@ -1,0 +1,15 @@
+<resources>
+    <color name="options_guidance_surface">#102333</color>
+    <string name="guidance_settings_heading">Ustawienia</string>
+    <string name="guidance_change">Do ustawienia</string>
+    <string name="guidance_change_count">Do ustawienia: %1$d</string>
+    <string name="guidance_later">Przy uruchamianiu</string>
+    <string name="guidance_later_count">Przy uruchamianiu: %1$d</string>
+    <string name="guidance_after_start">Przygotowanie po START</string>
+    <string name="guidance_after_start_count">Po START: %1$d</string>
+    <string name="guidance_models_and_save">Modele i zapis</string>
+    <string name="guidance_information">Informacja</string>
+    <string name="guidance_details">Szczegóły</string>
+    <string name="guidance_hide_details">Zwiń opis</string>
+    <string name="guidance_details_accessibility">%1$s. %2$s</string>
+</resources>

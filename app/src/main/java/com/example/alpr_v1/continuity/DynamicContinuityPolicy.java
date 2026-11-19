@@ -16,6 +16,7 @@ public final class DynamicContinuityPolicy implements ScenePolicy {
     }
     @Override
     public ContinuityAssessment assess(SceneEvidence evidence, SceneContinuityProfile profile) {
+        boolean localPoolPreserved=evidence.localVehicles.provenCount()>0;
         float targetScore = targetEvaluator.evaluate(evidence.target, profile);
         float vehicleScore = vehicleEvaluator.evaluate(evidence.vehicles);
         float motionScore = motionEvaluator.evaluate(evidence, targetScore, vehicleScore);
@@ -48,7 +49,7 @@ public final class DynamicContinuityPolicy implements ScenePolicy {
                 && evidence.motion.globalMotionCoherence >= 0.70f
                 && evidence.motion.compensatedFrameResidual < 1f;
         boolean poolPreserved = vehicleScore >= profile.minimumVehicleContinuityToPreserve
-                || coherentPoolMotion;
+                || coherentPoolMotion || localPoolPreserved;
         boolean motionExplained = motionScore >= profile.minimumMotionExplanation
                 && !stationaryLocalContradiction
                 && !stationaryStaleTargetEvidence;
@@ -58,6 +59,9 @@ public final class DynamicContinuityPolicy implements ScenePolicy {
         if (!evidence.rawVisualChange) {
             classification = VisualChangeClassification.NONE;
             reason = "no_raw_visual_change";
+        } else if(localPoolPreserved) {
+            classification=VisualChangeClassification.MOTION_EXPLAINED_CHANGE;
+            reason="source_bound_local_objects_preserve_scene";
         } else if (motionExplained && (targetPreserved || poolPreserved)) {
             classification = VisualChangeClassification.MOTION_EXPLAINED_CHANGE;
             reason = targetPreserved
@@ -89,7 +93,7 @@ public final class DynamicContinuityPolicy implements ScenePolicy {
                 targetScore,
                 vehicleScore,
                 motionScore,
-                cutScore,
+                localPoolPreserved?0f:cutScore,
                 targetPreserved,
                 poolPreserved,
                 continuityAllowsFinalization,

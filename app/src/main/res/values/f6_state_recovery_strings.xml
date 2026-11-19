@@ -1,0 +1,7 @@
+<resources>
+    <string name="f6_saved_waiting_source">Zapisano · oczekuję potwierdzenia geometrii</string>
+    <string name="research_sessions_export">Sesje / Eksport</string>
+    <string name="research_sessions_empty">Nie ma jeszcze zapisanych sesji. Historia jest dostępna również bez uruchamiania pomiaru.</string>
+    <string name="research_profile_explanation">Typ eksperymentu jest kategorią badania. F6 jest dodatkowym profilem zapisu; R0/R1/R2 określa strategię przetwarzania.</string>
+    <string name="research_configuration_planned">Planowana konfiguracja</string>
+</resources>

@@ -42,7 +42,7 @@ public class MainUiSessionLabelsTest {
     @Test public void readyCalibrationAndFullFrameAreSeparateBeforeStart()throws Exception{
         f.prefs.edit().putString(SettingsActivity.KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME").commit();f.tv.refreshInputSummary();
         String label=((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString();
-        assertTrue(label,label.contains("skalibrowany"));assertTrue(label.contains("Planowane wejście"));assertTrue(label.contains("pełna klatka"));assertFalse(label.contains("rektyfikacja"));
+        assertTrue(label,label.contains("Zapisano"));assertTrue(label.contains("Planowane wejście"));assertTrue(label.contains("pełna klatka"));assertFalse(label.contains("rektyfikacja"));
         assertEquals("READY",f.tv.bboxPreparationStatus());assertFalse(f.sessions.experiment.isRunning());
     }
     @Test public void activeTvUsesFrozenModeEvenIfPreferenceSaysFullFrame()throws Exception{
@@ -60,13 +60,13 @@ public class MainUiSessionLabelsTest {
     }
     @Test public void draftStaleAndMissingNeverClaimReady()throws Exception{
         set(f.tv,"calibration",TvSetupCalibration.empty());f.tv.refreshInputSummary();
-        assertTrue(((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString().contains("brak kalibracji"));
+        assertTrue(((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString().contains("Nie ustawiono"));
         f.confirm("2026-11-06T20:00:00Z");TvEditDraft draft=TvEditDraft.fromCalibration((TvSetupCalibration)get(f.tv,"calibration"));
         set(f.tv,"calibration",TvSetupCalibration.empty());set(f.tv,"draft",draft);f.tv.refreshInputSummary();
-        assertTrue(((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString().contains("DRAFT"));
+        assertTrue(((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString().contains("Do zapisania"));
         assertNotEquals("READY",f.tv.bboxPreparationStatus());set(f.tv,"draft",null);
         f.confirm("2026-11-06T20:00:00Z");set(f.tv,"calibration",((TvSetupCalibration)get(f.tv,"calibration")).invalidated("SYNTHETIC_CHANGED_CAMERA"));f.tv.refreshInputSummary();
-        String label=((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString();assertTrue(label.contains("NIEAKTUALNY"));assertFalse(label.contains("skalibrowany"));
+        String label=((TextView)f.main.findViewById(R.id.tv_frame_status)).getText().toString();assertTrue(label.contains("Wymaga ponownego ustawienia"));assertFalse(label.contains("Zapisano"));
         assertNotEquals("READY",f.blocker());
     }
     @Test public void acquisitionIsStillArmedBeforeStartAndAutomaticInResearch()throws Exception{
@@ -95,9 +95,12 @@ public class MainUiSessionLabelsTest {
     }
     @Test public void activeResearchFullFrameUsesFrozenConfigurationOverTvPreference()throws Exception{
         ResearchExecutionConfig config=TvBboxAdmissionTest.base(RoiBudgetPolicy.FULL_FRAME,false).withCameraSetup(TvBboxCropTest.setup(1));
+        f.prefs.edit().putString(SettingsActivity.KEY_TV_INPUT_MODE,"CAMERA_FULL_FRAME").commit();
+        Object cameraContext=TvBboxStartUiTest.call(f.main,"capturePreparationCameraContext",new Class<?>[0]);
+        f.prefs.edit().putString(SettingsActivity.KEY_TV_INPUT_MODE,"TV_BBOX_CROP").commit();
         ExperimentSession.Prepared prepared=f.sessions.experiment.prepare("roi_budget",config.variant,(TimerConfig)get(f.main,"experimentTimerConfig"),(ThermalConfig)get(f.main,"experimentThermalConfig"),new ExperimentIdentity("MAIN-UI","SYNTHETIC",1,"synthetic=true"),config);
         f.store=TvBboxProducerFixture.prepareFor(f.temp.newFolder(),prepared);set(f.sessions,"store",f.store);((AlprPipeline)get(f.main,"pipeline")).setResearchExecutionConfig(config);
-        Class<?> type=Class.forName(MainActivity.class.getName()+"$PreparedAnalysisStart");Constructor<?> ctor=type.getDeclaredConstructors()[0];ctor.setAccessible(true);Object ready=ctor.newInstance(config,prepared,f.store,0);
+        Class<?> type=Class.forName(MainActivity.class.getName()+"$PreparedAnalysisStart");Constructor<?> ctor=type.getDeclaredConstructors()[0];ctor.setAccessible(true);Object ready=ctor.newInstance(config,prepared,f.store,0,cameraContext);
         set(f.main,"preparedExperimentStart",ready);set(ready,"startWall",System.currentTimeMillis());set(ready,"startElapsed",System.nanoTime());set(ready,"startMonotonic",System.nanoTime());
         assertEquals(true,TvBboxStartUiTest.call(f.main,"beginAnalysisMeasurement",new Class<?>[]{type},ready));TvBboxProducerFixture.drain(f.store);
         assertTrue(f.sessions.experiment.isRunning());assertEquals("TV_BBOX_CROP",f.prefs.getString(SettingsActivity.KEY_TV_INPUT_MODE,""));

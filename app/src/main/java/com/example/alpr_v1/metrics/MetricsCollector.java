@@ -29,6 +29,7 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -76,6 +77,9 @@ public final class MetricsCollector {
         public final double inferenceSumMs;
 
         public final double auxiliarySumMs;
+        public final Map<String,Long> stageLastRunElapsedNanos;
+        public final Map<String,String> stageOutcomes;
+        public final boolean retainStageTimes;
 
 
 
@@ -90,7 +94,8 @@ public final class MetricsCollector {
                 double inferenceSumMs,
                 double auxiliarySumMs,
                 double receivedFps,
-                double processedFps
+                double processedFps,
+                LiveStageTimings stageTimes
         ) {
             this.receivedFps = receivedFps;
             this.processedFps = processedFps;
@@ -119,6 +124,9 @@ public final class MetricsCollector {
 
             this.auxiliarySumMs =
                     auxiliarySumMs;
+            stageLastRunElapsedNanos=Collections.unmodifiableMap(stageTimes.lastRuns());
+            stageOutcomes=Collections.unmodifiableMap(stageTimes.outcomes());
+            retainStageTimes=stageTimes.retainAcrossScenes();
         }
     }
     private boolean captureHighResolutionRequested;
@@ -349,7 +357,7 @@ public final class MetricsCollector {
         }
 
         traces.addLast(trace);
-        liveStageTimings.observe(trace.continuityStamp(), trace.durationsNanos());
+        liveStageTimings.observe(trace.continuityStamp(), trace.durationsNanos(),SystemClock.elapsedRealtimeNanos(),trace.status());
         if (researchCollector != null) {
             try {
                 String csv = csvForTraces(java.util.Collections.singletonList(trace));
@@ -451,6 +459,7 @@ public final class MetricsCollector {
     private final LiveStageTimings liveStageTimings = new LiveStageTimings();
 
     public synchronized void resetLiveStageTimings() { liveStageTimings.reset(); }
+    public synchronized void retainDynamicStageTimings(boolean retain) { liveStageTimings.setRetainAcrossScenes(retain); }
 
     public synchronized LiveSnapshot liveSnapshot() {
 
@@ -471,7 +480,7 @@ public final class MetricsCollector {
                     Double.NaN,
                     Double.NaN,
                     recentFrameRate(false),
-                    recentFrameRate(true)
+                    recentFrameRate(true),liveStageTimings
 
 
             );
@@ -504,7 +513,7 @@ public final class MetricsCollector {
                         "auxiliary_sum"
                 ),
                 recentFrameRate(false),
-                recentFrameRate(true)
+                recentFrameRate(true),liveStageTimings
         );
     }
 
@@ -1692,7 +1701,7 @@ public final class MetricsCollector {
             throws JSONException {
         if (model == null) return null;
         ModelVariant variant = autoTuneManager.chosenVariant(model);
-        ExecutionProfile profile = autoTuneManager.chosenProfile(model);
+        ExecutionProfile profile = autoTuneManager.normalProfile(model, variant);
         ModelInputSpec input = variant.input(model.manifest().input());
         ModelOutputSpec output = variant.output(model.manifest().output());
 

@@ -7,6 +7,12 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class DynamicZoomPolicyTest {
+    @Test public void ordinaryDynamicRequiresAPickedOrConfirmedSearchTarget() {
+        assertFalse(DynamicZoomPolicy.allowsOrdinary(TargetPurpose.SCAN_ACQUISITION,sample(true,true,true,.5f),false,SceneContinuityState.STABLE));
+        assertFalse(DynamicZoomPolicy.allowsOrdinary(TargetPurpose.SEARCH_VERIFICATION,sample(true,true,true,.5f),false,SceneContinuityState.STABLE));
+        assertTrue(DynamicZoomPolicy.allowsOrdinary(TargetPurpose.USER_PICK,sample(true,true,true,.5f),false,SceneContinuityState.STABLE));
+        assertTrue(DynamicZoomPolicy.allowsOrdinary(TargetPurpose.SEARCH_PURSUIT,sample(true,true,true,.5f),false,SceneContinuityState.STABLE));
+    }
     private AutoZoomController.Sample sample(boolean quad,boolean mz,boolean stable,float x) {
         return new AutoZoomController.Sample(1L,x,.5f,.1f,.4,false,2,quad,mz,mz,"WI1234A",stable);
     }

@@ -65,6 +65,13 @@ final class RobustAffineTransform {
             return a * d - b * c;
         }
 
+        Result inverse() {
+            float det = determinant();
+            if (!valid || !Float.isFinite(det) || Math.abs(det) < .0001f) return invalid();
+            return new Result(true,d/det,-b/det,(b*ty-d*tx)/det,
+                    -c/det,a/det,(c*tx-a*ty)/det,inlierCount,meanError);
+        }
+
         static Result identity() {
             return new Result(true, 1f, 0f, 0f, 0f, 1f, 0f, Integer.MAX_VALUE, 0f);
         }
@@ -85,7 +92,7 @@ final class RobustAffineTransform {
         int bestInliers = 0;
         float bestError = Float.POSITIVE_INFINITY;
         int evaluated = 0;
-        for (int first = 0; first < matches.size() - 2; first++) {
+        consensusSearch: for (int first = 0; first < matches.size() - 2; first++) {
             for (int second = first + 1; second < matches.size() - 1; second++) {
                 for (int third = second + 1; third < matches.size(); third++) {
                     if (evaluated++ >= 320) break;
@@ -98,6 +105,9 @@ final class RobustAffineTransform {
                         bestInliers = score.inliers;
                         bestError = score.error;
                     }
+                    // Every full-consensus hypothesis is refined from the same
+                    // complete set below. Further triplets cannot change that fit.
+                    if(score.inliers==matches.size())break consensusSearch;
                 }
                 if (evaluated >= 320) break;
             }
@@ -128,6 +138,11 @@ final class RobustAffineTransform {
             int width,
             int height
     ) {
+        return reasonableQuad(transform,quad,width,height,false);
+    }
+
+    static boolean reasonableQuad(Result transform,List<SparsePyramidalFlow.Point> quad,int width,int height,
+            boolean partialVehicle) {
         if (!plausible(transform) || quad == null || quad.size() < 4) return false;
         List<SparsePyramidalFlow.Point> source = quad.subList(0, 4);
         List<SparsePyramidalFlow.Point> target = new ArrayList<>(4);
@@ -139,7 +154,15 @@ final class RobustAffineTransform {
         if (areaRatio < 0.35f || areaRatio > 2.8f) return false;
         float marginX = width * 0.08f;
         float marginY = height * 0.08f;
-        for (SparsePyramidalFlow.Point point : target) {
+        if(partialVehicle) {
+            boolean inside=true;
+            for(SparsePyramidalFlow.Point p:target)if(p.x<0||p.x>width||p.y<0||p.y>height){inside=false;break;}
+            if(!inside) {
+                List<SparsePyramidalFlow.Point> visible=target;
+                for(int edge=0;edge<4;edge++)visible=clip(visible,edge,edge%2==0?0:edge==1?width:height);
+                if(visible.size()<3||Math.abs(signedArea(visible)/targetArea)<.5f)return false;
+            }
+        } else for (SparsePyramidalFlow.Point point : target) {
             if (point.x < -marginX || point.x > width + marginX
                     || point.y < -marginY || point.y > height + marginY) return false;
         }
@@ -151,6 +174,21 @@ final class RobustAffineTransform {
         float centerDy = targetCenterY - sourceCenterY;
         float maximumJump = Math.max(width, height) * 0.30f;
         return centerDx * centerDx + centerDy * centerDy <= maximumJump * maximumJump;
+    }
+
+    private static List<SparsePyramidalFlow.Point> clip(List<SparsePyramidalFlow.Point> input,int edge,float limit) {
+        List<SparsePyramidalFlow.Point> output=new ArrayList<>();
+        for(int i=0;i<input.size();i++) {
+            SparsePyramidalFlow.Point a=input.get(i),b=input.get((i+1)%input.size());
+            float av=edge<2?a.x:a.y,bv=edge<2?b.x:b.y;
+            boolean ai=edge%2==0?av>=limit:av<=limit,bi=edge%2==0?bv>=limit:bv<=limit;
+            if(ai)output.add(a);
+            if(ai!=bi) {
+                float t=(limit-av)/(bv-av);
+                output.add(new SparsePyramidalFlow.Point(a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)));
+            }
+        }
+        return output;
     }
 
     private static Result fit(

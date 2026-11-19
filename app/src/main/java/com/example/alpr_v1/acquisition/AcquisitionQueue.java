@@ -59,6 +59,19 @@ public final class AcquisitionQueue {
     private final Map<Long, QueueEntry> entries = new LinkedHashMap<>();
     private final Set<Long> terminalEntityIds = new HashSet<>();
     private final Set<Long> servedThisRound = new HashSet<>();
+    private final Map<Long,Long> refinementDue = new LinkedHashMap<>();
+    private boolean refinementEnabled;
+    public synchronized void setRefinementEnabled(boolean enabled) {
+        refinementEnabled=enabled;
+        if(!enabled)refinementDue.clear();
+    }
+    public synchronized void refineLater(long entityId,long now,long delay) {
+        if(!refinementEnabled){complete(entityId);return;}
+        terminalEntityIds.remove(entityId);
+        refinementDue.put(entityId,saturatedAdd(nonNegative(now),delay));
+        while(refinementDue.size()>256)refinementDue.remove(refinementDue.keySet().iterator().next());
+        defer(entityId,now,delay);
+    }
     private long revision;
     private long sceneGeneration;
     private boolean sceneInitialized;
@@ -129,7 +142,8 @@ public final class AcquisitionQueue {
                 continue;
             }
             if (terminalEntityIds.contains(source.entityId)
-                    || terminalState(source.acquisitionState)) {
+                    || terminalState(source.acquisitionState)&&!(refinementEnabled&&refinementDue.containsKey(source.entityId)
+                    &&source.acquisitionState!=EntityAcquisitionState.EXPIRED&&source.acquisitionState!=EntityAcquisitionState.FAILED)) {
                 changed |= entries.remove(source.entityId) != null;
                 continue;
             }
@@ -151,6 +165,8 @@ public final class AcquisitionQueue {
                         source.predictionAgeNanos
                 );
                 entries.put(source.entityId, entry);
+                Long due=refinementDue.get(source.entityId);
+                if(due!=null)entry.candidate=entry.candidate.withAttemptState(EntityAcquisitionState.QUEUED,0,0,0,due);
                 changed = true;
             } else {
                 AcquisitionCandidate updated = updateFromSource(
@@ -303,6 +319,7 @@ public final class AcquisitionQueue {
     }
 
     public synchronized void hardReset(long nextSceneGeneration) {
+        if(sceneGeneration!=nextSceneGeneration)refinementDue.clear();
         exclusiveDispatchOwner = 0L;
         entries.clear();
         servedThisRound.clear();

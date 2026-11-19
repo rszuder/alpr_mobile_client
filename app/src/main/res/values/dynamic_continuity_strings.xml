@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dynamic_vehicle_locked">LOCK · P%1$d · śledzę wybrany pojazd</string>
+    <string name="dynamic_lock_selected">LOCK · śledzę wybrany pojazd</string>
+    <string name="dynamic_lock_recovering">LOCK · odzyskuję wybrany pojazd…</string>
+    <string name="dynamic_lock_target_unavailable">LOCK · cel utracony</string>
+    <string name="dynamic_lock_release_hint">Zwolnij → skan</string>
+    <string name="dynamic_az_wait_pick">AZ · wybierz pojazd</string>
+    <string name="dynamic_az_wait_geometry">AZ · stabilizacja ramki</string>
+    <string name="dynamic_az_wait_motion">AZ · uspokój kamerę</string>
+    <string name="dynamic_az_cycle_used">AZ · cykl wykorzystany</string>
+    <string name="dynamic_az_wait_recovery">AZ · odzyskuję cel</string>
+</resources>

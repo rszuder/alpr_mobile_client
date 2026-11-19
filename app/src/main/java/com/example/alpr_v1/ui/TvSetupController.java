@@ -31,6 +31,7 @@ import com.example.alpr_v1.R;
 import com.example.alpr_v1.camera.CameraGeometryProvider;
 import com.example.alpr_v1.camera.CameraSetupControl;
 import com.example.alpr_v1.camera.CameraSetupSnapshot;
+import com.example.alpr_v1.camera.CameraSetupReadiness;
 import com.example.alpr_v1.camera.CameraSelection;
 import com.example.alpr_v1.setup.CameraPreviewGeometry;
 import com.example.alpr_v1.setup.TvDistanceCalculator;
@@ -56,8 +57,29 @@ import java.util.function.BooleanSupplier;
 public final class TvSetupController {
     public static final String ACTION="tv_setup_requested_action";
     private static final String STORED="tv_setup_calibration_v1", INPUTS="tv_setup_inputs_v1", OUTLINE="tv_outline_visible_v1";
+    private boolean persistedApprovalExpected;
     public enum Phase { NORMAL, WAITING, CAMERA_SETUP, EDITING, REVIEW, CAMERA_ERROR, COMMITTING, CANCELLING }
-    public enum Mode { CALIBRATION, DISTANCE }
+    public enum Mode { CALIBRATION, DISTANCE, F6_PHOTO }
+    public enum EditorExit { SAVED, CANCELLED, BACKGROUND }
+    private java.util.function.Consumer<EditorExit> editorExit=reason->{};
+    public void setEditorExitListener(java.util.function.Consumer<EditorExit> listener){editorExit=listener==null?reason->{}:listener;}
+    private boolean photoMode;
+    private String researchSummary="";
+    public void setResearchSummary(String summary){
+        String value=summary==null?"":summary;if(value.equals(researchSummary))return;
+        researchSummary=value;
+        // Bounds belong to the fixed main layout, never to preview freshness or text wrapping.
+        TextView caption=find(R.id.tv_frame_status);caption.setTextSize(value.isEmpty()?10:12);caption.setMaxLines(value.isEmpty()?2:3);
+        renderOutlineControl();
+    }
+    private com.example.alpr_v1.experiment.Final180PhotoRoiApproval photoApproval;
+    private String photoLoadKey="",photoApprovalFailure="";
+    private long photoRequest;
+    private int draftInitializations;
+    private boolean firstDraftChangeLogged;
+    private boolean freshPhotoDraft;
+    private List<com.example.alpr_v1.setup.TvCornerEditGeometry.Position> entryEditorPoints;
+    private androidx.appcompat.app.AlertDialog exitQuestion;
     private final AppCompatActivity activity;
     private final SharedPreferences preferences;
     private final PreviewView preview;
@@ -147,21 +169,28 @@ public final class TvSetupController {
         corners=find(R.id.tv_corner_choices);units=find(R.id.tv_distance_units);ratios=find(R.id.tv_distance_ratios);
         diagonal=find(R.id.tv_input_diagonal);width=find(R.id.tv_input_width);height=find(R.id.tv_input_height);
         aspectW=find(R.id.tv_input_aspect_w);aspectH=find(R.id.tv_input_aspect_h);margin=find(R.id.tv_input_margin);measured=find(R.id.tv_input_measured);
-        calibration=TvSetupCalibration.restore(preferences.getString(STORED,""));
+        String storedApproval=preferences.getString(STORED,"");
+        calibration=TvSetupCalibration.restore(storedApproval);persistedApprovalExpected=!storedApproval.isEmpty();
         draft=TvEditDraft.restore(preferences.getString(TvEditDraft.PREFERENCE,""));
         outlineVisible=preferences.getBoolean(OUTLINE,true);
         try{fields=new JSONObject(preferences.getString(INPUTS,"{}"));inputMode=fields.optString("mode","DIAGONAL_IN");}catch(Exception ignored){}
-        overlay.configure(preview,this::onDraftChanged,()->editable.getAsBoolean()&&phase==Phase.EDITING&&!calculatorMode&&!cameraStep);overlay.setCorners(calibration.corners);
+        overlay.configure(preview,this::onDraftChanged,()->editable.getAsBoolean()&&phase==Phase.EDITING&&!calculatorMode&&!cameraStep&&presentationReady()&&controlsReady());overlay.setCorners(calibration.corners);
+        overlay.attachLoupe(find(R.id.tv_corner_loupe));
         reference=new TvReferenceLayout(activity);
+        ((MaterialButtonToggleGroup)find(R.id.tv_corner_zoom_choices)).addOnButtonCheckedListener((group,id,checked)->{
+            if(checked&&!binding)overlay.setLoupeZoom(id==R.id.tv_corner_zoom_8?8:4);
+        });
+        find(R.id.tv_corner_step).setOnClickListener(v->overlay.setStep(overlay.step()==1?5:1));
         bindNudge(R.id.tv_corner_left,-1,0);bindNudge(R.id.tv_corner_up,0,-1);bindNudge(R.id.tv_corner_down,0,1);bindNudge(R.id.tv_corner_right,1,0);
         back=new OnBackPressedCallback(false){@Override public void handleOnBackPressed(){navigateBack();}};
         activity.getOnBackPressedDispatcher().addCallback(activity,back);
-        clear.setOnClickListener(v->clearDraft());confirm.setOnClickListener(v->requestExit(true));cancel.setOnClickListener(v->requestExit(false));
+        clear.setOnClickListener(v->clearDraft());confirm.setOnClickListener(v->requestExit(true));cancel.setOnClickListener(v->requestUserCancel());
         find(R.id.tv_frame_edit).setOnClickListener(v->open(Mode.CALIBRATION));
         find(R.id.tv_setup_details).setOnClickListener(v->{String state=calibration.status(geometry);
-            String label="READY".equals(state)?"GOTOWY":"STALE".equals(state)?"NIEAKTUALNY":"NIESKALIBROWANY";
-            MaterialAlertDialogBuilder dialog=new MaterialAlertDialogBuilder(activity,R.style.ThemeOverlay_Alpr_TvSetupDialog).setTitle(R.string.tv_editor_details_title)
-                    .setMessage(phase==Phase.CAMERA_ERROR?geometryDetails():label+"\n\n"+coverage.getText()).setPositiveButton(R.string.tv_editor_close_details,null);
+            String label=photoMode?editorState():activity.getString("READY".equals(state)?R.string.tv_precision_saved:"STALE".equals(state)?R.string.tv_precision_stale:R.string.tv_precision_missing);
+            MaterialAlertDialogBuilder dialog=new com.example.alpr_v1.ui.ImmersiveDialogBuilder(activity,R.style.ThemeOverlay_Alpr_TvSetupDialog).setTitle(photoMode?R.string.f6_photo_roi_title:R.string.tv_editor_details_title)
+                    .setMessage(phase==Phase.CAMERA_ERROR?geometryDetails():label+"\n\n"+(photoMode?activity.getString(R.string.tv_precision_photo_rectangle)+"\n\n":"")+coverage.getText()+(photoMode&&!photoApprovalFailure.isEmpty()?"\n\n"+photoApprovalFailure:"")
+                            +(photoMode&&!controlsReady()?"\n\n"+cameraState.reason:"")).setPositiveButton(R.string.tv_editor_close_details,null);
             if(com.example.alpr_v1.BuildConfig.DEBUG&&phase==Phase.CAMERA_ERROR)dialog.setNeutralButton(R.string.tv_camera_copy,(d,which)->{
                 android.content.ClipboardManager clipboard=(android.content.ClipboardManager)activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
                 if(clipboard!=null)clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ALPR camera geometry",geometryDetails()));});
@@ -211,11 +240,11 @@ public final class TvSetupController {
     }
     @SuppressWarnings("unchecked") private <T extends View>T find(int id){return (T)activity.findViewById(id);}
     public Phase phase(){return phase;}
-    public Mode mode(){return calculatorMode?Mode.DISTANCE:Mode.CALIBRATION;}
+    public Mode mode(){return photoMode?Mode.F6_PHOTO:calculatorMode?Mode.DISTANCE:Mode.CALIBRATION;}
     public boolean editing(){return phase!=Phase.NORMAL;}
     public boolean restoring(){return phase==Phase.COMMITTING||phase==Phase.CANCELLING;}
     public boolean outlineVisible(){return outlineVisible;}
-    private boolean canNudge(){return phase==Phase.EDITING&&!calculatorMode&&!cameraStep&&editable.getAsBoolean()&&presentationReady()&&controlsReady()&&overlay.editing();}
+    private boolean canNudge(){return phase==Phase.EDITING&&!calculatorMode&&!cameraStep&&editable.getAsBoolean()&&presentationReady()&&controlsReady()&&overlay.editing()&&overlay.selectedPosition()!=null;}
     private void bindNudge(int id,int dx,int dy){
         MaterialButton button=find(id);boolean[] touch={false},suppressClick={false};
         button.setOnClickListener(v->{if(!suppressClick[0]&&canNudge())overlay.nudgeSelected(dx,dy);});
@@ -234,12 +263,16 @@ public final class TvSetupController {
         });
     }
     private void onDraftChanged(){
-        if(!editing()||calculatorMode)return;
+        if(editing()&&photoMode&&entryEditorPoints!=null&&!firstDraftChangeLogged&&pointsChanged()){
+            firstDraftChangeLogged=true;diagnostic("first_corner_move","");
+        }
+        if(binding||!editing()||calculatorMode)return;
         if(!overlay.isManipulating()){saveDraft();render();return;}
         confirm.setEnabled(false);
         if(!cornerFeedbackPosted){cornerFeedbackPosted=true;root.postOnAnimation(()->{cornerFeedbackPosted=false;if(editing()&&!calculatorMode)renderCornerFeedback();});}
     }
     private void saveDraft(){
+        if(photoMode)return;
         if(calculatorMode||overlay.isManipulating()||overlay.placedCount()!=4||sourceContext==null
                 ||phase!=Phase.EDITING&&phase!=Phase.CAMERA_SETUP)return;
         CameraSetupSnapshot camera=new CameraSetupSnapshot(new CameraSelection(sourceContext.cameraId,sourceContext.physicalCameraId),(float)sourceContext.zoomRatio);
@@ -248,7 +281,7 @@ public final class TvSetupController {
     }
     private boolean canShowStoredOutline(){
         return calibration.corners.size()==4&&TvEditDraft.sameCoordinates(calibration.reference,geometry)
-                &&TvSetupCalibration.validation(calibration.corners,geometry,density())==null;
+                &&geometry!=null;
     }
     private void presentStoredOutline(){
         overlay.setStaleOutline(!"READY".equals(calibration.status(geometry)));
@@ -257,7 +290,7 @@ public final class TvSetupController {
     private void renderCornerFeedback(){
         boolean ready=phase==Phase.EDITING&&!calculatorMode&&!cameraStep&&presentationReady();
         int corner=overlay.selectedCorner();String name=((TextView)find(cornerIds[corner])).getText().toString();
-        textIfChanged(find(R.id.tv_corner_active),activity.getString(R.string.tv_corner_active_pixels,name));
+        textIfChanged(find(R.id.tv_corner_active),activity.getString(R.string.tv_precision_active,name,activity.getString(cornerNames[corner])));
         com.example.alpr_v1.setup.TvCornerEditGeometry.Position point=overlay.selectedPosition();
         TextView coordinates=find(R.id.tv_corner_coordinates),limit=find(R.id.tv_corner_limit_status);
         if(ready&&geometry!=null&&point!=null){
@@ -265,12 +298,142 @@ public final class TvSetupController {
             textIfChanged(coordinates,activity.getString(R.string.tv_corner_coordinates,x,y));
             coordinates.setContentDescription(activity.getString(R.string.tv_corner_coordinate_description,name,x,y,geometry.sourceWidth,geometry.sourceHeight));
         }else{textIfChanged(coordinates,activity.getString(R.string.tv_corner_coordinates_empty));coordinates.setContentDescription(activity.getString(R.string.tv_corner_coordinates_empty));}
-        textIfChanged(limit,activity.getString(ready&&overlay.boundaryLimited()?R.string.tv_corner_limit:ready&&overlay.selectedOnBoundary()?R.string.tv_corner_on_edge:R.string.tv_corner_nudge_hint));
+        textIfChanged(limit,ready&&point==null?activity.getString(R.string.tv_precision_place_corner):ready&&overlay.boundaryLimited()?activity.getString(R.string.tv_corner_limit):ready&&overlay.selectedOnBoundary()?activity.getString(R.string.tv_corner_on_edge):"");
         limit.setTextColor(color(ready&&overlay.boundaryLimited()?R.color.alpr_warning:R.color.alpr_text_secondary));
-        boolean can=canNudge()&&!overlay.isDragging();for(int id:nudgeIds){View button=find(id);button.setEnabled(can);if(!can)button.setPressed(false);}
-        binding=true;corners.check(cornerIds[corner]);binding=false;
+        boolean can=canNudge()&&!overlay.isDragging();for(int id:nudgeIds){View button=find(id);button.setEnabled(can);if(!can||!overlay.isManipulating())button.setPressed(false);}
+        String[] directions={"w lewo","w górę","w dół","w prawo"};
+        for(int i=0;i<nudgeIds.length;i++)find(nudgeIds[i]).setContentDescription(activity.getString(R.string.tv_precision_move_description,directions[i],overlay.step()));
+        MaterialButton stepButton=find(R.id.tv_corner_step);stepButton.setEnabled(can);
+        String stepText=activity.getString(overlay.step()==1?R.string.tv_precision_step_one:R.string.tv_precision_step_five);
+        textIfChanged(stepButton,stepText);stepButton.setContentDescription(activity.getString(R.string.tv_precision_step_description,stepText,overlay.step()==1?5:1));
+        binding=true;corners.check(cornerIds[corner]);
+        ((MaterialButtonToggleGroup)find(R.id.tv_corner_zoom_choices)).check(overlay.loupeZoom()==8?R.id.tv_corner_zoom_8:R.id.tv_corner_zoom_4);binding=false;
     }
-    private void renderReferenceContent(){reference.content(cameraStep,phase);}
+    private boolean pointsChanged(){
+        if(entryEditorPoints==null)return false;
+        List<com.example.alpr_v1.setup.TvCornerEditGeometry.Position> now=overlay.draftPositions();
+        if(now.size()!=entryEditorPoints.size())return true;
+        for(int i=0;i<now.size();i++){
+            com.example.alpr_v1.setup.TvCornerEditGeometry.Position a=now.get(i),b=entryEditorPoints.get(i);
+            if(a==null||b==null){if(a!=b)return true;}
+            else if(Double.compare(a.x,b.x)!=0||Double.compare(a.y,b.y)!=0)return true;
+        }return false;
+    }
+    private String editorState(){
+        if(pointsChanged())return activity.getString(R.string.tv_precision_dirty);
+        if(photoMode){
+            if(freshPhotoDraft)return activity.getString(R.string.tv_precision_new_photo_frame);
+            String stored=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"");
+            if(!stored.isEmpty())try{
+                JSONObject record=new JSONObject(stored);
+                com.example.alpr_v1.experiment.Final180PhotoRoiApproval.reviewCorners(stored,record.getInt("source_width_px"),record.getInt("source_height_px"));
+                if(photoApproval==null){
+                    if(photoApprovalFailure.isEmpty()||"PHOTO_APPROVAL_CHECK_PENDING".equals(photoApprovalFailure))return activity.getString(R.string.f6_saved_waiting_source);
+                    return activity.getString(R.string.tv_precision_stale);
+                }
+                JSONObject saved=photoApproval.reviewAgainst(geometry,entryCalibration.approval());
+                if(overlay.placedCount()!=4)return activity.getString(R.string.f6_saved_waiting_source);
+                if(sameCorners(saved.getJSONArray("corners_norm")))return activity.getString(!controlsReady()||!presentationReady()?R.string.f6_saved_waiting_source:R.string.tv_precision_saved);
+            }catch(Exception invalid){return activity.getString(R.string.tv_precision_stale);}
+        }else if(entryCalibration!=null&&"READY".equals(entryCalibration.status(entryGeometry))&&entryGeometry!=null
+                &&(geometry==null||TvEditDraft.sameCoordinates(entryGeometry,geometry))&&calibration.corners.size()==4){
+            List<Point2> now=overlay.corners();boolean same=now.size()==4;
+            for(int i=0;same&&i<4;i++)same=Float.compare(now.get(i).x,calibration.corners.get(i).x)==0&&Float.compare(now.get(i).y,calibration.corners.get(i).y)==0;
+            if(same)return activity.getString(!controlsReady()||!presentationReady()?R.string.f6_saved_waiting_source:R.string.tv_precision_saved);
+        }
+        return activity.getString(R.string.tv_precision_to_save);
+    }
+    private boolean sameCorners(org.json.JSONArray saved)throws Exception{
+        List<Point2> now=overlay.corners();if(now.size()!=saved.length())return false;
+        for(int i=0;i<now.size();i++)if(Float.compare(now.get(i).x,(float)saved.getJSONObject(i).getDouble("x"))!=0
+                ||Float.compare(now.get(i).y,(float)saved.getJSONObject(i).getDouble("y"))!=0)return false;
+        return true;
+    }
+    private void noteEntryPoints(){if(entryEditorPoints==null)entryEditorPoints=overlay.draftPositions();}
+    public String approvedTvRecord(){JSONObject approved=calibration.approval();return approved==null?"":approved.toString();}
+    private void loadPhotoApproval(){
+        String saved=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"");
+        if(saved.isEmpty())return;
+        String context=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,"");
+        JSONObject approved=entryCalibration.approval();
+        String key=saved+"|"+context+"|"+approved.optString("digest_sha256");
+        if(key.equals(photoLoadKey))return;
+        photoLoadKey=key;photoApproval=null;photoApprovalFailure="PHOTO_APPROVAL_CHECK_PENDING";
+        final com.example.alpr_v1.setup.TvBboxCrop source=photoSelectionForEditing();
+        final long token=++photoRequest;
+        try{
+            if(!context.isEmpty()||source.digest.equals(new JSONObject(saved).optString("tv_bbox_crop_digest_sha256"))){
+                photoApproval=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.resolve(saved,context,source,approved,null);
+                photoApprovalFailure="";return;
+            }
+        }catch(Exception invalid){photoApprovalFailure=failureReason(invalid);diagnostic("photo_approval_rejected",photoApprovalFailure);return;}
+        java.io.File sessions=com.example.alpr_v1.experiment.ResearchSessionStore.sessionsRoot(activity);
+        java.util.concurrent.CompletableFuture.runAsync(()->{
+            com.example.alpr_v1.experiment.Final180PhotoRoiApproval found=null;String failure="";
+            try{found=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.resolve(saved,context,source,approved,sessions);}
+            catch(Exception invalid){failure=failureReason(invalid);}
+            final com.example.alpr_v1.experiment.Final180PhotoRoiApproval result=found;final String reason=failure;
+            handler.post(()->{
+                if(token!=photoRequest||!photoMode||!editing()||!saved.equals(preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"")))return;
+                photoApproval=result;photoApprovalFailure=reason;diagnostic("photo_approval_loaded",reason);render();
+            });
+        });
+    }
+    private void diagnostic(String cause,String reason){
+        diagnostic(cause,reason,entryGeometry);
+    }
+    private static String failureReason(Throwable error){
+        StringBuilder text=new StringBuilder();int depth=0;
+        while(error!=null&&depth++<16){if(text.length()>0)text.append(" <- ");text.append(error);Throwable next=error.getCause();if(next==error)break;error=next;}
+        return text.toString();
+    }
+    private void diagnostic(String cause,String reason,CameraPreviewGeometry previous){
+        try{
+            JSONObject d=new JSONObject().put("cause",cause).put("reason",reason).put("phase",phase.name())
+                    .put("editor_callback_token",photoRequest).put("dirty",pointsChanged()).put("draft_initializations",draftInitializations)
+                    .put("coordinate_space","source_frame_normalized_v1").put("bbox_coordinate_space","camera_full_bitmap_xy")
+                    .put("elapsed_nanos",android.os.SystemClock.elapsedRealtimeNanos()).put("time_domain","ANDROID_ELAPSED_REALTIME")
+                    .put("source_geometry",geometry==null?JSONObject.NULL:geometry.toJson())
+                    .put("previous_source_geometry",previous==null?JSONObject.NULL:previous.toJson())
+                    .put("entry_geometry",entryGeometry==null?JSONObject.NULL:entryGeometry.toJson())
+                    .put("tv_approval",calibration.approval()==null?JSONObject.NULL:calibration.approval().optString("digest_sha256"));
+            String saved=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"");
+            org.json.JSONArray draftPoints=new org.json.JSONArray();
+            for(com.example.alpr_v1.setup.TvCornerEditGeometry.Position p:overlay.draftPositions())draftPoints.put(p==null?JSONObject.NULL:new JSONObject().put("x",p.x).put("y",p.y));
+            d.put("draft_corners_norm",draftPoints);
+            if(geometry!=null&&draftPoints.length()==4)try{
+                int[] box=com.example.alpr_v1.setup.TvBboxCrop.bounds(draftPoints,geometry.sourceWidth,geometry.sourceHeight);
+                d.put("draft_bbox_camera_xy",com.example.alpr_v1.setup.TvBboxCrop.box(box[0],box[1],box[2],box[3]));
+            }catch(Exception invalidDraft){d.put("draft_bbox_reason",invalidDraft.getMessage());}
+            if(!saved.isEmpty()){JSONObject p=new JSONObject(saved);d.put("roi_digest",p.optString("digest_sha256")).put("roi_tv_digest",p.optString("tv_bbox_crop_digest_sha256"))
+                    .put("stored_corners_norm",p.optJSONArray("corners_norm")).put("stored_bbox_camera_xy",p.optJSONObject("photo_roi_camera_xy"));}
+            com.example.alpr_v1.logging.AppLog.info(activity,"F6_CALIBRATION",d.toString());
+        }catch(Exception ignored){android.util.Log.w("F6_CALIBRATION","diagnostic unavailable: "+ignored);}
+    }
+    /** Approval review is independent of frame freshness. Only SAVE/START use fresh controls.
+     * The entry snapshot is authentic camera state captured on opening, never invented geometry. */
+    private com.example.alpr_v1.setup.TvBboxCrop photoSelectionForEditing(){
+        if(entryCalibration==null||entryGeometry==null
+                ||geometry!=null&&!TvEditDraft.sameCoordinates(entryGeometry,geometry))throw new IllegalStateException("F6_PHOTO_ROI_REQUIRED_OR_STALE");
+        CameraSetupControl.State camera=currentCameraState();
+        CameraSetupSnapshot applied=camera.applied;
+        if(applied==null&&entryCameraState!=null&&camera.requested.equals(entryCameraState.requested)
+                &&Math.abs(camera.requestedZoom-entryCameraState.requestedZoom)<1e-5)applied=entryCameraState.applied;
+        if(applied==null)throw new IllegalStateException("CAMERA_SETUP_SNAPSHOT_MISSING");
+        return com.example.alpr_v1.setup.TvBboxCrop.prepare(entryCalibration.snapshot(entryGeometry,null,null,
+                TvDistanceCalculator.unavailable("NOT_USED_FOR_TV_BBOX_INPUT"),entryCalibration.confirmedAt),entryGeometry,applied);
+    }
+    private void renderReferenceContent(){reference.content(cameraStep,phase,photoMode,editorState(),overlay.placedCount()==4);}
+    private void requestUserCancel(){
+        if(!calculatorMode&&pointsChanged()){
+            if(exitQuestion!=null&&exitQuestion.isShowing())return;
+            exitQuestion=new com.example.alpr_v1.ui.ImmersiveDialogBuilder(activity,R.style.ThemeOverlay_Alpr_TvSetupDialog)
+                    .setTitle(R.string.tv_precision_close_question).setMessage(photoMode?R.string.tv_precision_close_photo:R.string.tv_precision_close_tv)
+                    .setNegativeButton(R.string.tv_precision_continue,null)
+                    .setPositiveButton(R.string.tv_precision_close_without_save,(dialog,which)->requestExit(false)).create();
+            exitQuestion.show();
+        }else requestExit(false);
+    }
     public void toggleOutline(){
         outlineVisible=!outlineVisible;preferences.edit().putBoolean(OUTLINE,outlineVisible).apply();
         renderOutlineControl();applyVisibility();
@@ -285,22 +448,60 @@ public final class TvSetupController {
             int icon=outlineVisible?R.drawable.ic_tv_outline_visible:R.drawable.ic_tv_outline_hidden;
             if(!Integer.valueOf(icon).equals(root.getTag(R.id.menu_tv_outline))){item.setIcon(icon);root.setTag(R.id.menu_tv_outline,icon);}}
         String state=calibration.status(geometry);
-        int label="READY".equals(state)?R.string.main_ui_tv_ready:"STALE".equals(state)?R.string.main_ui_tv_stale
-                :draft!=null?R.string.main_ui_tv_draft:R.string.main_ui_tv_missing;
+        int label="READY".equals(state)?R.string.tv_precision_saved:"STALE".equals(state)?R.string.tv_precision_stale
+                :draft!=null?R.string.tv_precision_to_save:R.string.tv_precision_missing;
         String text=activity.getString(R.string.main_ui_tv_summary,activity.getString(label),
                 activity.getString(outlineVisible?R.string.main_ui_outline_visible:R.string.main_ui_outline_hidden))+"\n"+inputSummary.get();
+        if(!researchSummary.isEmpty())text=researchSummary;
         TextView summary=find(R.id.tv_frame_status);
         if(!text.contentEquals(summary.getText()))summary.setText(text);
-        summary.setContentDescription(text+("STALE".equals(state)?". "+calibration.reason(geometry):""));
-        find(R.id.tv_frame_edit).setEnabled(editable.getAsBoolean());
+        summary.setContentDescription(text+("STALE".equals(state)?". "+calibration.reason(geometry):
+                "READY".equals(state)&&calibration.reused()?". "+activity.getString(R.string.f25_tv_reused_detail):""));
+        boolean sourceKnown=geometry!=null&&(cameraControls==null||cameraState.ready());
+        int tvLabel=calibration.approval()==null?R.string.tv_precision_missing
+                :!sourceKnown?R.string.main_calibration_wait:label;
+        MaterialButton tv=find(R.id.tv_frame_edit);
+        String tvText=activity.getString(R.string.main_tv_calibrate_action)+"\n"+activity.getString(tvLabel);
+        textIfChanged(tv,tvText);tv.setContentDescription(tvText+("STALE".equals(state)?". "+calibration.reason(geometry):""));
+        tv.setEnabled(editable.getAsBoolean());
+        MaterialButton photo=find(R.id.f6_photo_roi_edit);
+        int photoLabel=R.string.tv_precision_missing;String reason="";
+        String saved=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"");
+        if(!saved.isEmpty())try{
+            com.example.alpr_v1.experiment.Final180PhotoRoiApproval.review(saved,
+                    preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,""))
+                    .reviewAgainst(geometry,calibration.approval());
+            photoLabel=sourceKnown?R.string.tv_precision_saved:R.string.main_calibration_wait;
+        }catch(Exception invalid){photoLabel=R.string.main_calibration_check;reason=". "+failureReason(invalid);}
+        String photoText=activity.getString(R.string.main_photo_calibrate_short)+"\n"+activity.getString(photoLabel);
+        textIfChanged(photo,photoText);photo.setContentDescription(activity.getString(R.string.main_photo_calibrate_action)+". "+activity.getString(photoLabel)+reason);
     }
     private boolean seedCorners(boolean reset){
         if(!reset&&overlay.placedCount()==4)return true;
+        if(photoMode){
+            try{
+                java.util.List<Point2> points=null;
+                if(!reset&&!preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"").isEmpty()){
+                    try{
+                        loadPhotoApproval();
+                        if(photoApproval==null)throw new IllegalArgumentException(photoApprovalFailure);
+                        photoApproval.reviewAgainst(geometry,entryCalibration.approval());
+                        org.json.JSONArray saved=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.reviewCorners(
+                                preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,""),geometry.sourceWidth,geometry.sourceHeight);
+                        points=new java.util.ArrayList<>();for(int i=0;i<4;i++)points.add(new Point2((float)saved.getJSONObject(i).getDouble("x"),(float)saved.getJSONObject(i).getDouble("y")));
+                    }catch(Exception incompatible){photoApprovalFailure=failureReason(incompatible);diagnostic("photo_draft_rejected_saved",photoApprovalFailure);}
+                }
+                freshPhotoDraft=points==null;
+                if(freshPhotoDraft)points=TvCornerDraft.insideTv(calibration.corners,geometry,density());
+                overlay.setCorners(points);overlay.selectCorner(0);noteEntryPoints();draftInitializations++;diagnostic("photo_draft_initialized",photoApprovalFailure);return true;
+            }catch(Exception unavailable){cameraFailureCode="DRAFT_NOT_VISIBLE";cameraFailure=failureReason(unavailable);photoApprovalFailure=cameraFailure;
+                diagnostic("photo_draft_unavailable",photoApprovalFailure);phase=Phase.CAMERA_ERROR;overlay.setEditing(false);render();return false;}
+        }
         try{
             TvEditDraft saved=reset?null:draft!=null?draft:TvEditDraft.fromCalibration(entryCalibration);
             if(saved!=null&&TvEditDraft.sameCoordinates(saved.reference,geometry))overlay.restoreDraft(saved.points,saved.selected);
             else{overlay.setCorners(TvCornerDraft.create(geometry,density()));overlay.selectCorner(0);}
-            return true;
+            noteEntryPoints();return true;
         }catch(IllegalArgumentException error){cameraFailureCode="DRAFT_NOT_VISIBLE";cameraFailure=error.getMessage();phase=Phase.CAMERA_ERROR;overlay.setEditing(false);render();return false;}
     }
     private boolean keyboardForm(){return editing()&&!restoring()&&calculatorMode&&imeVisible;}
@@ -354,21 +555,28 @@ public final class TvSetupController {
     public void setCameraControls(CameraSetupControl controls){cameraControls=controls;controls.setListener(this::onCameraControls);}
     public boolean choosingCamera(){return editing()&&!calculatorMode&&cameraStep;}
     private void onCameraControls(CameraSetupControl.State state){
-        long previous=cameraState.revision;boolean wasReady=cameraState.ready();cameraState=state;
-        if(editing()&&!restoring()&&previous!=state.revision){
-            calibration=calibration.invalidated("CAMERA_SETUP_CHANGED");overlay.setCorners(Collections.emptyList());sourceContext=null;
+        long previous=cameraState.revision;boolean wasReady=cameraState.ready();
+        boolean sourceRequestChanged=!cameraState.requested.equals(state.requested)||Math.abs(cameraState.requestedZoom-state.requestedZoom)>1e-5;
+        cameraState=state;
+        revalidateForCamera(state.readiness);
+        if(editing()&&!restoring()&&previous!=state.revision&&sourceRequestChanged){
+            calibration=calibration.awaitingVerification("CAMERA_SETUP_CHANGED");overlay.setCorners(Collections.emptyList());sourceContext=null;
             if(!calculatorMode){cameraStep=true;phase=Phase.WAITING;overlay.setEditing(false);resetWaitingBudget();armTimeout();configurePanel();}
         }
         if(editing()&&!calculatorMode&&!restoring()&&!state.ready()&&(phase==Phase.EDITING||phase==Phase.CAMERA_SETUP)){
-            phase=Phase.WAITING;overlay.setEditing(false);armTimeout();requestGeometry();
+            // A missing fresh frame suspends interaction, not operator approval or editor layout.
+            overlay.suspendInteraction();
+            if(phase==Phase.CAMERA_SETUP||sourceContext==null){phase=Phase.WAITING;overlay.setEditing(false);armTimeout();}
+            requestGeometry();
         }else if(editing()&&state.ready()&&!wasReady)requestGeometry();
+        if(editing()&&wasReady!=state.ready())diagnostic("camera_freshness_changed",state.reason);
         renderCameraControls();reconcile();renderReferenceContent();
     }
     private void requestCamera(CameraSelection selection,float ratio){
         if(cameraControls==null||!editable.getAsBoolean()||!editing()||calculatorMode||!cameraStep||restoring())return;
         saveDraft();resumeSource=null;
         cameraStep=true;sourceContext=null;overlay.setCorners(Collections.emptyList());overlay.setEditing(false);
-        calibration=calibration.invalidated("CAMERA_SETUP_CHANGED");phase=Phase.WAITING;resetWaitingBudget();armTimeout();
+        calibration=calibration.awaitingVerification("CAMERA_SETUP_CHANGED");phase=Phase.WAITING;resetWaitingBudget();armTimeout();
         cameraControls.apply(selection,ratio);requestGeometry();reconcile();
     }
     private float zoomForProgress(int value){double min=Math.max(.01,cameraState.minZoom),max=Math.max(min,cameraState.maxZoom);
@@ -376,7 +584,8 @@ public final class TvSetupController {
     private boolean controlsReady(){
         if(cameraControls==null)return geometry!=null;
         CameraSetupSnapshot applied=cameraState.applied;
-        return cameraState.ready()&&geometry!=null&&geometry.cameraId.equals(applied.selection.logicalCameraId)
+        return cameraState.ready()&&geometry!=null&&(cameraState.readiness==null||cameraState.readiness.ready()&&cameraState.readiness.bindingGeneration==geometry.bindingGeneration)
+                &&geometry.cameraId.equals(applied.selection.logicalCameraId)
                 &&(applied.selection.physicalCameraId==null||applied.selection.physicalCameraId.equals(geometry.physicalCameraId))
                 &&Math.abs(applied.zoomRatio-geometry.zoomRatio)<1e-4;
     }
@@ -397,7 +606,9 @@ public final class TvSetupController {
         }
         int index=0;for(int i=0;i<displayed.size();i++)if(displayed.get(i).selection.equals(selected))index=i;
         if(!displayed.isEmpty()&&lens.getSelectedItemPosition()!=index)lens.setSelection(index);
-        textIfChanged(cameraDetail,displayed.isEmpty()?cameraState.reason:displayed.get(index).detail);
+        String cameraDescription=displayed.isEmpty()?CameraOperatorPresentation.readableDetail(activity,cameraState.reason):displayed.get(index).detail;
+        if(cameraControls!=null)cameraDescription+="\n"+com.example.alpr_v1.camera.CameraController.describeObservation(cameraControls.observation());
+        textIfChanged(cameraDetail,cameraDescription);
         lens.setEnabled(editable.getAsBoolean()&&!cameraState.choices.isEmpty());
         zoom.setEnabled(editable.getAsBoolean()&&!cameraState.loading&&cameraState.maxZoom>cameraState.minZoom);
         if(!zoomDragging){float value=cameraState.applied==null?cameraState.requestedZoom:cameraState.applied.zoomRatio;
@@ -431,9 +642,9 @@ public final class TvSetupController {
         TextView view=find(R.id.tv_camera_fov);textIfChanged(view,reference.enabled()&&!fov.available()?"FOV: N/A · brak metadanych":full);view.setContentDescription(full);
     }
     private boolean availableLens(CameraSelection selection){for(CameraSetupControl.Choice choice:cameraState.choices)if(choice.selection.equals(selection))return true;return false;}
-    private void navigateBack(){saveDraft();if(!calculatorMode&&!cameraStep&&!restoring()){
+    private void navigateBack(){if(photoMode){requestUserCancel();return;}saveDraft();if(!calculatorMode&&!cameraStep&&!restoring()){
         cameraStep=true;phase=controlsReady()&&presentationReady()?Phase.CAMERA_SETUP:Phase.WAITING;overlay.setEditing(false);configurePanel();render();
-        }else close();}
+        }else requestUserCancel();}
     private boolean rollbackCamera(){
         if(cameraControls==null||entryCameraState==null)return false;
         if(cameraState.requested.equals(entryCameraState.requested)&&Math.abs(cameraState.requestedZoom-entryCameraState.requestedZoom)<1e-4)return false;
@@ -448,17 +659,37 @@ public final class TvSetupController {
         open(calculator?Mode.DISTANCE:Mode.CALIBRATION);
     }
     public void open(Mode mode){
+        if(mode==Mode.F6_PHOTO&&!"READY".equals(calibration.status(geometry))){
+            boolean approvedReview=false;
+            try{JSONObject approved=calibration.approval();
+                approvedReview=approved!=null&&com.example.alpr_v1.setup.SetupJson.verified(approved)
+                        &&(geometry==null||TvEditDraft.sameCoordinates(CameraPreviewGeometry.fromJson(approved.getJSONObject("source_geometry")),geometry));
+            }catch(Exception invalid){approvedReview=false;}
+            if(!approvedReview){Toast.makeText(activity,R.string.f6_roi_requires_tv,Toast.LENGTH_LONG).show();return;}
+        }
         if(phase==Phase.COMMITTING||phase==Phase.CANCELLING)return;
         if(editing()&&mode==mode())return; // Repeated readiness/menu callbacks keep the current draft.
         if(!editable.getAsBoolean()){Toast.makeText(activity,"Ustawienie TV jest dostępne przed START",Toast.LENGTH_SHORT).show();return;}
         boolean firstEntry=!editing();
+        firstDraftChangeLogged=false;
+        freshPhotoDraft=false;
+        entryEditorPoints=null;
         if(firstEntry){entryCalibration=calibration;entryGeometry=geometry;sourceContext=geometry;pendingSave=null;
             entryCameraState=cameraState;calibrationVisited=false;
             resumeSource=mode==Mode.CALIBRATION?(draft!=null?draft:TvEditDraft.fromCalibration(calibration)):null;resumeCameraRequested=false;}
         else if(!calculatorMode)saveDraft();
-        calculatorMode=mode==Mode.DISTANCE;resetWaitingBudget();
+        calculatorMode=mode==Mode.DISTANCE;photoMode=mode==Mode.F6_PHOTO;resetWaitingBudget();
+        if(photoMode){
+            photoApprovalFailure="";
+            String saved=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,"");
+            String context=preferences.getString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,"");
+            if(!saved.isEmpty()&&!context.isEmpty())try{photoApproval=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.review(saved,context);}
+            catch(Exception invalid){photoApproval=null;photoApprovalFailure=failureReason(invalid);}
+        }
+        binding=true;overlay.setStep(1);overlay.setLoupeZoom(4);binding=false;
+        if(photoMode){cameraStep=false;calibrationVisited=true;sourceContext=geometry;resumeSource=null;}
         if(!calculatorMode&&!calibrationVisited){cameraStep=true;calibrationVisited=true;sourceContext=null;}
-        phase=calculatorMode?Phase.EDITING:sourceContext!=null&&geometry!=null&&!sourceContext.sameSourceGeometry(geometry)?Phase.REVIEW:Phase.WAITING;
+        phase=calculatorMode?Phase.EDITING:sourceContext!=null&&geometry!=null&&!TvEditDraft.sameCoordinates(sourceContext,geometry)?Phase.REVIEW:Phase.WAITING;
         MaterialToolbar toolbar=find(R.id.top_app_bar);
         if(firstEntry){
             toolbarTitle=toolbar.getTitle();toolbarNavigation=toolbar.getNavigationIcon();
@@ -476,11 +707,17 @@ public final class TvSetupController {
                 "PRESENTED mode="+mode()+" phase="+phase+" form_visible="+find(R.id.tv_distance_scroll).isShown()));
     }
     private void configurePanel(){
+        overlay.setAnalysisBounds(photoMode);
         boolean compact=compactScreen();
         panel.setPadding(panel.getPaddingLeft(),dp(compact?8:12),panel.getPaddingRight(),dp(compact?8:12));
         topMargin(corners,compact?8:12);topMargin(coverage,compact?4:8);
         topMargin(find(R.id.tv_setup_waiting),compact?4:8);topMargin(find(R.id.tv_setup_actions),compact?4:8);
-        title.setText(calculatorMode?R.string.tv_distance_title:R.string.tv_camera_corners_title);
+        title.setText(photoMode?R.string.f6_photo_roi_title:calculatorMode?R.string.tv_distance_title:R.string.tv_camera_corners_title);
+        LinearLayout coordinatesRow=find(R.id.tv_corner_coordinate_header);boolean stackedCoordinates=fontScale()>1.3f;
+        coordinatesRow.setOrientation(stackedCoordinates?LinearLayout.VERTICAL:LinearLayout.HORIZONTAL);
+        TextView activeName=find(R.id.tv_corner_active),xy=find(R.id.tv_corner_coordinates);
+        activeName.setLayoutParams(new LinearLayout.LayoutParams(stackedCoordinates?-1:0,-2,stackedCoordinates?0:1));
+        xy.setLayoutParams(new LinearLayout.LayoutParams(stackedCoordinates?-1:dp(132),-2));
         clear.setVisibility(calculatorMode||cameraStep?View.GONE:View.VISIBLE);
         corners.setVisibility(calculatorMode||cameraStep?View.GONE:View.VISIBLE);
         coverage.setVisibility(!calculatorMode&&!cameraStep&&!compact&&fontScale()<=1.2f?View.VISIBLE:View.GONE);
@@ -490,21 +727,28 @@ public final class TvSetupController {
         find(R.id.tv_camera_controls_scroll).getLayoutParams().height=ViewGroup.LayoutParams.WRAP_CONTENT;
         confirm.setVisibility(calculatorMode||cameraStep?View.GONE:View.VISIBLE);
         next.setVisibility(!calculatorMode&&cameraStep?View.VISIBLE:View.GONE);
-        cancel.setText(calculatorMode?(fontScale()>1.2f?R.string.tv_editor_back_compact:R.string.tv_editor_back):R.string.tv_editor_close_keep_draft);
+        cancel.setText(calculatorMode?(fontScale()>1.2f?R.string.tv_editor_back_compact:R.string.tv_editor_back):R.string.tv_editor_cancel);
+        boolean compactActions=!calculatorMode&&compact&&fontScale()>1.2f&&!landscape();
+        confirm.setText(photoMode?(compactActions?R.string.tv_precision_save_photo_compact:R.string.tv_precision_save_photo)
+                :(compactActions?R.string.tv_precision_save_tv_compact:R.string.tv_precision_save_tv));
+        confirm.setContentDescription(activity.getString(photoMode?R.string.tv_precision_save_photo:R.string.tv_precision_save_tv));
         // Secondary copy may collapse at large fonts; corner choice and primary actions never scroll away.
         title.setVisibility(keyboardForm()||!calculatorMode&&cameraStep||compact||fontScale()>1.2f?View.GONE:View.VISIBLE);
         instruction.setVisibility(!keyboardForm()&&(calculatorMode||!cameraStep)&&!compact&&fontScale()<=1.2f?View.VISIBLE:View.GONE);
-        LinearLayout actions=find(R.id.tv_setup_actions);boolean stacked=fontScale()>1.2f&&!landscape();
+        LinearLayout actions=find(R.id.tv_setup_actions);boolean stacked=fontScale()>1.2f&&!landscape()&&!compactActions;
+        actions.setBaselineAligned(false);
         actions.setOrientation(stacked?LinearLayout.VERTICAL:LinearLayout.HORIZONTAL);
         for(MaterialButton button:new MaterialButton[]{cancel,confirm,next}){
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(stacked?ViewGroup.LayoutParams.MATCH_PARENT:0,ViewGroup.LayoutParams.WRAP_CONTENT,stacked?0:1);
             if(button!=cancel){if(stacked)lp.topMargin=dp(8);else lp.setMarginStart(dp(12));}button.setLayoutParams(lp);
-            button.setTextSize(TypedValue.COMPLEX_UNIT_SP,landscape()?14:16);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP,landscape()||compactActions?14:16);
         }
         MaterialToolbar toolbar=find(R.id.top_app_bar);toolbar.setTitle(calculatorMode?(fontScale()>1.2f?R.string.tv_distance_title_compact:R.string.tv_distance_title):
                 cameraStep?(fontScale()>1.2f?R.string.tv_camera_step_compact:R.string.tv_camera_step_title):
                 fontScale()>1.2f?R.string.tv_camera_corners_compact:R.string.tv_camera_corners_title);
         toolbar.setNavigationContentDescription(!calculatorMode&&!cameraStep?R.string.tv_camera_back:R.string.tv_editor_close_keep_draft);
+        if(photoMode)toolbar.setTitle(R.string.f6_photo_roi_title);
+        else if(!calculatorMode)toolbar.setTitle(R.string.tv_editor_title);
         toolbar.setNavigationIcon(!calculatorMode&&!cameraStep?androidx.appcompat.R.drawable.abc_ic_ab_back_material:R.drawable.ic_tv_close);
         int toolbarSize=dp(Math.max(48,Math.round((calculatorMode?24:36)*fontScale()+16)));
         if(toolbar.getLayoutParams().height!=toolbarSize){toolbar.getLayoutParams().height=toolbarSize;toolbar.requestLayout();}
@@ -514,6 +758,7 @@ public final class TvSetupController {
     private void applyVisibility(){
         boolean restoring=phase==Phase.COMMITTING||phase==Phase.CANCELLING;
         boolean active=editing();
+        CameraWindowUi.setMainEditorOpen(root,active);
         find(R.id.main_hud_storage).setVisibility(active?View.INVISIBLE:View.VISIBLE);
         // The reference composition belongs exclusively to the calibration wizard.
         // Mapping errors retain the existing recovery layout so Retry/Cancel have priority.
@@ -590,7 +835,7 @@ public final class TvSetupController {
         if(ticket!=transition||!editing())return;
         waitingDeadline=0;
         if(phase==Phase.CANCELLING){
-            calibration=(entryCalibration==null?calibration:entryCalibration).invalidated("CAMERA_GEOMETRY_UNAVAILABLE");
+            calibration=(entryCalibration==null?calibration:entryCalibration).awaitingVerification("CAMERA_GEOMETRY_UNAVAILABLE");
             finishPresentation();return;
         }
         if(phase==Phase.WAITING||phase==Phase.COMMITTING||(phase==Phase.EDITING||phase==Phase.CAMERA_SETUP)&&!geometryPresented){
@@ -617,16 +862,18 @@ public final class TvSetupController {
         if(previous==null||next==null||!previous.sameGeometry(next))detections.setCameraGeometry(next);
         overlay.setGeometry(next);
         if(!editing()){
-            if(previous!=null&&next!=null&&!previous.sameGeometry(next))calibration=calibration.invalidated("CAMERA_GEOMETRY_CHANGED");
+            if(next==null||previous!=null&&!previous.sameGeometry(next))calibration=calibration.awaitingVerification("CAMERA_GEOMETRY_CHANGED");
+            revalidateForCamera(cameraState.readiness);
             presentStoredOutline();
             applyVisibility();
-        }else if(!cameraStep&&sourceContext!=null&&next!=null&&!sourceContext.sameSourceGeometry(next)){
-            calibration=calibration.invalidated("CAMERA_GEOMETRY_CHANGED");
+        }else if(!cameraStep&&sourceContext!=null&&next!=null&&!TvEditDraft.sameCoordinates(sourceContext,next)){
+            calibration=calibration.awaitingVerification("CAMERA_GEOMETRY_CHANGED");
             if(!calculatorMode){phase=Phase.REVIEW;pendingSave=null;overlay.setEditing(false);overlay.setGeometry(null);applyVisibility();}
         }else if(!calculatorMode&&next==null&&(phase==Phase.EDITING||phase==Phase.CAMERA_SETUP)){
             // CameraX can briefly withdraw its transform while a surface/layout is updating.
             phase=Phase.WAITING;overlay.setEditing(false);armTimeout();}
         if(frozenGeometry!=null&&!frozenGeometry.sameGeometry(next)&&!invalidationSent){invalidationSent=true;emitInvalidation(geometryReason.isEmpty()?"CAMERA_GEOMETRY_CHANGED":geometryReason);}
+        if(previous==null?next!=null:next==null||!previous.sameGeometry(next))diagnostic("geometry_changed",geometryReason,previous);
         reconcile();
     }
     private void reconcile(){
@@ -637,14 +884,22 @@ public final class TvSetupController {
             if(phase==Phase.WAITING){
                 if(!controlsReady()){render();return;}
                 if(cameraStep){phase=Phase.CAMERA_SETUP;overlay.setEditing(false);render();return;}
+                if(photoMode&&entryEditorPoints==null&&entryCalibration!=null&&(entryGeometry==null||!"READY".equals(entryCalibration.status(entryGeometry)))){
+                    entryCalibration=entryCalibration.revalidated(geometry,cameraState.readiness,SystemClock.elapsedRealtimeNanos(),Instant.now().toString());
+                    calibration=entryCalibration;
+                    if(!"READY".equals(entryCalibration.status(geometry))){phase=Phase.REVIEW;render();return;}
+                    CameraPreviewGeometry previousEntry=entryGeometry;entryGeometry=geometry;
+                    diagnostic("photo_review_source_verified","",previousEntry);
+                }
                 if(sourceContext==null)sourceContext=geometry;
-                if(!sourceContext.sameSourceGeometry(geometry)){phase=Phase.REVIEW;}
+                if(!TvEditDraft.sameCoordinates(sourceContext,geometry)){phase=Phase.REVIEW;}
                 else{
                     if(!calculatorMode&&!seedCorners(false))return;
                     phase=Phase.EDITING;overlay.setEditing(!calculatorMode);
                 }
             }
         }
+        if(phase==Phase.EDITING)overlay.setEditing(!calculatorMode);
         render();
     }
     private void resumeFrame(){
@@ -668,6 +923,7 @@ public final class TvSetupController {
         }
         sourceContext=geometry;cameraStep=false;phase=Phase.EDITING;
         overlay.restoreDraft(saved.points,saved.selected);overlay.setEditing(true);configurePanel();applyVisibility();
+        noteEntryPoints();
     }
     private void clearDraft(){
         resumeSource=null;
@@ -680,11 +936,11 @@ public final class TvSetupController {
         if(!editing())return;
         if(!save)saveDraft();
         if(!save&&rollbackCamera()){
-            calibration=(entryCalibration==null?calibration:entryCalibration).invalidated("CAMERA_SETUP_CANCELLED_REQUIRES_CHECK");
+            calibration=(entryCalibration==null?calibration:entryCalibration).awaitingVerification("CAMERA_SETUP_CANCELLED_REQUIRES_CHECK");
             finishPresentation();return;
         }
         if(!save&&(geometry==null||sourceContext==null||phase==Phase.CAMERA_ERROR||phase==Phase.REVIEW)){
-            calibration=(entryCalibration==null?calibration:entryCalibration).invalidated("CAMERA_GEOMETRY_UNAVAILABLE");finishPresentation();return;
+            calibration=(entryCalibration==null?calibration:entryCalibration).awaitingVerification("CAMERA_GEOMETRY_UNAVAILABLE");finishPresentation();return;
         }
         if(phase==Phase.COMMITTING||phase==Phase.CANCELLING){if(!save){phase=Phase.CANCELLING;pendingSave=null;}return;}
         if(save&&(cameraStep||phase!=Phase.EDITING||!controlsReady()||!editable.getAsBoolean()||overlay.isManipulating()
@@ -698,23 +954,56 @@ public final class TvSetupController {
     private void finishExit(){
         boolean save=phase==Phase.COMMITTING;
         if(save&&!controlsReady())return;
-        if(sourceContext!=null&&!sourceContext.sameSourceGeometry(geometry)){phase=Phase.REVIEW;applyVisibility();render();return;}
+        if(sourceContext!=null&&!TvEditDraft.sameCoordinates(sourceContext,geometry)){phase=Phase.REVIEW;applyVisibility();render();return;}
+        if(photoMode){
+            if(save)try{
+                org.json.JSONArray points=new org.json.JSONArray();for(Point2 p:pendingSave)points.put(new JSONObject().put("x",p.x).put("y",p.y));
+                com.example.alpr_v1.experiment.Final180PhotoRoi roi=com.example.alpr_v1.experiment.Final180PhotoRoi.prepare(points,selectionForInput());
+                com.example.alpr_v1.experiment.Final180PhotoRoiApproval approval=com.example.alpr_v1.experiment.Final180PhotoRoiApproval.capture(
+                        roi,selectionForInput(),calibration.approval(),"OPERATOR_CONFIRMED");
+                if(!preferences.edit().putString(com.example.alpr_v1.experiment.Final180PhotoRoi.PREFERENCE,roi.toJson().toString())
+                        .putString(com.example.alpr_v1.experiment.Final180PhotoRoiApproval.PREFERENCE,approval.toJson().toString()).commit())
+                    throw new java.io.IOException("PHOTO_APPROVAL_WRITE_FAILED");
+                photoLoadKey="";photoApproval=approval;diagnostic("photo_saved","");
+            }catch(Exception invalid){phase=Phase.EDITING;overlay.setCorners(pendingSave);overlay.setEditing(true);configurePanel();applyVisibility();render();
+                android.util.Log.w("ALPR_TV_SETUP",invalid.getMessage(),invalid);
+                Toast.makeText(activity,CalibrationOperatorText.preparationError(activity,invalid.getMessage()),Toast.LENGTH_LONG).show();return;}
+            calibration=entryCalibration==null?calibration:entryCalibration;finishPresentation(save?EditorExit.SAVED:EditorExit.CANCELLED);
+            if(save)Toast.makeText(activity,R.string.f6_roi_saved,Toast.LENGTH_LONG).show();return;
+        }
         if(save){
             String validation=TvSetupCalibration.validation(pendingSave,geometry,density());
             if(validation!=null){phase=Phase.EDITING;overlay.setCorners(pendingSave);overlay.setEditing(true);configurePanel();applyVisibility();render();return;}
+            if(entryCalibration!=null&&entryCalibration.approval()!=null&&sameApprovedCorners(pendingSave,entryCalibration.corners)
+                    &&TvEditDraft.sameCoordinates(entryCalibration.reference,geometry)){
+                calibration=entryCalibration.revalidated(geometry,currentCameraState().readiness,android.os.SystemClock.elapsedRealtimeNanos(),Instant.now().toString());
+                if("READY".equals(calibration.status(geometry))){draft=null;preferences.edit().remove(TvEditDraft.PREFERENCE).apply();diagnostic("tv_saved_unchanged","");finishPresentation(EditorExit.SAVED);return;}
+            }
             calibration=TvSetupCalibration.confirm(pendingSave,geometry,density(),Instant.now().toString());
-            SharedPreferences.Editor savedEditor=preferences.edit().putString(STORED,snapshot(System.currentTimeMillis()).toString()).remove(TvEditDraft.PREFERENCE);
+            String approvedRecord=snapshot(System.currentTimeMillis()).toString();
+            calibration=calibration.withStoredApproval(approvedRecord);
+            SharedPreferences.Editor savedEditor=preferences.edit().putString(STORED,approvedRecord).remove(TvEditDraft.PREFERENCE);
             draft=null;
             if(cameraState.applied!=null)savedEditor.putString(CameraSetupSnapshot.PREFERENCE,cameraState.applied.toJson().toString());
-            savedEditor.apply();
+            if(!savedEditor.commit()){calibration=entryCalibration;phase=Phase.EDITING;overlay.setCorners(pendingSave);overlay.setEditing(true);configurePanel();render();return;}
+            persistedApprovalExpected=true;
+            diagnostic("tv_saved","");
         }else if(entryCalibration!=null){
             calibration=entryCalibration;
-            if(entryGeometry!=null&&!entryGeometry.sameGeometry(geometry))calibration=calibration.invalidated("CAMERA_GEOMETRY_CHANGED");
+            if(entryGeometry!=null&&!entryGeometry.sameGeometry(geometry))calibration=calibration.awaitingVerification("CAMERA_GEOMETRY_CHANGED");
         }
-        finishPresentation();
+        finishPresentation(save?EditorExit.SAVED:EditorExit.CANCELLED);
         if(save)Toast.makeText(activity,R.string.tv_editor_saved,Toast.LENGTH_SHORT).show();
     }
     private void finishPresentation(){
+        finishPresentation(EditorExit.CANCELLED);
+    }
+    private void finishPresentation(EditorExit reason){
+        diagnostic("editor_closed",photoApprovalFailure);photoRequest++;
+        if(photoApproval==null)photoLoadKey="";
+        if(exitQuestion!=null){exitQuestion.dismiss();exitQuestion=null;}
+        entryEditorPoints=null;
+        photoMode=false;overlay.setAnalysisBounds(false);
         pendingMenuMode=null;resumeSource=null;
         phase=Phase.NORMAL;resetWaitingBudget();pendingSave=null;back.setEnabled(false);overlay.setEditing(false);
         restoreToolbarMetrics();
@@ -724,6 +1013,12 @@ public final class TvSetupController {
             android.view.MenuItem action=toolbar.getMenu().findItem(item.getKey());if(action!=null)action.setVisible(item.getValue());}
         applyVisibility();
         presentStoredOutline();controlsRefresh.run();
+        editorExit.accept(reason);
+    }
+    private static boolean sameApprovedCorners(List<Point2> a,List<Point2> b){
+        if(a.size()!=b.size())return false;
+        for(int i=0;i<a.size();i++)if(Float.compare(a.get(i).x,b.get(i).x)!=0||Float.compare(a.get(i).y,b.get(i).y)!=0)return false;
+        return true;
     }
     private void restoreToolbarMetrics(){
         MaterialToolbar toolbar=find(R.id.top_app_bar);
@@ -733,8 +1028,8 @@ public final class TvSetupController {
     public void close(){requestExit(false);}
     public void onBackground(){
         pendingMenuMode=null;
-        if(!editing())return;saveDraft();rollbackCamera();saveInputs();calibration=(entryCalibration==null?calibration:entryCalibration).invalidated("ACTIVITY_PAUSED_REQUIRES_CHECK");
-        finishPresentation();
+        if(!editing())return;saveDraft();rollbackCamera();saveInputs();calibration=(entryCalibration==null?calibration:entryCalibration).awaitingVerification("ACTIVITY_PAUSED_REQUIRES_CHECK");
+        finishPresentation(EditorExit.BACKGROUND);
     }
     private static TextView toolbarTitleView(MaterialToolbar toolbar){
         for(int i=0;i<toolbar.getChildCount();i++)if(toolbar.getChildAt(i) instanceof TextView){
@@ -745,10 +1040,12 @@ public final class TvSetupController {
 
     private void render(){
         if(!editing())return;applyVisibility();
+        boolean referenceEditor=reference.enabled()&&!calculatorMode&&!cameraStep&&(phase==Phase.EDITING||phase==Phase.WAITING&&overlay.placedCount()==4);
         boolean ready=phase==Phase.EDITING&&presentationReady();
         boolean waiting=!calculatorMode&&phase==Phase.WAITING;
         boolean cameraError=!calculatorMode&&phase==Phase.CAMERA_ERROR;
-        status.setVisibility(keyboardForm()?View.GONE:View.VISIBLE);
+        status.setVisibility(keyboardForm()||referenceEditor?View.GONE:View.VISIBLE);
+        if(referenceEditor)textIfChanged(status,editorState());
         // Error recovery owns the space; disabled corner controls/statistics are not useful here.
         corners.setVisibility(!calculatorMode&&!cameraStep&&!cameraError?View.VISIBLE:View.GONE);
         coverage.setVisibility(!calculatorMode&&!cameraStep&&!cameraError&&!compactScreen()&&fontScale()<=1.2f?View.VISIBLE:View.GONE);
@@ -780,13 +1077,13 @@ public final class TvSetupController {
         else if(phase==Phase.REVIEW){status.setText(fontScale()>1.2f?"NIEAKTUALNY":"NIEAKTUALNY · sprawdź kadr");instruction.setText(R.string.tv_saved_frame_changed);}
         else if(phase==Phase.CAMERA_ERROR){status.setText(fontScale()>1.2f?R.string.tv_editor_mapping_error_compact:R.string.tv_editor_mapping_error_title);instruction.setText(R.string.tv_editor_camera_error);}
         else if(cameraStep){status.setText(R.string.tv_camera_step);}
-        else if(overlay.placedCount()<4){String name=fontScale()>1.2f?((MaterialButton)find(cornerIds[overlay.selectedCorner()])).getText().toString():activity.getString(cornerNames[overlay.selectedCorner()]);
+        else if(!referenceEditor&&overlay.placedCount()<4){String name=fontScale()>1.2f?((MaterialButton)find(cornerIds[overlay.selectedCorner()])).getText().toString():activity.getString(cornerNames[overlay.selectedCorner()]);
             status.setText(activity.getString(R.string.tv_editor_step,overlay.placedCount()+1,name));instruction.setText(R.string.tv_editor_tap);}
-        else{status.setText(fontScale()>1.2f?R.string.tv_editor_draft_compact:R.string.tv_editor_draft);instruction.setText(R.string.tv_editor_adjust_hint);}
+        else if(!referenceEditor){status.setText(editorState());instruction.setText(R.string.tv_precision_instruction);}
         String validation=!calculatorMode&&!cameraStep&&ready&&overlay.placedCount()==4?TvSetupCalibration.validation(overlay.corners(),geometry,density()):null;
         String problem=cameraError?(fontScale()>1.2f?activity.getString("FRAME_NOT_AVAILABLE".equals(cameraFailureCode)||"CAMERA_UNAVAILABLE".equals(cameraFailureCode)?
                 R.string.tv_editor_frame_error_short:R.string.tv_editor_mapping_error_short):cameraFailure):cameraStep&&"SAVED_FRAME_UNAVAILABLE".equals(cameraFailureCode)?cameraFailure:validation;
-        if(!overlay.isManipulating()){error.setText(problem==null?"":problem);error.setVisibility(problem==null||problem.isEmpty()?View.GONE:View.VISIBLE);}
+        if(!overlay.isManipulating()){error.setText(CameraOperatorPresentation.readableDetail(activity,problem));error.setVisibility(problem==null||problem.isEmpty()?View.GONE:View.VISIBLE);}
         confirm.setEnabled(!calculatorMode&&!cameraStep&&ready&&controlsReady()&&overlay.placedCount()==4&&!overlay.isManipulating()&&validation==null&&editable.getAsBoolean());
         if(!calculatorMode&&!cameraStep)renderCoverage();
         renderReferenceContent();renderCornerFeedback();
@@ -861,18 +1158,81 @@ public final class TvSetupController {
     }
     /** Immutable live mapper; observation workers must capture it with their buffer. */
     public CameraPreviewGeometry observationGeometry(){return geometry;}
+    /** Preparation only: live sessions keep their frozen mapper and existing invalidation gates. */
+    public void revalidateForCamera(CameraSetupReadiness camera){
+        if(Looper.myLooper()!=Looper.getMainLooper())throw new IllegalStateException("Calibration revalidation requires UI");
+        if(camera==null||editing()||!editable.getAsBoolean())return;
+        TvSetupCalibration next=calibration;
+        if(persistedApprovalExpected){
+            try{
+                JSONObject stored=new JSONObject(preferences.getString(STORED,"")),original=next.approval();
+                if(!com.example.alpr_v1.setup.SetupJson.verified(stored)||original==null
+                        ||!stored.getString("digest_sha256").equals(original.getString("digest_sha256")))next=next.invalidated("INVALID_STORED_CALIBRATION");
+            }catch(org.json.JSONException invalid){next=next.invalidated("INVALID_STORED_CALIBRATION");}
+        }
+        next=next.revalidated(geometry,camera,SystemClock.elapsedRealtimeNanos(),Instant.now().toString());
+        if(next!=calibration){calibration=next;presentStoredOutline();renderOutlineControl();}
+    }
+    /** Existing generic telemetry envelope; never a new manual approval or an archive schema. */
+    public JSONObject revalidationEvidence(CameraSetupReadiness camera){
+        revalidateForCamera(camera);
+        TvSetupCalibration c=calibration;CameraPreviewGeometry g=geometry;
+        if(!"READY".equals(c.status(g))||camera==null||!camera.ready()
+                ||!camera.frameFreshAt(SystemClock.elapsedRealtimeNanos())||g.bindingGeneration!=camera.bindingGeneration)return null;
+        JSONObject original=c.approval();
+        if(original==null||!com.example.alpr_v1.setup.SetupJson.verified(original))return null;
+        try{return new JSONObject().put("validation_scope","camera_configuration_and_source_geometry")
+                .put("physical_alignment_verified",false).put("revalidated_at_utc",Instant.now().toString())
+                .put("original_calibration_snapshot",original).put("original_digest_sha256",original.getString("digest_sha256"))
+                .put("confirmed_at_utc",c.confirmedAt).put("validated_source_geometry",g.toJson())
+                .put("applied_camera_setup",camera.applied.toJson()).put("camera_binding_generation",camera.bindingGeneration)
+                .put("camera_setup_revision",camera.revision).put("frame_received_elapsed_nanos",camera.lastFrameElapsedNanos)
+                .put("frame_sensor_timestamp_nanos",camera.frameTimestampNanos>0?camera.frameTimestampNanos:JSONObject.NULL);
+        }catch(org.json.JSONException error){throw new IllegalStateException("CALIBRATION_REVALIDATION_EVIDENCE_INVALID",error);}
+    }
+    private CameraSetupControl.State currentCameraState(){
+        if(cameraControls==null)return cameraState;
+        if(Looper.myLooper()!=Looper.getMainLooper())throw new IllegalStateException("CAMERA_SETUP_SNAPSHOT_STALE: capture camera setup on UI before preparation");
+        CameraSetupControl.State current=cameraControls.state();
+        // Keep the existing worker snapshot coherent at START; editor transitions stay listener-owned.
+        if(!editing())cameraState=current;
+        return current;
+    }
     public com.example.alpr_v1.setup.TvBboxCrop selectionForInput(){
+        CameraSetupControl.State current=currentCameraState();
+        revalidateForCamera(current.readiness);
+        return selectionForInput(current.ready()?current.applied:null);
+    }
+    public com.example.alpr_v1.setup.TvBboxCrop selectionForInput(CameraSetupSnapshot confirmedSetup){
         CameraPreviewGeometry g=geometry;TvSetupCalibration c=calibration;
-        if(!cameraState.ready())throw new IllegalStateException("TV_BBOX_CAMERA_NOT_READY");
+        if(confirmedSetup==null)throw new IllegalStateException("CAMERA_SETUP_SNAPSHOT_MISSING");
         JSONObject confirmed=c.snapshot(g,null,null,TvDistanceCalculator.unavailable("NOT_USED_FOR_TV_BBOX_INPUT"),c.confirmedAt);
-        return com.example.alpr_v1.setup.TvBboxCrop.prepare(confirmed,g,cameraState.applied);
+        return com.example.alpr_v1.setup.TvBboxCrop.prepare(confirmed,g,confirmedSetup);
     }
     public String bboxPreparationStatus(){
-        if(!"READY".equals(calibration.status(geometry)))return "Kalibracja TV: "+calibration.status(geometry)+" · zatwierdź aktualne narożniki";
-        if(!cameraState.ready())return "Brak potwierdzonej kamery i zoomu";
+        CameraSetupControl.State current=currentCameraState();
+        revalidateForCamera(current.readiness);
+        return bboxPreparationStatus(current.ready()?current.applied:null,current.reason);
+    }
+    public String bboxPreparationStatus(CameraSetupSnapshot confirmedSetup,String cameraReason){
+        if(!"READY".equals(calibration.status(geometry)))return confirmedSetup==null&&cameraReason!=null&&!cameraReason.isEmpty()
+                ?cameraReason:"TV: kalibracja wymaga sprawdzenia · "+calibration.reason(geometry);
+        if(confirmedSetup==null)return cameraReason==null||cameraReason.isEmpty()?"Brak potwierdzonej kamery i zoomu":cameraReason;
+        if(geometry==null||!geometry.cameraId.equals(confirmedSetup.selection.logicalCameraId)
+                ||!java.util.Objects.equals(geometry.physicalCameraId,confirmedSetup.selection.physicalCameraId)
+                ||Math.abs(geometry.zoomRatio-confirmedSetup.zoomRatio)>=1e-5)
+            return com.example.alpr_v1.camera.CameraSetupReadiness.Reason.CAMERA_SETUP_GEOMETRY_MISMATCH.description();
         if(java.time.Instant.parse(calibration.confirmedAt).toEpochMilli()>System.currentTimeMillis())return "Potwierdzenie kalibracji ma przyszłą datę · sprawdź zegar telefonu";
-        try{selectionForInput();}catch(RuntimeException error){return "Nieprawidłowy BBOX TV · sprawdź i zatwierdź narożniki";}
+        try{selectionForInput(confirmedSetup);}catch(RuntimeException error){return "Nieprawidłowy BBOX TV · sprawdź i zatwierdź narożniki";}
         return "READY";
+    }
+    /** Retaining loaded models is not camera admission; START still requires a fresh confirmation. */
+    public boolean matchesPreparedGeometry(com.example.alpr_v1.setup.TvBboxCrop selected){
+        CameraPreviewGeometry g=geometry;TvSetupCalibration c=calibration;
+        if(selected==null||g==null||!"READY".equals(c.status(g))||!selected.geometry.sameGeometry(g))return false;
+        try{return java.time.Instant.parse(c.confirmedAt).toEpochMilli()<=System.currentTimeMillis()
+                &&selected.calibrationDigest.equals(c.snapshot(g,null,null,TvDistanceCalculator.unavailable("NOT_USED_FOR_TV_BBOX_INPUT"),c.confirmedAt).getString("digest_sha256"));
+        }catch(RuntimeException|org.json.JSONException invalid){return false;}
     }
     public com.example.alpr_v1.setup.TvBboxCrop.Frame openInput(com.example.alpr_v1.setup.TvBboxCrop frozen,
             com.example.alpr_v1.vision.CameraImageConverter.Result converted){
@@ -898,7 +1258,7 @@ public final class TvSetupController {
         frozenDigest=selected.calibrationDigest;frozenGeometry=geometry;invalidationSent=false;return selected.calibrationJson();
     }
     public JSONObject freeze(long wallMillis){saveInputs();JSONObject snapshot=snapshot(wallMillis);frozenDigest=snapshot.optString("digest_sha256");frozenGeometry="READY".equals(snapshot.optString("status"))?geometry:null;invalidationSent=false;return snapshot;}
-    public void resumeSession(JSONObject frozen){if(invalidationSent||frozen==null||!"READY".equals(frozen.optString("status")))return;invalidationSent=true;frozenDigest=frozen.optString("digest_sha256");calibration=calibration.invalidated("ACTIVITY_RESUMED_REQUIRES_GEOMETRY_CHECK");overlay.setCorners(Collections.emptyList());emitInvalidation("ACTIVITY_RESUMED_REQUIRES_GEOMETRY_CHECK");}
+    public void resumeSession(JSONObject frozen){if(invalidationSent||frozen==null||!"READY".equals(frozen.optString("status")))return;invalidationSent=true;frozenDigest=frozen.optString("digest_sha256");calibration=calibration.awaitingVerification("ACTIVITY_RESUMED_REQUIRES_GEOMETRY_CHECK");overlay.setCorners(Collections.emptyList());emitInvalidation("ACTIVITY_RESUMED_REQUIRES_GEOMETRY_CHECK");}
     private void emitInvalidation(String reason){try{event.accept("tv_setup_calibration_invalidated",new JSONObject().put("digest_sha256",frozenDigest).put("reason",reason));}catch(Exception ignored){}}
     private int color(int resource){
         if(reference!=null&&reference.enabled()){

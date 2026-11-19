@@ -188,6 +188,24 @@ public class TvCalibrationMagnifierTest {
         fit(0,false,false);show(160,110);loupe.dismiss();int count=requests;
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofSeconds(2));assertEquals(count,requests);assertFalse(loupe.hasCurrentPixels());
     }
+    @Test public void untouchedCornerKeepsExactlyOneLiveCopyLoop(){
+        fit(0,false,false);show(160,110);int began=requests;
+        for(int i=0;i<60;i++){
+            loupe.show(camera,160,110);
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(100));
+            assertTrue(loupe.hasCurrentPixels());
+        }
+        assertEquals(60,requests-began);assertEquals(1,maxActive);sample(image(),60,40,160,110);
+    }
+    @Test public void temporaryCopyFailureRetainsSameSourceFrameWithExplicitPauseState()throws Exception{
+        fit(0,false,false);show(160,110);delayed=true;
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(101));
+        completions.remove(0).accept(PixelCopy.ERROR_SOURCE_NO_DATA);
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(300));
+        assertFalse(loupe.hasCurrentPixels());
+        assertEquals(Boolean.TRUE,invoke(loupe,"hasDisplayPixels",new Class<?>[]{}));sample(image(),60,40,160,110);
+        loupe.dismiss();assertEquals(Boolean.FALSE,invoke(loupe,"hasDisplayPixels",new Class<?>[]{}));
+    }
 
     private static void field(Object target,String name,Object value)throws Exception{Field f=target.getClass().getDeclaredField(name);f.setAccessible(true);f.set(target,value);}
     private static Object invoke(Object target,String name,Class<?>[] types,Object...args)throws Exception{Method m=target.getClass().getDeclaredMethod(name,types);m.setAccessible(true);return m.invoke(target,args);}
@@ -239,6 +257,23 @@ public class TvCalibrationMagnifierTest {
         setup(raw,new double[]{0,0,1280,960},0,false,1280,960);show(181,131);
         sample(image(),60,40,181,131);sample(image(),75,50,181,131);
     }
+    @Test public void sharedPreviewAndBothZoomLevelsUseTheSamePixelsAndLeaveReticleCenterOpen(){
+        fit(0,false,false);show(180,130);
+        Bitmap preview=Bitmap.createBitmap(360,260,Bitmap.Config.ARGB_8888);loupe.drawPreview(new Canvas(preview));
+        int count=requests;
+        for(float scale:new float[]{4,8}){
+            loupe.setZoom(scale);assertEquals(scale,loupe.zoom(),0);
+            Bitmap pixels=image(),window=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);loupe.drawWindow(new Canvas(window));
+            assertEquals("Reticle must not cover the target",pixels.getPixel(width/2,height/2),window.getPixel(width/2,height/2));
+            float[] raw={180+.5f/scale,130+.5f/scale};source.geometry.viewToRaw.mapPoints(raw);
+            assertEquals(raw[0]-.5,px(pixels.getPixel(width/2,height/2)),1);
+            assertEquals(raw[1]-.5,py(pixels.getPixel(width/2,height/2)),1);
+        }
+        assertEquals("Zoom is a render operation, not another camera request",count,requests);
+        float[] raw={180.5f,130.5f};source.geometry.viewToRaw.mapPoints(raw);
+        assertEquals(raw[0]-.5,px(preview.getPixel(180,130)),1);
+        assertEquals(raw[1]-.5,py(preview.getPixel(180,130)),1);
+    }
     private void touch(TvCalibrationOverlayView overlay,int action,float x,float y){
         MotionEvent event=MotionEvent.obtain(0,SystemClock.uptimeMillis(),action,x,y,0);
         assertTrue(overlay.onTouchEvent(event));event.recycle();
@@ -249,7 +284,7 @@ public class TvCalibrationMagnifierTest {
         overlay.setGeometry(camera);overlay.setCorners(java.util.Arrays.asList(new Point2(.3f,.3f),new Point2(.8f,.3f),new Point2(.8f,.7f),new Point2(.3f,.7f)));
         overlay.setEditing(true);field(overlay,"magnifier",loupe);return overlay;
     }
-    @Test public void loupeFollowsSelectedCornerAfterGrabOffsetAndClampAndStopsOnUp()throws Exception{
+    @Test public void loupeFollowsSelectedCornerAfterGrabOffsetAndClampAndRemainsOnUp()throws Exception{
         fit(0,false,false);TvCalibrationOverlayView overlay=editor();double[] initial=camera.normalizedToView(.3,.3);
         touch(overlay,MotionEvent.ACTION_DOWN,(float)initial[0]+7,(float)initial[1]+5);
         touch(overlay,MotionEvent.ACTION_MOVE,-40,-40);
@@ -257,7 +292,7 @@ public class TvCalibrationMagnifierTest {
         double[] edge=camera.normalizedToView(overlay.selectedPosition().x,overlay.selectedPosition().y);
         assertEquals(0,overlay.selectedPosition().x,.0001);assertEquals(0,overlay.selectedPosition().y,.0001);
         assertTrue(loupe.hasCurrentPixels());sample(image(),82,59,(float)edge[0],(float)edge[1]);
-        touch(overlay,MotionEvent.ACTION_UP,-40,-40);assertFalse(loupe.hasCurrentPixels());
+        touch(overlay,MotionEvent.ACTION_UP,-40,-40);assertTrue(loupe.hasCurrentPixels());
         assertEquals(0,overlay.corners().get(0).x,0);assertEquals(0,overlay.corners().get(0).y,0);
     }
     @Test public void cancelAndBackgroundDiscardLateImageWithoutChangingCancelSemantics()throws Exception{
@@ -265,9 +300,10 @@ public class TvCalibrationMagnifierTest {
             fit(0,false,false);delayed=true;TvCalibrationOverlayView overlay=editor();double[] q=camera.normalizedToView(.3,.3);
             touch(overlay,MotionEvent.ACTION_DOWN,(float)q[0],(float)q[1]);touch(overlay,MotionEvent.ACTION_MOVE,150,140);
             if(background)overlay.onWindowVisibilityChanged(View.GONE);else touch(overlay,MotionEvent.ACTION_CANCEL,150,140);
-            completions.remove(0).accept(PixelCopy.SUCCESS);assertFalse(loupe.hasCurrentPixels());
+            completions.remove(0).accept(PixelCopy.SUCCESS);assertEquals(!background,loupe.hasCurrentPixels());
             assertEquals(.3,overlay.corners().get(0).x,.0001);assertEquals(.3,overlay.corners().get(0).y,.0001);
-            int count=requests;org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(300));assertEquals(count,requests);
+            int count=requests;org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(300));if(background)assertEquals(count,requests);else assertTrue(requests>count);
+            loupe.dismiss();for(java.util.function.IntConsumer done:new ArrayList<>(completions))done.accept(PixelCopy.SUCCESS);completions.clear();
         }
     }
     @Test public void sourceLookupSkipsDecorationsAndHiddenOldSurface(){

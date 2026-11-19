@@ -14,6 +14,9 @@ public final class VehicleEntity {
     private AppearanceDescriptor vehicleAppearance = new AppearanceDescriptor(null);
     private AppearanceDescriptor plateAppearance = new AppearanceDescriptor(null);
     private PlateTextConsensus registration = PlateTextConsensus.EMPTY;
+    private PlateTextConsensus bestDynamicRegistration = PlateTextConsensus.EMPTY;
+    private PlateTextConsensus bestDynamicBadgeReading = PlateTextConsensus.EMPTY;
+    private long bestDynamicRegistrationSourceNanos, bestDynamicBadgeSourceNanos;
     private RegistrationConsensusSource registrationSource =
             RegistrationConsensusSource.NONE;
     private EntityAcquisitionState acquisitionState = EntityAcquisitionState.NEW;
@@ -63,6 +66,10 @@ public final class VehicleEntity {
     public synchronized AppearanceDescriptor vehicleAppearance() { return vehicleAppearance; }
     public synchronized AppearanceDescriptor plateAppearance() { return plateAppearance; }
     public synchronized PlateTextConsensus registration() { return registration; }
+    public synchronized PlateTextConsensus bestDynamicRegistration() { return bestDynamicRegistration; }
+    public synchronized long bestDynamicRegistrationSourceNanos() { return bestDynamicRegistrationSourceNanos; }
+    public synchronized PlateTextConsensus dynamicBadgeReading() { return bestDynamicBadgeReading; }
+    public synchronized long dynamicBadgeSourceNanos() { return bestDynamicBadgeSourceNanos; }
     public synchronized RegistrationConsensusSource registrationSource() {
         return registrationSource;
     }
@@ -107,6 +114,9 @@ public final class VehicleEntity {
         lastSeenNanos = Math.max(lastSeenNanos, nowNanos);
         lastMpNanos = Math.max(lastMpNanos, nowNanos);
     }
+
+    /** Actual local pixels renew presence, independently of the last MP measurement. */
+    synchronized void observeLocalPresence(long sourceTime) { lastSeenNanos=Math.max(lastSeenNanos,sourceTime); }
 
     /** Zmienia wyłącznie układ współrzędnych obrazu, bez odświeżania MP TTL. */
     synchronized void applyCameraMotion(
@@ -169,14 +179,31 @@ public final class VehicleEntity {
             boolean freshMzAttempted,
             RegistrationConsensusSource source
     ) {
+        return updateRegistration(consensus, nowNanos, freshMzAttempted, source, false);
+    }
+
+    synchronized boolean updateRegistration(PlateTextConsensus consensus, long nowNanos,
+            boolean freshMzAttempted, RegistrationConsensusSource source, boolean currentDynamicEvidence) {
         PlateTextConsensus incoming = consensus == null
                 ? PlateTextConsensus.EMPTY : consensus;
         if (freshMzAttempted) {
             mzAttempts++;
             lastFreshMzNanos = Math.max(lastFreshMzNanos, nowNanos);
         }
-        if (!shouldAdoptConsensus(registration, incoming)) return false;
+        if (currentDynamicEvidence ? !incoming.available() || nowNanos < lastConsensusUpdateNanos
+                : !shouldAdoptConsensus(registration, incoming)) return false;
         registration = incoming;
+        if(currentDynamicEvidence) {
+            if(DynamicReadingSelection.improves(incoming.confidence,incoming.observations,
+                    bestDynamicRegistration.confidence,bestDynamicRegistration.observations,bestDynamicRegistration.available())) {
+                bestDynamicRegistration=incoming;bestDynamicRegistrationSourceNanos=nowNanos;
+            }
+            if(DynamicReadingSelection.badgeEligible(incoming)&&DynamicReadingSelection.improves(
+                    incoming.confidence,incoming.observations,bestDynamicBadgeReading.confidence,
+                    bestDynamicBadgeReading.observations,bestDynamicBadgeReading.available())) {
+                bestDynamicBadgeReading=incoming;bestDynamicBadgeSourceNanos=nowNanos;
+            }
+        }
         registrationSource = source == null
                 ? RegistrationConsensusSource.NONE : source;
         lastConsensusUpdateNanos = Math.max(lastConsensusUpdateNanos, nowNanos);

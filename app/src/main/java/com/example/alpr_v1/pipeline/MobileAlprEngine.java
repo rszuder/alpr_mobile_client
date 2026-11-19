@@ -103,9 +103,12 @@ final class MobileAlprEngine implements AutoCloseable {
                 com.example.alpr_v1.inference.RuntimeEvidenceSink sink);
     }
     private final com.example.alpr_v1.setup.TvBboxCrop inputCrop;
+    private final com.example.alpr_v1.experiment.Final180PhotoRoi photoRoi;
     private com.example.alpr_v1.setup.TvBboxCrop.Frame tvInput;
     private com.example.alpr_v1.experiment.TvBboxEvidence.FrameRecord tvEvidenceFrame;
     private final InferenceBackend vehicleBackend;
+    private MpDiagnosticCapture mpDiagnosticCapture;
+    void setMpDiagnosticCapture(MpDiagnosticCapture capture){mpDiagnosticCapture=capture;}
     private final InferenceBackend plateBackend;
     private final InferenceBackend characterBackend;
     private final ModelInputSpec vehicleInputSpec;
@@ -126,6 +129,49 @@ final class MobileAlprEngine implements AutoCloseable {
     }
     private final Set<Integer> vehicleClassIds;
     private final PlateTrackCoordinator trackCoordinator = new PlateTrackCoordinator();
+    private com.example.alpr_v1.camera.BitmapMemoryBudget dynamicBitmapBudget;
+    private DynamicMzJob pendingDynamicMz;
+    private static final class DynamicMzJob implements AutoCloseable {
+        final PlateObservation draft;
+        final PlateVehicleAssociation association;
+        final Bitmap crop;
+        final float quality;
+        final int width,height,attempt;
+        final long rectificationNanos,queuedAt=SystemClock.elapsedRealtimeNanos();
+        final CropInferenceTiming base;
+        com.example.alpr_v1.camera.BitmapMemoryBudget.Lease lease;
+        final VehicleTrackingCoordinator coordinator;
+        final long presentationTicket;
+        boolean transferred,closed;
+        DynamicMzJob(PlateObservation draft,PlateVehicleAssociation association,Bitmap crop,float quality,
+                int width,int height,int attempt,long rect,CropInferenceTiming base,
+                com.example.alpr_v1.camera.BitmapMemoryBudget.Lease lease,VehicleTrackingCoordinator coordinator) {
+            this.draft=draft;this.association=association;this.crop=crop;this.quality=quality;
+            this.width=width;this.height=height;this.attempt=attempt;rectificationNanos=rect;this.base=base;this.lease=lease;
+            this.coordinator=coordinator;presentationTicket=coordinator.beginDynamicMzAttempt(draft.identityOwner());
+        }
+        public void close(){
+            if(closed)return;closed=true;
+            coordinator.endDynamicMzAttempt(presentationTicket);
+            if(!transferred){if(!crop.isRecycled())crop.recycle();if(lease!=null)lease.close();}
+        }
+    }
+    void setDynamicBitmapBudget(com.example.alpr_v1.camera.BitmapMemoryBudget budget){dynamicBitmapBudget=budget;}
+    void requestDynamicPlateRefresh(long entity) {
+        if(strictIdentity()&&vehicleTrackingCoordinator.repository().get(entity)!=null)
+            mtInferenceScheduler.forceRefresh("dynamic_plate_geometry_inconsistent");
+    }
+    boolean hasPendingDynamicMz(){return pendingDynamicMz!=null;}
+    ContinuityStamp pendingDynamicMzStamp(){return pendingDynamicMz==null?null:pendingDynamicMz.draft.continuityStamp();}
+    void discardPendingDynamicMz(){if(pendingDynamicMz!=null){pendingDynamicMz.close();pendingDynamicMz=null;}}
+    void observeDynamicTimings(InferenceTrace trace) {
+        if(!strictIdentity())return;
+        DynamicInferenceScheduler scheduler=trackCoordinator.dynamicScheduler();
+        scheduler.observe("MP",trace.durationNanos("vehicle_preprocess"),trace.durationNanos("vehicle_inference"),trace.durationNanos("vehicle_postprocess"),0);
+        scheduler.observe("MT",trace.durationNanos("plate_preprocess"),trace.durationNanos("plate_inference"),trace.durationNanos("plate_postprocess"),0);
+        scheduler.observe("MZ",trace.durationNanos("character_preprocess"),trace.durationNanos("character_inference"),trace.durationNanos("character_postprocess"),trace.durationNanos("plate_rectification"));
+        trace.putCount("dynamic_mz_base_cycles",scheduler.baseCycles());
+    }
     private final VehicleTrackingCoordinator vehicleTrackingCoordinator;
     private final PlateEntityBinder plateEntityBinder;
     private volatile FrameMotionHistory previewFrameMotionHistory;
@@ -228,6 +274,26 @@ final class MobileAlprEngine implements AutoCloseable {
     private long refinementEntityId;
     private volatile boolean forceVehicleRefresh;
     void requestVehicleRefreshAfterZoom() { forceVehicleRefresh = true; }
+    void requestVehicleRefreshForContinuity() { forceVehicleRefresh = true; }
+    private java.util.function.BiConsumer<Long,Long> identityPromotionListener;
+    void setIdentityPromotionListener(java.util.function.BiConsumer<Long,Long> listener) {identityPromotionListener=listener;}
+    private boolean strictIdentity() {
+        return vehicleTrackingPolicy==VehicleTrackingPolicy.TRACKED_MP&&!staticSceneMode&&vehicleBackend!=null
+                &&vehicleTrackingCoordinator.identity().enabled();
+    }
+    private boolean waitingForManualTarget;
+    void setWaitingForManualTarget(boolean waiting) { waitingForManualTarget=waiting; }
+    private void abortStaleIdentitySource(ContinuityStamp stamp) {
+        if(strictIdentity()&&!vehicleTrackingCoordinator.identity().sourceCurrent(stamp.sourceTimestampNanos)) {
+            forceVehicleRefresh=true;throw new ProcessingCancelledException();
+        }
+    }
+    private static void remapVehicleOverlays(List<OverlayItem> items,long from,long to) {
+        for(int i=0;i<items.size();i++) {OverlayItem item=items.get(i);
+            if(item.kind==OverlayItem.Kind.VEHICLE&&item.trackId==from)
+                items.set(i,new OverlayItem(item.kind,item.normalizedBounds,item.normalizedKeypoints,item.label,to,item.carriedPrediction));
+        }
+    }
     private SceneMutationGate sceneMutations;
     void setSceneMutationGate(SceneMutationGate gate) { sceneMutations = gate; }
     private <T> T mutate(ContinuityStamp stamp, java.util.function.Supplier<T> operation) {
@@ -257,6 +323,7 @@ final class MobileAlprEngine implements AutoCloseable {
         Detection recognitionDetection;
         List<Point2> recognitionCorners;
         long geometryReferenceSourceSequence;
+        com.example.alpr_v1.tracking.DynamicPlateGeometryGate.Decision dynamicGeometry;
 
         PlateCandidate(
                 Detection detection,
@@ -304,6 +371,7 @@ final class MobileAlprEngine implements AutoCloseable {
             ResearchExecutionConfig researchExecutionConfig,VehicleTrackingCoordinator vehicleTrackingCoordinator,
             com.example.alpr_v1.inference.RuntimeEvidenceSink evidenceSink,BackendOpener opener){
         inputCrop=researchExecutionConfig==null?null:researchExecutionConfig.tvBboxCrop();
+        photoRoi=researchExecutionConfig==null?null:researchExecutionConfig.final180PhotoRoi();
         if (vehicleTrackingCoordinator == null) {
             throw new IllegalArgumentException("vehicleTrackingCoordinator is required");
         }
@@ -378,7 +446,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         vehicleModel,
                         vehicleVariant,
                         frozenVehicle == null
-                                ? autoTuneManager.chosenProfile(vehicleModel)
+                                ? autoTuneManager.normalProfile(vehicleModel, vehicleVariant)
                                 : frozenVehicle.executionProfile(), evidenceSink
                 );
             }
@@ -386,14 +454,14 @@ final class MobileAlprEngine implements AutoCloseable {
                     plateModel,
                     plateVariant,
                     frozenPlate == null
-                            ? autoTuneManager.chosenProfile(plateModel)
+                            ? autoTuneManager.normalProfile(plateModel, plateVariant)
                             : frozenPlate.executionProfile(), evidenceSink
             );
             openedCharacter = opener.open(
                     characterModel,
                     characterVariant,
                     frozenCharacter == null
-                            ? autoTuneManager.chosenProfile(characterModel)
+                            ? autoTuneManager.normalProfile(characterModel, characterVariant)
                             : frozenCharacter.executionProfile(), evidenceSink
             );
         } catch (RuntimeException error) {
@@ -540,6 +608,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void hardResetScene(String reason) {
+        discardPendingDynamicMz();
         adaptiveMtRoi.reset();
         resetSceneDependentState();
         continuitySoftHold = false;
@@ -617,7 +686,7 @@ final class MobileAlprEngine implements AutoCloseable {
         pendingSoftReacquireReport = SoftReacquireReport.none();
         pendingTerminalRecoveryDirective = null;
         latestSoftReacquireVehicles = VehicleContinuityEvidence.empty();
-        trackCoordinator.reset();
+        if(strictIdentity())trackCoordinator.resetTechnicalTracks();else trackCoordinator.reset();
         mtInferenceScheduler.reset();
         mtInferenceScheduler.forceRefresh("continuity_soft_reacquire");
     }
@@ -753,6 +822,7 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     void applyCameraZoomTransform(float relativeRatio) {
+        if(strictIdentity())vehicleTrackingCoordinator.identity().applyControlledZoom(relativeRatio);
         autoZoomGeometryGuard.cameraTransform(relativeRatio);
         android.util.Log.d("ALPR_AZ_GEOMETRY", "transform ratio=" + relativeRatio + " "
                 + autoZoomGeometryGuard.diagnosticState());
@@ -825,6 +895,7 @@ final class MobileAlprEngine implements AutoCloseable {
             inputCrop.requireCurrent(frame,input.crop.geometry,input.crop.cameraSetup);
         }else if(input!=null)throw new IllegalArgumentException("TV_BBOX_UNDECLARED_INPUT");
         tvInput=input;tvEvidenceFrame=input==null?null:researchStore.tvBboxEvidence().capture(input,sourceStamp);
+        actualMtRuns=0;
         if(input!=null)trace.putDurationNanos("tv_bbox_crop",input.cropElapsedNanos);
         researchBatch = researchStore != null && researchStore.accepting()
                 ? new com.example.alpr_v1.experiment.ResearchAttemptBatch(researchStore,sourceStamp,
@@ -857,6 +928,7 @@ final class MobileAlprEngine implements AutoCloseable {
                     "", 0.0, mtSizeOverlays, frame.getWidth(), frame.getHeight(), false);
         }
         catch (RuntimeException error) { failure=error.toString(); throw error; }
+        catch (Error error) { if(researchStore!=null&&researchStore.final180()!=null)failure=error.toString();throw error; }
         finally {
             if(f5a!=null) {
                 String reason=researchStore.accepting() ? "scan_queue_updated".equals(trace.status())
@@ -869,7 +941,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 if (cancellationRequested.getAsBoolean()) cancellation=researchStore != null && !researchStore.accepting() ? "session_stopped" : "scene_superseded";
                 researchBatch.finish(cancellation,failure); researchBatch=null;
             }
-            if(tvEvidenceFrame!=null)tvEvidenceFrame.complete(trace.status(),cancellation);
+            if(tvEvidenceFrame!=null)tvEvidenceFrame.complete(trace.status(),cancellation,actualMtRuns,failure,trace.frameId());
             tvEvidenceFrame=null;tvInput=null;
         }
     }
@@ -878,7 +950,17 @@ final class MobileAlprEngine implements AutoCloseable {
             AlprPipeline.PlateDetectionCallback plateDetectionCallback,BooleanSupplier cancellationRequested,
             AlprPipeline.PlateObservationCallback plateObservationCallback) {
         if (sourceStamp == null) throw new IllegalArgumentException("sourceStamp");
+        abortStaleIdentitySource(sourceStamp);
         mtSizeSourceStamp = sourceStamp;
+        mutate(sourceStamp,()->{trackCoordinator.beginSource(sourceStamp,strictIdentity());return null;});
+        if(strictIdentity())trackCoordinator.dynamicScheduler().sourceSize(frame.getWidth(),frame.getHeight());
+        if(waitingForManualTarget&&strictIdentity()) {
+            trace.putCount("mp_runs",0);trace.putCount("mt_runs_this_frame",0);trace.putCount("mz_runs",0);
+            trace.putAttribute("manual_lock_state","WAITING_FOR_TARGET");
+            trace.finish("manual_target_unavailable","");
+            return new PipelineResult("manual_target_unavailable","Cel utracony", "",0,
+                    java.util.Collections.emptyList(),frame.getWidth(),frame.getHeight(),false);
+        }
         mtSizeTrace = trace;
         sizeBlockedCount = 0;
         actualMtRuns = 0;
@@ -1057,11 +1139,17 @@ final class MobileAlprEngine implements AutoCloseable {
                 }
                 VehicleDetectionResult vehicleResult =
                         detectVehicleRegions(frame, trace, sourceStamp);
+                if(strictIdentity()&&plateDetectionCallback!=null) {
+                    List<OverlayItem> measuredStage=com.example.alpr_v1.ui.VehicleMeasurementOverlay.from(lastMeasuredVehicles,
+                            vehicleTrackingCoordinator.rawMpBounds(trace.frameId(),sourceStamp.sourceTimestampNanos));
+                    if(!measuredStage.isEmpty())plateDetectionCallback.onPlateDetections(measuredStage,
+                            frame.getWidth(),frame.getHeight(),sourceStamp);
+                }
                 forceVehicleRefresh = false;
                 if (continuityFreshMpRequired) {
-                    recordFreshMpReassociation(
-                            vehicleTrackingCoordinator.latestFrame()
-                    );
+                    if(vehicleTrackingPolicy==VehicleTrackingPolicy.TRACKED_MP&&!staticSceneMode) {
+                        mutate(sourceStamp,()->{recordFreshMpReassociation(vehicleTrackingCoordinator.latestFrame());return null;});
+                    } else recordFreshMpReassociation(vehicleTrackingCoordinator.latestFrame());
                     abortIfTerminalRecoveryRequested();
                 }
                 cachedVehicleRois.clear();
@@ -1143,6 +1231,11 @@ final class MobileAlprEngine implements AutoCloseable {
                     frame.getHeight(),
                     false
             );
+        }
+
+        if(strictIdentity()&&persistentTargetEntityId>0L) {
+            long verifying=vehicleTrackingCoordinator.identity().verificationFor(persistentTargetEntityId);
+            if(verifying>0L)persistentTargetEntityId=verifying;
         }
 
         /*
@@ -1686,6 +1779,7 @@ final class MobileAlprEngine implements AutoCloseable {
             if (trackObservations.isEmpty()) {
                 mutate(sourceStamp, () -> trackCoordinator.update(trackObservations,
                         trace.frameId(), SystemClock.elapsedRealtimeNanos()));
+                abortStaleIdentitySource(sourceStamp);
                 if (plateDetectionCallback != null) plateDetectionCallback.onPlateDetections(
                         Collections.unmodifiableList(new ArrayList<>(overlays)),
                         frame.getWidth(), frame.getHeight(), sourceStamp);
@@ -1696,12 +1790,19 @@ final class MobileAlprEngine implements AutoCloseable {
                         overlays, frame.getWidth(), frame.getHeight(), hardSceneBoundary);
             }
         }
+        if(strictIdentity()) {
+            java.util.Set<Long> retainedOwners=new java.util.HashSet<>();
+            for(VehicleEntity entity:vehicleTrackingCoordinator.repository().activeEntities())retainedOwners.add(entity.entityId());
+            mutate(sourceStamp,()->{trackCoordinator.retainEntityStates(retainedOwners);return null;});
+        }
         List<PlateTrackCoordinator.Decision> decisions = mutate(sourceStamp, () -> trackCoordinator.update(
                 trackObservations,
                 trace.frameId(),
                 SystemClock.elapsedRealtimeNanos()
         ));
 
+        abortStaleIdentitySource(sourceStamp);
+        Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> identityOwners=new HashMap<>();
         Map<Long, PlateVehicleAssociation> associationByPlateTrack = new HashMap<>();
         Map<Long, MtWorkKind> workKindByPlateTrack = new HashMap<>();
         Map<Long, MtReason> workReasonByPlateTrack = new HashMap<>();
@@ -1737,9 +1838,44 @@ final class MobileAlprEngine implements AutoCloseable {
             workKindByPlateTrack.put(decision.trackId, workKind);
             workReasonByPlateTrack.put(decision.trackId, workReason);
 
+            if(strictIdentity()&&association.assigned()) {
+                selectEffectivePlateGeometry(plateCandidate,decision.trackId,association,frame,sourceStamp,staticRefinement,trace);
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp geometryOwner=
+                        vehicleTrackingCoordinator.identity().stamp(association.entityId,association.vehicleTrackId);
+                List<Point2> ordered=com.example.alpr_v1.vision.GeometryUtils.orderQuad(plateCandidate.recognitionCorners);
+                boolean valid=PlateQualityScorer.isValidQuad(ordered)&&cornersInsideFrame(ordered,frame.getWidth(),frame.getHeight());
+                Detection box=plateCandidate.recognitionDetection;
+                plateCandidate.dynamicGeometry=mutate(sourceStamp,()->vehicleTrackingCoordinator.evaluatePlateGeometry(
+                        geometryOwner,sourceStamp,new NormalizedBounds(box.left/frame.getWidth(),box.top/frame.getHeight(),
+                                box.right/frame.getWidth(),box.bottom/frame.getHeight()),valid?normalizedQuad(ordered,frame):null));
+                com.example.alpr_v1.tracking.DynamicPlateGeometryGate.Decision geometry=plateCandidate.dynamicGeometry;
+                trace.putAttribute("dynamic_plate_geometry_reason",geometry.reason.name());
+                trace.putConfidence("dynamic_plate_geometry_bbox_alignment",geometry.bboxAlignment);
+                trace.putConfidence("dynamic_plate_geometry_coverage",geometry.referenceCoverage);
+                android.util.Log.d("ALPR_DYNAMIC_GEOMETRY","frame="+trace.frameId()+" source="+sourceStamp.sourceTimestampNanos
+                        +" entity="+association.entityId+" plate_track="+decision.trackId+" reason="+geometry.reason
+                        +" bbox_alignment="+geometry.bboxAlignment+" reference_coverage="+geometry.referenceCoverage
+                        +" quad="+(geometry.quad==null?"null":java.util.Arrays.toString(geometry.quad.points())));
+                if(!geometry.accepted()) {
+                    associationByPlateTrack.put(decision.trackId,PlateVehicleAssociation.unassigned("plate_geometry_"+geometry.reason.name()));
+                    trace.putAttribute("mz_scheduler_reason","WAITING_VALID_PLATE_GEOMETRY");
+                    continue;
+                }
+                float[] acceptedPoints=geometry.quad.points();
+                List<Point2> effectiveCorners=new ArrayList<>();
+                for(int i=0;i<8;i+=2)effectiveCorners.add(new Point2(acceptedPoints[i]*frame.getWidth(),acceptedPoints[i+1]*frame.getHeight()));
+                plateCandidate.recognitionCorners=effectiveCorners;
+                NormalizedBounds accepted=geometry.quad.bounds();
+                plateCandidate.recognitionDetection=new Detection(box.classId,box.confidence,
+                        accepted.left*frame.getWidth(),accepted.top*frame.getHeight(),accepted.right*frame.getWidth(),
+                        accepted.bottom*frame.getHeight(),effectiveCorners);
+            }
+            final NormalizedQuad attachmentQuad=strictIdentity()&&plateCandidate.dynamicGeometry!=null
+                    ?plateCandidate.dynamicGeometry.quad:normalizedQuad(plateCandidate.corners,frame);
+
             float[] appearance = PlateAppearanceDescriptor.from(
                     frame,
-                    plateDetection
+                    strictIdentity()?plateCandidate.recognitionDetection:plateDetection
             );
             if (appearance != null) {
                 plateAppearanceByTrack.put(
@@ -1754,20 +1890,24 @@ final class MobileAlprEngine implements AutoCloseable {
             if (association.assigned()) {
                 final PlateVehicleAssociation requestedAssociation = association;
                 PlateTrackAttachmentStatus attachmentStatus =
-                        mutate(sourceStamp, () -> plateEntityBinder.attachPlate(
+                        mutate(sourceStamp, () -> {
+                        abortStaleIdentitySource(sourceStamp);
+                        if(strictIdentity())vehicleTrackingCoordinator.prepareCandidatePlate(requestedAssociation.entityId,
+                                decision.trackId,attachmentQuad,new AppearanceDescriptor(appearance),sourceTimestampNanos);
+                        return plateEntityBinder.attachPlate(
                         requestedAssociation,
                         decision.trackId,
-                        normalizedQuad(plateCandidate.corners, frame),
+                        attachmentQuad,
                         new AppearanceDescriptor(appearance),
                         sourceStamp.sourceSequence,
                         sourceTimestampNanos
-                ));
+                ); });
                 if (attachmentStatus.accepted()) {
                     if (dynamicEntitySelection) {
                         NormalizedBounds rawVehicle = vehicleTrackingCoordinator.rawMpBounds(
                                 trace.frameId(), sourceTimestampNanos).get(association.entityId);
                         adaptiveMtRoi.remember(association.entityId, rawVehicle,
-                                normalizedQuad(plateCandidate.corners, frame).bounds(), sourceStamp);
+                                attachmentQuad.bounds(), sourceStamp);
                     }
                     trace.putCount("plate_attached_to_entity", 1);
                     trace.putAttribute(
@@ -1838,10 +1978,19 @@ final class MobileAlprEngine implements AutoCloseable {
             );
             associationByPlateTrack.put(decision.trackId, association);
             if (association.assigned()) {
-                trackCoordinator.bindEntityState(
-                        decision.trackId,
-                        association.entityId
-                );
+                com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner=strictIdentity()
+                        ?vehicleTrackingCoordinator.identity().stamp(association.entityId,association.vehicleTrackId):null;
+                if(owner==null)trackCoordinator.bindEntityState(decision.trackId,association.entityId);
+                else {
+                    trackCoordinator.bindEntityState(decision.trackId,association.entityId,owner.epoch);
+                    boolean committed=mutate(sourceStamp,()->vehicleTrackingCoordinator.commitPlateGeometry(plateCandidate.dynamicGeometry,decision.trackId));
+                    if(committed) {
+                        identityOwners.put(decision.trackId,owner);
+                        if(researchZoomRatio<=1.01f)mutate(sourceStamp,()->{
+                            autoZoomGeometryGuard.remember(decision.trackId,owner.entityId,plateCandidate.recognitionDetection,
+                                    frame.getWidth(),frame.getHeight(),sourceStamp,SystemClock.elapsedRealtimeNanos());return null;});
+                    }
+                }
             }
             trace.putAttribute("plate_association_status", association.status.name());
             trace.putAttribute("plate_association_reason", association.reason);
@@ -1852,6 +2001,20 @@ final class MobileAlprEngine implements AutoCloseable {
             trace.putConfidence("plate_association_confidence", association.confidence);
         }
 
+        if(strictIdentity()) {
+            List<PlateTrackCoordinator.Decision> accepted=new ArrayList<>();
+            for(PlateTrackCoordinator.Decision decision:decisions)
+                if(identityOwners.containsKey(decision.trackId))accepted.add(decision);
+            decisions=accepted;
+            if(decisions.isEmpty()) {
+                trace.putCount("mz_runs",0);trace.putCount("mz_candidates_executed",0);
+                trace.putAttribute("mz_scheduler_reason","WAITING_VALID_PLATE_GEOMETRY");
+                trace.finish("tracking","");
+                return new PipelineResult("tracking","Utrzymuj całą tablicę w kadrze", "",0,
+                        overlays,frame.getWidth(),frame.getHeight(),hardSceneBoundary);
+            }
+        }
+
         /*
          * MT jest już zakończone, natomiast MZ jeszcze się nie rozpoczęło.
          * Publikujemy teraz samą geometrię, aby UI nie czekało na OCR i mogło
@@ -1859,38 +2022,16 @@ final class MobileAlprEngine implements AutoCloseable {
          */
         decisions = focusedPlateDecisions(decisions, associationByPlateTrack, persistentTargetEntityId);
         for (PlateTrackCoordinator.Decision decision : decisions) {
+            if(strictIdentity())continue; // Already selected and admitted before any DYN attachment.
             if (decision.sourceIndex < 0 || decision.sourceIndex >= candidates.size()) continue;
             PlateCandidate candidate = candidates.get(decision.sourceIndex);
             PlateVehicleAssociation owner = associationByPlateTrack.getOrDefault(decision.trackId,
                     PlateVehicleAssociation.unassigned("missing_association"));
-            long now = SystemClock.elapsedRealtimeNanos();
-            if (researchZoomRatio <= 1.01f) {
-                mutate(sourceStamp, () -> {
-                    autoZoomGeometryGuard.remember(decision.trackId, owner.entityId,
-                            candidate.detection, frame.getWidth(), frame.getHeight(), sourceStamp, now);
-                    return null;
-                });
-            } else if (!rapidCameraMotion && !cameraTransformInProgress
-                    && owner.status != VehicleAssociationStatus.AMBIGUOUS
-                    && (staticRefinement || refinementEntityId > 0L || autoZoomTargetLock.active())
-                    && (refinementEntityId <= 0L || owner.entityId == refinementEntityId)) {
-                AutoZoomGeometryGuard.Result geometry = autoZoomGeometryGuard.select(candidate.detection,
-                        decision.trackId, owner.entityId, frame.getWidth(), frame.getHeight(), sourceStamp, now);
-                android.util.Log.d("ALPR_AZ_GEOMETRY", "checked track=" + decision.trackId + " "
-                        + autoZoomGeometryGuard.diagnosticState() + " retained=" + (geometry.detection != candidate.detection));
-                if (geometry.detection != candidate.detection) {
-                    candidate.recognitionDetection = geometry.detection;
-                    candidate.recognitionCorners = geometry.detection.keypoints;
-                    candidate.geometryReferenceSourceSequence = geometry.referenceSourceSequence;
-                    trace.putAttribute("auto_zoom_crop_geometry", "pre_zoom_reference");
-                    android.util.Log.i("ALPR_AZ_GEOMETRY", "held_pre_zoom_quad track=" + decision.trackId
-                            + " entity=" + owner.entityId + " reference=" + geometry.referenceSourceSequence
-                            + " raw_right=" + candidate.detection.right
-                            + " effective_right=" + geometry.detection.right);
-                }
-            }
+            selectEffectivePlateGeometry(candidate,decision.trackId,owner,frame,sourceStamp,staticRefinement,trace);
         }
-        publishFreshMtRecoveryIfReady();
+        if(vehicleTrackingPolicy==VehicleTrackingPolicy.TRACKED_MP&&!staticSceneMode) {
+            mutate(sourceStamp,()->{publishFreshMtRecoveryIfReady();return null;});
+        } else publishFreshMtRecoveryIfReady();
         if (plateDetectionCallback != null && !decisions.isEmpty()) {
             List<OverlayItem> mtOverlays = new ArrayList<>(overlays);
             for (PlateTrackCoordinator.Decision decision : decisions) {
@@ -1916,6 +2057,7 @@ final class MobileAlprEngine implements AutoCloseable {
                             + " visual=" + sourceStamp.visualEpoch
                             + " transform=" + sourceStamp.cameraTransformGeneration
             );
+            abortStaleIdentitySource(sourceStamp);
             plateDetectionCallback.onPlateDetections(
                     Collections.unmodifiableList(mtOverlays),
                     frame.getWidth(),
@@ -1935,11 +2077,40 @@ final class MobileAlprEngine implements AutoCloseable {
         int characterCount = 0;
         int characterRuns = 0;
         int invalidGeometryCount = 0;
-
+        if(strictIdentity()) {
+            List<PlateTrackCoordinator.Decision> owned=new ArrayList<>();
+            for(PlateTrackCoordinator.Decision decision:decisions) {
+                PlateTrackCoordinator.Observation sample=null;
+                for(PlateTrackCoordinator.Observation observation:trackObservations)if(observation.sourceIndex==decision.sourceIndex){sample=observation;break;}
+                if(!identityOwners.containsKey(decision.trackId))trackCoordinator.bindUnassignedIdentity(decision.trackId,
+                        vehicleTrackingCoordinator.identity().breakEpoch());
+                owned.add(sample!=null
+                        ?trackCoordinator.identityDecision(decision,sample,trace.frameId()):decision);
+            }
+            decisions=owned;
+        }
+        Set<Long> deferredMzTracks=new HashSet<>();
+        if(strictIdentity()) {
+            List<PlateTrackCoordinator.Decision> geometryDecisions=new ArrayList<>();
+            for(PlateTrackCoordinator.Decision decision:decisions) {
+                if(decision.recognize&&!rapidCameraMotion&&!cameraTransformInProgress)deferredMzTracks.add(decision.trackId);
+                geometryDecisions.add(PlateTrackCoordinator.deferred(decision));
+            }
+            decisions=geometryDecisions;
+        }
         for (PlateTrackCoordinator.Decision decision : decisions) {
             if (decision.sourceIndex < 0 || decision.sourceIndex >= candidates.size()) continue;
             cancelIfRequested(cancellationRequested);
             PlateCandidate candidate = candidates.get(decision.sourceIndex);
+            PlateVehicleAssociation vehicleAssociation=associationByPlateTrack.getOrDefault(decision.trackId,
+                    PlateVehicleAssociation.unassigned("missing_plate_track_association"));
+            final com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp dispatchedOwner=identityOwners.get(decision.trackId);
+            if(strictIdentity()) {
+                trace.putAttribute("dynamic_policy_version","complementary_v1");
+                trace.putAttribute("mz_scheduler_reason",decision.schedulingReason);
+                trace.putAttribute("last_local_object_evidence",vehicleTrackingCoordinator.identity().lastLocalEvidence(vehicleAssociation.entityId));
+            }
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp observationOwner=dispatchedOwner;
             TemporalCharacterAggregator.Result trackResult = decision.currentResult;
             com.example.alpr_v1.experiment.AcquisitionAttemptRecord audit = researchBatch == null
                     ? null : researchBatch.forDetection(candidate.detection);
@@ -1988,19 +2159,25 @@ final class MobileAlprEngine implements AutoCloseable {
                     if (audit != null) {
                         audit.put("mz_executed",true);
                         audit.put("mz_backend",characterBackend.runtimeName());
+                        audit.f6MzStarted();
                     }
                     InferenceRunResult characterRun;
+                    long measuredCharacterBackendNanos=0;
                     try {
                         if(mzInputEvidence!=null)mzInputEvidence.started();
+                        long backendStarted=photoRoi==null?0:SystemClock.elapsedRealtimeNanos();
                         characterRun = characterBackend.run(characterInput.buffer);
+                        if(photoRoi!=null){measuredCharacterBackendNanos=SystemClock.elapsedRealtimeNanos()-backendStarted;
+                            if(audit!=null){audit.put("mz_backend_elapsed_nanos",measuredCharacterBackendNanos);audit.f6Event("MZ_RETURNED",null);}}
                     }
                     catch (RuntimeException error) {
                         if(mzInputEvidence!=null)mzInputEvidence.threw(error);
                         if (audit != null) audit.put("mz_execution_error",error.toString());
+                        if(audit!=null)audit.f6Event("MZ_FAILED",com.example.alpr_v1.experiment.Final180Evidence.details("execution_error",error.toString()));
                         throw error;
                     }
                     cancelIfRequested(cancellationRequested);
-                    cropCharacterInferenceNanos = SystemClock.elapsedRealtimeNanos() - started;
+                    cropCharacterInferenceNanos = photoRoi==null?SystemClock.elapsedRealtimeNanos()-started:measuredCharacterBackendNanos;
                     characterInferenceNanos += cropCharacterInferenceNanos;
                     characterRuns++;
                     if(mzInputEvidence!=null)mzInputEvidence.returned();
@@ -2019,13 +2196,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         charactersSum += character.confidence;
                         characterCount++;
                     }
-                    trackResult = mutate(sourceStamp, () -> trackCoordinator.recordRecognition(
-                            decision.trackId,
-                            candidate.schedulingQuality,
-                            trace.frameId(),
-                            characters,
-                            characterModel.manifest().labels()
-                    ));
+
                     List<Detection> sourceCharacters = new ArrayList<>();
                     for (Detection character : characters) {
                         sourceCharacters.add(DetectionCoordinateMapper.toSource(
@@ -2043,6 +2214,42 @@ final class MobileAlprEngine implements AutoCloseable {
                         freshText.append(character.label);
                     }
                     freshPrediction = freshText.toString();
+                    if(strictIdentity())trace.putAttribute("mz_evidence_status",freshPrediction.isEmpty()?"NO_CHARACTERS":"CHARACTER_EVIDENCE");
+                    abortStaleIdentitySource(sourceStamp);
+                    final String rawForIdentity=freshPrediction;
+                    trackResult = mutate(sourceStamp, () -> vehicleTrackingCoordinator.withIdentityOwner(
+                            dispatchedOwner,sourceTimestampNanos,()-> {
+                        if(strictIdentity()&&!vehicleTrackingCoordinator.preflightIdentity(dispatchedOwner,rawForIdentity,sourceTimestampNanos))return null;
+                        return trackCoordinator.recordRecognition(
+                            decision.trackId,
+                            candidate.schedulingQuality,
+                            trace.frameId(),
+                            characters,
+                            characterModel.manifest().labels());
+                    },null));
+                    if(trackResult==null){forceVehicleRefresh=true;continue;}
+                    if(strictIdentity()&&dispatchedOwner!=null) {
+                        long resolved=mutate(sourceStamp,()->vehicleTrackingCoordinator.verifyIdentity(dispatchedOwner,
+                                rawForIdentity,trace.frameId(),sourceStamp.sourceSequence,sourceTimestampNanos));
+                        if(resolved<=0){forceVehicleRefresh=true;continue;}
+                        if(resolved!=dispatchedOwner.entityId) {
+                            observationOwner=vehicleTrackingCoordinator.identity().stamp(resolved,dispatchedOwner.vehicleTrackId);
+                            trackCoordinator.promoteVerifiedState(dispatchedOwner.entityId,resolved,decision.trackId,observationOwner.epoch);
+                            vehicleAssociation=PlateVehicleAssociation.directValidated(resolved,dispatchedOwner.vehicleTrackId,
+                                    vehicleAssociation.confidence,"fresh_plate_reassociation_verified");
+                            associationByPlateTrack.put(decision.trackId,vehicleAssociation);
+                            remapVehicleOverlays(overlays,dispatchedOwner.entityId,resolved);
+                            lastMeasuredVehicles=vehicleTrackingCoordinator.replaceIdentity(lastMeasuredVehicles,dispatchedOwner.entityId,resolved);
+                            final com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp promotedOwner=observationOwner;
+                            mutate(sourceStamp,()->vehicleTrackingCoordinator.withIdentityOwner(promotedOwner,sourceTimestampNanos,()->{
+                                if(identityPromotionListener!=null)identityPromotionListener.accept(dispatchedOwner.entityId,resolved);
+                                return true;
+                            },false));
+                        }
+                        if(vehicleTrackingCoordinator.identity().verifying(resolved)) {
+                            trace.putAttribute("vehicle_identity_state","VERIFYING");continue;
+                        }
+                    }
                     if (audit != null) {
                         audit.put("mz_status",freshPrediction.isEmpty() ? "NO_CHARACTERS" : "READ");
                         audit.put("prediction",freshPrediction);
@@ -2070,11 +2277,16 @@ final class MobileAlprEngine implements AutoCloseable {
                 }
             }
 
+            if(strictIdentity()&&observationOwner!=null&&(!vehicleTrackingCoordinator.identity().accepts(observationOwner)
+                    ||vehicleTrackingCoordinator.identity().verifying(vehicleAssociation.entityId))) {
+                if(observationBitmap!=null&&!observationBitmap.isRecycled())observationBitmap.recycle();
+                continue;
+            }
             String visibleText = "";
             boolean registrationConfirmed = trackResult != null
                     && trackResult.stable
                     && RegistrationTextPolicy.displayable(trackResult.text)
-                    && (!decision.recognize
+                    && (strictIdentity() || !decision.recognize
                     || !freshPrediction.isEmpty()
                     && freshPrediction.equals(trackResult.text));
             if (trackResult != null && !trackResult.text.isEmpty()) {
@@ -2086,10 +2298,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         trackResult.observations
                 ));
             }
-            PlateVehicleAssociation vehicleAssociation = associationByPlateTrack.getOrDefault(
-                    decision.trackId,
-                    PlateVehicleAssociation.unassigned("missing_plate_track_association")
-            );
+            final PlateVehicleAssociation acceptedAssociation=vehicleAssociation;
             if (vehicleAssociation.assigned() && trackResult != null) {
                 MtReason registrationReason = workReasonByPlateTrack.getOrDefault(
                         decision.trackId, MtReason.UNKNOWN
@@ -2108,13 +2317,15 @@ final class MobileAlprEngine implements AutoCloseable {
                                 trackResult.observations,
                                 registrationConfirmed
                         );
-                boolean consensusUpdated = mutate(sourceStamp, () -> plateEntityBinder.updateRegistration(
-                        vehicleAssociation,
+                final com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp acceptedOwner=observationOwner;
+                boolean consensusUpdated = mutate(sourceStamp, () -> vehicleTrackingCoordinator.withIdentityOwner(
+                        acceptedOwner,sourceTimestampNanos,()->plateEntityBinder.updateRegistration(
+                        acceptedAssociation,
                         consensus,
                         SystemClock.elapsedRealtimeNanos(),
                         decision.recognize,
                         registrationSource
-                ));
+                ),false));
                 if (consensusUpdated) {
                     trace.putAttribute(
                             "vehicle_registration_source", registrationSource.name()
@@ -2169,9 +2380,11 @@ final class MobileAlprEngine implements AutoCloseable {
                     sourceStamp,
                     mtDecision == null
                             ? 0L : mtDecision.acquisitionDirectiveRevision
-            );
+            ).stampIdentityOwner(observationOwner).stampHistoryRun(strictIdentity()?vehicleTrackingCoordinator.identity().analysisRunId():0L);
             if (researchBatch != null) researchBatch.observe(candidate.detection,observation);
             plateObservations.add(observation);
+            if(deferredMzTracks.contains(decision.trackId)&&observationOwner!=null)
+                enqueueDynamicMz(observation,vehicleAssociation,candidate,frame,decision.mzAttemptIndex,trace);
             if (observation.previewBitmap != null && plateObservationCallback != null) {
                 cancelIfRequested(cancellationRequested);
                 plateObservationCallback.onPlateObservation(observation);
@@ -2568,7 +2781,7 @@ final class MobileAlprEngine implements AutoCloseable {
         );
     }
 
-    private static void addVehicleDiagnostics(
+    private void addVehicleDiagnostics(
             List<OverlayItem> overlays,
             List<Detection> vehicles,
             List<VehicleRoi> selectedRois,
@@ -2582,6 +2795,11 @@ final class MobileAlprEngine implements AutoCloseable {
                 frame.getWidth(),
                 frame.getHeight()
         );
+        if(vehicleTrackingPolicy==VehicleTrackingPolicy.TRACKED_MP&&!staticSceneMode){
+            VehicleTrackingFrame measured=lastMeasuredVehicles;
+            overlays.addAll(com.example.alpr_v1.ui.VehicleMeasurementOverlay.from(measured,
+                    measured==null?Collections.emptyMap():vehicleTrackingCoordinator.rawMpBounds(measured.sourceFrameId,measured.sourceTimestampNanos)));
+        } else {
         for (int vehicleIndex = 0; vehicleIndex < vehicles.size(); vehicleIndex++) {
             Detection vehicle = vehicles.get(vehicleIndex);
             overlays.add(new OverlayItem(
@@ -2601,6 +2819,8 @@ final class MobileAlprEngine implements AutoCloseable {
                     overlayEntityIds.get(vehicleIndex),
                     false
             ));
+        }
+
         }
 
         int selectedCount = selectedRois.size();
@@ -2854,6 +3074,117 @@ final class MobileAlprEngine implements AutoCloseable {
         return result;
     }
 
+    private void selectEffectivePlateGeometry(PlateCandidate candidate,long trackId,PlateVehicleAssociation owner,
+            Bitmap frame,ContinuityStamp sourceStamp,boolean staticRefinement,InferenceTrace trace) {
+        long now=SystemClock.elapsedRealtimeNanos();
+        if(researchZoomRatio<=1.01f) {
+            if(!strictIdentity())mutate(sourceStamp,()->{
+                autoZoomGeometryGuard.remember(trackId,owner.entityId,candidate.detection,
+                        frame.getWidth(),frame.getHeight(),sourceStamp,now);return null;});
+        } else if(!rapidCameraMotion&&!cameraTransformInProgress&&owner.status!=VehicleAssociationStatus.AMBIGUOUS
+                &&(staticRefinement||refinementEntityId>0L||autoZoomTargetLock.active())
+                &&(refinementEntityId<=0L||owner.entityId==refinementEntityId)) {
+            AutoZoomGeometryGuard.Result geometry=autoZoomGeometryGuard.select(candidate.detection,trackId,owner.entityId,
+                    frame.getWidth(),frame.getHeight(),sourceStamp,now);
+            android.util.Log.d("ALPR_AZ_GEOMETRY","checked track="+trackId+" "+autoZoomGeometryGuard.diagnosticState()
+                    +" retained="+(geometry.detection!=candidate.detection));
+            if(geometry.detection!=candidate.detection) {
+                candidate.recognitionDetection=geometry.detection;candidate.recognitionCorners=geometry.detection.keypoints;
+                candidate.geometryReferenceSourceSequence=geometry.referenceSourceSequence;
+                trace.putAttribute("auto_zoom_crop_geometry","pre_zoom_reference");
+                android.util.Log.i("ALPR_AZ_GEOMETRY","held_pre_zoom_quad track="+trackId+" entity="+owner.entityId
+                        +" reference="+geometry.referenceSourceSequence+" raw_right="+candidate.detection.right
+                        +" effective_right="+geometry.detection.right);
+            }
+        }
+    }
+
+    private void enqueueDynamicMz(PlateObservation draft,PlateVehicleAssociation association,PlateCandidate candidate,
+            Bitmap frame,int attempt,InferenceTrace trace) {
+        if(pendingDynamicMz!=null&&pendingDynamicMz.draft.entityId!=draft.entityId
+                &&vehicleTrackingCoordinator.identity().accepts(pendingDynamicMz.draft.identityOwner()))return;
+        discardPendingDynamicMz();
+        long bytes=4L*frame.getWidth()*frame.getHeight()+20L*characterInputSpec.width()*characterInputSpec.height();
+        com.example.alpr_v1.camera.BitmapMemoryBudget.Lease lease=dynamicBitmapBudget==null?null:dynamicBitmapBudget.acquire(bytes);
+        if(dynamicBitmapBudget!=null&&lease==null){trace.putAttribute("mz_scheduler_reason","MEMORY_BUDGET");return;}
+        Bitmap crop=null;
+        try {
+            long started=SystemClock.elapsedRealtimeNanos();crop=PlateRectifier.rectify(frame,candidate.recognitionCorners);
+            long rect=SystemClock.elapsedRealtimeNanos()-started;
+            CropInferenceTiming base=new CropInferenceTiming(trace.frameId(),trace.durationNanos("camera_conversion"),
+                    trace.durationNanos("vehicle_preprocess")+trace.durationNanos("vehicle_inference")+trace.durationNanos("vehicle_postprocess"),
+                    trace.durationNanos("vehicle_inference"),trace.durationNanos("plate_preprocess"),trace.durationNanos("plate_inference"),
+                    trace.durationNanos("plate_postprocess"),rect,0,0,0,trace.elapsedSinceStageStart("total"));
+            pendingDynamicMz=new DynamicMzJob(draft,association,crop,candidate.schedulingQuality,
+                    frame.getWidth(),frame.getHeight(),attempt,rect,base,lease,vehicleTrackingCoordinator);
+        } catch(RuntimeException|OutOfMemoryError error) {
+            if(crop!=null&&!crop.isRecycled())crop.recycle();if(lease!=null)lease.close();throw error;
+        }
+    }
+
+    /** Runs on the same neural worker, after the geometry job released its source bitmap. */
+    PipelineResult runPendingDynamicMz(InferenceTrace trace,BooleanSupplier cancelled) {
+        DynamicMzJob job=pendingDynamicMz;pendingDynamicMz=null;
+        if(job==null)return null;
+        try {
+            PlateObservation draft=job.draft;
+            ContinuityStamp source=draft.continuityStamp();
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner=draft.identityOwner();
+            if(!strictIdentity()||!vehicleTrackingCoordinator.identity().accepts(owner)
+                    ||vehicleTrackingCoordinator.identity().verifying(owner.entityId))return null;
+            cancelIfRequested(cancelled);
+            trace.putCount("source_width",job.width);trace.putCount("source_height",job.height);
+            trace.putDurationNanos("dynamic_mz_queue_wait",SystemClock.elapsedRealtimeNanos()-job.queuedAt);
+            trace.putDurationNanos("dynamic_mz_source_age",SystemClock.elapsedRealtimeNanos()-source.sourceTimestampNanos);
+            trace.putDurationNanos("plate_rectification",job.rectificationNanos);
+            trace.start("character_preprocess");
+            PreparedInput input=BitmapTensorPreprocessor.prepare(job.crop,characterInputSpec,characterBackend.inputInfo());
+            trace.stop("character_preprocess");
+            cancelIfRequested(cancelled);
+            trace.start("character_inference");
+            InferenceRunResult run=characterBackend.run(input.buffer);
+            trace.stop("character_inference");trace.putCount("character_runs",1);trace.putCount("mz_runs",1);
+            cancelIfRequested(cancelled);
+            trace.start("character_postprocess");
+            List<Detection> detections=characterCandidates(run,0,Collections.emptyList());
+            List<Detection> sourceCharacters=new ArrayList<>();
+            for(Detection character:detections)sourceCharacters.add(DetectionCoordinateMapper.toSource(character,input,0,0));
+            List<PlateCharacter> characters=plateCharacters(sourceCharacters,characterModel.manifest().labels(),job.crop.getWidth(),job.crop.getHeight());
+            StringBuilder text=new StringBuilder();for(PlateCharacter character:characters)text.append(character.label);
+            String raw=text.toString();
+            trace.stop("character_postprocess");
+            cancelIfRequested(cancelled);
+            final boolean[] applied={false};
+            TemporalCharacterAggregator.Result result=mutate(source,()->vehicleTrackingCoordinator.withIdentityOwner(owner,
+                    source.sourceTimestampNanos,()->{
+                        vehicleTrackingCoordinator.preflightIdentity(owner,raw,source.sourceTimestampNanos);
+                        trackCoordinator.beginSource(source,true);
+                        trackCoordinator.bindEntityState(draft.trackId,owner.entityId,owner.epoch);
+                        applied[0]=true;
+                        return trackCoordinator.recordRecognition(draft.trackId,job.quality,draft.frameId,detections,characterModel.manifest().labels());
+                    },null));
+            if(!applied[0]||!vehicleTrackingCoordinator.identity().accepts(owner))return null;
+            if(result==null)result=new TemporalCharacterAggregator.Result("",0,0,false,
+                    TemporalCharacterAggregator.LAYOUT_UNKNOWN,Collections.emptyList());
+            boolean confirmed=result.stable&&RegistrationTextPolicy.displayable(result.text);
+            PlateTextConsensus consensus=new PlateTextConsensus(result.text,(float)result.confidence,result.observations,confirmed);
+            mutate(source,()->vehicleTrackingCoordinator.withIdentityOwner(owner,source.sourceTimestampNanos,
+                    ()->plateEntityBinder.updateRegistration(job.association,consensus,SystemClock.elapsedRealtimeNanos(),true,RegistrationConsensusSource.FRESH_MZ),false));
+            CropInferenceTiming timing=new CropInferenceTiming(draft.frameId,job.base.cameraConversionNanos,job.base.vehicleStagesNanos,
+                    job.base.vehicleInferenceNanos,job.base.platePreprocessNanos,job.base.plateInferenceNanos,job.base.platePostprocessNanos,
+                    job.rectificationNanos,trace.durationNanos("character_preprocess"),trace.durationNanos("character_inference"),
+                    trace.durationNanos("character_postprocess"),job.base.pipelineToObservationNanos+trace.elapsedSinceStageStart("total"));
+            PlateObservation observation=draft.withMzResult(job.crop,result,characters,raw,timing,job.attempt,job.lease);
+            trace.putAttribute("dynamic_stage","MZ");trace.putAttribute("mz_evidence_status",raw.isEmpty()?"NO_CHARACTERS":"CHARACTER_EVIDENCE");
+            trace.finish(confirmed?"recognized":"preliminary",result.text);
+            List<PlateRecognition> readings=result.text.isEmpty()?Collections.emptyList():Collections.singletonList(
+                    new PlateRecognition(result.text,result.confidence,confirmed,result.observations));
+            PipelineResult completed=new PipelineResult(confirmed?"recognized":"preliminary","",readings,Collections.emptyList(),
+                    job.width,job.height,Collections.singletonList(observation),false).withContinuityStamp(source);
+            job.transferred=true;return completed;
+        } finally {job.close();}
+    }
+
     private VehicleDetectionResult detectVehicleRegions(
             Bitmap frame,
             InferenceTrace trace,
@@ -2880,12 +3211,23 @@ final class MobileAlprEngine implements AutoCloseable {
         List<Detection> decodedVehicles;
         List<Detection> vehicles = new ArrayList<>();
         int classEligibleVehicleCount = 0;
+        MpDiagnosticCapture.Session diagnostic=null;
+        if(mpDiagnosticCapture!=null&&mpDiagnosticCapture.pending()&&strictIdentity()&&tvInput==null
+                &&sourceStamp.sourceTimestampDomain.cameraDerived())
+            diagnostic=mpDiagnosticCapture.begin(analysisBitmap,trace.frameId(),sourceStamp,mpDiagnosticModel());
+        final MpDiagnosticCapture.Session captured=diagnostic;
+        long diagnosticBeforePost=0L;
         try {
         trace.start("vehicle_preprocess");
+        long diagnosticBeforePre=captured==null?0:captured.ioNanos();
         PreparedInput input = BitmapTensorPreprocessor.prepare(
-                analysisBitmap, vehicleInputSpec, vehicleBackend.inputInfo()
+                analysisBitmap, vehicleInputSpec, vehicleBackend.inputInfo(),captured==null?null:captured::letterboxed
         );
         trace.stop("vehicle_preprocess");
+        if(captured!=null) {
+            trace.putDurationNanos("vehicle_preprocess",trace.durationNanos("vehicle_preprocess")-(captured.ioNanos()-diagnosticBeforePre));
+            captured.input(input,vehicleBackend.inputInfo());
+        }
 
         trace.start("vehicle_inference");
         requireResearchAdmission();
@@ -2912,6 +3254,8 @@ final class MobileAlprEngine implements AutoCloseable {
                         + vehicleOutputSpec.normalizedCoordinates()
         );
         trace.stop("vehicle_inference");
+        if(captured!=null)captured.output(run);
+        if(captured!=null)diagnosticBeforePost=captured.ioNanos();
 
         trace.start("vehicle_postprocess");
         decodedVehicles = decodeFirstOutput(
@@ -2978,7 +3322,13 @@ final class MobileAlprEngine implements AutoCloseable {
 
             vehicles.add(mapped);
         }
+        if(captured!=null)captured.complete(decodedVehicles.size(),classEligibleVehicleCount);
         } finally {
+            if(captured!=null) {
+                captured.close();
+                trace.putDurationNanos("mp_diagnostic_io",captured.ioNanos());
+                trace.putAttribute("mp_diagnostic_capture","explicit_debug_control_not_performance_acceptance");
+            }
             if (tvInput==null&&analysisBitmap != frame) analysisBitmap.recycle();
         }
 
@@ -3095,7 +3445,9 @@ final class MobileAlprEngine implements AutoCloseable {
                     index
             ));
         }
-        VehicleTrackingFrame trackingFrame = mutate(sourceStamp, () -> vehicleTrackingCoordinator.updateFromMp(
+        VehicleTrackingFrame trackingFrame = mutate(sourceStamp, () -> {
+                abortStaleIdentitySource(sourceStamp);
+                return vehicleTrackingCoordinator.updateFromMp(
                 trace.frameId(),
                 sourceStamp.sourceFrameStamp(),
                 resultAvailableSourceTimestampNanos,
@@ -3104,7 +3456,7 @@ final class MobileAlprEngine implements AutoCloseable {
                         ? continuityEntitiesBefore
                         : java.util.Collections.emptySet(),
                 resultAvailableRuntimeNanos
-        ));
+        ); });
         if (staticSceneMode) trackingFrame = trackingFrame.measuredOnly();
         lastMeasuredVehicles = trackingFrame.withContinuityStamp(sourceStamp);
         if (vehicleTrackingCoordinator.vehicleSizeGate().enabled()) {
@@ -3200,6 +3552,7 @@ final class MobileAlprEngine implements AutoCloseable {
         }
         for (VehicleRoi roi : rois) totalArea += roi.area();
         trace.stop("vehicle_postprocess");
+        if(captured!=null)trace.putDurationNanos("vehicle_postprocess",trace.durationNanos("vehicle_postprocess")-(captured.ioNanos()-diagnosticBeforePost));
         if (maximumConfidence > 0.0) trace.putConfidence("vehicle", maximumConfidence);
         if (!rois.isEmpty()) {
             trace.putConfidence(
@@ -3212,6 +3565,25 @@ final class MobileAlprEngine implements AutoCloseable {
                         ? rawMpVehicleDetections : trackedDiagnosticVehicles,
                 rois
         );
+    }
+
+    private JSONObject mpDiagnosticModel() {
+        JSONObject value=new JSONObject();
+        try {
+            value.put("model_id",vehicleModel.manifest().modelId()).put("fingerprint",vehicleModel.fingerprint())
+                    .put("runtime",vehicleBackend.runtimeName()).put("labels",new JSONArray(vehicleModel.manifest().labels()))
+                    .put("allowed_vehicle_class_ids",new JSONArray(new java.util.TreeSet<>(vehicleClassIds)))
+                    .put("input",new JSONObject().put("width",vehicleInputSpec.width()).put("height",vehicleInputSpec.height())
+                            .put("channels",vehicleInputSpec.channels()).put("layout",vehicleInputSpec.layout())
+                            .put("color",vehicleInputSpec.colorSpace()).put("data_type",vehicleInputSpec.dataType())
+                            .put("scale",vehicleInputSpec.scale()).put("offset",vehicleInputSpec.offset()))
+                    .put("output",new JSONObject().put("decoder",vehicleOutputSpec.decoder()).put("tensor_layout",vehicleOutputSpec.tensorLayout())
+                            .put("channels_first",vehicleOutputSpec.channelsFirst()).put("class_count",vehicleOutputSpec.classCount())
+                            .put("has_objectness",vehicleOutputSpec.hasObjectness()).put("normalized_coordinates",vehicleOutputSpec.normalizedCoordinates())
+                            .put("confidence_threshold",vehicleOutputSpec.confidenceThreshold()).put("iou_threshold",vehicleOutputSpec.iouThreshold())
+                            .put("nms_in_graph",vehicleOutputSpec.nmsInGraph()).put("nms_required",vehicleOutputSpec.nmsRequired()));
+        } catch(org.json.JSONException invalid){android.util.Log.e("ALPR_MP_DIAGNOSTIC","Model metadata unavailable",invalid);}
+        return value;
     }
 
     private void refreshPredictedVehicleCache(
@@ -3757,6 +4129,11 @@ final class MobileAlprEngine implements AutoCloseable {
             int rr=Math.min(boundedRegion.right,inputCrop.right),bb=Math.min(boundedRegion.bottom,inputCrop.bottom);
             boundedRegion=rr>l&&bb>t?new VehicleRoiSelector.Region(l,t,rr,bb,null):null;
         }
+        if(boundedRegion!=null&&photoRoi!=null){
+            com.example.alpr_v1.experiment.Final180PhotoRoi photo=photoRoi;
+            int l=Math.max(boundedRegion.left,photo.left),t=Math.max(boundedRegion.top,photo.top),r=Math.min(boundedRegion.right,photo.right),b=Math.min(boundedRegion.bottom,photo.bottom);
+            boundedRegion=r>l&&b>t?new VehicleRoiSelector.Region(l,t,r,b,null):null;
+        }
         if (boundedRegion == null) return Collections.emptyList();
         boolean fullFrame = boundedRegion.left == 0 && boundedRegion.top == 0
                 && boundedRegion.right == frame.getWidth()
@@ -3817,17 +4194,21 @@ final class MobileAlprEngine implements AutoCloseable {
             }
             actualMtRuns++;
             InferenceRunResult run;
+            long measuredMtBackendNanos=0;
             if (staticSceneMode && com.example.alpr_v1.BuildConfig.DEBUG)
                 android.util.Log.d("ALPR_STATIC", "MT_INVOKE scene=" + mtSizeSourceStamp.sceneGeneration
                         + " frame=" + mtSizeSourceStamp.sourceSequence + " elapsed_ns=" + started);
-            try { run = plateBackend.run(input.buffer); }
+            try {long backendStarted=photoRoi==null?0:SystemClock.elapsedRealtimeNanos();run = plateBackend.run(input.buffer);
+                if(photoRoi!=null){measuredMtBackendNanos=SystemClock.elapsedRealtimeNanos()-backendStarted;
+                    if(audit!=null){audit.put("mt_backend_elapsed_nanos",measuredMtBackendNanos);audit.f6Event("MT_RETURNED",null);}} }
             catch (RuntimeException error) {
                 if (staticSceneMode && com.example.alpr_v1.BuildConfig.DEBUG)
                     android.util.Log.d("ALPR_STATIC", "MT_ERROR scene=" + mtSizeSourceStamp.sceneGeneration);
                 if (audit != null) audit.put("execution_error",error.toString());
+                if(audit!=null)audit.f6Event("MT_FAILED",com.example.alpr_v1.experiment.Final180Evidence.details("execution_error",error.toString()));
                 throw error;
             }
-            durations[1] += SystemClock.elapsedRealtimeNanos() - started;
+            durations[1] += photoRoi==null?SystemClock.elapsedRealtimeNanos()-started:measuredMtBackendNanos;
 
             started = SystemClock.elapsedRealtimeNanos();
             List<Detection> result = new ArrayList<>();
@@ -3859,6 +4240,7 @@ final class MobileAlprEngine implements AutoCloseable {
                 }
             }
             if(researchBatch!=null)researchBatch.decoded(audit);
+            if(audit!=null)audit.f6Event("MT_DECODED",com.example.alpr_v1.experiment.Final180Evidence.details("raw_detection_count",decoded.size()));
             durations[2] += SystemClock.elapsedRealtimeNanos() - started;
             if (roiPlan != null) adaptiveMtRoi.result(evidenceOwner.entityId, roiPlan.kind,
                     hasOwnedValidPlate(result, evidenceOwner, frame, retainedPlateAssociationCandidates));
@@ -3869,6 +4251,10 @@ final class MobileAlprEngine implements AutoCloseable {
     }
 
     private VehicleRoiSelector.Region modelFrameRegion(Bitmap frame){
+        if(photoRoi!=null){
+            com.example.alpr_v1.experiment.Final180PhotoRoi roi=photoRoi;
+            return new VehicleRoiSelector.Region(roi.left,roi.top,roi.right,roi.bottom,null);
+        }
         return tvInput==null?fullFrameRegion(frame):new VehicleRoiSelector.Region(inputCrop.left,inputCrop.top,inputCrop.right,inputCrop.bottom,null);
     }
     static VehicleRoiSelector.Region fullSensorFrameRegion(int width, int height) {
@@ -4258,30 +4644,11 @@ final class MobileAlprEngine implements AutoCloseable {
     // T2-I-4B: split output is allowed in the CHARACTER role only.
     // Existing MT/MP and legacy MZ continue through validateDecoder().
     private static void validateCharacterDecoder(ModelOutputSpec spec) {
-        if (!"raw_split_ltrb_scores_v1".equals(spec.outputFormat())) {
-            validateDecoder(spec);
-            return;
-        }
-        if (!"ultralytics_detect_split_ltrb_scores_int8_v1".equals(spec.decoder())
-                || spec.classCount() != 36 || spec.keypointCount() != 0
-                || spec.hasObjectness() || !spec.channelsFirst()
-                || !spec.normalizedCoordinates() || spec.nmsInGraph()
-                || spec.nmsRequired() || !"ltrb".equals(spec.boxFormat())) {
-            throw new IllegalArgumentException("MZ_SPLIT_INT8_INVALID_CHARACTER_CONTRACT");
-        }
+        com.example.alpr_v1.model.ModelConfigurationRequirements.requireCharacterDecoder(spec);
     }
 
     private static void validateDecoder(ModelOutputSpec outputSpec) {
-        if (outputSpec.nmsInGraph()) {
-            throw new IllegalArgumentException("Dekoder v1 wymaga eksportu bez NMS w grafie");
-        }
-        String decoder = outputSpec.decoder();
-        if (!decoder.equals("ultralytics_yolo_raw_v1")
-                && !decoder.equals("ultralytics_pose_raw_v1")
-                && !decoder.equals("ultralytics_detect_raw_v1")
-                && !isEndToEndDecoder(decoder)) {
-            throw new IllegalArgumentException("Nieobsługiwany dekoder: " + decoder);
-        }
+        com.example.alpr_v1.model.ModelConfigurationRequirements.requireDecoder(outputSpec);
     }
 
     private static boolean isEndToEndDecoder(String decoder) {
@@ -4330,6 +4697,7 @@ final class MobileAlprEngine implements AutoCloseable {
 
     @Override
     public void close() {
+        discardPendingDynamicMz();
         pendingSoftReacquireReport = SoftReacquireReport.none();
         pendingTerminalRecoveryDirective = null;
         characterBackend.close();

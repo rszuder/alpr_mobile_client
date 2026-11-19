@@ -35,6 +35,7 @@ final class TvReferenceLayout {
     private final List<Float> labelSizes=new ArrayList<>();
     private String windowKey="";
     private boolean enabled,preciseExpanded;
+    private boolean precisionScrolled;
     private int lastSectionIcon;
 
     private static final class ButtonAppearance {
@@ -79,7 +80,8 @@ final class TvReferenceLayout {
         }else{
             ((ViewGroup)instruction.getParent()).removeView(instruction);
             instructionParent.addView(instruction,Math.min(instructionIndex,instructionParent.getChildCount()),instructionLayout);instruction.setMinLines(2);
-            for(int id:new int[]{R.id.tv_ref_header,R.id.tv_ref_frame,R.id.tv_ref_instruction_card,R.id.tv_ref_precise_toggle,R.id.tv_ref_lens_choices,R.id.tv_corner_coordinate_header,R.id.tv_corner_nudge_controls})find(id).setVisibility(View.GONE);
+            for(int id:new int[]{R.id.tv_ref_header,R.id.tv_ref_frame,R.id.tv_ref_instruction_card,R.id.tv_ref_precise_toggle,R.id.tv_ref_lens_choices,R.id.tv_precision_panel})find(id).setVisibility(View.GONE);
+            find(R.id.tv_editor_heading).setVisibility(View.VISIBLE);
             find(R.id.tv_ref_section_icon).setVisibility(View.VISIBLE);find(R.id.tv_ref_section_title).setVisibility(View.VISIBLE);
             find(R.id.tv_camera_lens).setVisibility(View.VISIBLE);
             for(int id:new int[]{R.id.tv_camera_available_hint,R.id.tv_camera_input_mode,R.id.tv_camera_rectification_hint})find(id).setVisibility(View.VISIBLE);
@@ -93,15 +95,16 @@ final class TvReferenceLayout {
     void layout(boolean cameraStep,boolean landscape){
         if(!enabled)return;windowKey=currentWindowKey();
         find(R.id.tv_ref_header).setVisibility(View.VISIBLE);find(R.id.tv_ref_frame).setVisibility(View.VISIBLE);
-        find(R.id.tv_corner_coordinate_header).setVisibility(cameraStep?View.GONE:View.VISIBLE);
-        find(R.id.tv_ref_section_icon).setVisibility(cameraStep?View.VISIBLE:View.GONE);find(R.id.tv_ref_section_title).setVisibility(cameraStep?View.VISIBLE:View.GONE);
-        textIfChanged(find(R.id.tv_ref_section_title),font()>1.3f&&!cameraStep?"Rogi TV":activity.getString(cameraStep?R.string.tv_ref_camera:R.string.tv_ref_corners));
-        find(R.id.tv_ref_section_badge).setVisibility(font()>1.3f&&cameraStep?View.GONE:View.VISIBLE);
+        find(R.id.tv_ref_section_icon).setVisibility(cameraStep?View.VISIBLE:View.GONE);find(R.id.tv_ref_section_title).setVisibility(View.VISIBLE);
+        if(cameraStep)textIfChanged(find(R.id.tv_ref_section_title),activity.getString(R.string.tv_ref_camera));
+        find(R.id.tv_ref_section_badge).setVisibility(font()>1.3f?View.GONE:View.VISIBLE);
         int sectionIcon=cameraStep?R.drawable.ic_camera_preview_32:R.drawable.ic_auto_focus_zoom_24;
         if(lastSectionIcon!=sectionIcon){lastSectionIcon=sectionIcon;((android.widget.ImageView)find(R.id.tv_ref_section_icon)).setImageResource(sectionIcon);}
         int usable=Math.max(dp(240),root.getHeight()-root.getPaddingTop()-root.getPaddingBottom());
         int toolbarHeight=Math.max(toolbar.getHeight(),toolbar.getLayoutParams().height);
-        int headerHeight=dp(Math.max(56,landscape||font()>1.3f?28*font()+8:48*font()));View header=find(R.id.tv_ref_header);
+        boolean compactHeader=usable<dp(640)&&font()>1.2f;
+        int headerHeight=compactHeader?0:dp(Math.max(56,44*font()+8));View header=find(R.id.tv_ref_header);
+        header.setVisibility(compactHeader?View.GONE:View.VISIBLE);
         if(header.getLayoutParams().height!=headerHeight){header.getLayoutParams().height=headerHeight;header.requestLayout();}
         View frame=find(R.id.tv_ref_frame);ConstraintLayout.LayoutParams fp=new ConstraintLayout.LayoutParams((ConstraintLayout.LayoutParams)frame.getLayoutParams());
         ConstraintLayout.LayoutParams pp=new ConstraintLayout.LayoutParams((ConstraintLayout.LayoutParams)preview.getLayoutParams());
@@ -114,13 +117,21 @@ final class TvReferenceLayout {
             editor.topToBottom=R.id.tv_ref_header;editor.bottomToBottom=ConstraintLayout.LayoutParams.PARENT_ID;
         }else{
             int footer=Math.max(dp(56),find(R.id.tv_setup_actions).getMeasuredHeight());
-            // Reserve a usable scrolling area even with two large-font footer buttons.
-            int wanted=Math.round((usable-toolbarHeight)*.46f)-dp(16),available=usable-toolbarHeight-headerHeight-footer-dp(112);
+            View precision=find(R.id.tv_precision_panel);
+            precision.measure(View.MeasureSpec.makeMeasureSpec(Math.max(1,root.getWidth()-root.getPaddingLeft()-root.getPaddingRight()-dp(32)),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));
+            int needed=cameraStep?0:precision.getMeasuredHeight();
+            int bodyReserve=dp(Math.max(80,64*font()+16));
+            int margins=dp(40); // frame top, panel top/bottom, and footer separation
+            precisionScrolled=!cameraStep&&usable-toolbarHeight-headerHeight-footer-needed-margins-bodyReserve<dp(112);
+            placePrecision(precisionScrolled);
+            int wanted=precisionScrolled?dp(96):Math.round((usable-toolbarHeight)*.46f)-dp(16);
+            int available=usable-toolbarHeight-headerHeight-footer-(precisionScrolled?0:needed)-margins-bodyReserve;
             fp.width=0;fp.height=Math.max(dp(96),Math.min(wanted,available));fp.endToStart=ConstraintLayout.LayoutParams.UNSET;fp.endToEnd=ConstraintLayout.LayoutParams.PARENT_ID;
             fp.bottomToTop=fp.bottomToBottom=ConstraintLayout.LayoutParams.UNSET;fp.bottomMargin=0;
             editor.width=0;editor.height=0;editor.startToStart=editor.endToEnd=ConstraintLayout.LayoutParams.PARENT_ID;
             editor.topToBottom=R.id.tv_ref_frame;editor.bottomToBottom=ConstraintLayout.LayoutParams.PARENT_ID;
         }
+        if(landscape){precisionScrolled=true;placePrecision(true);}
         int verticalMargin=!cameraStep&&usable<dp(640)&&font()>1.3f?8:12;
         editor.topToTop=ConstraintLayout.LayoutParams.UNSET;editor.topMargin=dp(verticalMargin);editor.bottomMargin=dp(verticalMargin);
         editor.leftMargin=editor.rightMargin=dp(16);editor.setMarginStart(dp(16));editor.setMarginEnd(dp(16));
@@ -133,20 +144,34 @@ final class TvReferenceLayout {
         find(R.id.tv_camera_lens).setVisibility(View.GONE);find(R.id.tv_ref_lens_choices).setVisibility(View.VISIBLE);
         for(int id:new int[]{R.id.tv_camera_available_hint,R.id.tv_camera_input_mode,R.id.tv_camera_rectification_hint})find(id).setVisibility(View.GONE);
     }
-    void content(boolean cameraStep,TvSetupController.Phase phase){
-        if(!enabled)return;boolean editor=!cameraStep&&phase==TvSetupController.Phase.EDITING;
-        textIfChanged(find(R.id.tv_ref_section_badge),editor?"DRAFT":"Kalibracja");
-        find(R.id.tv_ref_instruction_card).setVisibility(editor?View.VISIBLE:View.GONE);find(R.id.tv_ref_precise_toggle).setVisibility(editor?View.VISIBLE:View.GONE);
-        find(R.id.tv_corner_nudge_controls).setVisibility(editor?View.VISIBLE:View.GONE);
+    void content(boolean cameraStep,TvSetupController.Phase phase,boolean photo,String state,boolean hasDraft){
+        if(!enabled)return;boolean editor=!cameraStep&&(phase==TvSetupController.Phase.EDITING||phase==TvSetupController.Phase.WAITING&&hasDraft);
+        textIfChanged(find(R.id.tv_ref_section_badge),editor||photo?state:activity.getString(R.string.tv_precision_to_save));
+        if(!cameraStep)textIfChanged(find(R.id.tv_ref_section_title),activity.getString(photo?R.string.tv_precision_photo_heading:R.string.tv_precision_heading));
+        find(R.id.tv_precision_panel).setVisibility(editor?View.VISIBLE:View.GONE);
+        find(R.id.tv_ref_instruction_card).setVisibility(editor&&preciseExpanded?View.VISIBLE:View.GONE);find(R.id.tv_ref_precise_toggle).setVisibility(editor?View.VISIBLE:View.GONE);
+        find(R.id.tv_editor_heading).setVisibility(editor&&!preciseExpanded?View.GONE:View.VISIBLE);
         if(editor){
             find(R.id.tv_setup_status).setVisibility(View.GONE);
-            textIfChanged(find(R.id.tv_ref_instruction_heading),font()>1.3f?"Dopasuj rogi TV":activity.getString(R.string.tv_ref_instruction_title));
-            if(font()>1.3f){instruction.setMinLines(1);textIfChanged(instruction,"Przeciągnij uchwyty i zatwierdź.");}
-            find(R.id.tv_setup_title).setVisibility(View.VISIBLE);((TextView)find(R.id.tv_setup_title)).setTextSize(16);updateExpansion();
+            textIfChanged(find(R.id.tv_ref_instruction_heading),activity.getString(photo?R.string.tv_precision_photo_heading:R.string.tv_precision_heading));
+            instruction.setMinLines(1);
+            textIfChanged(instruction,activity.getString(photo?R.string.tv_precision_photo_description:R.string.tv_precision_description)+"\n\n"+activity.getString(R.string.tv_precision_instruction)
+                    +(photo?"\n\n"+activity.getString(R.string.tv_precision_photo_rectangle)+"\n\n"+activity.getString(R.string.tv_precision_photo_hint):""));
+            find(R.id.tv_setup_title).setVisibility(View.GONE);
+            find(R.id.tv_corner_choices).setVisibility(View.VISIBLE);updateExpansion();
         }else find(R.id.tv_corner_choices).setVisibility(View.GONE);
     }
     private void updateExpansion(){
-        if(enabled&&find(R.id.tv_ref_precise_toggle).isShown())find(R.id.tv_corner_choices).setVisibility(preciseExpanded?View.VISIBLE:View.GONE);
+        if(enabled&&find(R.id.tv_ref_precise_toggle).isShown()){
+            find(R.id.tv_ref_instruction_card).setVisibility(preciseExpanded?View.VISIBLE:View.GONE);
+            find(R.id.tv_editor_heading).setVisibility(preciseExpanded?View.VISIBLE:View.GONE);
+            find(R.id.tv_setup_coverage).setVisibility(preciseExpanded?View.VISIBLE:View.GONE);
+        }
+    }
+    private void placePrecision(boolean scrolling){
+        View precision=find(R.id.tv_precision_panel);ViewGroup target=find(scrolling?R.id.tv_setup_body_content:R.id.tv_setup_panel);
+        if(precision.getParent()==target)return;
+        ((ViewGroup)precision.getParent()).removeView(precision);target.addView(precision,0,new LinearLayout.LayoutParams(-1,-2));
     }
     private void styleButton(MaterialButton button,boolean filled){
         int[][] states={new int[]{-android.R.attr.state_enabled},new int[]{}};

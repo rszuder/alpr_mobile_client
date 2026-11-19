@@ -44,7 +44,7 @@ public class TvCornerEditGeometryTest {
         TvCornerEditGeometry editor=new TvCornerEditGeometry(g);assertFalse(editor.containsView(41,280));
         Move point=editor.constrain(41,280);assertTrue(point.limited);assertTrue(TvCornerEditGeometry.contains(g,point.point.toPoint()));
     }
-    @Test public void nudgeIsOneSourcePixelInTheVisualDirectionForRotationAndMirror(){
+    @Test public void oneAndFiveSourcePixelsKeepVisualDirectionAndFractionalPositionForRotationAndMirror(){
         for(int rotation:new int[]{0,90,180,270})for(boolean mirror:new boolean[]{false,true}){
             CameraPreviewGeometry base=TvSetupGeometryTest.geometry(rotation,1000,1000,1,"synthetic",1);
             double[] turn=rotation==0?new double[]{1,0,0,0,1,0,0,0,1}:rotation==90?new double[]{0,-1,1000,1,0,0,0,0,1}:
@@ -52,10 +52,11 @@ public class TvCornerEditGeometryTest {
             double[] matrix=CameraPreviewGeometry.multiply(turn,base.sourceToViewMatrix());
             if(mirror)matrix=CameraPreviewGeometry.multiply(new double[]{-1,0,1000,0,1,0,0,0,1},matrix);
             CameraPreviewGeometry g=new CameraPreviewGeometry(base.sourceWidth,base.sourceHeight,1920,1080,new double[]{0,0,1920,1080},rotation,"synthetic",mirror?"FRONT":"BACK",1,1,1,1000,1000,matrix,new double[]{0,0,1000,1000});
-            TvCornerEditGeometry editor=new TvCornerEditGeometry(g);Position start=new Position(.5,.5);double[] v=g.normalizedToView(start.x,start.y);
-            for(int[] direction:new int[][]{{-1,0},{1,0},{0,-1},{0,1}}){
+            TvCornerEditGeometry editor=new TvCornerEditGeometry(g);Position start=new Position(.503123,.497456);double[] v=g.normalizedToView(start.x,start.y);
+            for(int[] direction:new int[][]{{-1,0},{1,0},{0,-1},{0,1}})for(int amount:new int[]{1,5}){
                 Move result=editor.nudge(start,direction[0],direction[1]);
-                assertEquals(1,Math.hypot((result.point.x-start.x)*g.sourceWidth,(result.point.y-start.y)*g.sourceHeight),1e-8);
+                for(int n=1;n<amount;n++)result=editor.nudge(result.point,direction[0],direction[1]);
+                assertEquals(amount,Math.hypot((result.point.x-start.x)*g.sourceWidth,(result.point.y-start.y)*g.sourceHeight),1e-8);
                 assertTrue((result.viewX-v[0])*direction[0]+(result.viewY-v[1])*direction[1]>0);
                 assertEquals(0,(result.viewX-v[0])*direction[1]-(result.viewY-v[1])*direction[0],1e-8);
             }

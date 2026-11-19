@@ -73,6 +73,15 @@ public final class AppLog {
         if (events.isEmpty()) return "Brak zapisanych zdarzeń";
         return String.join("\n", events);
     }
+    /** Full last finalization event, including its stack/cause chain, for the existing diagnostics panel. */
+    public static String lastFinalizationFailure(Context context){
+        String text=contents(context);int marker=text.lastIndexOf("/F6_SESSION_FINALIZATION ");
+        if(marker<0)return "";
+        int start=text.lastIndexOf('\n',marker)+1;
+        java.util.regex.Matcher next=java.util.regex.Pattern.compile("(?m)^\\d{4}-\\d{2}-\\d{2}T").matcher(text);
+        int end=text.length();if(next.find(marker))end=next.start();
+        return text.substring(start,end).trim();
+    }
 
     /** Zwraca starszy i bieżący plik, gotowe do dołączenia do raportu. */
     public static String contents(Context context) {

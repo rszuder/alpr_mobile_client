@@ -362,7 +362,7 @@
     <string name="settings_research_mz_execution">MZ · profil wykonania</string>
     <string name="settings_research_stage_summary">%1$s · %2$s · %3$s/%4$s</string>
     <string name="settings_research_stage_missing">%1$s · brak aktywnego modelu</string>
-    <string name="settings_research_stage_disabled">%1$s · wyłączony przez %2$s</string>
+    <string name="settings_research_stage_disabled">%1$s · nieuruchamiany w wariancie R0</string>
     <string name="settings_research_lock">Lock celu</string>
     <string name="settings_research_autozoom">Autozoom</string>
     <string name="research_autozoom_requires_lock">Autozoom w eksperymencie wymaga włączonego locka</string>

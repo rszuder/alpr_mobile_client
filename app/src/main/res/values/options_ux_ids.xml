@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item type="id" name="window_content_padding" />
+    <item type="id" name="window_immersive_bound" />
+    <item type="id" name="window_insets_binding" />
+    <item type="id" name="window_child_padding" />
+    <item type="id" name="window_toolbar_title_width" />
+    <item type="id" name="readiness_section_marker" />
+    <item type="id" name="readiness_field_marker" />
+</resources>

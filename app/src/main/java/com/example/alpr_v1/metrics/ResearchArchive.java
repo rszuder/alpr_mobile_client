@@ -113,11 +113,14 @@ public final class ResearchArchive {
         ArchiveWriter archive = new ArchiveWriter(destination);
         try {
             archive.writeText("report.json", reportJson);
-            archive.writeText("traces.csv", tracesCsv);
-            archive.writeText("thermal.csv", thermalCsv == null ? "" : thermalCsv);
-            archive.writeText("frame_flow.csv", frameFlowCsv == null ? "" : frameFlowCsv);
-            archive.writeText("events.jsonl", eventsJsonl == null ? "" : eventsJsonl);
-            archive.writeText("application.log", applicationLog == null ? "" : applicationLog);
+            boolean f6=persistentDirectory!=null&&com.example.alpr_v1.experiment.Final180Evidence.enabled(report.optJSONObject("research_collection"));
+            String[] streamedNames={"traces.csv","thermal.csv","frame_flow.csv","events.jsonl","application.log"};
+            String[] fallback={tracesCsv,thermalCsv,frameFlowCsv,eventsJsonl,applicationLog};
+            for(int i=0;i<streamedNames.length;i++){
+                java.io.File source=persistentDirectory==null?null:new java.io.File(persistentDirectory,"telemetry/"+streamedNames[i]);
+                if(f6&&source.isFile())archive.writeFile(streamedNames[i],source);
+                else archive.writeText(streamedNames[i],fallback[i]==null?"":fallback[i]);
+            }
             archive.writeText("README.md", researchReadme());
             archive.writeText("protocol.json", protocolJson(report).toString(2));
             archive.writeText("environment/device.json", report.optJSONObject("device") == null

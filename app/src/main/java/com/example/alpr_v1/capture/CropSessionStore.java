@@ -35,6 +35,51 @@ public final class CropSessionStore implements AutoCloseable {
     private boolean closed;
     public CropSessionStore(Context context) { this(new File(context.getFilesDir(), "crop-sessions")); }
     public CropSessionStore(File root) { this.root = root; }
+    public static final class ObservationPreview implements AutoCloseable {
+        public final Bitmap bitmap;
+        public final String text;
+        public final double confidence;
+        public final long capturedAtMillis;
+        public final List<com.example.alpr_v1.pipeline.PlateCharacter> characters;
+        ObservationPreview(Bitmap bitmap,JSONObject crop,JSONObject source) throws Exception {
+            this.bitmap=bitmap;text=crop.getString("raw_prediction");confidence=source.getDouble("confidence");
+            capturedAtMillis=source.getLong("captured_at_ms");
+            List<com.example.alpr_v1.pipeline.PlateCharacter> result=new ArrayList<>();JSONArray boxes=crop.getJSONArray("characters");
+            for(int i=0;i<Math.min(128,boxes.length());i++) {
+                JSONObject box=boxes.getJSONObject(i);
+                result.add(new com.example.alpr_v1.pipeline.PlateCharacter(box.getString("label"),box.getDouble("confidence"),
+                        (float)box.getDouble("left"),(float)box.getDouble("top"),(float)box.getDouble("right"),(float)box.getDouble("bottom")));
+            }
+            characters=java.util.Collections.unmodifiableList(result);
+        }
+        @Override public void close(){if(!bitmap.isRecycled())bitmap.recycle();}
+    }
+    /** Read-only lookup: an image belongs to its first source observation, never to a text match. */
+    public CompletableFuture<ObservationPreview> previewForObservation(String sessionId,String observationId) {
+        if(!validId(sessionId))return failed(new IllegalArgumentException("Invalid crop session id"));
+        return submit(()->{
+            try {
+            File directory=directory(sessionId);if(!new File(directory,"session.json").isFile())return null;
+            JSONArray crops=load(directory,null).getJSONArray("crops");
+            for(int i=0;i<crops.length();i++) {
+                JSONObject crop=crops.getJSONObject(i);JSONArray sources=crop.getJSONArray("observations");
+                if(sources.length()==0||!observationId.equals(sources.getJSONObject(0).getString("observation_id")))continue;
+                String name=crop.getString("image");if(!name.matches("crop-[0-9]+\\.jpg"))return null;
+                File file=new File(directory,name);
+                android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();options.inJustDecodeBounds=true;
+                android.graphics.BitmapFactory.decodeFile(file.getPath(),options);
+                if(options.outWidth<=0||options.outHeight<=0)return null;
+                options.inJustDecodeBounds=false;options.inSampleSize=1;
+                while(options.outWidth/options.inSampleSize>512||options.outHeight/options.inSampleSize>512)options.inSampleSize*=2;
+                Bitmap bitmap=android.graphics.BitmapFactory.decodeFile(file.getPath(),options);if(bitmap==null)return null;
+                try{return new ObservationPreview(bitmap,crop,sources.getJSONObject(0));}
+                catch(Exception error){bitmap.recycle();throw error;}
+                catch(OutOfMemoryError exhausted){bitmap.recycle();return null;}
+            }
+            return null;
+            } catch(OutOfMemoryError exhausted) {return null;}
+        });
+    }
 
     public synchronized CompletableFuture<Void> record(String sessionId, PlateObservation observation,
             ObservationTelemetry telemetry, String source) {

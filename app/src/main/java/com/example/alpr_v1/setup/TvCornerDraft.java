@@ -7,6 +7,17 @@ import java.util.List;
 /** Visible editing handles only. This geometry is never a confirmed calibration or model Pose. */
 public final class TvCornerDraft {
     private TvCornerDraft(){}
+    /** Unconfirmed F6 scaffold inside the approved TV, in the existing source/order convention. */
+    public static List<Point2> insideTv(List<Point2> tv,CameraPreviewGeometry geometry,float density){
+        String error=TvSetupCalibration.validation(tv,geometry,density);
+        if(error!=null)throw new IllegalArgumentException(error);
+        double cx=0,cy=0;for(Point2 p:tv){cx+=p.x/4d;cy+=p.y/4d;}
+        List<Point2> result=new ArrayList<>();
+        for(Point2 p:tv)result.add(new Point2((float)(cx+.6*(p.x-cx)),(float)(cy+.6*(p.y-cy))));
+        error=TvSetupCalibration.validation(result,geometry,density);
+        if(error!=null)throw new IllegalArgumentException(error);
+        return result;
+    }
     public static List<Point2> create(CameraPreviewGeometry geometry,float density){
         if(geometry==null)throw new IllegalArgumentException("Brak aktualnego przeliczenia kamery");
         double[] u=geometry.usableViewRect();double l=Double.POSITIVE_INFINITY,t=l,r=Double.NEGATIVE_INFINITY,b=r;

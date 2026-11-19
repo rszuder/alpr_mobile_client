@@ -38,6 +38,8 @@ public final class RecognitionEntityPager extends LinearLayout {
     private final LinearLayoutManager layout;
     private final TextView position;
     private RecognitionHistoryItem item;
+    private java.util.function.Consumer<RecognitionHistoryObservation> photoListener;
+    public void setPhotoListener(java.util.function.Consumer<RecognitionHistoryObservation> listener) {photoListener=listener;}
     private final int blue, violet, green, muted, foreground, surface;
     private static final class EntityPage {
         final long entity, scene;
@@ -80,7 +82,12 @@ public final class RecognitionEntityPager extends LinearLayout {
         this.item = item;
         pages.clear(); badges.clear(); badgeRow.removeAllViews();
         LinkedHashMap<String, EntityPage> grouped = new LinkedHashMap<>();
-        for (RecognitionHistoryObservation observation : item.observationRecords()) {
+        if(item.dynamicOwner) {
+            EntityPage page=new EntityPage(item.displayNumber>0?item.displayNumber:item.entityId,item.sceneGeneration);
+            RecognitionHistoryObservation best=item.bestConsensusObservation();
+            if(best!=null)page.observations.add(best);
+            grouped.put("owner",page);
+        } else for (RecognitionHistoryObservation observation : item.observationRecords()) {
             String key = observation.sceneGeneration + ":" + observation.entityId
                     + (observation.entityId == 0 ? ":" + observation.plateTrackId : "");
             EntityPage page = grouped.computeIfAbsent(key,
@@ -88,6 +95,7 @@ public final class RecognitionEntityPager extends LinearLayout {
             page.observations.add(observation);
         }
         pages.addAll(grouped.values());
+        badgeScroll.setVisibility(item.dynamicOwner?GONE:VISIBLE);
         if (pages.isEmpty()) pages.add(new EntityPage(item.entityId, 0));
         for (int index = 0; index < pages.size(); index++) {
             final int pageIndex = index;
@@ -128,22 +136,56 @@ public final class RecognitionEntityPager extends LinearLayout {
             badge.setSelected(active); badge.setTextColor(active ? color(R.color.alpr_background) : blue);
             badge.setBackground(shape(active ? blue : surface, blue, 24));
         }
-        position.setText(pages.size() == 1 ? "1 encja · obserwacje poniżej"
+        position.setText(item.dynamicOwner?"P"+(item.displayNumber>0?item.displayNumber:item.entityId)+" · najlepszy odczyt"
+                :pages.size() == 1 ? "1 encja · obserwacje poniżej"
                 : "‹   Encja " + (selected + 1) + " z " + pages.size() + "   ›   Przesuń w bok");
         TextView badge = badges.get(selected);
         badgeScroll.post(() -> badgeScroll.smoothScrollTo(Math.max(0, badge.getLeft() - dp(12)), 0));
     }
     private LinearLayout entityContent(EntityPage page) {
+        if(item.dynamicOwner)return dynamicBestContent(page);
+        return entityContent(page,item.dynamicOwner?Math.max(0,(page.observations.size()-1)/32*32):0);
+    }
+    private LinearLayout dynamicBestContent(EntityPage page) {
+        LinearLayout root=column(),card=card();
+        card.addView(text(item.currentText.isEmpty()?"Weryfikacja":item.currentText,23,foreground,true));
+        boolean confirmed=item.displayConfirmed();
+        card.addView(text(confirmed?"Potwierdzony odczyt":"Weryfikacja",13,confirmed?green:color(R.color.alpr_warning),true));
+        pair(card,"Pewność wyniku",value(item.currentConfidence*100,"%"),"Zebrane obserwacje",Integer.toString(item.observations),green);
+        card.addView(text("Kolejne obserwacje uzupełniają wynik. Lepszy odczyt zastępuje poprzedni.",13,muted,false));
+        RecognitionHistoryObservation best=page.observations.isEmpty()?null:page.observations.get(0);
+        if(best!=null) {
+            section(card,"CZASY MODELI PRZY NAJLEPSZYM WYNIKU",violet);timings(card,best.timing);
+            field(card,"Czas wyniku",new SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new Date(best.capturedAtMillis)));
+            if(photoListener!=null&&!best.captureSessionId.isEmpty()) {
+                TextView photo=action("Zdjęcie najlepszego wyniku");
+                photo.setOnClickListener(v->photoListener.accept(best));card.addView(photo);
+            }
+        }
+        root.addView(card);return root;
+    }
+    private LinearLayout entityContent(EntityPage page,int first) {
         LinearLayout root = column(); root.setPadding(dp(2), 0, dp(2), 0);
+        int end=item.dynamicOwner?Math.min(first+32,page.observations.size()):page.observations.size();
         TextView heading = text(page.label() + "  ·  " + Math.max(1, page.observations.size()) + " obs.", 19, blue, true);
         heading.setPadding(dp(4), dp(4), 0, dp(10)); root.addView(heading);
+        if(item.dynamicOwner&&page.observations.size()>32) {
+            LinearLayout navigation=row();
+            TextView older=action("‹ Starsze"),newer=action("Nowsze ›");
+            older.setEnabled(first>0);newer.setEnabled(end<page.observations.size());
+            older.setOnClickListener(v->replaceObservationPage(root,page,Math.max(0,first-32)));
+            newer.setOnClickListener(v->replaceObservationPage(root,page,end));
+            navigation.addView(older,new LayoutParams(0,-2,1));
+            TextView range=text((first+1)+"–"+end+" / "+page.observations.size(),12,muted,false);range.setGravity(Gravity.CENTER);
+            navigation.addView(range,new LayoutParams(0,-1,1));navigation.addView(newer,new LayoutParams(0,-2,1));root.addView(navigation);
+        }
         if (page.observations.isEmpty()) {
             LinearLayout legacy = card(); legacy.addView(text("Zapis archiwalny", 15, foreground, true));
             timings(legacy, item.timing);
             legacy.addView(text("Ten zapis nie zawiera szczegółowych obserwacji encji.", 13, muted, false));
             root.addView(legacy);
         }
-        for (int index = 0; index < page.observations.size(); index++) {
+        for (int index = first; index < end; index++) {
             RecognitionHistoryObservation observation = page.observations.get(index);
             LinearLayout card = card();
             card.addView(text("OBSERWACJA " + (index + 1) + "  ·  "
@@ -155,6 +197,9 @@ public final class RecognitionEntityPager extends LinearLayout {
                     observation.confirmed ? green : color(R.color.alpr_warning), true));
             pair(card, "Pewność odczytu", value(observation.confidence * 100, "%"),
                     "Pewność MT", value(observation.plateConfidence * 100, "%"), green);
+            if(photoListener!=null&&!observation.captureSessionId.isEmpty()) {
+                TextView photo=action("Zdjęcie tej próby");photo.setOnClickListener(v->photoListener.accept(observation));card.addView(photo);
+            }
             section(card, "CZASY MODELI", violet); timings(card, observation.timing);
             ObservationTelemetry telemetry = observation.telemetry;
             section(card, "ZASOBY PRZY ODCZYCIE", blue);
@@ -185,6 +230,14 @@ public final class RecognitionEntityPager extends LinearLayout {
             LayoutParams params = new LayoutParams(-1, -2); params.bottomMargin = dp(12); root.addView(card, params);
         }
         return root;
+    }
+    private TextView action(String label) {
+        TextView button=text(label,13,blue,true);button.setMinHeight(dp(48));button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(8),dp(4),dp(8),dp(4));button.setFocusable(true);button.setBackground(shape(surface,blue,12));return button;
+    }
+    private void replaceObservationPage(LinearLayout old,EntityPage page,int first) {
+        ViewGroup parent=(ViewGroup)old.getParent();if(parent==null)return;
+        parent.removeView(old);parent.addView(entityContent(page,first));
     }
     private void timings(LinearLayout parent, CropInferenceTiming timing) {
         LinearLayout values = row();

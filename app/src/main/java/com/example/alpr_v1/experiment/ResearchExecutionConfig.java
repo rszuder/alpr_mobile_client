@@ -17,11 +17,18 @@ public final class ResearchExecutionConfig {
     /** TV crop uses the accepted F21 contract; TV rectification remains a test-only prototype. */
     private final com.example.alpr_v1.setup.ResearchInputMode researchInputMode;
     private final com.example.alpr_v1.setup.TvBboxCrop tvBboxCrop;
+    private final Final180PhotoRoi final180PhotoRoi;
+    public Final180PhotoRoi final180PhotoRoi(){return final180PhotoRoi;}
+    public ResearchExecutionConfig withFinal180(Final180PhotoRoi roi){
+        ConfigurationRequirements.requirePhotoInput(tvBboxCrop!=null,roiBudgetPolicy,vehicle.enabled);
+        Final180PhotoRoi.fromJson(roi.toJson(),tvBboxCrop);
+        return new ResearchExecutionConfig(this,cameraSetup,researchInputMode,tvBboxCrop,roi);
+    }
     public com.example.alpr_v1.setup.ResearchInputMode inputMode(){return researchInputMode;}
     public com.example.alpr_v1.setup.TvBboxCrop tvBboxCrop(){return tvBboxCrop;}
     public ResearchExecutionConfig withTvBboxCrop(com.example.alpr_v1.setup.TvBboxCrop snapshot){
-        if(!"roi_budget".equals(experimentType))throw new IllegalStateException("TV_BBOX_F5A_ONLY");
-        if(autoZoomEnabled)throw new IllegalStateException("TV_BBOX_REQUIRES_FIXED_ZOOM");
+        ConfigurationRequirements.requireTvCategory(experimentType);
+        ConfigurationRequirements.requireTvFixedZoom(autoZoomEnabled);
         if(snapshot==null||!snapshot.cameraSetup.same(cameraSetup))throw new IllegalArgumentException("TV_BBOX_CAMERA_SETUP_MISMATCH");
         return new ResearchExecutionConfig(this,cameraSetup,com.example.alpr_v1.setup.ResearchInputMode.TV_BBOX_CROP,snapshot);
     }
@@ -196,6 +203,7 @@ public final class ResearchExecutionConfig {
         );
         this.researchInputMode=com.example.alpr_v1.setup.ResearchInputMode.CAMERA_FULL_FRAME;
         this.tvBboxCrop=null;
+        this.final180PhotoRoi=null;
         this.lockEnabled = lockEnabled;
         this.autoZoomEnabled = autoZoomEnabled;
         this.vehicleTrackingEnabled = vehicleTrackingEnabled;
@@ -216,22 +224,15 @@ public final class ResearchExecutionConfig {
             try {
                 observedSha = com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(basePackage.sourceArchive());
                 shaEvidence = observedSha.equals(basePackageSourceSha256) ? "OBSERVED_MATCH" : "OBSERVED_MISMATCH";
-                if (!observedSha.equals(basePackageSourceSha256)) throw new IllegalArgumentException("RESEARCH_PACKAGE_SHA_CHANGED");
+                ConfigurationRequirements.requirePackageHash(observedSha,basePackageSourceSha256);
             } catch (java.io.IOException error) { shaEvidence = "SOURCE_ARCHIVE_UNAVAILABLE: " + error.getMessage(); }
         }
         basePackageObservedSha256 = observedSha; basePackageShaEvidence = shaEvidence;
         this.compositionModified = basePackage != null && compositionModified;
         this.packageSizeBytes = Math.max(0L, packageSizeBytes);
-        if (this.roiBudgetPolicy.usesVehicleCascade() && !this.vehicle.enabled) {
-            throw new IllegalArgumentException("R1/R2 wymagają aktywnego etapu MP");
-        }
-        if (!this.plate.enabled || !this.character.enabled) {
-            throw new IllegalArgumentException("Research Mode wymaga etapów MT i MZ");
-        }
-        if (this.autoZoomEnabled && !this.lockEnabled
-                && sceneHandlingMode == com.example.alpr_v1.continuity.SceneHandlingMode.DYNAMIC_CONTINUITY) {
-            throw new IllegalArgumentException("Autozoom wymaga włączonego locka");
-        }
+        ConfigurationRequirements.requireVehicleStage(this.roiBudgetPolicy,this.vehicle.enabled);
+        ConfigurationRequirements.requireAlprStages(this.plate.enabled,this.character.enabled);
+        ConfigurationRequirements.requireAutoZoomLock(this.autoZoomEnabled,this.lockEnabled,sceneHandlingMode);
     }
 
     public ResearchStageExecutionConfig stage(ModelRole role) {
@@ -245,7 +246,13 @@ public final class ResearchExecutionConfig {
     }
     private ResearchExecutionConfig(ResearchExecutionConfig source,com.example.alpr_v1.camera.CameraSetupSnapshot setup,
             com.example.alpr_v1.setup.ResearchInputMode mode,com.example.alpr_v1.setup.TvBboxCrop crop){
+        this(source,setup,mode,crop,source.final180PhotoRoi);
+    }
+    private ResearchExecutionConfig(ResearchExecutionConfig source,com.example.alpr_v1.camera.CameraSetupSnapshot setup,
+            com.example.alpr_v1.setup.ResearchInputMode mode,com.example.alpr_v1.setup.TvBboxCrop crop,Final180PhotoRoi photo){
         researchInputMode=mode;tvBboxCrop=crop;
+        final180PhotoRoi=photo;
+        if(photo!=null)Final180PhotoRoi.fromJson(photo.toJson(),crop);
         dynamicMtConfig=source.dynamicMtConfig;sceneHandlingMode=source.sceneHandlingMode;experimentType=source.experimentType;variant=source.variant;
         roiBudgetPolicy=source.roiBudgetPolicy;recognitionProfile=source.recognitionProfile;cameraRequestedResolution=source.cameraRequestedResolution;cameraSetup=setup;
         lockEnabled=source.lockEnabled;autoZoomEnabled=source.autoZoomEnabled;vehicleTrackingEnabled=source.vehicleTrackingEnabled;
@@ -268,6 +275,7 @@ public final class ResearchExecutionConfig {
 
     public JSONObject toJson() throws JSONException {
         JSONObject json = new JSONObject();
+        if(final180PhotoRoi!=null)json.put("capture_profile",Final180PhotoRoi.PROFILE).put("f6_photo_roi",final180PhotoRoi.toJson());
         json.put("experiment_type", experimentType);
         json.put("analysis_mode", sceneHandlingMode.analysisMode());
         json.put("scene_handling_mode", sceneHandlingMode.wireName());

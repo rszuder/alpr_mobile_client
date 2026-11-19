@@ -44,6 +44,39 @@ public final class ScanAcquisitionController {
     private boolean releasePending;
     private boolean finishOnFirstRead;
     private boolean staticBaseline;
+    private boolean normalDynamicPolicy;
+    private long manualDisplayNumber;
+    public synchronized void setNormalDynamicPolicy(boolean enabled) {
+        normalDynamicPolicy=enabled;queue.setRefinementEnabled(enabled);
+    }
+    private final Map<Long,String> lastFinalizedDynamicText=new HashMap<>();
+    private void finishQueueTurn(long entityId,long now,boolean stable) {
+        // Ordinary DYN has one model-cost scheduler; acquisition must not add a second timer.
+        if(normalDynamicPolicy)queue.refineLater(entityId,now,0L);
+        else queue.complete(entityId);
+    }
+    private boolean manualLock() { return normalDynamicPolicy&&activeSession!=null&&activeSession.purpose()==TargetPurpose.USER_PICK; }
+    private boolean manualTargetUnavailable() { return manualLock()&&activeSession.state()==TargetSessionState.WAITING_FOR_TARGET; }
+    private void waitForManualTarget(long now) {
+        if(!manualLock())return;
+        if(activeSession.state()!=TargetSessionState.WAITING_FOR_TARGET)targetFocusRevision++;
+        activeSession.transitionTo(TargetSessionState.WAITING_FOR_TARGET,now);
+        pauseSessionBudgets(now);plateAnchor=null;recoveryPaused=false;continuityPaused=false;
+        setDirective(AcquisitionDirectiveAction.NONE,activeSession.sessionId(),activeSession.entityId(),"manual_lock_waiting_for_release");
+    }
+    /** A local identity break must finish bounded recovery even without a global scene-change event. */
+    public synchronized boolean onManualIdentityStatus(long recoveryDeadline,long sourceTime,long runtime) {
+        if(!manualLock()||manualTargetUnavailable())return false;
+        if(recoveryDeadline>0) {
+            if(sourceTime>recoveryDeadline){waitForManualTarget(runtime);return true;}
+            if(activeSession.state()!=TargetSessionState.RECOVERING)activeSession.transitionTo(TargetSessionState.RECOVERING,runtime);
+            pauseSessionBudgets(runtime);
+            setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,activeSession.sessionId(),activeSession.entityId(),"manual_lock_bounded_recovery");
+        } else if(activeSession.state()==TargetSessionState.RECOVERING&&!recoveryPaused) {
+            activeSession.transitionTo(TargetSessionState.TRACKING,runtime);resumeSessionBudgets(runtime);
+        }
+        return false;
+    }
     public synchronized void setStaticBaseline(boolean enabled) {
         staticBaseline = enabled;
         if (enabled) { searchText = ""; searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED; }
@@ -55,6 +88,7 @@ public final class ScanAcquisitionController {
     private long lastVehicleFrameId;
     private long foregroundRefreshAfterFrameId = -1L;
     private long zoomBudgetSessionId;
+    private long pendingZoomSessionId;
     private long targetFocusRevision;
     private boolean awaitingFreshScanAnchor;
     private long scanAnchorAfterFrameId;
@@ -69,7 +103,8 @@ public final class ScanAcquisitionController {
         boolean exclusive = activeSession != null && activeSession.persistent() && activeSession.cameraAttentionOwned();
         return new TargetFocusSnapshot(exclusive ? activeSession.entityId() : 0L,
                 exclusive ? activeSession.sessionId() : 0L, targetFocusRevision, awaitingFreshScanAnchor,
-                exclusive ? activeSession.state() : null);
+                exclusive ? activeSession.state() : null,
+                exclusive ? manualLock()?manualDisplayNumber:activeSession.entityId() : 0L);
     }
 
     /** Only a completed MP from the current focus revision may reopen multi-vehicle presentation. */
@@ -112,18 +147,39 @@ public final class ScanAcquisitionController {
     public synchronized void finishLockZoom(long now) {
         if (zoomBudgetSessionId > 0L && zoomBudgetSessionId == activeSessionId()) resumeSessionBudgets(now);
         zoomBudgetSessionId = 0L;
+        pendingZoomSessionId=0L;
+    }
+    public synchronized boolean reserveLockZoom(long now) {
+        if(staticBaseline||activeSession==null||!activeSession.persistent()||manualTargetUnavailable()
+                ||pendingZoomSessionId>0||zoomedLockSessions.contains(activeSession.sessionId()))return false;
+        pendingZoomSessionId=zoomBudgetSessionId=activeSession.sessionId();
+        pauseSessionBudgets(now);return true;
+    }
+    public synchronized boolean commitLockZoom() {
+        if(activeSession==null||pendingZoomSessionId!=activeSession.sessionId())return false;
+        boolean consumed=zoomedLockSessions.add(pendingZoomSessionId);
+        pendingZoomSessionId=0L;return consumed;
+    }
+    public synchronized boolean lockZoomUsed() {
+        return activeSession!=null&&zoomedLockSessions.contains(activeSession.sessionId());
     }
 
     public synchronized void pickVehicle(long entityId, long now) {
+        pickVehicle(entityId,entityId,now);
+    }
+    public synchronized void pickVehicle(long entityId,long displayNumber,long now) {
         if (staticBaseline || !running() || entityId <= 0L) return;
+        if(manualLock())return;
         releaseForeground(false, now);
         modeController.switchMode(ApplicationMode.PICK_ACQUIRE_LOCK, now);
         searchState = com.example.alpr_v1.domain.SearchMatchState.NOT_EVALUATED;
         beginForeground(entityId, TargetPurpose.USER_PICK, now);
+        manualDisplayNumber=displayNumber;
     }
 
     public synchronized void startSearch(String text, long now) {
         if (staticBaseline || !running()) return;
+        if(manualLock())return;
         String normalized = RegistrationSearchPolicy.normalize(text);
         if (normalized.length() < 4) throw new IllegalArgumentException("Registration must contain at least four characters");
         releaseForeground(true, now);
@@ -205,6 +261,20 @@ public final class ScanAcquisitionController {
         this(new ModeController(), ScanAcquisitionProfile.DEFAULT);
     }
 
+    /** Same physical observation after fresh OCR verification; not a new target selection. */
+    public synchronized void rebindVerifiedVehicle(long candidate,long canonical) {
+        if(staticBaseline||candidate<=0||canonical<=0||candidate==canonical)return;
+        vehiclesSeen.remove(candidate);vehiclesQueued.remove(candidate);
+        identifiedEntityIds.remove(candidate);completedEntityIds.remove(candidate);entityRecognitions.remove(candidate);
+        firstObservationRuntimeNanos.remove(candidate);bestCropByEntityId.remove(candidate);
+        if(activeSession!=null&&activeSession.rebindVerifiedVehicle(candidate,canonical)) {
+            if(activeSession.persistent())queue.holdForTarget(canonical);
+            if(plateAnchor!=null&&plateAnchor.entityId==candidate)plateAnchor=null;
+        }
+        if(directive.entityId==candidate)directive=new AcquisitionDirective(directive.revision,directive.action,
+                directive.scanRunId,directive.sessionId,canonical,"fresh_plate_identity_verified");
+    }
+
     public ScanAcquisitionController(
             ModeController modeController,
             ScanAcquisitionProfile profile
@@ -226,6 +296,7 @@ public final class ScanAcquisitionController {
     }
 
     private void startRun(long scanRunId, long nowRuntimeNanos, boolean finishOnFirstRead) {
+        lastFinalizedDynamicText.clear();
         this.finishOnFirstRead = finishOnFirstRead;
         rememberRuntime(nowRuntimeNanos);
         cancelActiveSession(TargetSessionState.CANCELLED, nowRuntimeNanos);
@@ -298,6 +369,7 @@ public final class ScanAcquisitionController {
     ) {
         rememberRuntime(nowRuntimeNanos);
         if (!running()) return currentDirective();
+        if(manualTargetUnavailable())return currentDirective();
         if (continuity == null || frame == null
                 || frame.sceneGeneration != continuity.sceneGeneration) {
             return setDirective(
@@ -344,7 +416,7 @@ public final class ScanAcquisitionController {
             vehiclesQueued.add(candidate.entityId);
         }
         if (activeSession != null && vehicleSizeGate != null
-                && vehicleSizeGate.isTooSmall(activeSession.entityId())) {
+                && vehicleSizeGate.blocksExistingSession(activeSession.entityId())) {
             waitingForVehicleSize = true;
             pauseSessionBudgets(nowRuntimeNanos);
             return setDirective(AcquisitionDirectiveAction.REQUEST_FRESH_MP,
@@ -375,10 +447,20 @@ public final class ScanAcquisitionController {
 
         AcquisitionQueue.Selection selection = queue.selectNext(nowRuntimeNanos);
         if (selection == null) {
+            String waiting="scan_queue_waiting_for_candidate";
+            if(vehicleSizeGate!=null) {
+                java.util.Map<Long,DynamicVehicleSizeGate.Decision> sizes=vehicleSizeGate.decisions();
+                for(AcquisitionCandidate candidate:updatedQueue.candidates) {
+                    DynamicVehicleSizeGate.Decision size=sizes.get(candidate.entityId);
+                    if(size==null)continue;
+                    if(size.reason==DynamicVehicleSizeGate.Reason.INVALID_CONFIGURATION){waiting="vehicle_threshold_invalid";break;}
+                    if(size.reason==DynamicVehicleSizeGate.Reason.VEHICLE_TOO_SMALL)waiting="vehicle_too_small";
+                }
+            }
             return setDirective(
                     AcquisitionDirectiveAction.REQUEST_FRESH_MP,
                     0L, 0L,
-                    "scan_queue_waiting_for_candidate"
+                    waiting
             );
         }
         activeSession = modeController.startSession(
@@ -433,6 +515,7 @@ public final class ScanAcquisitionController {
                 != continuity.cameraTransformGeneration) {
             return ignored("stale_scan_pipeline_result");
         }
+        if(manualTargetUnavailable())return ignored("manual_lock_waiting_for_release");
         rememberCurrentEntityRecognitions(result);
         if (!running()) return ignored("queue_paused_result_retained");
         if (activeSession != null && activeSession.sessionId() != dispatchedSessionId) {
@@ -561,7 +644,8 @@ public final class ScanAcquisitionController {
         }
         if (matching.confirmed
                 && matching.cropSupportsConsensus
-                && RegistrationTextPolicy.displayable(matching.text)) {
+                && RegistrationTextPolicy.displayable(matching.text)
+                &&(!normalDynamicPolicy||!matching.text.equals(lastFinalizedDynamicText.get(matching.entityId)))) {
             long entityId = activeSession.entityId();
             long sessionId = activeSession.sessionId();
             long sessionStartedRuntimeNanos = activeSession.startedAtNanos();
@@ -590,7 +674,8 @@ public final class ScanAcquisitionController {
                     nowRuntimeNanos
             );
             activeSession = null;
-            queue.complete(entityId);
+            if(normalDynamicPolicy)lastFinalizedDynamicText.put(entityId,matching.text);
+            finishQueueTurn(entityId,nowRuntimeNanos,true);
             completedEntityIds.add(entityId);
             recordActiveSessionDuration(nowRuntimeNanos);
             entitiesReadyToFinalize++;
@@ -620,7 +705,7 @@ public final class ScanAcquisitionController {
             modeController.finishSession(sessionId, TargetSessionState.COMPLETED, nowRuntimeNanos);
             recordActiveSessionDuration(nowRuntimeNanos);
             activeSession = null;
-            queue.complete(entityId);
+            finishQueueTurn(entityId,nowRuntimeNanos,matching.confirmed);
             completedEntityIds.add(entityId);
             resetSessionBudgets();
             plateAnchor = null;
@@ -674,6 +759,7 @@ public final class ScanAcquisitionController {
             return;
         }
         if (decision.action == SceneTransitionAction.SOFT_REACQUIRE) {
+            if(manualTargetUnavailable())return;
             recoveryPaused = true;
             pauseSessionBudgets(nowRuntimeNanos);
             if (activeSession != null
@@ -692,6 +778,15 @@ public final class ScanAcquisitionController {
             return;
         }
         if (decision.action == SceneTransitionAction.HARD_RESET) {
+            if(manualLock()) {
+                identifiedEntityIds.clear();completedEntityIds.clear();entityRecognitions.clear();
+                readingFrames.clear();readingSequences.clear();
+                queue.hardReset(Math.max(0L,decision.incrementSceneGeneration
+                        ?queue.snapshot(nowRuntimeNanos).sceneGeneration+1L:queue.snapshot(nowRuntimeNanos).sceneGeneration));
+                awaitingFreshScanAnchor=false;targetFocusRevision++;
+                waitForManualTarget(nowRuntimeNanos);
+                return;
+            }
             if (activeSession != null) vehiclesLost++;
             recordActiveSessionDuration(nowRuntimeNanos);
             cancelActiveSession(TargetSessionState.LOST, nowRuntimeNanos);
@@ -792,6 +887,10 @@ public final class ScanAcquisitionController {
     ) {
         rememberRuntime(nowRuntimeNanos);
         if (result == null || !running()) return;
+        if(manualTargetUnavailable())return;
+        if(manualLock()&&result!=SoftReacquireResult.TARGET_RECOVERED) {
+            waitForManualTarget(nowRuntimeNanos);return;
+        }
         switch (result) {
             case TARGET_RECOVERED:
                 recoveryPaused = false;
@@ -1065,6 +1164,7 @@ public final class ScanAcquisitionController {
     }
 
     private void resetSessionBudgets() {
+        pendingZoomSessionId=0L;
         waitingForVehicleSize = false;
         zoomBudgetSessionId = 0L;
         activeSessionBudget = null;
@@ -1184,7 +1284,9 @@ public final class ScanAcquisitionController {
                 observation.text,
                 observation.recognitionConfidence,
                 observation.confirmed,
-                observation.observations
+                observation.observations,
+                normalDynamicPolicy?observation.sourceTimestampNanos:0L,
+                observation.identityOwner()==null?0L:observation.identityOwner().epoch
         );
         EntityRecognitionSnapshot previous = entityRecognitions.get(
                 observation.entityId
@@ -1195,7 +1297,9 @@ public final class ScanAcquisitionController {
                 && (candidate.observations > previous.observations
                 || candidate.observations == previous.observations
                 && candidate.confidence >= previous.confidence);
-        if (replace) entityRecognitions.put(observation.entityId, candidate);
+        if(normalDynamicPolicy) {
+            entityRecognitions.put(observation.entityId,com.example.alpr_v1.ui.BadgeReadingPolicy.currentDynamic(previous,candidate));
+        } else if (replace) entityRecognitions.put(observation.entityId, candidate);
     }
 
     private void rememberCurrentEntityRecognitions(PipelineResult result) {
@@ -1229,7 +1333,7 @@ public final class ScanAcquisitionController {
             // Full-frame/expanded ROI work may read a queued neighbor or finish
             // a released session. Retire that entity without releasing the current owner.
             if (currentLiveRead && !activeOwner) {
-                queue.complete(observation.entityId);
+                finishQueueTurn(observation.entityId,lastRuntimeNanos,observation.confirmed);
                 completedEntityIds.add(observation.entityId);
             }
         }

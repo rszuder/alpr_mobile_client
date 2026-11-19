@@ -6,6 +6,17 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class LiveStageTimingsTest {
+    @Test public void dynamicLastActualRunSurvivesSceneMotionAndSkippedModels() {
+        LiveStageTimings timings=new LiveStageTimings();timings.setRetainAcrossScenes(true);
+        timings.observe(new ContinuityStamp(1,2,0,100),Collections.singletonMap("plate_inference",700_000_000L),1000,"no_plate");
+        timings.observe(new ContinuityStamp(2,3,1,200),Collections.singletonMap("vehicle_inference",80_000_000L),2000,"tracking");
+        timings.observe(new ContinuityStamp(2,3,1,300),Collections.emptyMap(),3000,"stale_source");
+        assertEquals(700,timings.milliseconds("plate_inference"),.001);
+        assertEquals(Long.valueOf(1000),timings.lastRuns().get("plate_inference"));
+        assertEquals("no_plate",timings.outcomes().get("plate_inference"));
+        assertTrue(Double.isNaN(timings.milliseconds("character_inference")));
+        timings.reset();assertTrue(timings.lastRuns().isEmpty());
+    }
     @Test public void skippedMzBetweenHudPollsKeepsItsLastActualTime() {
         LiveStageTimings timings = new LiveStageTimings();
         ContinuityStamp stamp = new ContinuityStamp(1, 2, 0, 100);

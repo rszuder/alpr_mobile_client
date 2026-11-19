@@ -60,8 +60,115 @@ public final class LivePresentationController {
     private String stableResult = "";
     private double stableConfidence;
     private boolean missingModelsStatusLocked;
+    private boolean ordinaryDynamicPresentation;
+    private long dynamicOwner,dynamicEpoch;
+    private boolean dynamicVisible;
+    private com.example.alpr_v1.domain.PlateTextConsensus dynamicReading;
+    private State dynamicState=State.SEARCHING;
+    private String dynamicStatusPrimary="",dynamicStatusHint="";
+    public void setDynamicPresentation(boolean enabled) {
+        if(ordinaryDynamicPresentation==enabled)return;
+        ordinaryDynamicPresentation=enabled;dynamicOwner=dynamicEpoch=0;dynamicReading=null;dynamicState=State.SEARCHING;
+        dynamicStatusPrimary=dynamicStatusHint="";
+        if(!enabled){clearResult();configureLayout(layoutRoot);}
+        else configureDynamicResultSpace();
+    }
+    private void configureDynamicResultSpace() {
+        float density=layoutRoot.getResources().getDisplayMetrics().density;
+        float extra=Math.max(0,layoutRoot.getResources().getConfiguration().fontScale-1f);
+        boolean landscape=compactLandscape(layoutRoot);
+        View row=layoutRoot.findViewById(R.id.main_device_result_row);
+        if(!landscape&&row!=null) {
+            int height=Math.round((64+(int)Math.ceil(extra*56/4)*4)*density);
+            if(row.getLayoutParams().height!=height){row.getLayoutParams().height=height;row.requestLayout();}
+        }
+        if(landscape) {
+            View slot=layoutRoot.findViewById(R.id.main_result_slot);
+            int height=Math.max(Math.round(26*density),resultText.getLineHeight()+Math.round(4*density));
+            if(slot!=null&&slot.getLayoutParams().height!=height){slot.getLayoutParams().height=height;slot.requestLayout();}
+        }
+    }
+    public void renderDynamicResult(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot,long entityId) {
+        renderDynamicResult(snapshot,entityId,null);
+    }
+    public void renderDynamicResult(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot,long entityId,
+            com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot scan) {
+        setDynamicPresentation(true);
+        if(snapshot==null){showState(dynamicReading==null?State.SEARCHING:State.RECOVERING,"");return;}
+        updateDynamicStatus(snapshot,entityId,scan);
+        com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot.Vehicle vehicle=snapshot==null?null:snapshot.vehicles.get(entityId);
+        com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation identity=snapshot==null?null:snapshot.identities.get(entityId);
+        com.example.alpr_v1.domain.PlateTextConsensus reading=vehicle==null?com.example.alpr_v1.domain.PlateTextConsensus.EMPTY:vehicle.displayReading;
+        dynamicState=identity==null?State.SEARCHING:!identity.visible?State.RECOVERING:
+                reading.available()?State.CONFIRMED:vehicle!=null&&vehicle.mzInProgress?State.RECOGNIZING:State.TRACKING;
+        if(vehicle==null||identity==null||identity.verifying||!reading.available()) {
+            if(dynamicReading!=null||dynamicOwner!=entityId)clearResult();
+            dynamicOwner=entityId;dynamicReading=null;showState(dynamicState,"");return;
+        }
+        if(dynamicOwner!=entityId){clearResult();dynamicOwner=entityId;dynamicReading=null;}
+        if(dynamicReading!=reading||dynamicEpoch!=identity.epoch||dynamicVisible!=identity.visible) {
+            currentEvidenceEpoch=currentEvidenceSource=0L;
+            showCurrentResult(vehicle.plateTrackId,reading.text,reading.confidence,
+                    reading.stable,reading.observations,vehicle.displayReadingSourceNanos,identity.epoch);
+            resultMeta.setText("P"+identity.number+" · "+resultMeta.getText());
+            if(!identity.visible) {
+                resultConfidence.setText(resultConfidence.getResources().getString(R.string.dynamic_result_last,reading.confidence*100.0));
+                resultTray.setContentDescription("Ostatni odczyt · P"+identity.number+" · "+reading.text+" · "+resultConfidence.getText());
+            }
+            dynamicReading=reading;dynamicEpoch=identity.epoch;dynamicVisible=identity.visible;
+        }
+        showState(dynamicState,"");
+    }
+
+    private void updateDynamicStatus(com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot snapshot,long id,
+            com.example.alpr_v1.acquisition.ScanAcquisitionSnapshot scan) {
+        dynamicStatusPrimary=dynamicStatusHint="";
+        com.example.alpr_v1.acquisition.DynamicVehicleSizeGate.Decision size=snapshot.sizeDecisions.get(id);
+        if(size==null&&id==0&&snapshot.sizeDecisions.size()==1)size=snapshot.sizeDecisions.values().iterator().next();
+        android.content.res.Resources resources=statusPrimary.getResources();
+        if(size!=null&&size.reason==com.example.alpr_v1.acquisition.DynamicVehicleSizeGate.Reason.INVALID_CONFIGURATION) {
+            dynamicStatusPrimary=resources.getString(R.string.dynamic_threshold_invalid);
+            dynamicStatusHint=resources.getString(R.string.dynamic_threshold_fix);return;
+        }
+        if(size!=null&&size.reason==com.example.alpr_v1.acquisition.DynamicVehicleSizeGate.Reason.VEHICLE_TOO_SMALL) {
+            dynamicStatusPrimary=resources.getString(R.string.dynamic_vehicle_too_small);
+            dynamicStatusHint=resources.getString(R.string.dynamic_vehicle_size_hint,Math.round(size.widthPx),Math.round(size.heightPx),size.requiredWidthPx,size.requiredHeightPx);return;
+        }
+        com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot.Vehicle vehicle=snapshot.vehicles.get(id);
+        com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation identity=snapshot.identities.get(id);
+        com.example.alpr_v1.tracking.DynamicPlateGeometryGate.Decision plateGeometry=snapshot.plateGeometryDecisions.get(id);
+        if(plateGeometry!=null&&!plateGeometry.accepted()&&identity!=null&&identity.visible&&!identity.verifying
+                &&plateGeometry.owner!=null&&plateGeometry.owner.epoch==identity.epoch
+                &&plateGeometry.owner.analysisRunId==snapshot.analysisRunId) {
+            dynamicStatusPrimary=resources.getString(R.string.dynamic_plate_geometry_waiting);
+            dynamicStatusHint=resources.getString(vehicle!=null&&vehicle.reading.available()
+                    ?R.string.dynamic_plate_geometry_last:R.string.dynamic_plate_geometry_hint);return;
+        }
+        if(vehicle!=null&&identity!=null&&identity.visible&&!identity.verifying&&vehicle.displayReading.available()) {
+            dynamicStatusPrimary=resources.getString(R.string.dynamic_reading_available);
+            dynamicStatusHint=resources.getString(R.string.dynamic_best_reading_hint);return;
+        }
+        if(vehicle==null||identity==null||!identity.visible||identity.verifying||vehicle.displayReading.available())return;
+        if(vehicle.mzInProgress) {
+            dynamicStatusPrimary=resources.getString(R.string.dynamic_reading_verifying);
+            dynamicStatusHint=resources.getString(R.string.dynamic_collecting_read);return;
+        }
+        int mt=0,mz=0;
+        if(scan!=null) {
+            if(scan.activeEntityId==id){mt=scan.mtAttempts;mz=scan.freshMzAttempts;}
+            for(com.example.alpr_v1.acquisition.AcquisitionCandidate candidate:scan.queue.candidates)
+                if(candidate.entityId==id){mt=Math.max(mt,candidate.mtAttempts);mz=Math.max(mz,candidate.freshMzAttempts);}
+        }
+        int primary=vehicle.plateTrackId>0?(mz>0?R.string.dynamic_no_characters:R.string.dynamic_plate_located):
+                mt>0?R.string.dynamic_stage_no_plate:R.string.dynamic_locating_plate;
+        dynamicStatusPrimary=resources.getString(primary);
+        dynamicStatusHint=resources.getString(vehicle.plateTrackId>0?R.string.dynamic_collecting_read:R.string.dynamic_keep_vehicle);
+    }
     private DiagnosticsVisibilityListener diagnosticsVisibilityListener;
     private boolean timerCompleted;
+    private CharSequence basePrimary="",baseSecondary="";
+    private ResearchOperationPresentation operationStatus;
+    private boolean operationPrimary,operationWarning;
     private final android.view.ViewTreeObserver.OnPreDrawListener hudFrame = () -> { layoutHudPanels(); return true; };
     private final View modelInfoPanel;
     private final View layoutRoot;
@@ -86,6 +193,7 @@ public final class LivePresentationController {
         this.statusDot = statusDot;
         this.statusPrimary = statusPrimary;
         this.statusSecondary = statusSecondary;
+        basePrimary=statusPrimary.getText();
         this.statusSecondary.setVisibility(View.GONE);
         this.event = event;
         this.diagnosticsPanel = diagnosticsPanel;
@@ -124,6 +232,8 @@ public final class LivePresentationController {
     }
 
     public void showState(State next, String secondaryText) {
+        if(ordinaryDynamicPresentation&&(next==State.TRACKING||next==State.RECOGNIZING||next==State.CONFIRMED
+                ||next==State.RECOVERING||next==State.SEARCHING))next=dynamicState;
         State safeState = resolveStateForMissingModels(
                 next,
                 missingModelsStatusLocked
@@ -141,8 +251,8 @@ public final class LivePresentationController {
         diagnosticsPanel.setVisibility(diagnosticsExpanded ? View.VISIBLE : View.GONE);
         diagnosticsText.setVisibility(View.GONE);
         if (state == State.STOPPED) {
-            setTextIfChanged(statusPrimary,statusPrimary.getResources().getString(R.string.main_ui_stopped));
-            statusStrip.setContentDescription(statusPrimary.getText());
+            setPrimary(statusPrimary.getResources().getString(R.string.main_ui_stopped));
+            updateStatusDescription();
             statusStrip.setVisibility(View.VISIBLE);
             event.setVisibility(View.GONE);
             calmHint.setText(R.string.recognition_searching);
@@ -152,9 +262,15 @@ public final class LivePresentationController {
         }
         statusStrip.setVisibility(View.VISIBLE);
         if (changed) {
-            setTextIfChanged(statusPrimary,statusPrimary.getResources().getString(primaryText(state)));
+            setPrimary(statusPrimary.getResources().getString(primaryText(state)));
             calmHint.setText(hintText(state));
             tintDot(state);
+        }
+        if(ordinaryDynamicPresentation&&(state==State.SEARCHING||state==State.TRACKING||state==State.RECOGNIZING
+                ||state==State.CONFIRMED||state==State.RECOVERING)) {
+            setPrimary(dynamicStatusPrimary.isEmpty()?statusPrimary.getResources().getString(primaryText(state)):dynamicStatusPrimary);
+            calmHint.setText(dynamicStatusHint.isEmpty()?statusPrimary.getResources().getString(hintText(state)):dynamicStatusHint);
+            setStatusSecondary(dynamicStatusHint);
         }
         applyTimerCompletionCopy();
         updateStatusDescription();
@@ -190,7 +306,7 @@ public final class LivePresentationController {
         showState(next, "");
         String primaryText = primary == null ? "" : primary.toString().trim();
         String hintText = hint == null ? "" : hint.toString().trim();
-        if (!primaryText.isEmpty()) setTextIfChanged(statusPrimary,primaryText);
+        if (!primaryText.isEmpty()) setPrimary(primaryText);
         if (!hintText.isEmpty()) calmHint.setText(hintText);
         if(next!=State.STATIC_IDLE) setStatusSecondary(hintText);
         applyTimerCompletionCopy();
@@ -216,15 +332,25 @@ public final class LivePresentationController {
             boolean stable,
             int hitCount
     ) {
+        showResult(trackId,text,confidence,stable,hitCount,false);
+    }
+    private long currentEvidenceSource,currentEvidenceEpoch;
+    public void showCurrentResult(long trackId,String text,double confidence,boolean stable,int hitCount,
+            long sourceNanos,long ownerEpoch) {
+        if(ownerEpoch<currentEvidenceEpoch||ownerEpoch==currentEvidenceEpoch&&sourceNanos<currentEvidenceSource)return;
+        currentEvidenceEpoch=ownerEpoch;currentEvidenceSource=sourceNanos;
+        showResult(trackId,text,confidence,stable,hitCount,true);
+    }
+    private void showResult(long trackId,String text,double confidence,boolean stable,int hitCount,boolean currentEvidence) {
         if (missingModelsStatusLocked) return;
         String normalized = text == null ? "" : text.trim();
         if (normalized.isEmpty()) return;
         boolean sameResult = trackId == resultTrackId && normalized.equals(stableResult);
-        if (sameResult && confidence + 0.001 < stableConfidence) return;
+        if (!currentEvidence && sameResult && confidence + 0.001 < stableConfidence) return;
         if (!sameResult) stableConfidence = 0.0;
         resultTrackId = trackId;
         stableResult = normalized;
-        stableConfidence = Math.max(stableConfidence, confidence);
+        stableConfidence = currentEvidence?confidence:Math.max(stableConfidence, confidence);
         resultShownAtMillis = android.os.SystemClock.elapsedRealtime();
         resultText.setText(normalized);
         resultConfidence.setText(String.format(
@@ -240,24 +366,32 @@ public final class LivePresentationController {
         ));
         resultTray.setContentDescription(normalized+" · "+resultConfidence.getText()+" · "+resultMeta.getText());
         if (resultTray.getVisibility() != View.VISIBLE) {
+            if(ordinaryDynamicPresentation) {
+                resultTray.animate().cancel();resultTray.setAlpha(1f);resultTray.setTranslationY(0f);resultTray.setVisibility(View.VISIBLE);
+            } else {
             resultTray.setAlpha(0f);
             resultTray.setTranslationY(12f);
             resultTray.setVisibility(View.VISIBLE);
             resultTray.animate().alpha(1f).translationY(0f).setDuration(180L).start();
+            }
         }
+        if(currentEvidence&&!stable)state=State.RECOGNIZING;
         showState(stable ? State.CONFIRMED : State.RECOGNIZING, "");
     }
 
     public void onTargetLost() {
+        if(ordinaryDynamicPresentation)return;
         showState(State.RECOVERING, "");
         long elapsed = android.os.SystemClock.elapsedRealtime() - resultShownAtMillis;
         long delay = Math.max(0L, RESULT_MINIMUM_HOLD_MS - elapsed);
         handler.postDelayed(() -> {
-            if (state == State.RECOVERING) hideResult();
+            if (!ordinaryDynamicPresentation&&state == State.RECOVERING) hideResult();
         }, delay);
     }
 
     public void clearResult() {
+        dynamicReading=null;
+        currentEvidenceSource=currentEvidenceEpoch=0L;
         stableResult = "";
         stableConfidence = 0.0;
         resultTrackId = 0L;
@@ -306,7 +440,7 @@ public final class LivePresentationController {
     }
     private void applyTimerCompletionCopy(){
         if(!timerCompleted||state==State.ERROR||state==State.SETUP_REQUIRED)return;
-        setTextIfChanged(statusPrimary,statusPrimary.getResources().getString(R.string.main_timer_finished_status));
+        setPrimary(statusPrimary.getResources().getString(R.string.main_timer_finished_status));
         setStatusSecondary(statusSecondary.getResources().getString(R.string.main_timer_finished_hint));
         updateStatusDescription();
     }
@@ -381,6 +515,8 @@ public final class LivePresentationController {
             int heightDp=base+(int)Math.ceil(extra*24/4)*4;
             if(landscape)heightDp=id==R.id.normal_camera_hud?Math.max(24,(int)Math.ceil((font*17+4)/4)*4):
                     info?Math.max(64,(int)Math.ceil((font*12+28)/4)*4):Math.max(48,(int)Math.ceil((font*12+27)/4)*4);
+            if(id==R.id.tv_frame_summary&&root.findViewById(R.id.main_calibration_actions).getVisibility()==View.VISIBLE)
+                heightDp=Math.round(128*Math.max(1,font));
             int height=Math.round(heightDp*density);
             if(info){LinearLayout.LayoutParams p=(LinearLayout.LayoutParams)v.getLayoutParams();p.width=landscape?0:ViewGroup.LayoutParams.MATCH_PARENT;p.weight=landscape?1:0;}
             if(v.getLayoutParams().height!=height){v.getLayoutParams().height=height;v.requestLayout();}
@@ -431,8 +567,24 @@ public final class LivePresentationController {
     public long presentedTrackId(){return resultTray.getVisibility()==View.VISIBLE?resultTrackId:0L;}
 
     private void setStatusSecondary(CharSequence text){
-        setTextIfChanged(statusSecondary,text);
-        statusSecondary.setVisibility(text.length()==0?View.GONE:View.VISIBLE);
+        baseSecondary=text;renderStatus();
+    }
+    private void setPrimary(CharSequence text){basePrimary=text;renderStatus();}
+    /** File progress uses the fixed header, never the camera image or a measurement HUD. */
+    public void setOperationStatus(ResearchOperationPresentation status,boolean replacePrimary,boolean warning){
+        operationStatus=status;operationPrimary=replacePrimary;operationWarning=warning;renderStatus();
+    }
+    private void renderStatus(){
+        CharSequence primary=basePrimary,secondary=baseSecondary;
+        if(operationStatus!=null&&operationStatus.visible){
+            if(operationStatus.active){
+                if(operationPrimary&&!timerCompleted&&state!=State.ERROR&&state!=State.SETUP_REQUIRED){
+                    primary=operationStatus.title;secondary=operationStatus.detail;
+                }else secondary=operationStatus.title+(operationStatus.determinate?" · "+operationStatus.percent+"%":"");
+            }else if(operationWarning)secondary=operationStatus.title;
+        }
+        setTextIfChanged(statusPrimary,primary);setTextIfChanged(statusSecondary,secondary);
+        statusSecondary.setVisibility(secondary.length()==0?View.GONE:View.VISIBLE);updateStatusDescription();
     }
     private static void setTextIfChanged(TextView view,CharSequence text){
         if(!text.toString().contentEquals(view.getText()))view.setText(text);
@@ -513,7 +665,8 @@ public final class LivePresentationController {
                 break;
         }
         int resolvedAccent = ContextCompat.getColor(
-                statusDot.getContext(), accentColor
+                statusDot.getContext(), ordinaryDynamicPresentation&&value!=State.ERROR&&value!=State.SETUP_REQUIRED
+                        ?R.color.cockpit_cyan:accentColor
         );
         statusDot.setBackgroundTintList(ColorStateList.valueOf(
                 resolvedAccent

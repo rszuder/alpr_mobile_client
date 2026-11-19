@@ -88,6 +88,21 @@ public final class PlateEntityBinder {
         if (association == null || !association.assigned() || consensus == null) {
             return false;
         }
+        if (coordinator != null && coordinator.identity().enabled()) {
+            boolean accepted=repository.updateDynamicRegistration(association.entityId, consensus, nowNanos, freshMzAttempted, source);
+            if(com.example.alpr_v1.BuildConfig.DEBUG&&freshMzAttempted) {
+                com.example.alpr_v1.domain.VehicleEntity entity=repository.get(association.entityId);
+                if(entity!=null)try {
+                    android.util.Log.d("ALPR_DYNAMIC_READING","run="+coordinator.identity().analysisRunId()
+                            +" entity="+entity.entityId()+" update_ns="+nowNanos+" clock=android_elapsed_realtime accepted="+accepted
+                            +" current_text="+entity.registration().text+" current_score="+entity.registration().confidence
+                            +" current_stable="+entity.registration().stable+" observations="+entity.registration().observations
+                            +" best_text="+entity.bestDynamicRegistration().text+" best_score="+entity.bestDynamicRegistration().confidence
+                            +" badge_text="+entity.dynamicBadgeReading().text+" badge_score="+entity.dynamicBadgeReading().confidence);
+                } catch(RuntimeException ignored) { /* Local JVM logging may be unavailable. */ }
+            }
+            return accepted;
+        }
         return repository.updateRegistration(
                 association.entityId,
                 consensus,

@@ -93,9 +93,26 @@ public final class LiveHudView extends LinearLayout {
         String fullFps=!Double.isFinite(cameraFps)||cameraFps<0?"—":String.format(PL,"%.1f",cameraFps);
         findViewById(R.id.hud_camera_fps).setContentDescription(getContext().getString(R.string.hud_camera_fps)+": "+fullFps);
         findViewById(R.id.hud_camera_fps).setTooltipText(findViewById(R.id.hud_camera_fps).getContentDescription());
-        stage(R.id.hud_mp_time,R.id.hud_mp_caption,R.string.hud_vehicle_stage,"MP",awaitingFresh?Double.NaN:snapshot.vehicleInferenceMs);
-        stage(R.id.hud_mt_time,R.id.hud_mt_caption,R.string.hud_plate_stage,"MT",awaitingFresh?Double.NaN:snapshot.plateInferenceMs);
-        stage(R.id.hud_mz_time,R.id.hud_mz_caption,R.string.hud_character_stage,"MZ",awaitingFresh?Double.NaN:snapshot.characterInferenceMs);
+        boolean hide=awaitingFresh&&!snapshot.retainStageTimes;
+        stage(R.id.hud_mp_time,R.id.hud_mp_caption,R.string.hud_vehicle_stage,"MP",hide?Double.NaN:snapshot.vehicleInferenceMs);
+        stage(R.id.hud_mt_time,R.id.hud_mt_caption,R.string.hud_plate_stage,"MT",hide?Double.NaN:snapshot.plateInferenceMs);
+        stage(R.id.hud_mz_time,R.id.hud_mz_caption,R.string.hud_character_stage,"MZ",hide?Double.NaN:snapshot.characterInferenceMs);
+        if(snapshot.retainStageTimes) {
+            stageAge(R.id.hud_mp_time,"vehicle_inference",snapshot);
+            stageAge(R.id.hud_mt_time,"plate_inference",snapshot);
+            stageAge(R.id.hud_mz_time,"character_inference",snapshot);
+        }
+    }
+    private void stageAge(int id,String key,MetricsCollector.LiveSnapshot snapshot) {
+        Long measured=snapshot.stageLastRunElapsedNanos.get(key);View field=findViewById(id);
+        String detail=measured==null?getContext().getString(R.string.dynamic_stage_not_run):
+                getContext().getString(R.string.dynamic_stage_last_run,Math.max(0,(SystemClock.elapsedRealtimeNanos()-measured)/1_000_000_000L));
+        String outcome=snapshot.stageOutcomes.get(key);
+        if(outcome!=null&&outcome.contains("stale"))detail+=" · "+getContext().getString(R.string.dynamic_stage_rejected);
+        else if("no_plate".equals(outcome)&&"plate_inference".equals(key))detail+=" · "+getContext().getString(R.string.dynamic_stage_no_plate);
+        else if(("stabilizing".equals(outcome)||"preliminary".equals(outcome))&&"character_inference".equals(key))
+            detail+=" · "+getContext().getString(R.string.dynamic_stage_read_pending);
+        field.setContentDescription(field.getContentDescription()+" · "+detail);field.setTooltipText(field.getContentDescription());
     }
     /** Same existing thermal poll and CPU sampling; only display units moved into captions. */
     public void renderDeviceMetrics(double batteryTemperatureC){

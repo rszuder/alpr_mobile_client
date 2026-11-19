@@ -47,15 +47,7 @@ public final class NcnnBackend implements InferenceBackend {
         contractVariant = variant;
         outputSpec = variant.output(model.manifest().output());
         ModelInputSpec input = variant.input(model.manifest().input());
-        if (!"NCHW".equals(input.layout())) {
-            throw new IllegalArgumentException("Backend NCNN v1 wymaga wejścia NCHW");
-        }
-        if (!"FLOAT32".equals(input.dataType())) {
-            throw new IllegalArgumentException("Backend NCNN v1 wymaga wejścia FLOAT32");
-        }
-        if (input.channels() != 3) {
-            throw new IllegalArgumentException("Backend NCNN v1 wymaga trzech kanałów wejścia");
-        }
+        com.example.alpr_v1.model.ModelConfigurationRequirements.requireNcnnInput(input);
         File param = null;
         File weights = null;
         for (String relative : variant.files()) {

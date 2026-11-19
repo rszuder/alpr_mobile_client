@@ -1,0 +1,18 @@
+<resources>
+    <string name="camera_operator_off">Kamera jest wyłączona</string>
+    <string name="camera_operator_open_preview">Włącz Podgląd, aby zobaczyć obraz.</string>
+    <string name="camera_operator_starting">Uruchamianie kamery…</string>
+    <string name="camera_operator_wait_image">Czekam na obraz z wybranego obiektywu.</string>
+    <string name="camera_operator_zoom">Ustawianie przybliżenia…</string>
+    <string name="camera_operator_wait_frame">Czekam na nowy obraz z kamery…</string>
+    <string name="camera_operator_changed">Zmieniono ustawienia kamery</string>
+    <string name="camera_operator_check_image">Sprawdź podgląd przed START.</string>
+    <string name="camera_operator_tv">Sprawdź ustawienie kamery względem TV</string>
+    <string name="camera_operator_tv_action">Ustaw kamerę i zatwierdź narożniki TV.</string>
+    <string name="camera_operator_unknown">Nie można jeszcze potwierdzić stanu kamery</string>
+    <string name="camera_operator_details">Sprawdź Podgląd; przyczyna jest dostępna w szczegółach.</string>
+    <string name="camera_operator_ready">Obraz z kamery jest dostępny</string>
+    <string name="camera_operator_fixed_zoom">Wyłącz automatyczne przybliżenie dla analizy obszaru TV.</string>
+    <string name="camera_operator_tv_input">Sprawdź ustawienie obrazu TV</string>
+    <string name="menu_session_operation">Stan zapisu sesji</string>
+</resources>

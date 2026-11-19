@@ -91,10 +91,14 @@ public class TvMagnifierNativeCopyTest {
         File f=new File("build/reports/tv-magnifier/native-readback-regression.png");assertTrue(f.getParentFile().isDirectory()||f.getParentFile().mkdirs());
         try(FileOutputStream out=new FileOutputStream(f)){assertTrue(figure.compress(Bitmap.CompressFormat.PNG,100,out));}
     }
-    @Test public void popupStaysInsidePreviewAwayFromEditedCornerAndHeader(){
-        Rect bounds=new Rect(30,290,375,605);
-        for(int[] p:new int[][]{{35,295},{370,295},{370,600},{35,600}}){Rect window=TvCalibrationMagnifier.popupBounds(bounds,p[0],p[1],120,80,8);assertNotNull(window);assertTrue(bounds.contains(window));assertFalse(window.contains(p[0],p[1]));}
-        assertNull(TvCalibrationMagnifier.popupBounds(new Rect(0,0,60,40),0,0,120,80,8));
+    @Test public void inlinePanelKeepsItsBoundsWhenTheCornerChanges(){
+        android.widget.FrameLayout host=new android.widget.FrameLayout(RuntimeEnvironment.getApplication());
+        CameraPreviewGeometry g=new CameraPreviewGeometry(640,480,640,480,new double[]{0,0,640,480},0,"0","BACK",1,1,1,640,480,new double[]{1,0,0,0,1,0,0,0,1},new double[]{0,0,640,480});
+        TvCalibrationMagnifier.Source source=new TvCalibrationMagnifier.Source(new TvMagnifierGeometry(g,640,480,new Matrix()),new Object(),null,false);
+        TvCalibrationMagnifier l=new TvCalibrationMagnifier(new View(RuntimeEnvironment.getApplication()),ignored->source,(s,b,done)->done.accept(PixelCopy.SUCCESS),SystemClock::uptimeMillis,new float[]{120,80,4,6});
+        l.attach(host);host.measure(View.MeasureSpec.makeMeasureSpec(240,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(160,View.MeasureSpec.EXACTLY));host.layout(20,30,260,190);
+        for(int[] point:new int[][]{{0,0},{640,0},{640,480},{0,480}}){l.show(g,point[0],point[1]);assertEquals(1,host.getChildCount());assertEquals(0,host.getChildAt(0).getLeft());assertEquals(240,host.getChildAt(0).getWidth());assertEquals(20,host.getLeft());}
+        l.dismiss();
     }
     @Test public void memoryLimitDoesNotAttemptReadback(){
         CameraPreviewGeometry g=new CameraPreviewGeometry(640,480,640,480,new double[]{0,0,640,480},0,"0","BACK",1,1,1,640,480,new double[]{1,0,0,0,1,0,0,0,1},new double[]{0,0,640,480});

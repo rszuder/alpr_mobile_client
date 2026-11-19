@@ -73,6 +73,7 @@ public final class AlprPipeline {
      * Lekki wynik etapu MT publikowany zanim silnik rozpocznie MZ.
      * Callback działa na wątku analizatora i nie może blokować inferencji.
      */
+    /** Intermediate geometry; ordinary dynamic also publishes fresh MP before MT/MZ finish. */
     public interface PlateDetectionCallback {
         void onPlateDetections(
                 List<OverlayItem> overlayItems,
@@ -145,6 +146,11 @@ public final class AlprPipeline {
             "character_postprocess"
     };
     private final Context context;
+    private MpDiagnosticCapture mpDiagnosticCapture;
+    public synchronized void requestMpDiagnosticCapture(String requestId)throws java.io.IOException {
+        mpDiagnosticCapture=new MpDiagnosticCapture(context.getFilesDir(),requestId);
+        if(engine!=null)engine.setMpDiagnosticCapture(mpDiagnosticCapture);
+    }
     private final ModelRegistry registry;
     private final MetricsCollector metrics;
     private final AutoTuneManager autoTuneManager;
@@ -230,9 +236,16 @@ public final class AlprPipeline {
     }
     private final java.util.concurrent.ConcurrentLinkedQueue<SceneTransitionDecision> pendingUiTransitions =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final class OrdinaryTransition {
+        final SceneTransitionDecision decision;
+        final SceneContinuitySnapshot context;
+        OrdinaryTransition(SceneTransitionDecision decision,SceneContinuitySnapshot context) {this.decision=decision;this.context=context;}
+    }
+    private final java.util.concurrent.atomic.AtomicReference<OrdinaryTransition> pendingOrdinaryTransition=new java.util.concurrent.atomic.AtomicReference<>();
 
     /** Publish freshness immediately; engine cleanup stays on the inference thread. */
     private void publishUiTransition(SceneTransitionDecision decision) {
+        if(normalDynamicIdentityEnabled()&&decision.action==SceneTransitionAction.NONE)return;
         SceneContinuitySnapshot snapshot = sceneTransitionCoordinator.snapshot();
         sceneGeneration.accumulateAndGet(snapshot.sceneGeneration, Math::max);
         visualEpoch.accumulateAndGet(snapshot.visualEpoch, Math::max);
@@ -245,11 +258,20 @@ public final class AlprPipeline {
             staticWatcher.reset(); staticWatcherArmed = false;
             stableSceneVehicles.invalidate();
         }
-        pendingUiTransitions.add(decision);
+        if(normalDynamicIdentityEnabled())pendingOrdinaryTransition.set(new OrdinaryTransition(decision,snapshot));
+        else pendingUiTransitions.add(decision);
         frameGate.requestImmediateFrame();
     }
 
     private void applyPendingUiTransitions() {
+        OrdinaryTransition ordinary=pendingOrdinaryTransition.getAndSet(null);
+        if(ordinary!=null) {
+            SceneContinuitySnapshot current=sceneTransitionCoordinator.snapshot();
+            if(normalDynamicIdentityEnabled()&&ordinary.context.sceneGeneration==current.sceneGeneration
+                    &&ordinary.context.visualEpoch==current.visualEpoch
+                    &&ordinary.context.cameraTransformGeneration==current.cameraTransformGeneration)
+                applySceneTransition(ordinary.decision);
+        }
         SceneTransitionDecision decision;
         while ((decision = pendingUiTransitions.poll()) != null) {
             if (decision.revision == sceneTransitionCoordinator.snapshot().decisionRevision)
@@ -376,6 +398,8 @@ public final class AlprPipeline {
         this.metrics = metrics;
         this.autoTuneManager = autoTuneManager;
         this.frameGate = new AdaptiveFrameGate(context);
+        if(com.example.alpr_v1.BuildConfig.DEBUG)vehicleTrackingCoordinator.identity().setDiagnosticSink(
+                message->android.util.Log.d("ALPR_DYNAMIC_IDENTITY",message));
         this.sceneTransitionCoordinator = new SceneTransitionCoordinator(
                 SceneHandlingMode.STRICT_SCENE_BOUNDARY,
                 SceneContinuityProfile.INITIAL
@@ -821,11 +845,56 @@ public final class AlprPipeline {
         return processBitmap(frame,sourceFrameStamp,cameraToBitmapNanos,cameraRotationNanos,cameraRotationDegrees,
                 plateDetectionCallback,sceneChangeCallback,plateObservationCallback,null);
     }
+    private com.example.alpr_v1.camera.BitmapMemoryBudget dynamicBitmapBudget;
+    private final java.util.concurrent.atomic.AtomicLong dynamicPlateRefresh=new java.util.concurrent.atomic.AtomicLong();
+    public void requestDynamicPlateRefresh(long entityId){if(entityId>0)dynamicPlateRefresh.compareAndSet(0L,entityId);}
+    public synchronized void setDynamicBitmapBudget(com.example.alpr_v1.camera.BitmapMemoryBudget budget) {
+        dynamicBitmapBudget=budget;if(engine!=null)engine.setDynamicBitmapBudget(budget);
+    }
+    public synchronized boolean hasPendingDynamicMz(){return engine!=null&&engine.hasPendingDynamicMz();}
+    public synchronized void discardPendingDynamicMz(){if(engine!=null)engine.discardPendingDynamicMz();}
+    public synchronized PipelineResult processPendingDynamicMz() {
+        if(engine==null)return null;
+        applyPendingUiTransitions();
+        MobileAlprEngine working=engine;if(working==null)return null;
+        ContinuityStamp source=working.pendingDynamicMzStamp();
+        if(source==null)return null;
+        final long focusRevision=dispatchedFocusRevision;
+        if(!normalDynamicIdentityEnabled()||!researchWorkAdmitted()||!isCurrentContinuityStamp(source)
+                ||scanAcquisitionController.targetFocus().revision!=focusRevision) {
+            working.discardPendingDynamicMz();return null;
+        }
+        InferenceTrace trace=new InferenceTrace(frameIds.incrementAndGet(),source);
+        boolean recorded=false;
+        trace.start("total");
+        try {
+            PipelineResult result=working.runPendingDynamicMz(trace,()->!researchWorkAdmitted()||!isCurrentContinuityStamp(source)
+                    ||scanAcquisitionController.targetFocus().revision!=focusRevision);
+            result=stampAndValidateResult(result,source);
+            if(result!=null){handleScanPipelineResult(result,SystemClock.elapsedRealtimeNanos());recordVehicleTrackingEvents();}
+            return result;
+        } catch(MobileAlprEngine.ProcessingCancelledException cancelled) {
+            trace.finish("scene_superseded","");return null;
+        } catch(RuntimeModelContractException contract) {
+            recorded=true;
+            return handleRuntimeContractFailure(contract,trace,source,trace.frameId());
+        } catch(RuntimeException error) {
+            android.util.Log.e("ALPR_DYNAMIC_MZ","mz_stage_failed",error);
+            trace.finish("pipeline_error","");
+            return new PipelineResult("pipeline_error","Błąd rozpoznawania znaków",Collections.emptyList(),Collections.emptyList(),
+                    0,0,Collections.emptyList(),false).withContinuityStamp(source);
+        } finally {
+            trace.stop("total");working.observeDynamicTimings(trace);
+            if(!recorded){appendTimingAudit(trace);trace.captureMemoryAfterMeasurement();metrics.add(trace);}
+        }
+    }
+
     public synchronized PipelineResult processBitmap(Bitmap frame,SourceFrameStamp sourceFrameStamp,
             long cameraToBitmapNanos,long cameraRotationNanos,int cameraRotationDegrees,
             PlateDetectionCallback plateDetectionCallback,SceneChangeCallback sceneChangeCallback,
             PlateObservationCallback plateObservationCallback,com.example.alpr_v1.setup.TvBboxCrop.Frame tvInput){
         if (frame == null || frame.isRecycled()) return null;
+        metrics.retainDynamicStageTimings(normalDynamicIdentityEnabled());
         ResearchExecutionConfig inputConfig=researchExecutionConfig();
         if(inputConfig!=null&&inputConfig.tvBboxCrop()!=null&&(tvInput==null||tvInput.camera!=frame
                 ||!inputConfig.tvBboxCrop().digest.equals(tvInput.crop.digest)))throw new IllegalArgumentException("TV_BBOX_FRAME_CONTEXT_REQUIRED");
@@ -908,14 +977,17 @@ public final class AlprPipeline {
         );
         trace.putCount("camera_rotation_degrees", cameraRotationDegrees);
         trace.start("total");
+        boolean f6EngineEntered=false;
         if (!registry.hasCompleteAlprComposition()) {
             trace.stop("total");
             trace.finish("models_missing", "");
             trace.captureMemoryAfterMeasurement();
             metrics.add(trace);
+            recordFinal180NotRun(frame,tvInput,processingStamp,trace,"models_missing");
             return PipelineResult.waitingForModels(processingStamp);
         }
         if (runtimeContractFailureGate.isBlocked()) {
+            recordFinal180NotRun(frame,tvInput,processingStamp,trace,"runtime_contract_failed");
             finishRuntimeContractFailureTrace(trace);
             return null;
         }
@@ -961,6 +1033,8 @@ public final class AlprPipeline {
                         trace,
                         SystemClock.elapsedRealtimeNanos()
                 );
+                long dynamicRefresh=dynamicPlateRefresh.getAndSet(0L);
+                if(dynamicRefresh>0&&normalDynamicIdentityEnabled())engine.requestDynamicPlateRefresh(dynamicRefresh);
             } finally {
                 trace.stop("engine_setup");
             }
@@ -971,6 +1045,7 @@ public final class AlprPipeline {
             trace.start("engine_total");
             PipelineResult result;
             try {
+                f6EngineEntered=true;
                 result = engine.run(
                         frame,
                         trace,
@@ -985,6 +1060,7 @@ public final class AlprPipeline {
                 );
             } finally {
                 trace.stop("engine_total");
+                engine.observeDynamicTimings(trace);
             }
             SoftReacquireReport softReport = engine.consumeSoftReacquireReport();
             if (isCurrentContinuityStamp(processingStamp)) {
@@ -1035,6 +1111,7 @@ public final class AlprPipeline {
             frameGate.requestImmediateFrame();
             return null;
         } catch (RuntimeModelContractException contractError) {
+            if(!f6EngineEntered)recordFinal180NotRun(frame,tvInput,processingStamp,trace,"engine_setup_failed");
             return handleRuntimeContractFailure(
                     contractError,
                     trace,
@@ -1042,6 +1119,7 @@ public final class AlprPipeline {
                     frameId
             );
         } catch (Exception error) {
+            if(!f6EngineEntered)recordFinal180NotRun(frame,tvInput,processingStamp,trace,"engine_setup_failed");
             AppLog.errorRateLimited(
                     context,
                     "pipeline_error",
@@ -1060,6 +1138,12 @@ public final class AlprPipeline {
                     processingStamp
             );
         }
+    }
+
+    private void recordFinal180NotRun(Bitmap frame,com.example.alpr_v1.setup.TvBboxCrop.Frame input,ContinuityStamp stamp,InferenceTrace trace,String reason){
+        com.example.alpr_v1.experiment.ResearchSessionStore store=researchCollector;
+        if(store!=null&&store.final180()!=null&&input!=null&&store.tvBboxEvidence()!=null)
+            store.tvBboxEvidence().capture(input,stamp).complete(reason,"",0,reason,trace.frameId());
     }
 
     private void appendTimingAudit(
@@ -1437,6 +1521,7 @@ public final class AlprPipeline {
                         false,
                         false
                 );
+        if(normalDynamicIdentityEnabled())evidence=evidence.withLocalVehicles(vehicleTrackingCoordinator.localPoolEvidence(safeSourceFrame));
         SceneTransitionDecision decision = observeSceneEvidence(evidence,safeSourceFrame);
         lastSceneEvidence = evidence;
         lastSceneDecision = decision;
@@ -1513,6 +1598,17 @@ public final class AlprPipeline {
 
     private TargetContinuityEvidence currentTargetEvidence(long nowNanos) {
         TargetSnapshot target = targetSnapshot;
+        if(normalDynamicIdentityEnabled()) {
+            long id=scanAcquisitionController.targetFocus().entityId;
+            if(id==0&&target!=null) {
+                VehicleEntity attached=vehicleTrackingCoordinator.repository().findByPlateTrackId(target.trackId);
+                if(attached!=null)id=attached.entityId();
+            }
+            SceneContinuitySnapshot context=sceneTransitionCoordinator.snapshot();
+            TargetContinuityEvidence local=vehicleTrackingCoordinator.localTargetEvidence(id,nowNanos,
+                    context.sceneGeneration,context.visualEpoch,context.cameraTransformGeneration);
+            if(local!=null)return local;
+        }
         if (target == null || !target.hasTrack()) {
             if (target != null && target.state == TargetSnapshot.State.LOST) {
                 return new TargetContinuityEvidence(
@@ -1667,7 +1763,10 @@ public final class AlprPipeline {
         );
         if (previousFocusEntity > 0L && scanAcquisitionController.targetFocus().entityId == 0L
                 && report.result == SoftReacquireResult.ACTIVE_TARGET_LOST) {
-            vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
+            if(normalDynamicIdentityEnabled()) {
+                // A missing focus in one recovered MP pool ends attention, not physical identity.
+                vehicleTrackingCoordinator.repository().clearActiveTarget(previousFocusEntity);
+            } else vehicleTrackingCoordinator.repository().retireEntity(previousFocusEntity);
         }
         AcquisitionDirective scanDirective =
                 scanAcquisitionController.currentDirective();
@@ -1742,19 +1841,103 @@ public final class AlprPipeline {
     private long dispatchedScanSessionId;
     private long dispatchedFocusRevision;
 
+    private boolean normalDynamicIdentityEnabled() { return !experimentModeEnabled&&frozenResearchExecutionConfig==null&&!staticMode(); }
+
+    /** Preview must invalidate in-flight owners without waiting for the heavy pipeline monitor. */
+    public void observeVehicleIdentity(ContinuityStamp stamp,long sourceTime,
+            com.example.alpr_v1.tracking.PreviewTrackingFrame local,boolean available) {
+        synchronized(sceneTransitionCoordinator) {
+        if(!normalDynamicIdentityEnabled()||stamp==null||!isCurrentContinuityStamp(stamp))return;
+        vehicleTrackingCoordinator.setNormalDynamicIdentity(true,sceneTransitionCoordinator.reacquireTimeoutNanos());
+        vehicleTrackingCoordinator.observeLocalVehicles(sourceTime,local,available);
+        updateManualIdentityStatus(sourceTime);
+        MobileAlprEngine current=engine;
+        if(current!=null&&!vehicleTrackingCoordinator.identity().sourceCurrent(sourceTime-1))current.requestVehicleRefreshAfterZoom();
+        }
+    }
+
+    public void observeVehicleIdentity(ContinuityStamp stamp,
+            com.example.alpr_v1.tracking.PreviewTrackingFrame vehicles,boolean vehiclesAvailable,
+            com.example.alpr_v1.tracking.PreviewTrackingFrame plates,boolean platesAvailable) {
+        synchronized(sceneTransitionCoordinator) {
+        if(!normalDynamicIdentityEnabled()||stamp==null||!isCurrentContinuityStamp(stamp))return;
+        vehicleTrackingCoordinator.setNormalDynamicIdentity(true,sceneTransitionCoordinator.reacquireTimeoutNanos());
+        vehicleTrackingCoordinator.observeLocalTargets(stamp,vehicles,vehiclesAvailable,plates,platesAvailable);
+        updateManualIdentityStatus(stamp.sourceTimestampNanos);
+        MobileAlprEngine current=engine;
+        if(current!=null&&!vehicleTrackingCoordinator.identity().sourceCurrent(stamp.sourceTimestampNanos-1))current.requestVehicleRefreshAfterZoom();
+        }
+    }
+    public java.util.Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> vehicleIdentityPlateStamps(ContinuityStamp source) {
+        return vehicleTrackingCoordinator.plateAnchorOwners(source);
+    }
+    public java.util.Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> vehicleIdentityStamps(
+            java.util.List<OverlayItem> items) {
+        java.util.Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp> owners=new java.util.HashMap<>();
+        if(normalDynamicIdentityEnabled())for(OverlayItem item:items) {
+            com.example.alpr_v1.domain.VehicleEntity entity=vehicleTrackingCoordinator.repository().get(item.trackId);
+            if(entity==null)continue;
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner=vehicleTrackingCoordinator.identity().stamp(entity.entityId(),entity.vehicleTrackId());
+            if(vehicleTrackingCoordinator.identity().accepts(owner))owners.put(item.trackId,owner);
+        }
+        return owners;
+    }
+    private void updateManualIdentityStatus(long sourceTime) {
+        if(!manualTargetSelected())return;
+        long id=scanAcquisitionController.targetFocus().entityId;
+        long deadline=vehicleTrackingCoordinator.identity().lostRecoveryDeadline(id);
+        if(scanAcquisitionController.onManualIdentityStatus(deadline,sourceTime,SystemClock.elapsedRealtimeNanos()))
+            vehicleTrackingCoordinator.identity().endRecovery(id,sourceTime);
+    }
+    public java.util.List<OverlayItem> plateAnchoredVehicleItems(long sourceTime) {
+        java.util.List<OverlayItem> items=new java.util.ArrayList<>();
+        if(normalDynamicIdentityEnabled())for(java.util.Map.Entry<Long,com.example.alpr_v1.domain.NormalizedBounds> e:
+                vehicleTrackingCoordinator.identity().plateDerivedBounds(sourceTime).entrySet()) {
+            com.example.alpr_v1.domain.NormalizedBounds b=e.getValue();
+            items.add(new OverlayItem(OverlayItem.Kind.VEHICLE,new android.graphics.RectF(b.left,b.top,b.right,b.bottom),
+                    java.util.Collections.emptyList(),"",e.getKey(),true));
+        }
+        return items;
+    }
+    public java.util.Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> vehicleIdentityPresentation() {
+        return vehicleTrackingCoordinator.identity().presentation();
+    }
+    public com.example.alpr_v1.tracking.DynamicVehicleDisplaySnapshot dynamicDisplaySnapshot(ContinuityStamp source) {
+        synchronized(sceneTransitionCoordinator) {
+            VehicleTrackingFrame frame=vehicleTrackingCoordinator.latestFrame();
+            if(source==null||frame.sceneGeneration!=source.sceneGeneration)return null;
+            if((frame.visualEpoch!=source.visualEpoch||frame.cameraTransformGeneration!=source.cameraTransformGeneration)
+                    &&!vehicleTrackingCoordinator.hasCurrentLocalEvidence(source))return null;
+            return normalDynamicIdentityEnabled()&&isCurrentContinuityStamp(source)
+                    ?vehicleTrackingCoordinator.displaySnapshot(source):null;
+        }
+    }
+    public java.util.Map<Long,Long> vehicleIdentityPlateOwners() {return vehicleTrackingCoordinator.identityPlateOwners();}
+    public boolean isCurrentIdentityObservation(PlateObservation observation) {
+        return !normalDynamicIdentityEnabled()||vehicleTrackingCoordinator.acceptsObservation(observation);
+    }
+    public PipelineResult currentIdentityResult(PipelineResult result) {
+        return result==null||!normalDynamicIdentityEnabled()?result:result.filterIdentityObservations(this::isCurrentIdentityObservation);
+    }
+
     private void prepareScanAcquisition(
             MobileAlprEngine activeEngine,
             long nowRuntimeNanos
     ) {
+        updateManualIdentityStatus(latestContinuitySourceFrame().sourceTimestampNanos);
         com.example.alpr_v1.acquisition.TargetFocusSnapshot focus = scanAcquisitionController.targetFocus();
         dispatchedFocusRevision = focus.revision;
         activeEngine.setPersistentTargetEntityId(focus.entityId);
+        vehicleTrackingCoordinator.setExclusiveTarget(normalDynamicIdentityEnabled()?focus.entityId:0L);
+        activeEngine.setWaitingForManualTarget(normalDynamicIdentityEnabled()&&focus.waitingForTarget);
         if (focus.awaitingFreshScanAnchor) {
             activeEngine.releaseFocusedTarget("persistent_focus_released");
             stableSceneVehicles.invalidate();
             activeEngine.requestVehicleRefreshAfterZoom();
         }
         activeEngine.setStaticSceneMode(staticMode());
+        vehicleTrackingCoordinator.setNormalDynamicIdentity(normalDynamicIdentityEnabled(),sceneTransitionCoordinator.reacquireTimeoutNanos());
+        scanAcquisitionController.setNormalDynamicPolicy(normalDynamicIdentityEnabled());
         scanAcquisitionController.setVehicleSizeGate(vehicleTrackingCoordinator.vehicleSizeGate());
         activeEngine.setResearchCollector(researchCollector,currentCameraZoomRatio);
         activeEngine.setStaticRefinement(staticMode() && staticCycle.refining());
@@ -1781,6 +1964,14 @@ public final class AlprPipeline {
                     false, directive.revision, 0L,
                     0f, 0f, 0f, 0f
             );
+        }
+        if(normalDynamicIdentityEnabled()&&directive.entityId>0L) {
+            long verifying=vehicleTrackingCoordinator.identity().verificationFor(directive.entityId);
+            if(verifying>0L) {
+                activeEngine.setPersistentTargetEntityId(verifying);
+                directive=new AcquisitionDirective(directive.revision,directive.action,directive.scanRunId,
+                        directive.sessionId,verifying,"identity_candidate_requires_fresh_ocr");
+            }
         }
         dispatchedScanSessionId = directive.sessionId;
         applyScanDirectiveToEngine(
@@ -2666,7 +2857,7 @@ public final class AlprPipeline {
             ContinuityStamp processingStamp
     ) {
         if (result == null) return null;
-        PipelineResult stamped = result.withContinuityStamp(processingStamp);
+        PipelineResult stamped = currentIdentityResult(result.withContinuityStamp(processingStamp));
         ContinuityResultDisposition disposition = continuityGenerationGate.evaluate(
                 sceneTransitionCoordinator.stamp(processingStamp.sourceTimestampNanos),
                 processingStamp
@@ -2690,7 +2881,7 @@ public final class AlprPipeline {
                 || sceneTransitionCoordinator.snapshot().finalizationSuspended) {
             return stamped.withoutGeometryAndFinalization();
         }
-        return stamped;
+        return currentIdentityResult(stamped);
     }
 
     private void finishStaleResultTrace(InferenceTrace trace) {
@@ -2702,9 +2893,19 @@ public final class AlprPipeline {
     }
 
     /** Called on the inference executor, before a new measured camera stream starts. */
+    private int preparedNormalExecutionRevision = -1;
     public synchronized void prepareModels() {
         if (!registry.hasCompleteAlprComposition()) throw new IllegalStateException("REQUIRED_MODELS_MISSING");
         if (runtimeContractFailureGate.isBlocked()) throw new IllegalStateException("RUNTIME_CONTRACT_BLOCKED");
+        // Ordinary CPU edits are pending until this existing pre-stream preparation boundary.
+        // They never trigger settings_applied, a scene reset, or a research-profile change.
+        if (frozenResearchExecutionConfig == null) {
+            int revision = new com.example.alpr_v1.autotune.NormalExecutionSettings(context).revision();
+            if (revision != preparedNormalExecutionRevision) {
+                reloadRequested = true;
+                preparedNormalExecutionRevision = revision;
+            }
+        }
         ensureEngineLoaded();
         frameGate.requestImmediateFrame();
     }
@@ -2732,6 +2933,8 @@ public final class AlprPipeline {
             throw error;
         }
         logEngineModelDiagnostics(engine);
+        engine.setDynamicBitmapBudget(dynamicBitmapBudget);
+        engine.setMpDiagnosticCapture(mpDiagnosticCapture);
         engine.setDynamicMtConfig(frozenResearchExecutionConfig == null
                 ? com.example.alpr_v1.acquisition.DynamicMtSettings.read(context.getSharedPreferences(
                         com.example.alpr_v1.SettingsActivity.PREFERENCES, android.content.Context.MODE_PRIVATE))
@@ -2742,6 +2945,9 @@ public final class AlprPipeline {
         engine.setRapidCameraMotion(rapidCameraMotion);
         engine.setCameraTransformInProgress(cameraTransformInProgress);
         engine.setSoftReacquireResultListener(this::handleSoftReacquireReport);
+        engine.setIdentityPromotionListener((candidate,canonical)->{
+            if(normalDynamicIdentityEnabled())scanAcquisitionController.rebindVerifiedVehicle(candidate,canonical);
+        });
         engine.setPreviewFrameMotionHistory(previewFrameMotionHistory);
         stableSceneVehicles.invalidate();
         engine.setStableSceneVehicleCache(stableSceneVehicles);
@@ -2769,16 +2975,34 @@ public final class AlprPipeline {
      * Converts an authoritative stationary direct-luma cut into a real scene
      * generation boundary. A stale callback cannot reset a newer scene.
      */
-    public synchronized SceneTransitionDecision requestAbruptSceneReset(
+    public SceneTransitionDecision requestAbruptSceneReset(
             SourceFrameStamp sourceFrameStamp,
             float changedFraction,
             float meanDelta
+    ) {
+        if (normalDynamicIdentityEnabled()) {
+            synchronized (sceneTransitionCoordinator) {
+                return evaluateAbruptSceneReset(sourceFrameStamp, changedFraction, meanDelta, true);
+            }
+        }
+        synchronized (this) {
+            return evaluateAbruptSceneReset(sourceFrameStamp, changedFraction, meanDelta, false);
+        }
+    }
+
+    private SceneTransitionDecision evaluateAbruptSceneReset(
+            SourceFrameStamp sourceFrameStamp, float changedFraction, float meanDelta,
+            boolean deferInferenceCleanup
     ) {
         if (sourceFrameStamp == null
                 || !isCurrentContinuityStamp(
                 sourceFrameStamp.continuityStamp()
         )) {
             return null;
+        }
+        if(normalDynamicIdentityEnabled()&&vehicleTrackingCoordinator.localPoolEvidence(sourceFrameStamp).provenCount()>0) {
+            return evaluatePreviewSceneEvidence(sourceFrameStamp,true,clamp01(changedFraction),clamp01(changedFraction),
+                    clamp01(meanDelta/255f),0f,0f,false,false,null,true);
         }
         SceneTransitionDecision decision =
                 sceneTransitionCoordinator.requestStructuralReset(
@@ -2787,7 +3011,8 @@ public final class AlprPipeline {
                 );
         lastSceneDecision = decision;
         lastSceneEvidence = null;
-        applySceneTransition(decision);
+        if (deferInferenceCleanup) publishUiTransition(decision);
+        else applySceneTransition(decision);
         android.util.Log.d(
                 "ALPR_SCENE_EVIDENCE",
                 String.format(
@@ -2837,7 +3062,7 @@ public final class AlprPipeline {
     }
 
     public synchronized void resetTracking() {
-        pendingUiTransitions.clear();
+        pendingUiTransitions.clear();pendingOrdinaryTransition.set(null);
         applySceneTransition(sceneTransitionCoordinator.requestStructuralReset(
                 "explicit_pipeline_reset",
                 SystemClock.elapsedRealtimeNanos()
@@ -3104,17 +3329,22 @@ public final class AlprPipeline {
 
     public void pickVehicle(long entityId) {
         if (staticMode() || vehicleTrackingCoordinator.repository().get(entityId) == null) return;
+        if(normalDynamicIdentityEnabled()&&scanAcquisitionController.foregroundPurpose()==com.example.alpr_v1.domain.TargetPurpose.USER_PICK)return;
         sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
         vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
         if (plateOwnerEntityId(targetSnapshot.trackId) != entityId) {
             targetSnapshot = TargetSnapshot.searching().withContinuityStamp(sceneTransitionCoordinator.stamp(latestContinuitySourceFrame()));
         }
-        scanAcquisitionController.pickVehicle(entityId, SystemClock.elapsedRealtimeNanos());
+        com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation presentation=vehicleTrackingCoordinator.identity().presentation().get(entityId);
+        scanAcquisitionController.pickVehicle(entityId,normalDynamicIdentityEnabled()?(presentation==null?0L:presentation.number):entityId,
+                SystemClock.elapsedRealtimeNanos());
+        vehicleTrackingCoordinator.setExclusiveTarget(normalDynamicIdentityEnabled()?entityId:0L);
         frameGate.requestImmediateFrame();
     }
 
     public void startRegistrationSearch(String text) {
         if (staticMode()) return;
+        if(manualTargetSelected())return;
         sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
         vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
         scanAcquisitionController.startSearch(text, SystemClock.elapsedRealtimeNanos());
@@ -3125,6 +3355,7 @@ public final class AlprPipeline {
         sceneTransitionCoordinator.cancelTargetRecovery(SystemClock.elapsedRealtimeNanos());
         vehicleTrackingCoordinator.repository().clearActiveTarget(scanAcquisitionController.targetFocus().entityId);
         scanAcquisitionController.releaseForeground(endSearch, SystemClock.elapsedRealtimeNanos());
+        vehicleTrackingCoordinator.setExclusiveTarget(0L);
         if (scanAcquisitionController.targetFocus().awaitingFreshScanAnchor) targetSnapshot = TargetSnapshot.searching()
                 .withContinuityStamp(sceneTransitionCoordinator.stamp(latestContinuitySourceFrame()));
         frameGate.requestImmediateFrame();
@@ -3133,6 +3364,9 @@ public final class AlprPipeline {
     public String searchRegistration() { return scanAcquisitionController.searchText(); }
     public com.example.alpr_v1.domain.SearchMatchState searchMatchState() { return scanAcquisitionController.searchState(); }
     public long lockedEntityId() { return scanAcquisitionController.lockedEntityId(); }
+    public boolean manualTargetSelected() {
+        return normalDynamicIdentityEnabled()&&scanAcquisitionController.foregroundPurpose()==com.example.alpr_v1.domain.TargetPurpose.USER_PICK;
+    }
     public com.example.alpr_v1.acquisition.TargetFocusSnapshot targetFocus() { return scanAcquisitionController.targetFocus(); }
     public long plateOwnerEntityId(long plateTrackId) {
         com.example.alpr_v1.domain.VehicleEntity entity = vehicleTrackingCoordinator.repository().findByPlateTrackId(plateTrackId);
@@ -3148,9 +3382,33 @@ public final class AlprPipeline {
         if (staticMode() || !com.example.alpr_v1.acquisition.DynamicZoomPolicy.allows(
                 scanAcquisitionController.foregroundPurpose(), sample,
                 rapidCameraMotion || cameraMoving || cameraTransformInProgress, sceneTransitionCoordinator.snapshot().state)
-                || !scanAcquisitionController.claimLockZoom(SystemClock.elapsedRealtimeNanos())) return false;
+                ) {dynamicZoomWaitReason="GEOMETRY";return false;}
+        if(normalDynamicIdentityEnabled()) {
+            com.example.alpr_v1.acquisition.TargetFocusSnapshot focus=targetFocus();
+            com.example.alpr_v1.domain.TargetPurpose purpose=scanAcquisitionController.foregroundPurpose();
+            if(!com.example.alpr_v1.acquisition.DynamicZoomPolicy.allowsOrdinary(purpose,sample,
+                    rapidCameraMotion||cameraMoving||cameraTransformInProgress,sceneTransitionCoordinator.snapshot().state)
+                    ||sample.entityId!=focus.entityId||sample.sessionId!=focus.sessionId||sample.focusRevision!=focus.revision
+                    ||focus.waitingForTarget) {dynamicZoomWaitReason="PICK";return false;}
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation owner=vehicleTrackingCoordinator.identity().presentation().get(focus.entityId);
+            if(owner==null||!owner.visible||owner.verifying||owner.epoch!=sample.ownerEpoch)return false;
+            if(!scanAcquisitionController.reserveLockZoom(SystemClock.elapsedRealtimeNanos()))return false;
+        } else if(!scanAcquisitionController.claimLockZoom(SystemClock.elapsedRealtimeNanos()))return false;
         dynamicZoomEntity = foregroundEntityId();
+        dynamicZoomWaitReason="";
         return dynamicZoomEntity > 0L;
+    }
+    private volatile String dynamicZoomWaitReason="GEOMETRY";
+    public String dynamicZoomWaitReason() {
+        if(targetFocus().waitingForTarget)return "RECOVERY";
+        com.example.alpr_v1.domain.TargetPurpose purpose=scanAcquisitionController.foregroundPurpose();
+        if(purpose!=com.example.alpr_v1.domain.TargetPurpose.USER_PICK&&purpose!=com.example.alpr_v1.domain.TargetPurpose.SEARCH_PURSUIT)return "PICK";
+        if(rapidCameraMotion||cameraMoving||cameraTransformInProgress)return "MOTION";
+        if(scanAcquisitionController.lockZoomUsed())return "BUDGET";
+        return dynamicZoomWaitReason;
+    }
+    public void dynamicZoomPhysicallyStarted() {
+        if(normalDynamicIdentityEnabled())scanAcquisitionController.commitLockZoom();
     }
 
     public void finishDynamicZoom() {
@@ -3288,11 +3546,16 @@ public final class AlprPipeline {
                 SystemClock.elapsedRealtimeNanos()
         );
         metrics.setSceneContinuityConfiguration(safeMode.wireName(), "initial_v2");
+        metrics.retainDynamicStageTimings(normalDynamicIdentityEnabled());
         scanAcquisitionController.setStaticBaseline(safeMode == SceneHandlingMode.STRICT_SCENE_BOUNDARY);
         if (decision.action == SceneTransitionAction.HARD_RESET) applySceneTransition(decision);
+        vehicleTrackingCoordinator.setNormalDynamicIdentity(normalDynamicIdentityEnabled(),sceneTransitionCoordinator.reacquireTimeoutNanos());
+        scanAcquisitionController.setNormalDynamicPolicy(normalDynamicIdentityEnabled());
     }
 
     public void setCameraTransformInProgress(boolean inProgress) {
+        if(inProgress&&normalDynamicIdentityEnabled()&&dynamicZoomEntity>0)
+            vehicleTrackingCoordinator.identity().beginControlledTransform(dynamicZoomEntity,SystemClock.elapsedRealtimeNanos());
         cameraTransformInProgress = inProgress;
         if (inProgress) stableSceneVehicles.invalidate();
     }
@@ -3427,7 +3690,7 @@ public final class AlprPipeline {
     }
 
     public synchronized void close() {
-        pendingUiTransitions.clear();
+        pendingUiTransitions.clear();pendingOrdinaryTransition.set(null);
         if (engine != null) engine.close();
         engine = null;
         activeModelRuntimeSummaries = java.util.Collections.emptyList();
@@ -3453,6 +3716,7 @@ public final class AlprPipeline {
     }
 
     public void startScanRun(long scanRunId, long nowRuntimeNanos) {
+        if(normalDynamicIdentityEnabled())vehicleTrackingCoordinator.identity().beginRunIfEmpty();
         stableSceneVehicles.invalidate();
         staticCycle.reset(sceneTransitionCoordinator.snapshot().sceneGeneration);
         staticWatcher.reset();
@@ -3634,6 +3898,30 @@ public final class AlprPipeline {
                 changedFraction, brightnessDelta, anchorDriftScore, anchorChangedFraction,
                 focusedTrackingLost, focusedTrackingDegraded, null, true);
     }
+    /** Preview workers publish transitions without waiting for the neural inference monitor. */
+    public SceneTransitionDecision onOrdinaryPreviewSceneEvidence(
+            SourceFrameStamp sourceFrameStamp, boolean rawVisualChange, float rawVisualChangeScore,
+            float changedFraction, float brightnessDelta, float anchorDriftScore,
+            float anchorChangedFraction, boolean focusedTrackingLost, boolean focusedTrackingDegraded,
+            MotionExplanationEvidence motionOverride) {
+        synchronized(sceneTransitionCoordinator) {
+        if(sourceFrameStamp==null||!isCurrentContinuityStamp(sourceFrameStamp.continuityStamp()))return null;
+        return evaluatePreviewSceneEvidence(sourceFrameStamp,rawVisualChange,rawVisualChangeScore,
+                changedFraction,brightnessDelta,anchorDriftScore,anchorChangedFraction,
+                focusedTrackingLost,focusedTrackingDegraded,motionOverride,true);
+        }
+    }
+    public SceneTransitionDecision onWorkerPreviewSceneEvidence(
+            SourceFrameStamp sourceFrameStamp, boolean rawVisualChange, float rawVisualChangeScore,
+            float changedFraction, float brightnessDelta, float anchorDriftScore,
+            float anchorChangedFraction, boolean focusedTrackingLost, boolean focusedTrackingDegraded,
+            MotionExplanationEvidence motionOverride) {
+        if(normalDynamicIdentityEnabled())return onOrdinaryPreviewSceneEvidence(sourceFrameStamp,rawVisualChange,
+                rawVisualChangeScore,changedFraction,brightnessDelta,anchorDriftScore,anchorChangedFraction,
+                focusedTrackingLost,focusedTrackingDegraded,motionOverride);
+        return onPreviewSceneEvidence(sourceFrameStamp,rawVisualChange,rawVisualChangeScore,changedFraction,
+                brightnessDelta,anchorDriftScore,anchorChangedFraction,focusedTrackingLost,focusedTrackingDegraded,motionOverride);
+    }
 
     private SceneTransitionDecision evaluatePreviewSceneEvidence(
             SourceFrameStamp sourceFrameStamp, boolean rawVisualChange, float rawVisualChangeScore,
@@ -3649,6 +3937,13 @@ public final class AlprPipeline {
         TargetContinuityEvidence targetEvidence = currentTargetEvidence(
                 safeSourceFrame.sourceTimestampNanos
         );
+        if(normalDynamicIdentityEnabled()&&targetEvidence.entityId>0) {
+            SceneContinuitySnapshot context=sceneTransitionCoordinator.snapshot();
+            if(vehicleTrackingCoordinator.localTargetEvidence(targetEvidence.entityId,safeSourceFrame.sourceTimestampNanos,
+                    context.sceneGeneration,context.visualEpoch,context.cameraTransformGeneration)!=null) {
+                focusedTrackingLost=false;focusedTrackingDegraded=false;
+            }
+        }
         SceneEvidence evidence = new SceneEvidence(
                         previewEvidenceIds.incrementAndGet(),
                         safeSourceFrame.sourceSequence,
@@ -3670,6 +3965,9 @@ public final class AlprPipeline {
                         false,
                         false
                 );
+        if(normalDynamicIdentityEnabled())evidence=evidence.withLocalVehicles(vehicleTrackingCoordinator.localPoolEvidence(safeSourceFrame));
+        if(fromUi&&normalDynamicIdentityEnabled()&&rawVisualChange&&evidence.localVehicles.provenCount()>0)
+            requestLocalContinuityRefresh(safeSourceFrame);
         SceneTransitionDecision decision = observeSceneEvidence(evidence,safeSourceFrame);
         if (rawVisualChange || decision.action != SceneTransitionAction.NONE) {
             android.util.Log.d(
@@ -3709,6 +4007,22 @@ public final class AlprPipeline {
         if (fromUi) publishUiTransition(decision);
         else applySceneTransition(decision);
         return decision;
+    }
+
+    private SourceFrameStamp lastLocalContinuityRefresh;
+    /** A control MP does not reset object tracking, trigger OCR, or renew a measurement timestamp. */
+    private void requestLocalContinuityRefresh(SourceFrameStamp source) {
+        SourceFrameStamp previous=lastLocalContinuityRefresh;
+        boolean same=previous!=null&&previous.sceneGeneration==source.sceneGeneration&&previous.visualEpoch==source.visualEpoch
+                &&previous.cameraTransformGeneration==source.cameraTransformGeneration&&previous.domain==source.domain;
+        long interval=Math.max(SceneContinuityProfile.INITIAL.reacquireTimeoutNanos,vehicleTrackingCoordinator.lastMpObservationGapNanos());
+        if(same&&source.sourceTimestampNanos-previous.sourceTimestampNanos<interval)return;
+        lastLocalContinuityRefresh=source;
+        MobileAlprEngine current=engine;
+        if(current!=null)current.requestVehicleRefreshForContinuity();
+        frameGate.requestImmediateFrame();
+        android.util.Log.d("ALPR_SCENE_EVIDENCE","refresh=local_continuity source="+source.sourceTimestampNanos
+                +" action=CONTROL_MP preserve_local_trackers=true");
     }
 
     public boolean isCurrentContinuityStamp(ContinuityStamp stamp) {

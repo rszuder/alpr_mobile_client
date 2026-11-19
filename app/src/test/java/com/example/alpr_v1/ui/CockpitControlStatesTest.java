@@ -58,8 +58,8 @@ public class CockpitControlStatesTest {
         ExperimentSession e=fixture.f.sessions.experiment;ExperimentSession.Prepared p=e.prepare("pipeline_comparison","SYNTHETIC",TimerConfig.disabled(),ThermalConfig.disabled(),ExperimentIdentity.defaults(),null);
         assertTrue(e.startPrepared(p,1000,1000));call("updateAutoZoomButton");disabled(R.id.auto_zoom_button);assertTrue(az.enabled());
     }
-    @Test public void configuredTimerIsNeutralAndRealDeadlineUsesCyanStatus()throws Exception{
-        set("experimentModeEnabled",true);set("experimentTimerConfig",TimerConfig.of(true,300));call("renderAnalysisControls");neutral(R.id.experiment_timer_button);
+    @Test public void enabledTimerTileAndRealDeadlineUseCyan()throws Exception{
+        set("experimentModeEnabled",true);set("experimentTimerConfig",TimerConfig.of(true,300));call("renderAnalysisControls");cyan(R.id.experiment_timer_button);
         assertEquals("ustawiono",((android.widget.TextView)main.findViewById(R.id.experiment_timer_caption)).getText().toString());
         ExperimentSession e=fixture.f.sessions.experiment;ExperimentSession.Prepared p=e.prepare("pipeline_comparison","SYNTHETIC",TimerConfig.of(true,300),ThermalConfig.disabled(),ExperimentIdentity.defaults(),null);
         assertTrue(e.startPrepared(p,System.currentTimeMillis(),android.os.SystemClock.elapsedRealtimeNanos()));set("cameraStarted",true);call("renderAnalysisControls");

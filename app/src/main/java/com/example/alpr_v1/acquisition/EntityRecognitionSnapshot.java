@@ -8,6 +8,7 @@ public final class EntityRecognitionSnapshot {
     public final double confidence;
     public final boolean confirmed;
     public final int observations;
+    public final long evidenceSourceNanos, identityEpoch;
 
     public EntityRecognitionSnapshot(
             long entityId,
@@ -17,11 +18,18 @@ public final class EntityRecognitionSnapshot {
             boolean confirmed,
             int observations
     ) {
+        this(entityId, plateTrackId, text, confidence, confirmed, observations, 0L, 0L);
+    }
+
+    public EntityRecognitionSnapshot(long entityId, long plateTrackId, String text, double confidence,
+            boolean confirmed, int observations, long evidenceSourceNanos, long identityEpoch) {
         this.entityId = Math.max(0L, entityId);
         this.plateTrackId = Math.max(0L, plateTrackId);
         this.text = text == null ? "" : text.trim();
         this.confidence = Math.max(0.0, Math.min(1.0, confidence));
         this.confirmed = confirmed;
         this.observations = Math.max(0, observations);
+        this.evidenceSourceNanos = evidenceSourceNanos;
+        this.identityEpoch = identityEpoch;
     }
 }

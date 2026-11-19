@@ -14,7 +14,7 @@ public final class TvBboxProducerFixture {
     }
     public static ResearchSessionStore prepareOnly(File root,ResearchExecutionConfig config)throws Exception{
         ExperimentSession.Prepared p=new ExperimentSession().prepare("roi_budget",config.variant,TimerConfig.disabled(),ThermalConfig.disabled(),
-                new ExperimentIdentity("SYNTHETIC-F5A20-TV-BBOX","SYNTHETIC",1,"synthetic=true; DEVICE_RUN=NOT_RUN"),config);
+                new ExperimentIdentity(config.final180PhotoRoi()==null?"SYNTHETIC-F5A20-TV-BBOX":"SYNTHETIC-F6-FINAL180","SYNTHETIC",1,"synthetic=true; DEVICE_RUN=NOT_RUN"),config);
         return prepareFor(root,p);
     }
     public static ResearchSessionStore prepareFor(File root,ExperimentSession.Prepared p)throws Exception{

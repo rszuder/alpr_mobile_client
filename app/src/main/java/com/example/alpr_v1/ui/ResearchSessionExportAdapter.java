@@ -26,8 +26,8 @@ public final class ResearchSessionExportAdapter extends BaseAdapter {
         ResearchSessionSummary item = getItem(position);
         text(row,R.id.session_export_date,item.dateText(ZoneId.systemDefault()));
         text(row,R.id.session_export_duration,item.durationText());
-        text(row,R.id.session_export_title,type(item.value("experiment_type")));
-        text(row,R.id.session_export_configuration,configuration(item));
+        text(row,R.id.session_export_title,ResearchConfigurationText.title(item));
+        text(row,R.id.session_export_configuration,(ResearchConfigurationText.isF6(item.execution)?ResearchConfigurationText.type(item.value("experiment_type"))+" ? ":"")+configuration(item));
         text(row,R.id.session_export_execution,execution(item.execution));
         String series = item.session.optString("series_id", "");
         String scenario = item.session.optString("scenario_id", "");
@@ -43,6 +43,8 @@ public final class ResearchSessionExportAdapter extends BaseAdapter {
         TextView status = row.findViewById(R.id.session_export_status);
         status.setText(!item.metadataAvailable ? R.string.session_export_no_metadata
                 : item.complete ? R.string.session_export_complete : R.string.session_export_partial);
+        row.setContentDescription(ResearchConfigurationText.title(item)+". "+item.partialReason());
+        if(item.metadataAvailable&&item.creationDate)status.setText("NIE ROZPOCZĘTO");
         status.setTextColor(ContextCompat.getColor(row.getContext(),item.complete ? R.color.alpr_success : R.color.alpr_warning));
         return row;
     }

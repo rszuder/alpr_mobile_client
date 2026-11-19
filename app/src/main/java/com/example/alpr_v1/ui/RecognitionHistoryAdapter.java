@@ -106,15 +106,30 @@ public final class RecognitionHistoryAdapter
         void bind(RecognitionHistoryItem item, Listener listener) {
             Context context = itemView.getContext();
             preview.setPlate(item.previewBitmap, item.characters);
-            preview.setBoxesVisible(true);
-            number.setText(item.text.isEmpty() ? context.getString(R.string.result_placeholder) : item.text);
+            preview.setBoxesVisible(!item.dynamicOwner);
+            number.setSingleLine(!item.dynamicOwner);
+            number.setMaxLines(item.dynamicOwner?2:1);
+            number.setText(item.displayText().isEmpty() ? context.getString(R.string.result_placeholder) : item.displayText());
+            android.widget.LinearLayout summary=(android.widget.LinearLayout)confidence.getParent();
+            boolean stacked=item.dynamicOwner&&context.getResources().getConfiguration().fontScale>1.15f;
+            summary.setOrientation(stacked?android.widget.LinearLayout.VERTICAL:android.widget.LinearLayout.HORIZONTAL);
+            android.widget.LinearLayout.LayoutParams observationLayout=(android.widget.LinearLayout.LayoutParams)observations.getLayoutParams();
+            observationLayout.setMarginStart(stacked?0:Math.round(8*context.getResources().getDisplayMetrics().density));
+            observationLayout.topMargin=stacked?Math.round(4*context.getResources().getDisplayMetrics().density):0;
+            observations.setLayoutParams(observationLayout);
             time.setText(new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
-                    new Date(item.capturedAtMillis)
+                    new Date(item.dynamicOwner?item.lastObservationAtMillis:item.capturedAtMillis)
             ));
             confidence.setText(context.getString(
                     R.string.history_confidence_format,
-                    percent(item.confidence)
+                    percent(item.displayConfidence())
             ));
+            if(item.dynamicOwner) {
+                confidence.setText(context.getString(R.string.dynamic_history_confidence,
+                        item.displayConfirmed()?"Potwierdzony":"Weryfikacja",percent(item.currentConfidence)));
+                confidence.setTextColor(androidx.core.content.ContextCompat.getColor(context,
+                        item.displayConfirmed()?R.color.alpr_success:R.color.alpr_warning));
+            } else confidence.setTextColor(androidx.core.content.ContextCompat.getColor(context,R.color.alpr_success));
             observations.setText(context.getResources().getQuantityString(
                     R.plurals.history_observation_count,
                     Math.max(1, item.observations),
@@ -123,11 +138,11 @@ public final class RecognitionHistoryAdapter
             itemView.setOnClickListener(view -> listener.onOpen(item));
             itemView.setContentDescription(context.getString(
                     R.string.history_item_description,
-                    item.text,
+                    item.displayText(),
                     context.getString(
                             R.string.history_detail_meta,
                             time.getText(),
-                            percent(item.confidence)
+                            percent(item.displayConfidence())
                     ),
                     observations.getText()
             ));

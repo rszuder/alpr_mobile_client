@@ -32,6 +32,15 @@ public final class AcquisitionAttemptRecord {
     boolean ownsAttemptPermit = true;
     boolean plateCrop;
     private PlateObservation observation;
+    private final ContinuityStamp sourceStamp;
+    private int f6MzSequence;
+    public void f6Event(String event,JSONObject details){
+        if(store.final180()!=null)store.final180().event(event,sourceStamp,data.optString("tv_bbox_frame_key"),data.optString("f5a_scene_event_id"),
+                data.optLong("trace_frame_id"),attemptId,mtInvocationId(),data.optString("f6_mz_invocation_id"),details);
+    }
+    public void f6MzStarted(){
+        if(store.final180()!=null){put("f6_mz_invocation_id",attemptId+"/mz-"+(++f6MzSequence));f6Event("MZ_STARTED",null);}
+    }
     java.util.List<MzInputEvidence.Capture> mzInputs;
     int mzInputCallCount;
     public boolean mzInputEvidenceEnabled(){return store.mzInputEvidence()!=null;}
@@ -46,6 +55,7 @@ public final class AcquisitionAttemptRecord {
     AcquisitionAttemptRecord(ResearchSessionStore store,String id,ContinuityStamp stamp,
                              String roiPolicy,float zoom,long entity,long vehicle) {
         this.store = store; attemptId = id; sessionId = store.sessionId();
+        sourceStamp=stamp;
         put("attempt_id",id); put("session_id",sessionId);
         put("scene_generation",stamp.sceneGeneration); put("visual_epoch",stamp.visualEpoch);
         put("camera_transform_generation",stamp.cameraTransformGeneration);
@@ -97,6 +107,7 @@ public final class AcquisitionAttemptRecord {
     public void mtStarted() {
         put("mt_invocation_id",attemptId); put("mt_executed",true);
         put("mt_status",MtStatus.NO_DETECTION.name()); put("mt_detection_count",0);
+        if(store.final180()!=null){put("mt_started_elapsed_nanos",store.elapsedNow());f6Event("MT_STARTED",null);}
         if(store.f5aEvidence()!=null)store.f5aEvidence().invocation(data.optString("f5a_scene_event_id"),attemptId);
     }
     /** One source-image copy for the whole MT invocation, not one copy per detected plate.

@@ -9,6 +9,7 @@ public enum TargetSessionState {
     LOCKED_IDENTIFIED,
     LOCKED_UNIDENTIFIED,
     RECOVERING,
+    WAITING_FOR_TARGET,
     COMPLETED,
     CANCELLED,
     LOST;

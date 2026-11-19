@@ -32,6 +32,8 @@
         android:title="@string/menu_clear_result"
         app:showAsAction="never" />
 
+    <item android:id="@+id/menu_session_operation" android:title="@string/menu_session_operation" app:showAsAction="never" android:visible="false" />
+
     <item
         android:id="@+id/menu_help"
         android:icon="@drawable/ic_help_24"

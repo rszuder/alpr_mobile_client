@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dynamic_history_best_detail">Najlepszy wynik łączony · %1$d%% · zebrane obserwacje: %2$d</string>
+    <string name="dynamic_history_best_photo">Zdjęcie najlepszego wyniku z %1$s · wynik łączony %2$d%%</string>
+    <string name="dynamic_memory_paused">Analiza wstrzymana — mało pamięci</string>
+    <string name="dynamic_memory_resume">Zwolnij pamięć i naciśnij START</string>
+    <string name="dynamic_memory_resolution">%1$d×%2$d · limit RAM %3$.1f MP</string>
+    <string name="dynamic_history_detail">Wynik łączony: %1$s · %2$d%%\nZdjęcie: %3$s · %4$d%%</string>
+    <string name="dynamic_history_confidence">%1$s · %2$d%%</string>
+    <string name="dynamic_history_photo_unavailable">Zdjęcie tej próby nie jest dostępne. Zachowano jej metadane.</string>
+    <string name="dynamic_history_raw_photo">Zdjęcie próby z %1$s · surowy odczyt %2$d%%</string>
+</resources>

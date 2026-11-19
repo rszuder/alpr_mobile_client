@@ -15,6 +15,7 @@ import java.util.zip.*;
 public final class TvBboxInputValidator {
     private TvBboxInputValidator(){}
     public static String validate(File archive)throws Exception{
+        try(ZipFile zip=new ZipFile(archive)){if(Final180Evidence.enabled(json(zip,"session.json")))return Final180ArchiveValidator.validate(archive);}
         ResearchArchive.verifyEntryHashes(archive);
         try(ZipFile zip=new ZipFile(archive)){
             Set<String> names=new HashSet<>();Enumeration<? extends ZipEntry> entries=zip.entries();
@@ -95,7 +96,7 @@ public final class TvBboxInputValidator {
             return summary.getBoolean("complete")?"PASS":"PARTIAL";
         }
     }
-    private static void validateDetection(JSONObject local,JSONObject attempt,TvBboxCrop frozen)throws Exception{
+    static void validateDetection(JSONObject local,JSONObject attempt,TvBboxCrop frozen)throws Exception{
         require(TvBboxCrop.LOCAL_SPACE.equals(local.getString("coordinate_space")),"Pose local space");
         JSONArray box=local.getJSONArray("bbox"),points=local.getJSONArray("corners_px");require(box.length()==4,"Local bbox");
         String[] keys={"plate_left","plate_top","plate_right","plate_bottom"};
@@ -115,7 +116,7 @@ public final class TvBboxInputValidator {
             require(attempt.getInt("mt_pose_source_width_px")==frozen.sourceWidth&&attempt.getInt("mt_pose_source_height_px")==frozen.sourceHeight,"Pose source dimensions");
         }
     }
-    private static boolean image(ZipFile zip,JSONObject image,String space,int width,int height)throws Exception{
+    static boolean image(ZipFile zip,JSONObject image,String space,int width,int height)throws Exception{
         require("JPEG94".equals(image.getString("encoding"))&&Boolean.FALSE.equals(image.opt("exact_model_input"))
                 &&space.equals(image.getString("coordinate_space")),"Image context/space");
         if("MISSING".equals(image.getString("status"))){require(image.isNull("entry")&&image.isNull("sha256")&&!image.optString("missing_reason").isEmpty(),"Missing image reason");return false;}
@@ -126,7 +127,7 @@ public final class TvBboxInputValidator {
         require(options.outWidth==integer(image,"width_px")&&options.outHeight==integer(image,"height_px")
                 &&(width<0||width==options.outWidth)&&(height<0||height==options.outHeight),"Image dimensions");return true;
     }
-    private static void stamp(JSONObject stamp)throws Exception{
+    static void stamp(JSONObject stamp)throws Exception{
         for(String key:MzInputEvidence.STAMP)if(!"source_timestamp_domain".equals(key)){
             Object n=stamp.opt(key);require((n instanceof Integer||n instanceof Long)&&((Number)n).longValue()>=0,"Stamp int64: "+key);
         }

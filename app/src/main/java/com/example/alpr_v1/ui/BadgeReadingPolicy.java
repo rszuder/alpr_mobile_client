@@ -6,6 +6,16 @@ import com.example.alpr_v1.acquisition.EntityRecognitionSnapshot;
 public final class BadgeReadingPolicy {
     private BadgeReadingPolicy() {}
 
+    /** A newer aggregate may correct text or lower confidence; delayed snapshots cannot undo it. */
+    public static EntityRecognitionSnapshot currentDynamic(EntityRecognitionSnapshot previous,
+            EntityRecognitionSnapshot candidate) {
+        if (candidate == null) return previous;
+        if (previous == null || candidate.identityEpoch > previous.identityEpoch) return candidate;
+        if (candidate.identityEpoch < previous.identityEpoch
+                || candidate.evidenceSourceNanos < previous.evidenceSourceNanos) return previous;
+        return candidate;
+    }
+
     public static EntityRecognitionSnapshot retainBest(
             EntityRecognitionSnapshot previous, EntityRecognitionSnapshot candidate
     ) {

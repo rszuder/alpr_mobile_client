@@ -18,9 +18,12 @@ public final class DynamicVehicleSizeGate {
             this.enterWidth = enterWidth; this.enterHeight = enterHeight;
             this.keepWidth = keepWidth; this.keepHeight = keepHeight;
         }
+        public boolean fitsFrame(int width,int height) {
+            return width > 0 && height > 0 && enterWidth <= width && enterHeight <= height;
+        }
     }
 
-    public enum Reason { ALLOWED, VEHICLE_TOO_SMALL, VEHICLE_MEASUREMENT_REQUIRED }
+    public enum Reason { ALLOWED, VEHICLE_TOO_SMALL, VEHICLE_MEASUREMENT_REQUIRED, INVALID_CONFIGURATION }
     public static final class Decision {
         public final Reason reason;
         public final float widthPx, heightPx;
@@ -73,9 +76,10 @@ public final class DynamicVehicleSizeGate {
             int minWidth = keeping ? config.keepWidth : config.enterWidth;
             int minHeight = keeping ? config.keepHeight : config.enterHeight;
             float pixelsWide = bounds.width() * width, pixelsHigh = bounds.height() * height;
-            boolean allowed = pixelsWide + 0.0001f >= minWidth && pixelsHigh + 0.0001f >= minHeight;
+            boolean fits = config.fitsFrame(width,height);
+            boolean allowed = fits && pixelsWide + 0.0001f >= minWidth && pixelsHigh + 0.0001f >= minHeight;
             if (allowed) admitted.add(item.getKey()); else admitted.remove(item.getKey());
-            measured.put(item.getKey(), new Decision(allowed ? Reason.ALLOWED : Reason.VEHICLE_TOO_SMALL,
+            measured.put(item.getKey(), new Decision(!fits ? Reason.INVALID_CONFIGURATION : allowed ? Reason.ALLOWED : Reason.VEHICLE_TOO_SMALL,
                     pixelsWide, pixelsHigh, minWidth, minHeight));
         }
     }
@@ -87,6 +91,9 @@ public final class DynamicVehicleSizeGate {
     public synchronized boolean isTooSmall(long entityId) {
         return enabled && measured.containsKey(entityId)
                 && measured.get(entityId).reason == Reason.VEHICLE_TOO_SMALL;
+    }
+    public synchronized boolean blocksExistingSession(long entityId) {
+        return enabled&&measured.containsKey(entityId)&&!measured.get(entityId).allowed();
     }
     public synchronized boolean hasCurrentMeasurement(ContinuityStamp stamp, int width, int height) {
         return sameContext(measurementStamp, stamp) && sourceWidth == width && sourceHeight == height
@@ -101,6 +108,7 @@ public final class DynamicVehicleSizeGate {
         return measured.get(entityId);
     }
     public synchronized Set<Long> measuredEntityIds() { return new HashSet<>(measured.keySet()); }
+    public synchronized Map<Long,Decision> decisions() { return new HashMap<>(measured); }
     private static boolean sameContext(ContinuityStamp first, ContinuityStamp second) {
         return first != null && second != null && first.sceneGeneration == second.sceneGeneration
                 && first.visualEpoch == second.visualEpoch

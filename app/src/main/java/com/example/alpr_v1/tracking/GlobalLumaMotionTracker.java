@@ -18,6 +18,8 @@ public final class GlobalLumaMotionTracker {
     private int previousWidth;
     private int previousHeight;
     private List<NormalizedBounds> previousForegroundMasks = Collections.emptyList();
+    private long lastFlowNanos,lastAffineNanos,lastFallbackNanos;
+    public synchronized long[] stageNanos(){return new long[]{lastFlowNanos,lastAffineNanos,lastFallbackNanos};}
 
     public synchronized FrameMotionTransform update(
             byte[] gray,
@@ -46,6 +48,7 @@ public final class GlobalLumaMotionTracker {
 
     public synchronized FrameMotionTransform update(byte[] gray,int width,int height,List<NormalizedBounds> foregroundMasks,
             boolean cameraMotionConfirmedBySensor,ObservationMask support) {
+        lastFlowNanos=lastAffineNanos=lastFallbackNanos=0L;
         if(support!=null) support.requireSize(width,height);
         if(!ObservationMask.same(mask,support)) reset();
         mask=support;
@@ -84,6 +87,7 @@ public final class GlobalLumaMotionTracker {
             previousForegroundMasks = currentForegroundMasks;
             return FrameMotionTransform.invalid();
         }
+        long flowStarted=System.nanoTime();
         SparsePyramidalFlow.Result flow = SparsePyramidalFlow.track(
                 reference,
                 current,
@@ -91,11 +95,14 @@ public final class GlobalLumaMotionTracker {
                 height,
                 points, true, mask
         );
+        lastFlowNanos=Math.max(0L,System.nanoTime()-flowStarted);
         previous = current;
         previousForegroundMasks = currentForegroundMasks;
 
+        long affineStarted=System.nanoTime();
         RobustAffineTransform.Result affine =
                 RobustAffineTransform.estimate(flow.matches);
+        lastAffineNanos=Math.max(0L,System.nanoTime()-affineStarted);
         if (affine.valid && affine.inlierCount >= MINIMUM_INLIERS) {
             float determinant = affine.determinant();
             if (Float.isFinite(determinant)
@@ -133,15 +140,17 @@ public final class GlobalLumaMotionTracker {
             }
         }
 
+        long fallbackStarted=System.nanoTime();
         FrameMotionTransform sparseFallback = translationFromSparseFlow(
                 flow.matches,
                 points.size(),
                 width,
                 height
         );
-        if (sparseFallback.valid) return sparseFallback;
+        if (sparseFallback.valid) {lastFallbackNanos=Math.max(0L,System.nanoTime()-fallbackStarted);return sparseFallback;}
         if (cameraMotionConfirmedBySensor
                 && sparseFallback.quality.supportsSensorConfirmedCameraMotion()) {
+            lastFallbackNanos=Math.max(0L,System.nanoTime()-fallbackStarted);
             return sensorConfirmed(sparseFallback);
         }
 
@@ -154,6 +163,7 @@ public final class GlobalLumaMotionTracker {
                 combinedForegroundMasks,
                 cameraMotionConfirmedBySensor
         );
+        lastFallbackNanos=Math.max(0L,System.nanoTime()-fallbackStarted);
         if (coarse.valid) return coarse;
         return cameraMotionConfirmedBySensor
                 && coarse.quality.supportsSensorConfirmedCameraMotion()
@@ -305,12 +315,13 @@ public final class GlobalLumaMotionTracker {
             List<NormalizedBounds> foregroundMasks,
             boolean cameraMotionConfirmedBySensor
     ) {
+        boolean[] sourceSupport=translationSourceSupport(width,height,foregroundMasks);
         Translation forward = searchTranslation(
-                previous, current, width, height, foregroundMasks, cameraMotionConfirmedBySensor
+                previous, current, width, height, sourceSupport, cameraMotionConfirmedBySensor
         );
         if (!forward.valid) return FrameMotionTransform.invalid();
         Translation backward = searchTranslation(
-                current, previous, width, height, foregroundMasks, cameraMotionConfirmedBySensor
+                current, previous, width, height, sourceSupport, cameraMotionConfirmedBySensor
         );
         if (!backward.valid
                 || Math.abs(forward.dx + backward.dx) > 2
@@ -346,12 +357,23 @@ public final class GlobalLumaMotionTracker {
                 ? result : FrameMotionTransform.invalid();
     }
 
+    /** Same source-pixel predicate as before, evaluated once for both search directions. */
+    private static boolean[] translationSourceSupport(int width,int height,List<NormalizedBounds> masks) {
+        if(masks==null||masks.isEmpty())return null;
+        boolean[] support=new boolean[width*height];
+        for(int y=0;y<height;y++) {
+            float normalizedY=y/(float)height;
+            for(int x=0;x<width;x++)support[y*width+x]=!insideForeground(x/(float)width,normalizedY,masks);
+        }
+        return support;
+    }
+
     private Translation searchTranslation(
             byte[] source,
             byte[] target,
             int width,
             int height,
-            List<NormalizedBounds> foregroundMasks,
+            boolean[] sourceSupport,
             boolean cameraMotionConfirmedBySensor
     ) {
         int maximumDx = Math.max(4, Math.round(width * 0.18f));
@@ -375,7 +397,7 @@ public final class GlobalLumaMotionTracker {
                 target,
                 width,
                 height,
-                foregroundMasks,
+                sourceSupport,
                 startX,
                 endX,
                 startY,
@@ -395,7 +417,7 @@ public final class GlobalLumaMotionTracker {
                 target,
                 width,
                 height,
-                foregroundMasks,
+                sourceSupport,
                 startX,
                 endX,
                 startY,
@@ -417,7 +439,7 @@ public final class GlobalLumaMotionTracker {
                 target,
                 width,
                 height,
-                foregroundMasks,
+                sourceSupport,
                 startX,
                 endX,
                 startY,
@@ -446,7 +468,7 @@ public final class GlobalLumaMotionTracker {
             byte[] target,
             int width,
             int height,
-            List<NormalizedBounds> foregroundMasks,
+            boolean[] sourceSupport,
             int startX,
             int endX,
             int startY,
@@ -470,7 +492,7 @@ public final class GlobalLumaMotionTracker {
                         target,
                         width,
                         height,
-                        foregroundMasks,
+                        sourceSupport,
                         startX,
                         endX,
                         startY,
@@ -497,7 +519,7 @@ public final class GlobalLumaMotionTracker {
             byte[] target,
             int width,
             int height,
-            List<NormalizedBounds> foregroundMasks,
+            boolean[] sourceSupport,
             int startX,
             int endX,
             int startY,
@@ -513,11 +535,7 @@ public final class GlobalLumaMotionTracker {
             int sourceRow = y * width;
             int targetRow = (y + dy) * width;
             for (int x = startX; x < endX; x += safeSampleStep) {
-                if (insideForeground(
-                        x / (float) width,
-                        y / (float) height,
-                        foregroundMasks
-                )) continue;
+                if(sourceSupport!=null&&!sourceSupport[sourceRow+x])continue;
                 if(mask!=null&&(!mask.contains(x,y)||!mask.contains(x+dx,y+dy))) continue;
                 difference += Math.abs(
                         (source[sourceRow + x] & 0xff)
@@ -666,7 +684,8 @@ public final class GlobalLumaMotionTracker {
     ) {
         if (masks == null || masks.isEmpty()) return false;
         final float margin = 0.025f;
-        for (NormalizedBounds mask : masks) {
+        for (int index=0;index<masks.size();index++) {
+            NormalizedBounds mask=masks.get(index);
             if (mask == null || !mask.valid()) continue;
             if (normalizedX >= mask.left - margin
                     && normalizedX <= mask.right + margin

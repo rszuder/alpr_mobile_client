@@ -199,6 +199,13 @@
                                 android:textStyle="bold" />
                         </TableRow>
                     </TableLayout>
+                    <TextView
+                        android:id="@+id/diagnostics_mz_input_evidence_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:textColor="@color/alpr_text_muted"
+                        android:textSize="12sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

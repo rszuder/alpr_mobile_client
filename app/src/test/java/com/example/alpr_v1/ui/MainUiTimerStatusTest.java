@@ -42,10 +42,10 @@ public class MainUiTimerStatusTest {
         assertTrue(session.startPrepared(prepared,System.currentTimeMillis(),android.os.SystemClock.elapsedRealtimeNanos()));render();
     }
     @Test public void disabledUnavailableAndConfiguredHaveDistinctClockCopy()throws Exception{
-        render();assertEquals(View.GONE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Timer",text(R.id.experiment_timer_button));
+        render();assertEquals(View.VISIBLE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Timer\nOFF",text(R.id.experiment_timer_button));
         configured(300);render();assertEquals("5:00",text(R.id.experiment_timer_value));assertEquals("ustawiono",text(R.id.experiment_timer_caption));
         assertFalse(f.sessions.experiment.isRunning());assertEquals(-1,f.sessions.experiment.timerDeadlineElapsedNanos());
-        set(f.main,"experimentModeEnabled",false);render();assertEquals(View.GONE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());
+        set(f.main,"experimentModeEnabled",false);render();assertEquals(View.VISIBLE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());
     }
     @Test public void runningAndStaticIdleUseTheSameRetainedDeadline()throws Exception{
         running(300);long deadline=f.sessions.experiment.timerDeadlineElapsedNanos();assertEquals("5:00",text(R.id.experiment_timer_value));
@@ -65,10 +65,10 @@ public class MainUiTimerStatusTest {
     }
     @Test public void manualStopErrorAndCancelledPreparationDoNotLookLikeRunningTimers()throws Exception{
         running(300);f.sessions.experiment.finish(ExperimentSession.CompletionReason.MANUAL);presentation.stop();render();
-        assertEquals(View.GONE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Analiza zatrzymana",text(R.id.live_status));
+        assertEquals(View.VISIBLE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Analiza zatrzymana",text(R.id.live_status));
         f.sessions.experiment.reset();running(300);f.sessions.experiment.finish(ExperimentSession.CompletionReason.ERROR);
         presentation.showUserStatus(LivePresentationController.State.ERROR,"Obserwacja TV zatrzymana","Sprawdź kalibrację TV");render();
-        assertEquals(View.GONE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Obserwacja TV zatrzymana",text(R.id.live_status));
+        assertEquals(View.VISIBLE,f.main.findViewById(R.id.experiment_timer_status).getVisibility());assertEquals("Obserwacja TV zatrzymana",text(R.id.live_status));
         f.sessions.experiment.reset();render();assertEquals("ustawiono",text(R.id.experiment_timer_caption));assertFalse(f.sessions.experiment.isRunning());
     }
     @Test public void configuredNextTimerIsPresentationOnlyAndPreservesOldDeadline()throws Exception{
@@ -103,11 +103,12 @@ public class MainUiTimerStatusTest {
         ShadowSystemClock.advanceBy(Duration.ofMillis(1001));render();layout(720,360);
         assertEquals("59:59",text(R.id.experiment_timer_value));assertEquals(width,clock.getWidth());assertEquals(preview,rect(R.id.camera_preview));assertEquals(deadline,f.sessions.experiment.timerDeadlineElapsedNanos());
     }
-    @Test public void realTimerAndThermalTilesKeepTheirOriginalDialogCallbacks()throws Exception{
+    @Test public void timerTileTogglesClockConfiguresAndThermalKeepsItsCallback()throws Exception{
         set(f.main,"experimentPreviewPaused",true);call("configureAnalysisControls");
-        assertTrue(f.main.findViewById(R.id.experiment_timer_button).performClick());android.app.Dialog timer=ShadowDialog.getLatestDialog();assertTrue(timer.isShowing());timer.dismiss();
+        assertTrue(f.main.findViewById(R.id.experiment_timer_button).performClick());assertNull(ShadowDialog.getLatestDialog());
+        assertTrue(f.main.findViewById(R.id.experiment_timer_status).performClick());android.app.Dialog timer=ShadowDialog.getLatestDialog();assertTrue(timer.isShowing());timer.dismiss();
         assertTrue(f.main.findViewById(R.id.experiment_thermal_button).performClick());android.app.Dialog thermal=ShadowDialog.getLatestDialog();assertNotSame(timer,thermal);assertTrue(thermal.isShowing());thermal.dismiss();
-        assertEquals("Timer",text(R.id.experiment_timer_button));
+        assertEquals("Timer\nON",text(R.id.experiment_timer_button));
     }
     void layout(){layout(360,800);}
     void layout(int width,int height){View v=f.main.findViewById(R.id.main);v.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));v.layout(0,0,width,height);}

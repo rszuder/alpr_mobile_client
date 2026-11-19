@@ -9,7 +9,7 @@
     <string name="main_ui_input_unavailable">N/A — brak konfiguracji</string>
     <string name="main_ui_tv_ready">skalibrowany</string>
     <string name="main_ui_tv_stale">NIEAKTUALNY</string>
-    <string name="main_ui_tv_draft">szkic (DRAFT)</string>
+    <string name="main_ui_tv_draft">Do zapisania</string>
     <string name="main_ui_tv_missing">brak kalibracji</string>
     <string name="main_ui_outline_visible">ON</string>
     <string name="main_ui_outline_hidden">OFF</string>

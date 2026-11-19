@@ -8,6 +8,21 @@ import java.util.Arrays;
 import static org.junit.Assert.assertEquals;
 
 public class AutoZoomControllerTest {
+    private AutoZoomController.Sample owned(long track,long entity,long epoch,long session,long revision,String text) {
+        return new AutoZoomController.Sample(track,.5f,.5f,.1f,.5,false,2,true,true,true,text,true,entity,epoch,session,revision);
+    }
+    @Test public void dynamicZoomUsesPhysicalOwnerInsteadOfEqualTextOrNearbyGeometry() {
+        AutoZoomController c=new AutoZoomController();c.setEnabled(true);
+        assertEquals(AutoZoomController.Action.REQUEST_ZOOM,c.requestRefinement(owned(10,1,2,3,4,"AB12345")).action);
+        org.junit.Assert.assertFalse(c.matchesTarget(owned(10,2,2,3,4,"AB12345")));
+        org.junit.Assert.assertFalse(c.matchesTarget(owned(10,1,1,3,4,"AB12345")));
+        org.junit.Assert.assertFalse(c.matchesTarget(owned(10,1,2,30,4,"AB12345")));
+        org.junit.Assert.assertFalse(c.matchesTarget(owned(10,1,2,3,40,"AB12345")));
+        AutoZoomController.Sample corrected=owned(20,1,2,3,4,"AB1234S");
+        org.junit.Assert.assertTrue(c.matchesTarget(corrected));
+        org.junit.Assert.assertSame(corrected,c.targetSample(Arrays.asList(owned(10,2,2,3,4,"AB12345"),corrected)));
+        org.junit.Assert.assertNull(c.targetSample(Collections.singletonList(owned(10,2,2,3,4,"AB12345"))));
+    }
     @Test
     public void performsOnlyOneZoomAttemptForTrackAndReturnsAfterImprovement() {
         AutoZoomController controller = new AutoZoomController();

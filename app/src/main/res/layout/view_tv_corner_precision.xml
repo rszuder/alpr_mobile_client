@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+    <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/tv_corner_choices"
+        android:layout_width="match_parent" android:layout_height="wrap_content" app:singleSelection="true" app:selectionRequired="true">
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_lg" style="@style/TvCornerButton"
+            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/tv_corner_lg" android:contentDescription="@string/tv_corner_lg_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_pg" style="@style/TvCornerButton"
+            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/tv_corner_pg" android:contentDescription="@string/tv_corner_pg_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_pd" style="@style/TvCornerButton"
+            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/tv_corner_pd" android:contentDescription="@string/tv_corner_pd_description" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_ld" style="@style/TvCornerButton"
+            android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/tv_corner_ld" android:contentDescription="@string/tv_corner_ld_description" />
+    </com.google.android.material.button.MaterialButtonToggleGroup>
+    <LinearLayout android:id="@+id/tv_corner_coordinate_header" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:baselineAligned="false" android:gravity="center_vertical">
+        <TextView android:id="@+id/tv_corner_active" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:minLines="2" android:maxLines="2" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/tv_ref_accent" />
+        <TextView android:id="@+id/tv_corner_coordinates" android:layout_width="132dp" android:layout_height="wrap_content"
+            android:minLines="2" android:maxLines="2" android:fontFamily="monospace" android:textSize="12sp" android:text="@string/tv_corner_coordinates_empty" android:textColor="@color/tv_ref_text" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/tv_precision_image_row" android:layout_width="match_parent" android:layout_height="152dp" android:orientation="horizontal" android:baselineAligned="false">
+        <FrameLayout android:id="@+id/tv_corner_loupe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent"
+            android:layout_marginEnd="8dp" android:background="@drawable/tv_reference_frame" android:contentDescription="@string/tv_precision_loupe" />
+        <androidx.constraintlayout.widget.ConstraintLayout android:id="@+id/tv_corner_nudge_controls" android:layout_width="152dp" android:layout_height="match_parent">
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_up" style="@style/TvCornerNudgeButton"
+                android:layout_width="48dp" android:layout_height="48dp" app:icon="@drawable/ic_tv_corner_up" android:contentDescription="@string/tv_corner_up_pixel"
+                app:layout_constraintTop_toTopOf="parent" app:layout_constraintStart_toStartOf="parent" app:layout_constraintEnd_toEndOf="parent" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_left" style="@style/TvCornerNudgeButton"
+                android:layout_width="48dp" android:layout_height="48dp" app:icon="@drawable/ic_arrow_back_24" android:contentDescription="@string/tv_corner_left_pixel"
+                app:layout_constraintTop_toTopOf="parent" app:layout_constraintBottom_toBottomOf="parent" app:layout_constraintStart_toStartOf="parent" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_right" style="@style/TvCornerNudgeButton"
+                android:layout_width="48dp" android:layout_height="48dp" app:icon="@drawable/ic_arrow_forward_24" android:contentDescription="@string/tv_corner_right_pixel"
+                app:layout_constraintTop_toTopOf="parent" app:layout_constraintBottom_toBottomOf="parent" app:layout_constraintEnd_toEndOf="parent" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_down" style="@style/TvCornerNudgeButton"
+                android:layout_width="48dp" android:layout_height="48dp" app:icon="@drawable/ic_tv_corner_down" android:contentDescription="@string/tv_corner_down_pixel"
+                app:layout_constraintBottom_toBottomOf="parent" app:layout_constraintStart_toStartOf="parent" app:layout_constraintEnd_toEndOf="parent" />
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+    </LinearLayout>
+    <TextView android:id="@+id/tv_corner_limit_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:minLines="1" android:maxLines="1" android:textSize="12sp" android:includeFontPadding="false" android:textColor="@color/tv_ref_secondary" android:accessibilityLiveRegion="polite" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:baselineAligned="false" android:gravity="center_vertical">
+        <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/tv_corner_zoom_choices"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" app:singleSelection="true" app:selectionRequired="true" app:checkedButton="@id/tv_corner_zoom_4">
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_zoom_4" style="@style/TvCornerButton" android:layout_width="64dp" android:layout_height="wrap_content" android:minHeight="48dp" android:text="4×" android:contentDescription="@string/tv_precision_zoom_4" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_zoom_8" style="@style/TvCornerButton" android:layout_width="64dp" android:layout_height="wrap_content" android:minHeight="48dp" android:text="8×" android:contentDescription="@string/tv_precision_zoom_8" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+        <com.google.android.material.button.MaterialButton android:id="@+id/tv_corner_step" style="@style/TvCornerButton" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:minHeight="48dp" android:layout_marginStart="8dp" android:text="@string/tv_precision_step_one" android:textAllCaps="false" android:textSize="13sp" android:paddingHorizontal="4dp" />
+    </LinearLayout>
+</LinearLayout>

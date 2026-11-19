@@ -21,12 +21,17 @@ public final class RecognitionHistoryStore {
     private long nextReadingGroup = 1L;
 
     /**
-     * One canonical registration key owns one gallery image. Scene mode and tracking identity
-     * never relax equality or merge vehicle-domain identities.
+     * Static images group by canonical registration; dynamic images group by physical owner.
+     * Text equality never merges dynamic vehicle-domain identities.
      */
     public synchronized boolean upsertObservation(com.example.alpr_v1.pipeline.PlateObservation observation,
             ObservationTelemetry telemetry, boolean dynamic, String captureSource) {
+        return upsertObservation(observation,telemetry,dynamic,captureSource,"");
+    }
+    public synchronized boolean upsertObservation(com.example.alpr_v1.pipeline.PlateObservation observation,
+            ObservationTelemetry telemetry,boolean dynamic,String captureSource,String captureSessionId) {
         if (observation == null || !observation.hasFreshMzRead()) return false;
+        if(dynamic)return upsertDynamicObservation(observation,telemetry,captureSource,captureSessionId);
         RecognitionHistoryObservation record = new RecognitionHistoryObservation(observation, captureSource, telemetry);
         String key = numberKey(record.text);
         if (key.isEmpty()) return false;
@@ -59,6 +64,78 @@ public final class RecognitionHistoryStore {
     /** Shared canonical key. Raw MZ text stays with the representative image and each observation. */
     public static String numberKey(String text) {
         return com.example.alpr_v1.domain.RegistrationTextNormalizer.registrationKey(text);
+    }
+    private final Map<String,Long> dynamicAliases=new LinkedHashMap<>();
+    private static String dynamicKey(long run,long scene,long entity,long visual,long plate) {
+        return "dynamic:"+run+":"+scene+(entity>0?":entity:"+entity:":visual:"+visual+":plate:"+plate);
+    }
+    private boolean upsertDynamicObservation(com.example.alpr_v1.pipeline.PlateObservation observation,
+            ObservationTelemetry telemetry,String source,String captureSessionId) {
+        RecognitionHistoryObservation record=new RecognitionHistoryObservation(observation,source,telemetry,captureSessionId);
+        if(record.registrationKey.isEmpty())return false;
+        com.example.alpr_v1.tracking.DynamicVehicleIdentity.Stamp owner=observation.identityOwner();
+        long run=observation.dynamicAnalysisRunId();
+        long entity=dynamicAliases.getOrDefault(dynamicKey(run,observation.sceneGeneration,observation.entityId,0,0),observation.entityId);
+        String key=dynamicKey(run,observation.sceneGeneration,entity,observation.visualEpoch,observation.plateTrackId);
+        RecognitionHistoryItem item=items.get(key);
+        if(item==null && owner!=null && entity>0) {
+            String provisionalKey=dynamicKey(run,observation.sceneGeneration,0,observation.visualEpoch,observation.plateTrackId);
+            RecognitionHistoryItem provisional=items.remove(provisionalKey);
+            if(provisional!=null) {
+                item=provisional.withIdentity(key,entity,observation.vehicleTrackId);
+                item.displayNumber=owner.displayNumber;
+            }
+        }
+        if(item==null) {
+            if(observation.previewBitmap==null||observation.previewBitmap.isRecycled())return false;
+            Bitmap image=copy(observation.previewBitmap);
+            if(image==null)return false;
+            item=new RecognitionHistoryItem(key,observation.sceneGeneration,entity,observation.vehicleTrackId,
+                    observation.plateTrackId,observation.trackId,record.text,record.confidence,observation.plateConfidence,
+                    observation.capturedAtMillis,image,observation.characters,observation.timing,observation.confirmed,
+                    0,observation.sharpness,source);
+            item.dynamicOwner=true;item.analysisRunId=run;item.displayNumber=owner==null?0:owner.displayNumber;
+        }
+        boolean fresh=item.record(record);
+        if(!fresh)return false;
+        boolean improved=item.updateConsensus(observation);
+        if(improved&&item.observations>0&&observation.previewBitmap!=null&&!observation.previewBitmap.isRecycled()) {
+            Bitmap replacement=copy(observation.previewBitmap);
+            if(replacement!=null) {
+                // Release our reference, not a bitmap potentially still borrowed by the renderer.
+                item.previewBitmap=replacement;item.text=record.text;item.confidence=record.confidence;
+                item.plateConfidence=record.plateConfidence;item.capturedAtMillis=record.capturedAtMillis;
+                item.previewConfidence=record.confidence;item.previewSharpness=observation.sharpness;
+                item.previewCapturedAtMillis=record.capturedAtMillis;item.replacePreviewMetadata(observation.characters,observation.timing);
+                item.vehicleTrackId=observation.vehicleTrackId;item.plateTrackId=observation.plateTrackId;
+                item.trackId=observation.trackId;item.confirmed=record.confirmed;item.captureSource=source;
+            }
+        }
+        item.observations=item.observationRecords().size();
+        item.lastObservationAtMillis=Math.max(item.lastObservationAtMillis,record.capturedAtMillis);
+        items.remove(key);items.put(key,item);trimToCapacity();return true;
+    }
+    public synchronized boolean promoteDynamicOwners(long run,long scene,Map<Long,Long> aliases,
+            Map<Long,com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation> identities) {
+        boolean changed=false;
+        for(Map.Entry<Long,Long> alias:aliases.entrySet()) {
+            String previous=dynamicKey(run,scene,alias.getKey(),0,0),canonical=dynamicKey(run,scene,alias.getValue(),0,0);
+            dynamicAliases.put(previous,alias.getValue());
+            RecognitionHistoryItem old=items.remove(previous);if(old==null)continue;
+            changed=true;
+            RecognitionHistoryItem target=items.get(canonical);
+            if(target==null) {target=old.withIdentity(canonical,alias.getValue(),old.vehicleTrackId);items.put(canonical,target);}
+            else {
+                for(RecognitionHistoryObservation observation:old.observationRecords())target.record(observation);
+                target.mergeBestConsensus(old);
+                old.retire();
+            }
+            com.example.alpr_v1.tracking.DynamicVehicleIdentity.Presentation presentation=identities.get(alias.getValue());
+            if(presentation!=null)target.displayNumber=presentation.number;
+            target.observations=target.observationRecords().size();
+        }
+        while(dynamicAliases.size()>capacity*4)dynamicAliases.remove(dynamicAliases.keySet().iterator().next());
+        return changed;
     }
 
     public RecognitionHistoryStore() {
@@ -247,17 +324,18 @@ public final class RecognitionHistoryStore {
     public synchronized boolean remove(String historyId) {
         RecognitionHistoryItem removed = items.remove(historyId);
         if (removed == null) return false;
-        removed.recycle();
+        removed.retire();
         plateOwners.values().removeIf(historyId::equals);
         readingGroups.values().removeIf(historyId::equals);
         return true;
     }
 
     public synchronized void clear() {
-        for (RecognitionHistoryItem item : items.values()) item.recycle();
+        for (RecognitionHistoryItem item : items.values()) item.retire();
         items.clear();
         plateOwners.clear();
         readingGroups.clear();
+        dynamicAliases.clear();
     }
 
     static String historyId(
@@ -291,7 +369,7 @@ public final class RecognitionHistoryStore {
             Map.Entry<String, RecognitionHistoryItem> oldest =
                     items.entrySet().iterator().next();
             items.remove(oldest.getKey());
-            oldest.getValue().recycle();
+            oldest.getValue().retire();
         }
         plateOwners.values().removeIf(id -> !items.containsKey(id));
         readingGroups.values().removeIf(id -> !items.containsKey(id));

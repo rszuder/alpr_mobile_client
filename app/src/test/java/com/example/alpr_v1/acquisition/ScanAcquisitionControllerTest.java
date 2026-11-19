@@ -1023,6 +1023,65 @@ public final class ScanAcquisitionControllerTest {
         return controller;
     }
 
+    @Test public void normalManualLockKeepsItsSelectionAfterTotalLossUntilRelease() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.setNormalDynamicPolicy(true);controller.pickVehicle(4L,1L,10L);
+        long session=controller.targetFocus().sessionId,revision=controller.targetFocus().revision;
+        controller.onTerminalRecovery(SoftReacquireResult.ACTIVE_TARGET_LOST,
+                transition(SceneTransitionAction.RELEASE_ACTIVE_TARGET,SceneContinuityState.STABLE,false),20L);
+        assertTrue(controller.targetFocus().waitingForTarget);assertEquals(4L,controller.lockedEntityId());
+        assertEquals(session,controller.targetFocus().sessionId);assertTrue(controller.targetFocus().revision>revision);
+        assertEquals(1L,controller.targetFocus().displayNumber);
+        controller.onVehicleFrame(frame(candidate(5L,55L)),continuity(),30L);
+        assertEquals(4L,controller.lockedEntityId());assertEquals(AcquisitionDirectiveAction.NONE,controller.currentDirective().action);
+        controller.releaseForeground(false,40L);
+        assertEquals(0L,controller.lockedEntityId());assertTrue(controller.targetFocus().awaitingFreshScanAnchor);
+    }
+    @Test public void normalManualLockWaitsAcrossAHardBoundaryAndStopEndsIt() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.setNormalDynamicPolicy(true);controller.pickVehicle(4L,10L);
+        long session=controller.targetFocus().sessionId;
+        controller.onContinuityDecision(transition(SceneTransitionAction.HARD_RESET,SceneContinuityState.STABLE,true),20L);
+        assertTrue(controller.targetFocus().waitingForTarget);assertEquals(session,controller.targetFocus().sessionId);
+        controller.stopRun(30L);assertEquals(0L,controller.lockedEntityId());
+    }
+    @Test public void normalManualTapIsIdempotentAndCannotSwitchToAnotherVehicleBeforeRelease() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.setNormalDynamicPolicy(true);controller.pickVehicle(4L,10L);
+        long session=controller.targetFocus().sessionId,revision=controller.targetFocus().revision;
+        controller.pickVehicle(4L,20L);controller.pickVehicle(5L,30L);
+        assertEquals(4L,controller.lockedEntityId());assertEquals(session,controller.targetFocus().sessionId);
+        assertEquals(revision,controller.targetFocus().revision);
+    }
+    @Test public void refusedOpticalStartDoesNotSpendTheNormalLockBudgetButPhysicalStartDoes() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.setNormalDynamicPolicy(true);controller.pickVehicle(4L,10L);
+        assertTrue(controller.reserveLockZoom(20L));assertFalse(controller.lockZoomUsed());
+        controller.finishLockZoom(30L);assertTrue(controller.reserveLockZoom(40L));
+        assertTrue(controller.commitLockZoom());assertTrue(controller.lockZoomUsed());
+        controller.finishLockZoom(50L);assertFalse(controller.reserveLockZoom(60L));
+    }
+    @Test public void normalLiveScanRevisitsTheSameVehicleAfterAReadableCropInsteadOfEndingItsEvidence() {
+        ScanAcquisitionController controller=new ScanAcquisitionController();
+        controller.setNormalDynamicPolicy(true);controller.startLiveRun(1,0);
+        controller.onVehicleFrame(frame(candidate(4,44)),continuity(),1);
+        controller.onPipelineResult(result(observation(4,44,false,true,"AB12345")),continuity(),SECOND);
+        controller.onVehicleFrame(frame(candidate(4,44)),continuity(),SECOND+100_000_000L);
+        assertEquals("Model scheduler owns the retry cadence",4,controller.snapshot(SECOND+100_000_000L).activeEntityId);
+        controller.onVehicleFrame(frame(candidate(4,44)),continuity(),2*SECOND);
+        assertEquals(4,controller.snapshot(2*SECOND).activeEntityId);
+    }
+    @Test public void localIdentityLossHasABoundedRecoveryWithoutDependingOnGlobalSceneChanges() {
+        ScanAcquisitionController controller=startedWithCandidate(4L);
+        controller.setNormalDynamicPolicy(true);controller.pickVehicle(4L,10L);
+        assertFalse(controller.onManualIdentityStatus(100L,90L,20L));
+        assertEquals(com.example.alpr_v1.domain.TargetSessionState.RECOVERING,controller.targetFocus().sessionState);
+        assertFalse(controller.onManualIdentityStatus(100L,100L,30L));
+        assertTrue(controller.onManualIdentityStatus(100L,101L,40L));assertTrue(controller.targetFocus().waitingForTarget);
+        assertFalse(controller.onManualIdentityStatus(0,102L,50L));assertTrue(controller.targetFocus().waitingForTarget);
+        controller.startSearch("OTHER55",60L);assertEquals(4L,controller.lockedEntityId());
+    }
+
     @Test public void l8l10l11ManualFocusOwnsDispatchAndIgnoresBackgroundMpAndOcr() {
         ScanAcquisitionController controller = startedWithCandidate(4L);
         controller.pickVehicle(4L,10L);

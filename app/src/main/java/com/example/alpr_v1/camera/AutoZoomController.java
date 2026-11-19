@@ -47,6 +47,7 @@ public final class AutoZoomController {
         public final boolean recognitionSuccessful;
         public final String text;
         public final boolean stableTargetGeometry;
+        public final long entityId, ownerEpoch, sessionId, focusRevision;
 
         public Sample(
                 long trackId,
@@ -91,6 +92,13 @@ public final class AutoZoomController {
                 String text,
                 boolean stableTargetGeometry
         ) {
+            this(trackId,centerX,centerY,normalizedWidth,recognitionConfidence,confirmed,observations,validQuad,
+                    recognitionExecuted,recognitionSuccessful,text,stableTargetGeometry,0L,0L,0L,0L);
+        }
+        public Sample(long trackId,float centerX,float centerY,float normalizedWidth,double recognitionConfidence,
+                boolean confirmed,int observations,boolean validQuad,boolean recognitionExecuted,
+                boolean recognitionSuccessful,String text,boolean stableTargetGeometry,
+                long entityId,long ownerEpoch,long sessionId,long focusRevision) {
             this.trackId = trackId;
             this.centerX = clamp(centerX);
             this.centerY = clamp(centerY);
@@ -103,6 +111,7 @@ public final class AutoZoomController {
             this.recognitionSuccessful = recognitionExecuted && recognitionSuccessful;
             this.text = normalizeText(text);
             this.stableTargetGeometry = stableTargetGeometry;
+            this.entityId=entityId;this.ownerEpoch=ownerEpoch;this.sessionId=sessionId;this.focusRevision=focusRevision;
         }
     }
 
@@ -218,6 +227,8 @@ public final class AutoZoomController {
     }
 
     private Decision startRefinement(Sample sample) {
+        targetEntityId=sample.entityId;targetOwnerEpoch=sample.ownerEpoch;
+        targetSessionId=sample.sessionId;targetFocusRevision=sample.focusRevision;
         targetTrackId = sample.trackId;
         targetCenterX = sample.centerX; targetCenterY = sample.centerY;
         targetText = beforeText = sample.text;
@@ -343,6 +354,7 @@ public final class AutoZoomController {
 
     public synchronized boolean matchesTarget(Sample sample) {
         if (sample == null) return false;
+        if(targetEntityId>0)return sameOwner(sample);
         if (sample.trackId == targetTrackId) return true;
         if (!targetText.isEmpty() && targetText.equals(sample.text)) return true;
         double dx = sample.centerX - targetCenterX;
@@ -420,6 +432,10 @@ public final class AutoZoomController {
     }
 
     private Sample findTarget(List<Sample> samples) {
+        if(targetEntityId>0) {
+            for(Sample sample:samples)if(sameOwner(sample))return sample;
+            return null;
+        }
         for (Sample sample : samples) {
             if (sample.trackId == targetTrackId) return sample;
         }
@@ -452,6 +468,7 @@ public final class AutoZoomController {
     }
 
     private void clearTarget() {
+        targetEntityId=targetOwnerEpoch=targetSessionId=targetFocusRevision=0L;
         targetTrackId = 0L;
         targetCenterX = 0.5f;
         targetCenterY = 0.5f;
@@ -462,6 +479,11 @@ public final class AutoZoomController {
         beforeConfidence = 0.0;
         bestAfterConfidence = 0.0;
         zoomedSinceNanos = 0L;
+    }
+    private long targetEntityId,targetOwnerEpoch,targetSessionId,targetFocusRevision;
+    private boolean sameOwner(Sample sample) {
+        return sample!=null&&sample.entityId==targetEntityId&&sample.ownerEpoch==targetOwnerEpoch
+                &&sample.sessionId==targetSessionId&&sample.focusRevision==targetFocusRevision;
     }
 
     private static float clamp(float value) {

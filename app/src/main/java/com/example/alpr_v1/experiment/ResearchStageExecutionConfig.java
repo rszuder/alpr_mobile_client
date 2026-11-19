@@ -175,13 +175,7 @@ public final class ResearchStageExecutionConfig {
                         || (!modelRef.modelManifestJson().isEmpty()
                             && !modelRef.modelManifestJson().equals(activeModel.manifest().rawJson())))
                     throw new IllegalStateException("RESEARCH_FROZEN_VARIANT_CHANGED: " + variantId);
-                try {
-                    for (String file : variant.files()) {
-                        String actual = com.example.alpr_v1.inference.RuntimeExecutionEvidence.sha256(
-                                com.example.alpr_v1.inference.RuntimeExecutionEvidence.safeFile(activeModel, file));
-                        if (!actual.equals(variant.sha256().get(file))) throw new IllegalStateException("RESEARCH_MODEL_SHA_CHANGED: " + file);
-                    }
-                } catch (java.io.IOException error) { throw new IllegalStateException("RESEARCH_MODEL_FILE_UNAVAILABLE", error); }
+                com.example.alpr_v1.model.ModelConfigurationRequirements.requireResearchArtifacts(activeModel,variant);
                 return variant;
             }
         }

@@ -100,6 +100,16 @@ public final class OverlayViewportTransform {
         );
     }
 
+    /** Full vehicle corners remain outside the image; only its rendered rectangle is clipped. */
+    public static PointF mapViewToNormalizedUnclipped(PointF point,int sourceWidth,int sourceHeight,
+            int viewWidth,int viewHeight) {
+        if(point==null)return new PointF();
+        Geometry geometry=geometry(sourceWidth,sourceHeight,viewWidth,viewHeight);
+        if(!geometry.valid)return new PointF();
+        return new PointF((point.x-geometry.offsetX)/(sourceWidth*geometry.scale),
+                (point.y-geometry.offsetY)/(sourceHeight*geometry.scale));
+    }
+
     private static Geometry geometry(
             int sourceWidth,
             int sourceHeight,

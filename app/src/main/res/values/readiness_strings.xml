@@ -1,0 +1,8 @@
+<resources>
+    <string name="readiness_summary">Podsumowanie</string>
+    <string name="readiness_show_all">Pokaż wszystkie</string>
+    <string name="readiness_return">Wróć do podsumowania</string>
+    <string name="readiness_busy_return">Trwa zapis lub przygotowanie. Powrót do podsumowania będzie dostępny po zakończeniu operacji.</string>
+    <item type="id" name="readiness_back_summary" />
+    <item type="id" name="readiness_main_return" />
+</resources>

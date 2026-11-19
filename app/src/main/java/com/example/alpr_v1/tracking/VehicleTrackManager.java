@@ -93,9 +93,9 @@ public final class VehicleTrackManager {
         }
     }
 
-    private static final class Track {
+    private final class Track {
         final long trackId;
-        final long entityId;
+        long entityId;
         final BoxKalman kalman = new BoxKalman();
         final long firstSeenNanos;
         long lastSeenNanos;
@@ -116,6 +116,10 @@ public final class VehicleTrackManager {
         }
 
         NormalizedBounds predicted(long nowNanos) {
+            NormalizedBounds controlled=normalDynamicIdentity?identity.controlledBounds(entityId,nowNanos):null;
+            if(controlled!=null)return controlled;
+            NormalizedBounds local=normalDynamicIdentity?identity.boundsAt(entityId,nowNanos,lastSeenNanos):null;
+            if(local!=null)return local;
             return kalman.estimate(nowNanos);
         }
 
@@ -150,12 +154,113 @@ public final class VehicleTrackManager {
     }
 
     private final VehicleEntityRepository repository;
+    private final DynamicVehicleIdentity identity;
     private final int maxTrackedVehicles;
     private long trackTtlNanos;
     private final long entityTtlNanos;
     private final List<Track> tracks = new ArrayList<>();
     private long nextTrackId = 1L;
+    private boolean normalDynamicIdentity;
+    private long normalRecoveryGraceNanos;
+    private static final class IdentityWindow {
+        final long measuredAt, recoverUntil;
+        IdentityWindow(long at, long trackTtl, long grace, long entityTtl) {
+            measuredAt=at;
+            recoverUntil=at+Math.min(entityTtl,trackTtl+grace);
+        }
+    }
+    private final java.util.Map<Long,IdentityWindow> identityWindows=new java.util.HashMap<>();
+    /** Ordinary dynamic mode only. Prediction/selection never renew an MP evidence window. */
+    public synchronized void setNormalDynamicIdentity(boolean enabled,long recoveryGraceNanos) {
+        if(normalDynamicIdentity!=enabled)identityWindows.clear();
+        normalDynamicIdentity=enabled;
+        identity.setEnabled(enabled);
+        normalRecoveryGraceNanos=Math.max(0L,Math.min(entityTtlNanos,recoveryGraceNanos));
+        identity.window(trackTtlNanos,normalRecoveryGraceNanos,entityTtlNanos);
+    }
+    private boolean withinIdentityWindow(long entityId,long now) {
+        if(normalDynamicIdentity)return identity.recoverable(entityId,now);
+        IdentityWindow window=identityWindows.get(entityId);
+        return window!=null&&now>=window.measuredAt&&now<=window.recoverUntil;
+    }
+    private boolean needsIdentityRecovery(Track track) {
+        // An uninterrupted measured track keeps the existing association policy,
+        // including the coordinator's latency-adaptive TTL. A missed MP is a loss.
+        return track.missedUpdates>0;
+    }
+    private static boolean matchingAppearance(AppearanceDescriptor stable,AppearanceDescriptor fresh) {
+        // Existing dormant reassociation gate; unavailable appearance is not identity evidence.
+        return stable!=null&&fresh!=null&&stable.available()&&fresh.available()&&similarity(stable,fresh)>=0.55f;
+    }
+    private boolean recoveryIdentityAllowed(Track track,int index,List<Observation> observations,long now) {
+        if(normalDynamicIdentity&&identity.verifying(track.entityId)&&!identity.pendingCanStart(track.entityId))return false;
+        if(normalDynamicIdentity&&!identity.mayAssociate(track.entityId,now,track.missedUpdates>0))return false;
+        if(normalDynamicIdentity&&identity.controlled(track.entityId,now))
+            return matchingAppearance(track.appearance,observations.get(index).appearance)
+                    &&associationScore(track.predicted(now),track.appearance,observations.get(index))>MIN_REASSOCIATION_SCORE;
+        if(normalDynamicIdentity&&identity.continuous(track.entityId,now))return true;
+        if(!normalDynamicIdentity||!identity.known(track.entityId))return true;
+        if(!withinIdentityWindow(track.entityId,now))return false;
+        Observation chosen=observations.get(index);
+        if(!recoveryAppearance(track.appearance,chosen.appearance))return false;
+        for(Track other:tracks)if(other!=track&&!needsIdentityRecovery(other)
+                &&associationScore(other.predicted(now),other.appearance,chosen)>=MIN_ACTIVE_ASSOCIATION_SCORE)return false;
+        float score=Math.max(associationScore(track.predicted(now),track.appearance,chosen),
+                recoveryAssociationScore(track.predicted(now),track.appearance,chosen));
+        // Require an unambiguous observation for this identity as well as the existing reverse margin.
+        for(int i=0;i<observations.size();i++)if(i!=index){
+            Observation other=observations.get(i);
+            if(!matchingAppearance(track.appearance,other.appearance))continue;
+            float competing=Math.max(associationScore(track.predicted(now),track.appearance,other),
+                    recoveryAssociationScore(track.predicted(now),track.appearance,other));
+            if(competing>=MIN_ACTIVE_ASSOCIATION_SCORE&&score-competing<MIN_ASSOCIATION_MARGIN)return false;
+        }
+        return true;
+    }
+    private static boolean recoveryAppearance(AppearanceDescriptor stable,AppearanceDescriptor fresh) {
+        return matchingAppearance(stable,fresh);
+    }
+    /** Local pixels provide a source-time association proposal, never a synthetic MP measurement. */
+    private NormalizedBounds associationBounds(Track track,long sourceTime) {
+        if(normalDynamicIdentity&&identity.continuous(track.entityId,sourceTime)) {
+            NormalizedBounds local=identity.boundsAt(track.entityId,sourceTime);
+            if(local!=null&&local.valid())return local;
+        }
+        return track.predicted(sourceTime);
+    }
     private long priorityEntityId;
+    private long exclusiveEntityId;
+    public synchronized void setExclusiveTarget(long entityId) {
+        exclusiveEntityId=normalDynamicIdentity?Math.max(0,entityId):0;
+        identity.exclusiveTarget(exclusiveEntityId);
+        if(exclusiveEntityId>0)tracks.removeIf(track->track.entityId!=exclusiveEntityId
+                &&!identity.verificationFor(track.entityId,exclusiveEntityId));
+    }
+    private List<Observation> exclusiveObservations(List<Observation> observations,long now) {
+        if(exclusiveEntityId==0)return observations;
+        VehicleEntity selected=repository.get(exclusiveEntityId);
+        if(selected==null)return Collections.emptyList();
+        boolean continuous=identity.continuous(exclusiveEntityId,now)||identity.controlled(exclusiveEntityId,now);
+        Observation best=null;float bestScore=Float.NEGATIVE_INFINITY,second=Float.NEGATIVE_INFINITY;
+        for(Observation observation:observations) {
+            float score=Float.NEGATIVE_INFINITY;
+            for(Track track:tracks)if(track.entityId==exclusiveEntityId||identity.verificationFor(track.entityId,exclusiveEntityId))
+                score=Math.max(score,associationScore(associationBounds(track,now),track.appearance,observation));
+            if(!continuous&&identity.known(exclusiveEntityId)) {
+                boolean parent=false;
+                for(DynamicVehicleIdentity.Parent candidate:recognizedRecoveryCandidates(observation,now))
+                    if(candidate.id==exclusiveEntityId)parent=true;
+                if(!parent)continue;
+                NormalizedBounds local=identity.recoveryBounds(exclusiveEntityId);
+                score=Math.max(score,associationScore(local==null?predictEntity(selected,now):local,
+                        selected.vehicleAppearance(),observation));
+            }
+            if(score<MIN_ACTIVE_ASSOCIATION_SCORE)continue;
+            if(score>bestScore){second=bestScore;bestScore=score;best=observation;}else second=Math.max(second,score);
+        }
+        return best!=null&&hasAssociationMargin(bestScore,bestScore,second)
+                ?Collections.singletonList(best):Collections.emptyList();
+    }
     private long priorityRecoveryGraceNanos;
     private long tracksCreated;
     private long tracksExpired;
@@ -188,6 +293,7 @@ public final class VehicleTrackManager {
             throw new IllegalArgumentException("maxTrackedVehicles must be positive");
         }
         this.repository = repository;
+        this.identity = new DynamicVehicleIdentity(repository);
         this.maxTrackedVehicles = maxTrackedVehicles;
         this.trackTtlNanos = Math.max(1L, trackTtlNanos);
         this.entityTtlNanos = Math.max(this.trackTtlNanos, entityTtlNanos);
@@ -211,10 +317,11 @@ public final class VehicleTrackManager {
     ) {
         long trackingStarted = System.nanoTime();
         long safeNow = Math.max(0L, nowNanos);
+        entitiesCreated += identity.expire(safeNow);
         Set<Long> protectedIds = protectedReassociationEntityIds == null
                 ? Collections.emptySet() : protectedReassociationEntityIds;
         tracksExpired += removeExpiredTracks(safeNow);
-        List<Observation> observations = validObservations(rawObservations);
+        List<Observation> observations = exclusiveObservations(validObservations(rawObservations),safeNow);
         boolean[] usedTracks = new boolean[tracks.size()];
         boolean[] usedObservations = new boolean[observations.size()];
 
@@ -235,10 +342,11 @@ public final class VehicleTrackManager {
         for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
             Track track = tracks.get(trackIndex);
             if (usedTracks[trackIndex] || priorityPending(track, safeNow)) continue;
-            NormalizedBounds predicted = track.predicted(safeNow);
+            NormalizedBounds predicted = associationBounds(track,safeNow);
             for (int observationIndex = 0;
                     observationIndex < observations.size(); observationIndex++) {
                 if (usedObservations[observationIndex]) continue;
+                if(!recoveryIdentityAllowed(track,observationIndex,observations,safeNow))continue;
                 float score = associationScore(
                         predicted,
                         track.appearance,
@@ -290,11 +398,16 @@ public final class VehicleTrackManager {
             if (!usedTracks[index]) {
                 tracks.get(index).missedUpdates++;
                 tracks.get(index).sourceIndex = -1;
+                if(!identity.continuous(tracks.get(index).entityId,safeNow))
+                    identity.lost(tracks.get(index).entityId,safeNow,"mp_miss_no_local_continuity");
             }
         }
 
         Set<Long> assignedEntityIds = new HashSet<>();
         for (Track track : tracks) assignedEntityIds.add(track.entityId);
+        java.util.Map<Integer,VehicleEntity> dynamicAssignments=normalDynamicIdentity
+                ? dormantAssignments(observations,usedObservations,assignedEntityIds,safeNow)
+                : java.util.Collections.emptyMap();
         for (int observationIndex = 0;
                 observationIndex < observations.size(); observationIndex++) {
             if (usedObservations[observationIndex]) continue;
@@ -304,12 +417,25 @@ public final class VehicleTrackManager {
                 continue;
             }
             Observation observation = observations.get(observationIndex);
+            if(normalDynamicIdentity&&identity.hasDiagnostics()) {
+                StringBuilder diagnostic=new StringBuilder("unmatched_mp source="+safeNow+" candidates=");
+                for(Track existing:tracks) {
+                    NormalizedBounds local=identity.boundsAt(existing.entityId,safeNow);
+                    diagnostic.append(existing.entityId).append("/local=").append(local!=null)
+                            .append("/eligible=").append(identity.mayAssociate(existing.entityId,safeNow,existing.missedUpdates>0))
+                            .append("/score=").append(associationScore(associationBounds(existing,safeNow),existing.appearance,observation)).append(';');
+                }
+                identity.diagnostic(diagnostic.toString());
+            }
             // During bounded recovery, ambiguous evidence for the target must not
             // immediately create a second identity for that same vehicle.
             if (reservedForPriorityRecovery(observation, safeNow)) continue;
-            VehicleEntity reassociated = findDormantEntity(
+            VehicleEntity reassociated = normalDynamicIdentity ? dynamicAssignments.get(observationIndex) : findDormantEntity(
                     observation, assignedEntityIds, safeNow, protectedIds
             );
+            List<DynamicVehicleIdentity.Parent> parents=normalDynamicIdentity
+                    ?recognizedRecoveryCandidates(observation,safeNow):Collections.emptyList();
+            if(exclusiveEntityId>0&&reassociated==null&&parents.isEmpty())continue;
             long trackId = nextTrackId++;
             VehicleEntity entity;
             if (reassociated != null) {
@@ -323,13 +449,14 @@ public final class VehicleTrackManager {
                         safeNow
                 );
             } else {
-                entitiesCreated++;
                 entity = repository.create(
                         trackId,
                         observation.bounds,
                         observation.appearance,
                         safeNow
                 );
+                identity.created(entity.entityId(),safeNow,parents);
+                if(!identity.verifying(entity.entityId()))entitiesCreated++;
             }
             Track track = new Track(trackId, entity.entityId(), observation, safeNow);
             tracksCreated++;
@@ -337,6 +464,16 @@ public final class VehicleTrackManager {
             assignedEntityIds.add(entity.entityId());
         }
 
+        if(normalDynamicIdentity){
+            for(Track track:tracks)if(track.sourceIndex>=0&&track.missedUpdates==0)
+            {
+                identityWindows.put(track.entityId,new IdentityWindow(safeNow,trackTtlNanos,normalRecoveryGraceNanos,entityTtlNanos));
+                boolean newlyNumbered=identity.pendingCanStart(track.entityId);
+                identity.measured(track.entityId,safeNow);
+                if(newlyNumbered)entitiesCreated++;
+            }
+            identityWindows.keySet().removeIf(id->repository.get(id)==null);
+        }
         entitiesExpired += repository.expireOldEntities(safeNow, entityTtlNanos);
         List<Snapshot> result = snapshots(safeNow, false);
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
@@ -351,6 +488,7 @@ public final class VehicleTrackManager {
     public synchronized List<Snapshot> projectAfterMeasurement(long nowNanos) {
         long trackingStarted = System.nanoTime();
         long safeNow = Math.max(0L, nowNanos);
+        entitiesCreated += identity.expire(safeNow);
         tracksExpired += removeExpiredTracks(safeNow);
         List<Snapshot> result = snapshots(safeNow, false);
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
@@ -362,6 +500,7 @@ public final class VehicleTrackManager {
     public synchronized List<Snapshot> predict(long nowNanos) {
         long trackingStarted = System.nanoTime();
         long safeNow = Math.max(0L, nowNanos);
+        entitiesCreated += identity.expire(safeNow);
         tracksExpired += removeExpiredTracks(safeNow);
         List<Snapshot> result = snapshots(safeNow, true);
         lastTrackingNanos = Math.max(0L, System.nanoTime() - trackingStarted);
@@ -389,6 +528,8 @@ public final class VehicleTrackManager {
         // Technical track expiry does not end domain identity. Dormant entities
         // must stay in the same coordinate system as the next MP observations.
         for (VehicleEntity entity : repository.activeEntities()) {
+            if(exclusiveEntityId>0&&entity.entityId()!=exclusiveEntityId
+                    &&!identity.verificationFor(entity.entityId(),exclusiveEntityId))continue;
             if (movedEntities.contains(entity.entityId())) continue;
             NormalizedBounds bounds = entity.vehicleBounds();
             if (bounds == null || !bounds.valid()) continue;
@@ -421,7 +562,10 @@ public final class VehicleTrackManager {
 
     public synchronized void resetScene() {
         tracks.clear();
+        identityWindows.clear();
+        identity.clear(false);
         priorityEntityId = 0L;
+        exclusiveEntityId = 0L;
         priorityRecoveryGraceNanos = 0L;
         nextTrackId = 1L;
         repository.resetScene();
@@ -435,6 +579,7 @@ public final class VehicleTrackManager {
                 1L,
                 Math.min(ttlNanos, Math.max(1L, entityTtlNanos - 1L))
         );
+        identity.window(trackTtlNanos,normalRecoveryGraceNanos,entityTtlNanos);
     }
 
     public synchronized long trackTtlNanos() { return trackTtlNanos; }
@@ -456,14 +601,18 @@ public final class VehicleTrackManager {
 
     private boolean priorityPending(Track track, long nowNanos) {
         return track.entityId == priorityEntityId
+                && (!normalDynamicIdentity || withinIdentityWindow(track.entityId,nowNanos))
                 && nowNanos - track.lastSeenNanos <= Math.min(entityTtlNanos,
                         trackTtlNanos + priorityRecoveryGraceNanos);
     }
 
     private boolean reservedForPriorityRecovery(Observation observation, long nowNanos) {
         for (Track track : tracks) {
+            // A known lost target needs this current MP as an independent OCR candidate.
+            if(normalDynamicIdentity&&identity.known(track.entityId))continue;
             if (!priorityPending(track, nowNanos) || track.missedUpdates == 0) continue;
-            NormalizedBounds predicted = track.predicted(nowNanos);
+            if(normalDynamicIdentity&&!matchingAppearance(track.appearance,observation.appearance))continue;
+            NormalizedBounds predicted = associationBounds(track,nowNanos);
             if (!predicted.valid()) continue;
             if (associationScore(predicted, track.appearance, observation)
                     >= MIN_ACTIVE_ASSOCIATION_SCORE
@@ -478,13 +627,14 @@ public final class VehicleTrackManager {
         for (int trackIndex = 0; trackIndex < tracks.size(); trackIndex++) {
             Track target = tracks.get(trackIndex);
             if (usedTracks[trackIndex] || !priorityPending(target, nowNanos)) continue;
-            NormalizedBounds predicted = target.predicted(nowNanos);
+            NormalizedBounds predicted = associationBounds(target,nowNanos);
             if (!predicted.valid()) return;
             float threshold = recovery ? MIN_ACTIVE_RECOVERY_SCORE : MIN_ACTIVE_ASSOCIATION_SCORE;
             float best = Float.NEGATIVE_INFINITY, second = Float.NEGATIVE_INFINITY;
             int selected = -1;
             for (int index = 0; index < observations.size(); index++) {
                 if (usedObservations[index]) continue;
+                if(!recoveryIdentityAllowed(target,index,observations,nowNanos))continue;
                 Observation observation = observations.get(index);
                 float score = recovery
                         ? recoveryAssociationScore(predicted, target.appearance, observation)
@@ -501,7 +651,8 @@ public final class VehicleTrackManager {
             // Priority changes processing order, not evidence of identity.
             for (Track other : tracks) {
                 if (other == target) continue;
-                NormalizedBounds otherBounds = other.predicted(nowNanos);
+                if(normalDynamicIdentity&&!identity.mayAssociate(other.entityId,nowNanos,other.missedUpdates>0))continue;
+                NormalizedBounds otherBounds = associationBounds(other,nowNanos);
                 float normalScore = associationScore(otherBounds, other.appearance, observation);
                 if (recovery && normalScore >= MIN_ACTIVE_ASSOCIATION_SCORE) return;
                 float competingScore = recovery
@@ -522,10 +673,93 @@ public final class VehicleTrackManager {
 
     private int removeExpiredTracks(long nowNanos) {
         int before = tracks.size();
-        tracks.removeIf(track -> (nowNanos - track.lastSeenNanos > trackTtlNanos
-                && !priorityPending(track, nowNanos))
-                || repository.get(track.entityId) == null);
+        tracks.removeIf(track -> {
+            boolean expired=(nowNanos-track.lastSeenNanos>trackTtlNanos&&!priorityPending(track,nowNanos)
+                    &&!identity.freshLocal(track.entityId,nowNanos)&&!identity.controlled(track.entityId,nowNanos))
+                    ||repository.get(track.entityId)==null;
+            if(expired)identity.lost(track.entityId,nowNanos,"track_ttl");
+            return expired;
+        });
         return before - tracks.size();
+    }
+
+    private java.util.Map<Integer,VehicleEntity> dormantAssignments(List<Observation> observations,
+            boolean[] used,Set<Long> assigned,long now) {
+        List<VehicleEntity> eligible=new ArrayList<>();
+        for(VehicleEntity entity:repository.activeEntities())if(!assigned.contains(entity.entityId())
+                &&(exclusiveEntityId==0||entity.entityId()==exclusiveEntityId)
+                &&!identity.verifying(entity.entityId())
+                &&entity.acquisitionState()!=EntityAcquisitionState.EXPIRED&&withinIdentityWindow(entity.entityId(),now)
+                &&entity.vehicleBounds()!=null&&entity.vehicleBounds().valid())eligible.add(entity);
+        float[][] scores=new float[observations.size()][eligible.size()];
+        for(float[] row:scores)java.util.Arrays.fill(row,Float.NEGATIVE_INFINITY);
+        for(int i=0;i<observations.size();i++)if(!used[i])for(int j=0;j<eligible.size();j++){
+            VehicleEntity entity=eligible.get(j);Observation observation=observations.get(i);
+            if(!recoveryAppearance(entity.vehicleAppearance(),observation.appearance))continue;
+            float score=associationScore(predictEntity(entity,now),entity.vehicleAppearance(),observation);
+            if(score>MIN_REASSOCIATION_SCORE)scores[i][j]=score;
+        }
+        java.util.Map<Integer,VehicleEntity> result=new java.util.HashMap<>();
+        for(int i=0;i<observations.size();i++)if(!used[i]){
+            int selected=-1;float best=Float.NEGATIVE_INFINITY,second=Float.NEGATIVE_INFINITY;
+            for(int j=0;j<eligible.size();j++)if(scores[i][j]>best){second=best;best=scores[i][j];selected=j;}
+                else second=Math.max(second,scores[i][j]);
+            if(selected<0||!hasAssociationMargin(best,best,second))continue;
+            float competing=Float.NEGATIVE_INFINITY;
+            for(int other=0;other<observations.size();other++)if(other!=i)competing=Math.max(competing,scores[other][selected]);
+            if(!hasAssociationMargin(best,Math.max(best,competing),competing))continue;
+            result.put(i,eligible.get(selected));
+        }
+        return result;
+    }
+
+    private List<DynamicVehicleIdentity.Parent> recognizedRecoveryCandidates(Observation observation,long now) {
+        List<DynamicVehicleIdentity.Parent> result=new ArrayList<>();
+        for(VehicleEntity entity:repository.activeEntities()) {
+            if(exclusiveEntityId>0&&entity.entityId()!=exclusiveEntityId)continue;
+            IdentityWindow window=identityWindows.get(entity.entityId());
+            if(window==null||!recoveryAppearance(entity.vehicleAppearance(),observation.appearance))continue;
+            NormalizedBounds local=identity.recoveryBounds(entity.entityId());
+            if(associationScore(local==null?predictEntity(entity,now):local,entity.vehicleAppearance(),observation)<=MIN_REASSOCIATION_SCORE)continue;
+            DynamicVehicleIdentity.Parent parent=identity.parent(entity.entityId(),window.recoverUntil,now);
+            if(parent!=null)result.add(parent);
+        }
+        return result;
+    }
+
+    public DynamicVehicleIdentity identity() {return identity;}
+
+    /** A conflicting raw MZ result invalidates its old owner; it is not fed into A's OCR memory. */
+    public synchronized void rejectKnownOwner(DynamicVehicleIdentity.Stamp owner,long sourceTime) {
+        if(!identity.accepts(owner))return;
+        identity.lost(owner.entityId,sourceTime);
+        for(Track track:tracks)if(track.entityId==owner.entityId) {track.missedUpdates++;track.sourceIndex=-1;}
+    }
+
+    public synchronized long verifyFresh(DynamicVehicleIdentity.Stamp owner,String raw,long frameId,long sequence,long sourceTime) {
+        DynamicVehicleIdentity.ReadDecision decision=identity.fresh(owner,raw,frameId,sequence,sourceTime);
+        if(decision==null)return 0L;
+        if(decision.recoveredEntityId<0) {
+            tracks.removeIf(track->track.entityId==owner.entityId);
+            repository.retireEntity(owner.entityId);
+            return 0L;
+        }
+        if(decision.committedNew)entitiesCreated++;
+        if(decision.recoveredEntityId<=0)return owner.entityId;
+        Track candidate=null;
+        for(Track track:tracks)if(track.entityId==owner.entityId)candidate=track;
+        if(candidate==null||candidate.sourceIndex<0)return 0L;
+        long original=decision.recoveredEntityId;
+        Track measured=candidate;
+        tracks.removeIf(track->track!=measured&&track.entityId==original);
+        repository.promoteVerifiedVehicle(owner.entityId,original,candidate.trackId,
+                candidate.predicted(sourceTime),candidate.motion(),candidate.appearance,sourceTime);
+        candidate.entityId=original;
+        IdentityWindow window=identityWindows.remove(owner.entityId);
+        if(window!=null)identityWindows.put(original,window);
+        identity.recovered(owner.entityId,original,sourceTime);
+        entityReassociations++;
+        return original;
     }
 
     private VehicleEntity findDormantEntity(
@@ -665,10 +899,11 @@ public final class VehicleTrackManager {
             if (usedTracks[trackIndex]) continue;
             Track track = tracks.get(trackIndex);
             if (priorityPending(track, nowNanos)) continue;
-            NormalizedBounds predicted = track.predicted(nowNanos);
+            NormalizedBounds predicted = associationBounds(track,nowNanos);
             for (int observationIndex = 0;
                     observationIndex < observations.size(); observationIndex++) {
                 if (usedObservations[observationIndex]) continue;
+                if(!recoveryIdentityAllowed(track,observationIndex,observations,nowNanos))continue;
                 float score = recoveryAssociationScore(
                         predicted, track.appearance, observations.get(observationIndex)
                 );
@@ -727,6 +962,8 @@ public final class VehicleTrackManager {
         // or resolve ambiguous target identity merely by left-to-right order.
         for (Track track : tracks) {
             if (priorityPending(track, nowNanos)) return;
+            if(normalDynamicIdentity&&needsIdentityRecovery(track))return;
+            if(normalDynamicIdentity&&!identity.mayAssociate(track.entityId,nowNanos,track.missedUpdates>0))return;
         }
         if (tracks.size() != observations.size() || tracks.size() < 2) return;
         List<Integer> trackOrder = new ArrayList<>(tracks.size());
@@ -736,7 +973,7 @@ public final class VehicleTrackManager {
             observationOrder.add(index);
         }
         trackOrder.sort(Comparator.comparingDouble(
-                index -> tracks.get(index).predicted(nowNanos).centerX()
+                index -> associationBounds(tracks.get(index),nowNanos).centerX()
         ));
         observationOrder.sort(Comparator.comparingDouble(
                 index -> observations.get(index).bounds.centerX()
@@ -747,7 +984,7 @@ public final class VehicleTrackManager {
         for (int rank = 0; rank < trackOrder.size(); rank++) {
             Track track = tracks.get(trackOrder.get(rank));
             Observation observation = observations.get(observationOrder.get(rank));
-            NormalizedBounds predicted = track.predicted(nowNanos);
+            NormalizedBounds predicted = associationBounds(track,nowNanos);
             float sizeSimilarity = Math.min(
                     ratio(predicted.width(), observation.bounds.width()),
                     ratio(predicted.height(), observation.bounds.height())

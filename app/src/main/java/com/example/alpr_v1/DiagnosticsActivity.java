@@ -187,9 +187,18 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         );
 
         renderModelsTable(registry, autoTune);
+        boolean tensorDiagnostic=com.example.alpr_v1.experiment.MzInputEvidence.productionEnabled();
+        ((TextView)findViewById(R.id.diagnostics_mz_input_evidence_status)).setText(getString(R.string.f25_mz_tensor_diagnostic,
+                getString(tensorDiagnostic?R.string.f25_diagnostic_on:R.string.f25_diagnostic_off),
+                tensorDiagnostic?"":com.example.alpr_v1.experiment.MzInputEvidence.DIAGNOSTIC_BLOCK_REASON));
         renderRecentLog(
                 AppLog.recentEvents(this, 20)
         );
+        String finalization=AppLog.lastFinalizationFailure(this);
+        if(!finalization.isEmpty()){
+            TextView failure=new TextView(this);failure.setText("Ostatni błąd finalizacji (odrębny od gotowości START)\n"+finalization);
+            failure.setTextIsSelectable(true);failure.setPadding(12,16,12,16);log.addView(failure);
+        }
     }
 
     private void renderModelsTable(
@@ -998,11 +1007,7 @@ public final class DiagnosticsActivity extends AppCompatActivity {
     }
 
     private void applySystemInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.diagnostics_root), (view, insets) -> {
-            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return insets;
-        });
+        com.example.alpr_v1.ui.CameraWindowUi.install(getWindow(),findViewById(R.id.diagnostics_root));
     }
     private int resolveLogMessageColor(
             String levelAndTag,

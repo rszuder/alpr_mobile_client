@@ -160,8 +160,13 @@ public class GallerySessionScopeTest {
         View settings=LayoutInflater.from(Robolectric.buildActivity(androidx.appcompat.app.AppCompatActivity.class).get())
                 .cloneInContext(new android.view.ContextThemeWrapper(app,R.style.Theme_ALPR_v1))
                 .inflate(R.layout.activity_settings,null,false);
-        TextView status=settings.findViewById(R.id.settings_mz_input_evidence_status);
-        assertNotNull(status);assertTrue(status.getText().toString().contains(MzInputEvidence.DIAGNOSTIC_BLOCK_REASON));
-        assertTrue(status.getText().toString().contains("OFF"));assertFalse(status.isClickable());
+        java.util.ArrayList<View> technicalCopy=new java.util.ArrayList<>();
+        settings.findViewsWithText(technicalCopy,MzInputEvidence.DIAGNOSTIC_BLOCK_REASON,View.FIND_VIEWS_WITH_TEXT);assertTrue(technicalCopy.isEmpty());
+        org.robolectric.android.controller.ActivityController<DiagnosticsActivity> controller=Robolectric.buildActivity(DiagnosticsActivity.class).setup();
+        try{
+            TextView status=controller.get().findViewById(R.id.diagnostics_mz_input_evidence_status);
+            assertNotNull(status);assertTrue(status.getText().toString().contains(MzInputEvidence.DIAGNOSTIC_BLOCK_REASON));
+            assertTrue(status.getText().toString().contains("wyłączona"));assertFalse(status.isClickable());
+        }finally{controller.pause().stop().destroy();}
     }
 }

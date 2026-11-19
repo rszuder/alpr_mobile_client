@@ -29,15 +29,16 @@ public final class ModelStatusFormatter {
     public static String describeResearch(InstalledModel model, AutoTuneManager manager,
             com.example.alpr_v1.experiment.ResearchExecutionChoice choice) {
         if (model == null) return "Brak aktywnego modelu";
-        ModelVariant variant = manager.chosenVariant(model);
+        ModelVariant variant;
+        try { variant = com.example.alpr_v1.experiment.ResearchVariantSelection.requirePinned(model,manager.storedVariantId(model)); }
+        catch (IllegalStateException missing) { return displayName(model.manifest().name())+"\nWybierz jawny wariant modelu do badania"; }
         ModelInputSpec input = variant.input(model.manifest().input());
         String hardware;
-        try { hardware = hardwareLabel(choice.resolveApproved(variant)); }
+        try { choice.resolveApproved(variant);hardware = choice.label(); }
         catch (IllegalArgumentException invalid) { hardware = "Wybierz CPU/GPU — brak zatwierdzonego profilu"; }
         return displayName(model.manifest().name()) + "\n" + variantLabel(variant) + " · " + hardware
                 + " • " + input.width() + '×' + input.height() + "\n"
-                + (manager.isVariantPinned(model) ? "EXP · przypięty: " + variant.id()
-                        : "EXP · wybierz jawny wariant (AUTO niedozwolone)");
+                + "Wariant badawczy: " + variant.id();
     }
 
     public static String format(ModelRegistry registry, AutoTuneManager autoTuneManager) {
@@ -57,17 +58,17 @@ public final class ModelStatusFormatter {
         boolean complete = registry.hasCompleteAlprComposition();
         String header;
         if (complete && basePackage != null && registry.isCompositionModified()) {
-            header = "Stan: gotowa\nŹródło: kompozycja zmodyfikowana · baza: "
+            header = "Modele: wybrane\nŹródło: kompozycja zmodyfikowana · baza: "
                     + displayName(basePackage.manifest().name())
                     + " v" + basePackage.manifest().version();
         } else if (complete && activePackage != null) {
-            header = "Stan: gotowa\nŹródło: kompletny pakiet ALPR · "
+            header = "Modele: wybrane\nŹródło: kompletny pakiet ALPR · "
                     + displayName(activePackage.manifest().name())
                     + " v" + activePackage.manifest().version();
             String createdAt = shortDate(activePackage.manifest().createdAt());
             if (!createdAt.isEmpty()) header += " • " + createdAt;
         } else if (complete) {
-            header = "Stan: gotowa\nŹródło: kompozycja z modeli mobilnych · MT i MZ aktywne";
+            header = "Modele: wybrane\nŹródło: kompozycja z modeli mobilnych · MT i MZ aktywne";
         } else {
             header = "Stan: niekompletna\nBrakuje: " + missingRequiredRoles(registry);
             if (basePackage != null && registry.isCompositionModified()) {
@@ -107,8 +108,9 @@ public final class ModelStatusFormatter {
                     : "Brak aktywnego modelu\nEtap opcjonalny — pipeline może działać bez MP";
         }
         ModelManifest manifest = model.manifest();
-        ModelVariant selected = autoTuneManager.chosenVariant(model);
-        ExecutionProfile profile = autoTuneManager.chosenProfile(model);
+        ModelVariant selected = autoTuneManager.inspectedVariant(model);
+        if (selected == null) return displayName(manifest.name()) + "\n" + autoTuneManager.normalExecutionLabel(model, null)
+                + "\nDostępność wariantu sprawdzimy podczas uruchamiania.";
         ModelInputSpec input = selected.input(manifest.input());
         ModelOutputSpec output = selected.output(manifest.output());
 
@@ -119,9 +121,9 @@ public final class ModelStatusFormatter {
         }
 
         String second = variantLabel(selected)
-                + " · " + hardwareLabel(profile)
+                + " · " + autoTuneManager.normalExecutionLabel(model, selected)
                 + " • " + input.width() + '×' + input.height()
-                + (autoTuneManager.isVariantPinned(model) ? " • ręczny"
+                + (!autoTuneManager.storedVariantId(model).isEmpty() ? " • ręczny"
                         : autoTuneManager.hasProfile(model) ? " • AutoTune" : " • AUTO (domyślny)");
 
         StringBuilder third = new StringBuilder(String.format(

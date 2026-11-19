@@ -11,6 +11,23 @@ import java.util.Arrays;
 import java.util.List;
 
 public final class RobustAffineTransformTest {
+    @Test public void fullConsensusUsesTheSameAllPointRefinement()throws Exception {
+        List<SparsePyramidalFlow.Match> matches=new ArrayList<>();
+        for(int y=0;y<5;y++)for(int x=0;x<6;x++) {
+            int index=matches.size();float px=12+11*x,py=14+16*y;
+            matches.add(new SparsePyramidalFlow.Match(index,new SparsePyramidalFlow.Point(px,py),
+                    new SparsePyramidalFlow.Point(1.01f*px+.02f*py+3+((index%7)-3)*.01f,
+                            -.01f*px+.99f*py-2+((index%5)-2)*.01f),1,.1f));
+        }
+        int[] indices=new int[matches.size()];for(int i=0;i<indices.length;i++)indices[i]=i;
+        java.lang.reflect.Method fit=RobustAffineTransform.class.getDeclaredMethod("fit",List.class,int[].class);fit.setAccessible(true);
+        RobustAffineTransform.Result reference=(RobustAffineTransform.Result)fit.invoke(null,matches,indices);
+        RobustAffineTransform.Result result=RobustAffineTransform.estimate(matches);
+        assertTrue(result.valid);assertEquals(30,result.inlierCount);
+        assertEquals(reference.a,result.a,0f);assertEquals(reference.b,result.b,0f);assertEquals(reference.tx,result.tx,0f);
+        assertEquals(reference.c,result.c,0f);assertEquals(reference.d,result.d,0f);assertEquals(reference.ty,result.ty,0f);
+        assertEquals(1.01f,result.a,.002f);assertEquals(3f,result.tx,.1f);assertEquals(-2f,result.ty,.1f);
+    }
     @Test
     public void estimatesAffineDespiteOutliers() {
         List<SparsePyramidalFlow.Match> matches = new ArrayList<>();

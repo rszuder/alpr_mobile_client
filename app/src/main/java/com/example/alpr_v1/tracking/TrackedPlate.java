@@ -20,6 +20,9 @@ public final class TrackedPlate {
     public final boolean localAppearanceValidated;
     public final float[] localAppearanceDescriptor;
     public final long updatedAtNanos;
+    public final DynamicVehicleIdentity.Stamp identityOwner;
+    public final long anchorSourceTimestampNanos;
+    public final com.example.alpr_v1.domain.NormalizedQuad fullReferenceQuad;
 
     TrackedPlate(
             OverlayItem overlayItem,
@@ -35,6 +38,31 @@ public final class TrackedPlate {
             float[] localAppearanceDescriptor,
             long updatedAtNanos
     ) {
+        this(overlayItem,trackingQuality,supportRatio,meanMatchError,trackerInliers,consecutiveFailures,
+                ageFrames,framesSinceMtAnchor,localAppearanceSimilarity,localAppearanceValidated,
+                localAppearanceDescriptor,updatedAtNanos,null);
+    }
+    TrackedPlate(OverlayItem overlayItem,float trackingQuality,float supportRatio,float meanMatchError,
+            int trackerInliers,int consecutiveFailures,int ageFrames,int framesSinceMtAnchor,
+            float localAppearanceSimilarity,boolean localAppearanceValidated,float[] localAppearanceDescriptor,
+            long updatedAtNanos,DynamicVehicleIdentity.Stamp identityOwner) {
+        this(overlayItem,trackingQuality,supportRatio,meanMatchError,trackerInliers,consecutiveFailures,
+                ageFrames,framesSinceMtAnchor,localAppearanceSimilarity,localAppearanceValidated,localAppearanceDescriptor,
+                updatedAtNanos,identityOwner,0L);
+    }
+    TrackedPlate(OverlayItem overlayItem,float trackingQuality,float supportRatio,float meanMatchError,
+            int trackerInliers,int consecutiveFailures,int ageFrames,int framesSinceMtAnchor,
+            float localAppearanceSimilarity,boolean localAppearanceValidated,float[] localAppearanceDescriptor,
+            long updatedAtNanos,DynamicVehicleIdentity.Stamp identityOwner,long anchorSourceTimestampNanos) {
+        this(overlayItem,trackingQuality,supportRatio,meanMatchError,trackerInliers,consecutiveFailures,ageFrames,
+                framesSinceMtAnchor,localAppearanceSimilarity,localAppearanceValidated,localAppearanceDescriptor,
+                updatedAtNanos,identityOwner,anchorSourceTimestampNanos,null);
+    }
+    TrackedPlate(OverlayItem overlayItem,float trackingQuality,float supportRatio,float meanMatchError,
+            int trackerInliers,int consecutiveFailures,int ageFrames,int framesSinceMtAnchor,
+            float localAppearanceSimilarity,boolean localAppearanceValidated,float[] localAppearanceDescriptor,
+            long updatedAtNanos,DynamicVehicleIdentity.Stamp identityOwner,long anchorSourceTimestampNanos,
+            com.example.alpr_v1.domain.NormalizedQuad fullReferenceQuad) {
         this.overlayItem = overlayItem;
         this.trackId = overlayItem == null ? 0L : overlayItem.trackId;
         this.normalizedBounds = overlayItem == null
@@ -52,6 +80,9 @@ public final class TrackedPlate {
         this.localAppearanceDescriptor = localAppearanceDescriptor == null
                 ? null : localAppearanceDescriptor.clone();
         this.updatedAtNanos = Math.max(0L, updatedAtNanos);
+        this.identityOwner=identityOwner;
+        this.anchorSourceTimestampNanos=anchorSourceTimestampNanos;
+        this.fullReferenceQuad=fullReferenceQuad;
     }
 
     private static float clamp01(float value) {

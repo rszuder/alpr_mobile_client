@@ -94,6 +94,12 @@ final class SparsePyramidalFlow {
         return track(previous,current,width,height,points,validateForwardBackward,null);
     }
     static Result track(byte[] previous,byte[] current,int width,int height,List<Point> points,boolean validateForwardBackward,ObservationMask mask) {
+        return track(previous,current,width,height,points,validateForwardBackward,mask,null);
+    }
+
+    /** A camera estimate initializes local KLT; it never substitutes local point validation. */
+    static Result track(byte[] previous,byte[] current,int width,int height,List<Point> points,
+            boolean validateForwardBackward,ObservationMask mask,FrameMotionTransform cameraMotion) {
         if(mask!=null) mask.requireSize(width,height);
         if (previous == null || current == null || points == null
                 || width < 16 || height < 16
@@ -101,13 +107,17 @@ final class SparsePyramidalFlow {
                 || current.length < width * height) {
             return new Result(Collections.emptyList(), points == null ? 0 : points.size());
         }
-        Pyramid first = Pyramid.build(previous, width, height, PYRAMID_LEVELS, mask);
-        Pyramid second = Pyramid.build(current, width, height, PYRAMID_LEVELS, mask);
+        boolean initialized=cameraMotion!=null&&cameraMotion.valid;
+        Pyramid first = Pyramid.build(previous, width, height, initialized?1:PYRAMID_LEVELS, mask);
+        Pyramid second = Pyramid.build(current, width, height, initialized?1:PYRAMID_LEVELS, mask);
         List<Match> matches = new ArrayList<>();
         boolean[] unsupported = mask==null?null:new boolean[points.size()];
         for (int index = 0; index < points.size(); index++) {
             Point source = points.get(index);
-            Track forward = trackPoint(first, second, source, null);
+            Point initial=initialized?new Point(
+                    cameraMotion.mapX(source.x/width,source.y/height)*width-source.x,
+                    cameraMotion.mapY(source.x/width,source.y/height)*height-source.y):null;
+            Track forward = trackPoint(first, second, source, initial);
             if(forward.unsupported) unsupported[index]=true;
             if (!forward.valid || forward.error > MAXIMUM_MEAN_ERROR) continue;
             float fbError = 0f;
@@ -230,10 +240,19 @@ final class SparsePyramidalFlow {
     }
 
     private static float sample(Image image, float x, float y) {
-        int left = (int) Math.floor(x);
-        int top = (int) Math.floor(y);
+        int left=(int)x,top=(int)y;
+        if(x<left)left--;
+        if(y<top)top--;
         float dx = x - left;
         float dy = y - top;
+        if(left>=0&&top>=0&&left+1<image.width&&top+1<image.height) {
+            int index=top*image.width+left;
+            byte[] pixels=image.gray;
+            float topValue=(pixels[index]&0xff)*(1f-dx)+(pixels[index+1]&0xff)*dx;
+            index+=image.width;
+            float bottomValue=(pixels[index]&0xff)*(1f-dx)+(pixels[index+1]&0xff)*dx;
+            return topValue*(1f-dy)+bottomValue*dy;
+        }
         int right = Math.min(image.width - 1, left + 1);
         int bottom = Math.min(image.height - 1, top + 1);
         left = Math.max(0, left);

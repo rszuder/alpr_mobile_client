@@ -11,6 +11,11 @@ public final class ExperimentStartRequest {
         return generation;
     }
     public synchronized boolean pending() { return pending; }
+    /** Read-only identity: checking readiness must never create an operator request. */
+    public synchronized long pendingGeneration() { return pending ? generation : -1L; }
+    public synchronized boolean isCurrent(long requestGeneration) {
+        return pending && requestGeneration >= 0L && generation == requestGeneration;
+    }
     public synchronized boolean waitingForPermission() { return permissionDialog; }
     public synchronized void permissionStarted() {
         permissionDialog = true;

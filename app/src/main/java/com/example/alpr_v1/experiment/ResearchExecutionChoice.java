@@ -11,11 +11,11 @@ import java.util.Locale;
 
 /** Jawny wybór profilu wykonania dostępny przed startem sesji badawczej. */
 public enum ResearchExecutionChoice {
-    AUTO("auto", "AUTO"),
-    CPU_1("cpu_1", "CPU 1"),
-    CPU_2("cpu_2", "CPU 2"),
-    CPU_4("cpu_4", "CPU 4"),
-    GPU("gpu", "GPU");
+    AUTO("auto", "Automatycznie"),
+    CPU_1("cpu_1", "CPU · 1 wątek"),
+    CPU_2("cpu_2", "CPU · 2 wątki"),
+    CPU_4("cpu_4", "CPU · 4 wątki"),
+    GPU("gpu", "GPU · procesor graficzny");
 
     private final String wireName;
     private final String label;
@@ -37,7 +37,7 @@ public enum ResearchExecutionChoice {
     }
 
     public ExecutionProfile resolveApproved(ModelVariant variant) {
-        if (this == AUTO) throw new IllegalArgumentException("RESEARCH_BACKEND_REQUIRED: wybierz CPU 1/2/4 albo GPU; AUTO jest niedozwolone");
+        if (this == AUTO) throw new IllegalArgumentException("RESEARCH_BACKEND_REQUIRED: wybierz CPU (1, 2 lub 4 wątki) albo GPU; AUTO jest niedozwolone");
         return resolve(variant, null);
     }
 

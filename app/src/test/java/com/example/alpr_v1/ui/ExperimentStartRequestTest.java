@@ -4,6 +4,14 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ExperimentStartRequestTest {
+    @Test public void readingRequestIdentityCannotAuthorizeWorkAndCancelledGenerationCannotBeReused() {
+        ExperimentStartRequest start=new ExperimentStartRequest();
+        assertEquals(-1L,start.pendingGeneration());assertFalse(start.isCurrent(-1L));assertFalse(start.pending());
+        long first=start.request();assertEquals(first,start.pendingGeneration());assertTrue(start.isCurrent(first));
+        start.cancel();assertFalse(start.isCurrent(first));assertEquals(-1L,start.pendingGeneration());
+        long next=start.request();assertNotEquals(first,next);assertFalse(start.isCurrent(first));assertTrue(start.isCurrent(next));
+        assertTrue(start.consumeIfReady(true));assertFalse(start.isCurrent(next));assertEquals(-1L,start.pendingGeneration());
+    }
     @Test public void pausedPreviewCanBecomeReadyAndStartExactlyOnceAfterOneRequest() {
         ExperimentStartRequest start = new ExperimentStartRequest();
         long first = start.request();
